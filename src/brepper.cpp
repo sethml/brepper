@@ -1,5 +1,9 @@
 #include "brepper.hpp"
 #include "common/logging.hpp"
+#include "mesh/stl_reader.hpp"
+#include "mesh/mesh_sampling.hpp"
+#include <pcl/io/pcd_io.h>
+#include <pcl/io/ply_io.h>
 
 namespace brepper {
 
@@ -59,8 +63,38 @@ bool BrepperPipeline::process() {
 
 bool BrepperPipeline::stage1_load_mesh() {
     LOG_INFO("Stage 1: Loading and preprocessing mesh");
-    // TODO: Implement STL loading and point cloud generation
-    LOG_WARN("Stage 1: Not implemented yet");
+    
+    // Step 1.1: Load STL file
+    STLReader reader(config_);
+    if (!reader.load(config_.input_file, results_.input_mesh)) {
+        return false;
+    }
+    
+    // Step 1.2: Sample mesh to point cloud with normals
+    MeshSampler sampler(config_);
+    if (!sampler.sample(results_.input_mesh, results_.sampled_cloud)) {
+        return false;
+    }
+    
+    // Step 1.3: Save debug output if requested
+    if (!config_.save_point_cloud.empty()) {
+        LOG_INFO("Saving point cloud to: ", config_.save_point_cloud);
+        
+        // Determine format from extension
+        std::string ext = config_.save_point_cloud.substr(
+            config_.save_point_cloud.find_last_of('.') + 1);
+        
+        if (ext == "pcd") {
+            pcl::io::savePCDFileBinary(config_.save_point_cloud, *results_.sampled_cloud);
+        } else if (ext == "ply") {
+            pcl::io::savePLYFileBinary(config_.save_point_cloud, *results_.sampled_cloud);
+        } else {
+            LOG_WARN("Unknown point cloud format, saving as PCD");
+            pcl::io::savePCDFileBinary(config_.save_point_cloud + ".pcd", *results_.sampled_cloud);
+        }
+    }
+    
+    LOG_INFO("Stage 1 complete: ", results_.sampled_cloud->size(), " points generated");
     return true;
 }
 
