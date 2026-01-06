@@ -22,17 +22,33 @@ cmake --build build -j$(sysctl -n hw.ncpu)
 brepper - Convert STL mesh to STEP with fitted surfaces
 
 USAGE:
-    brepper [OPTIONS] <input.stl> -o <output.step>
+    brepper [OPTIONS] <input.stl> [-o <output.step>]
 
 REQUIRED:
     <input.stl>              Input STL file (binary or ASCII)
-    -o, --output <file>      Output STEP file
+    -o, --output <file>      Output STEP file (required unless --stage < 6)
 
 GENERAL OPTIONS:
     -v, --verbose            Enable verbose output
     -q, --quiet              Suppress non-error output
     --debug                  Enable debug output and intermediate files
     --threads <N>            Number of threads (default: auto)
+    --stage <1-6>            Stop after stage (default: 6=export)
+                             1=load, 2=segment, 3=assign, 4=boundary, 5=brep, 6=export
+    --dimensions             Print mesh bounding box dimensions
+```
+
+### Examples
+
+```bash
+# Full conversion
+./build/brepper input.stl -o output.step
+
+# Just load and sample mesh (stage 1)
+./build/brepper input.stl --stage 1 -v
+
+# Run through segmentation (stage 2)
+./build/brepper input.stl --stage 2 -v
 ```
 
 See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for full documentation.

@@ -4,6 +4,16 @@
 
 namespace brepper {
 
+// Pipeline stages (for --stage option)
+enum class PipelineStage {
+    Load = 1,        // Stage 1: Load mesh and sample points
+    Segment = 2,     // Stage 2: RANSAC surface segmentation
+    Assign = 3,      // Stage 3: Assign triangles to surfaces
+    Boundary = 4,    // Stage 4: Detect boundaries
+    BRep = 5,        // Stage 5: Build B-Rep
+    Export = 6       // Stage 6: Export STEP file
+};
+
 // Units for input STL files
 enum class Units {
     Millimeters,  // mm (default)
@@ -87,7 +97,7 @@ struct Config {
     
     // Analysis options
     bool print_dimensions = false;  // Print mesh bounding box dimensions
-    bool skip_output = false;       // Skip output file (for analysis only)
+    PipelineStage stop_after_stage = PipelineStage::Export;  // Run pipeline up to this stage
 };
 
 } // namespace brepper

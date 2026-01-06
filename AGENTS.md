@@ -104,3 +104,19 @@ cmake --build build && ctest --test-dir build --output-on-failure
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+### Don't Truncate Build or Test Output
+
+Never pipe build or test commands through `head`, `tail`, or other truncating filters:
+
+- Errors often appear at unexpected locations in the output
+- Truncating can hide the actual failure while showing misleading context
+- Build systems and test frameworks already produce focused error output
+
+```bash
+# Bad: might hide the actual error
+cmake --build build 2>&1 | head -100
+
+# Good: see all output
+cmake --build build
+```

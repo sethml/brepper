@@ -22,14 +22,14 @@ bool validate_files(const Config& config) {
         return false;
     }
     
-    // Skip output validation if no output requested
-    if (config.skip_output) {
+    // Only require output file if running to export stage
+    if (config.stop_after_stage != PipelineStage::Export) {
         return true;
     }
     
-    // Require output file if not skipping
+    // Require output file for export stage
     if (config.output_file.empty()) {
-        LOG_ERROR("Output file required (use --output or --no-output)");
+        LOG_ERROR("Output file required when running to export stage (use -o or --stage to stop earlier)");
         return false;
     }
     
@@ -72,7 +72,12 @@ int main(int argc, char* argv[]) {
     app.add_flag("--debug", config.debug, "Enable debug output and intermediate files");
     app.add_option("--threads", config.num_threads, "Number of threads (default: auto)");
     app.add_flag("--dimensions", config.print_dimensions, "Print mesh bounding box dimensions");
-    app.add_flag("--no-output", config.skip_output, "Skip output file (for analysis only)");
+    
+    // Pipeline stage control
+    int stage_num = 6;
+    app.add_option("--stage", stage_num,
+                  "Stop after stage: 1=load, 2=segment, 3=assign, 4=boundary, 5=brep, 6=export (default: 6)")
+        ->check(CLI::Range(1, 6));
     
     // Units option
     std::string units_str = "mm";
@@ -174,6 +179,9 @@ int main(int argc, char* argv[]) {
     else if (units_str == "cm") config.stl_units = Units::Centimeters;
     else if (units_str == "m") config.stl_units = Units::Meters;
     else if (units_str == "in") config.stl_units = Units::Inches;
+    
+    // Convert stage number to enum
+    config.stop_after_stage = static_cast<PipelineStage>(stage_num);
     
     // Validate inputs
     if (!validate_files(config)) {

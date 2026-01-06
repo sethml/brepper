@@ -460,10 +460,10 @@ brepper/
 - [x] Basic CLI framework
 
 ### Phase 2: Surface Segmentation (Week 3-4)
-- [ ] RANSAC plane fitting
-- [ ] RANSAC cylinder fitting
-- [ ] RANSAC sphere/cone fitting
-- [ ] Iterative extraction loop
+- [x] RANSAC plane fitting
+- [x] RANSAC cylinder fitting
+- [x] RANSAC sphere/cone fitting
+- [x] Iterative extraction loop
 - [ ] Segment clustering
 
 ### Phase 3: NURBS & Assignment (Week 5-6)

@@ -2,6 +2,7 @@
 #include "common/logging.hpp"
 #include "mesh/stl_reader.hpp"
 #include "mesh/mesh_sampling.hpp"
+#include "segmentation/ransac_segmenter.hpp"
 #include <pcl/io/pcd_io.h>
 #include <pcl/io/ply_io.h>
 #include <pcl/conversions.h>
@@ -28,11 +29,13 @@ BrepperPipeline::BrepperPipeline(const Config& config) : config_(config) {
 bool BrepperPipeline::process() {
     LOG_INFO("Starting brepper pipeline");
     LOG_INFO("Input: ", config_.input_file);
-    if (!config_.skip_output) {
+    if (config_.stop_after_stage == PipelineStage::Export) {
         LOG_INFO("Output: ", config_.output_file);
+    } else {
+        LOG_INFO("Stopping after stage ", static_cast<int>(config_.stop_after_stage));
     }
     
-    // Execute pipeline stages
+    // Execute pipeline stages up to the requested stage
     if (!stage1_load_mesh()) {
         LOG_ERROR("Stage 1 (load mesh) failed");
         return false;
@@ -43,9 +46,8 @@ bool BrepperPipeline::process() {
         print_mesh_dimensions();
     }
     
-    // Skip remaining stages if no output requested
-    if (config_.skip_output) {
-        LOG_INFO("Skipping output (--no-output specified)");
+    if (config_.stop_after_stage < PipelineStage::Segment) {
+        LOG_INFO("Pipeline completed (stopped after stage 1)");
         return true;
     }
     
@@ -54,9 +56,19 @@ bool BrepperPipeline::process() {
         return false;
     }
     
+    if (config_.stop_after_stage < PipelineStage::Assign) {
+        LOG_INFO("Pipeline completed (stopped after stage 2)");
+        return true;
+    }
+    
     if (!stage3_assign_triangles()) {
         LOG_ERROR("Stage 3 (assign triangles) failed");
         return false;
+    }
+    
+    if (config_.stop_after_stage < PipelineStage::Boundary) {
+        LOG_INFO("Pipeline completed (stopped after stage 3)");
+        return true;
     }
     
     if (!stage4_detect_boundaries()) {
@@ -64,9 +76,19 @@ bool BrepperPipeline::process() {
         return false;
     }
     
+    if (config_.stop_after_stage < PipelineStage::BRep) {
+        LOG_INFO("Pipeline completed (stopped after stage 4)");
+        return true;
+    }
+    
     if (!stage5_build_brep()) {
         LOG_ERROR("Stage 5 (build B-Rep) failed");
         return false;
+    }
+    
+    if (config_.stop_after_stage < PipelineStage::Export) {
+        LOG_INFO("Pipeline completed (stopped after stage 5)");
+        return true;
     }
     
     if (!stage6_export_step()) {
@@ -117,8 +139,14 @@ bool BrepperPipeline::stage1_load_mesh() {
 
 bool BrepperPipeline::stage2_segment_surfaces() {
     LOG_INFO("Stage 2: Segmenting surfaces with RANSAC");
-    // TODO: Implement RANSAC surface fitting
-    LOG_WARN("Stage 2: Not implemented yet");
+    
+    RANSACSegmenter segmenter(config_);
+    if (!segmenter.segment(results_.sampled_cloud, results_.fitted_surfaces)) {
+        LOG_ERROR("RANSAC segmentation failed");
+        return false;
+    }
+    
+    LOG_INFO("Stage 2 complete: found ", results_.fitted_surfaces.size(), " surfaces");
     return true;
 }
 
