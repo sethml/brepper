@@ -4,6 +4,7 @@
 #include "mesh/mesh_sampling.hpp"
 #include "segmentation/ransac_segmenter.hpp"
 #include "boundary/triangle_assignment.hpp"
+#include "boundary/boundary_detector.hpp"
 #include <pcl/io/pcd_io.h>
 #include <pcl/io/ply_io.h>
 #include <pcl/conversions.h>
@@ -166,8 +167,23 @@ bool BrepperPipeline::stage3_assign_triangles() {
 
 bool BrepperPipeline::stage4_detect_boundaries() {
     LOG_INFO("Stage 4: Detecting boundaries and fitting curves");
-    // TODO: Implement boundary detection
-    LOG_WARN("Stage 4: Not implemented yet");
+    
+    BoundaryDetector detector(config_);
+    
+    // Detect boundary edges
+    std::vector<BoundaryEdge> boundary_edges;
+    if (!detector.detect(results_.input_mesh, results_.assignments, boundary_edges)) {
+        LOG_ERROR("Boundary edge detection failed");
+        return false;
+    }
+    
+    // Extract boundary curves
+    if (!detector.extract_curves(results_.input_mesh, boundary_edges, results_.boundary_curves)) {
+        LOG_ERROR("Boundary curve extraction failed");
+        return false;
+    }
+    
+    LOG_INFO("Stage 4 complete: found ", results_.boundary_curves.size(), " boundary curves");
     return true;
 }
 

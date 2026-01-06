@@ -473,8 +473,8 @@ brepper/
 - [ ] Segmented mesh visualization
 
 ### Phase 4: Boundary Detection (Week 7-8)
-- [ ] Boundary edge detection
-- [ ] Edge chain extraction
+- [x] Boundary edge detection
+- [x] Edge chain extraction
 - [ ] Analytic curve fitting
 - [ ] B-spline curve fitting
 

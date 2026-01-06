@@ -24,4 +24,4 @@ test_*.ply
 
 # Debug outputs
 debug_*
-*.log
+*.logbuild-release/
