@@ -67,3 +67,40 @@ Keep README.md up to date when changes affect user-facing behavior:
 3. **Changed defaults** - Document any changes to default parameter values
 4. **New features** - Add brief descriptions of significant new capabilities
 5. **Include in commit** - README updates should be part of the same commit as the feature work
+
+## Code Style Preferences
+
+### Avoid Large Conditional Compilation Blocks
+
+Prefer making dependencies required rather than optional if it would require large `#ifdef` blocks:
+
+- Large conditional blocks lead to hidden build breakages and bugs
+- Code paths that aren't regularly compiled tend to bit-rot
+- Testing burden doubles when code has multiple compilation configurations
+- If a dependency is important enough to use, make it required
+
+**Bad:**
+```cpp
+#ifdef USE_FEATURE_X
+    // 50+ lines of code using feature X
+#else
+    // 50+ lines of fallback code
+#endif
+```
+
+**Better:** Make the dependency required, or isolate the feature into a separate optional component that can be tested independently.
+
+Small `#ifdef` blocks (e.g., platform-specific includes, debug logging) are acceptable.
+
+### Command Line Efficiency
+
+When building and running tests, combine commands with `&&` to avoid unnecessary waits:
+
+```bash
+# Good: single command, stops on failure
+cmake --build build && ctest --test-dir build --output-on-failure
+
+# Bad: separate commands requiring multiple tool invocations
+cmake --build build
+ctest --test-dir build --output-on-failure
+```

@@ -1,12 +1,9 @@
 #include "mesh_sampling.hpp"
 #include "common/logging.hpp"
 #include <pcl/conversions.h>
+#include <omp.h>
 #include <cmath>
 #include <vector>
-
-#ifdef BREPPER_USE_OPENMP
-#include <omp.h>
-#endif
 
 namespace brepper {
 
@@ -161,7 +158,6 @@ bool MeshSampler::sample(const pcl::PolygonMesh& mesh, PointCloudNormalPtr& clou
         LOG_DEBUG("Adjusted to ", total_estimated_points, " samples");
     }
     
-#ifdef BREPPER_USE_OPENMP
     // Parallel sampling using per-thread clouds
     int num_threads = config_.num_threads > 0 ? config_.num_threads : omp_get_max_threads();
     omp_set_num_threads(num_threads);
@@ -243,51 +239,6 @@ bool MeshSampler::sample(const pcl::PolygonMesh& mesh, PointCloudNormalPtr& clou
     for (const auto& tc : thread_clouds) {
         cloud->insert(cloud->end(), tc.begin(), tc.end());
     }
-    
-#else
-    // Sequential fallback (original code)
-    cloud.reset(new PointCloudNormal);
-    cloud->reserve(total_estimated_points);
-    
-    for (size_t tri_idx = 0; tri_idx < num_triangles; ++tri_idx) {
-        const auto& polygon = mesh.polygons[tri_idx];
-        if (polygon.vertices.size() != 3) continue;
-        
-        const auto& pt0 = (*vertices)[polygon.vertices[0]];
-        const auto& pt1 = (*vertices)[polygon.vertices[1]];
-        const auto& pt2 = (*vertices)[polygon.vertices[2]];
-        
-        Eigen::Vector3f v0(pt0.x, pt0.y, pt0.z);
-        Eigen::Vector3f v1(pt1.x, pt1.y, pt1.z);
-        Eigen::Vector3f v2(pt2.x, pt2.y, pt2.z);
-        
-        Eigen::Vector3f normal = computeFaceNormal(v0, v1, v2);
-        
-        // Add centroid
-        Eigen::Vector3f centroid = (v0 + v1 + v2) / 3.0f;
-        pcl::PointNormal pn;
-        pn.x = centroid.x(); pn.y = centroid.y(); pn.z = centroid.z();
-        pn.normal_x = normal.x(); pn.normal_y = normal.y(); pn.normal_z = normal.z();
-        pn.curvature = 0.0f;
-        cloud->push_back(pn);
-        
-        // Add vertices
-        for (int i = 0; i < 3; ++i) {
-            const auto& pt = (*vertices)[polygon.vertices[i]];
-            pcl::PointNormal vpn;
-            vpn.x = pt.x; vpn.y = pt.y; vpn.z = pt.z;
-            vpn.normal_x = normal.x(); vpn.normal_y = normal.y(); vpn.normal_z = normal.z();
-            vpn.curvature = 0.0f;
-            cloud->push_back(vpn);
-        }
-        
-        // Random samples
-        int num_additional = samples_per_triangle[tri_idx] - 4;
-        if (num_additional > 0) {
-            sampleTriangle(v0, v1, v2, normal, num_additional, *cloud);
-        }
-    }
-#endif
     
     num_sampled_points_ = cloud->size();
     cloud->width = num_sampled_points_;

@@ -43,7 +43,7 @@ See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for full documentation.
 - OpenCASCADE (OCCT) ≥7.6  
 - Eigen ≥3.4
 - CLI11 (header-only)
-- OpenMP (optional, for parallel processing)
+- OpenMP (required for parallel processing)
 
 On macOS, install OpenMP via: `brew install libomp`
 

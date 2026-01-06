@@ -11,7 +11,7 @@ find_package(OpenCASCADE REQUIRED)
 find_package(Eigen3 REQUIRED)  # Remove version constraint for now
 find_package(CLI11 CONFIG QUIET)
 
-# OpenMP support (on macOS, use Homebrew's libomp)
+# OpenMP support (required for parallel processing)
 if(APPLE)
     # Homebrew libomp paths
     set(OpenMP_C_FLAGS "-Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include")
@@ -20,12 +20,8 @@ if(APPLE)
     set(OpenMP_CXX_LIB_NAMES "omp")
     set(OpenMP_omp_LIBRARY "/opt/homebrew/opt/libomp/lib/libomp.dylib")
 endif()
-find_package(OpenMP)
-if(OpenMP_CXX_FOUND)
-    message(STATUS "OpenMP found - parallel processing enabled")
-else()
-    message(WARNING "OpenMP not found - parallel processing disabled")
-endif()
+find_package(OpenMP REQUIRED)
+message(STATUS "OpenMP found - parallel processing enabled")
 
 # If CLI11 not found via package manager, fetch it
 if(NOT CLI11_FOUND)
@@ -66,12 +62,11 @@ target_link_libraries(brepper PRIVATE
     ${OCCT_LIBS}
     Eigen3::Eigen
     CLI11::CLI11
-    $<$<BOOL:${OpenMP_CXX_FOUND}>:OpenMP::OpenMP_CXX>
+    OpenMP::OpenMP_CXX
 )
 
 target_compile_definitions(brepper PRIVATE
     ${PCL_DEFINITIONS}
-    $<$<BOOL:${OpenMP_CXX_FOUND}>:BREPPER_USE_OPENMP>
 )
 
 # Enable warnings
