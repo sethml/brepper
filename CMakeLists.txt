@@ -34,8 +34,17 @@ if(NOT CLI11_FOUND)
     FetchContent_MakeAvailable(cli11)
 endif()
 
-# Collect sources
-file(GLOB_RECURSE SOURCES src/*.cpp)
+# Source files (explicitly listed for reliable builds)
+set(SOURCES
+    src/main.cpp
+    src/brepper.cpp
+    src/boundary/boundary_detector.cpp
+    src/boundary/triangle_assignment.cpp
+    src/io/step_writer.cpp
+    src/mesh/mesh_sampling.cpp
+    src/mesh/stl_reader.cpp
+    src/segmentation/ransac_segmenter.cpp
+)
 
 # Main executable
 add_executable(brepper ${SOURCES})
