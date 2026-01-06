@@ -40,6 +40,7 @@ set(SOURCES
     src/brepper.cpp
     src/boundary/boundary_detector.cpp
     src/boundary/triangle_assignment.cpp
+    src/brep/brep_builder.cpp
     src/io/step_writer.cpp
     src/mesh/mesh_sampling.cpp
     src/mesh/stl_reader.cpp

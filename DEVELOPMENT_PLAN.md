@@ -479,13 +479,13 @@ brepper/
 - [ ] B-spline curve fitting
 
 ### Phase 5: B-Rep Construction (Week 9-10)
-- [ ] OCCT surface creation
+- [x] OCCT surface creation
 - [ ] Trimmed face construction
-- [ ] Face sewing
-- [ ] Solid creation & healing
+- [x] Face sewing
+- [x] Solid creation & healing
 
 ### Phase 6: Export & Polish (Week 11-12)
-- [ ] STEP export
+- [x] STEP export
 - [ ] Error handling & validation
 - [x] Performance optimization (OpenMP parallelization)
 - [x] Testing & documentation (Catch2 unit tests)

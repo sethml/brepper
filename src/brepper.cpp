@@ -5,6 +5,8 @@
 #include "segmentation/ransac_segmenter.hpp"
 #include "boundary/triangle_assignment.hpp"
 #include "boundary/boundary_detector.hpp"
+#include "brep/brep_builder.hpp"
+#include "io/step_writer.hpp"
 #include <pcl/io/pcd_io.h>
 #include <pcl/io/ply_io.h>
 #include <pcl/conversions.h>
@@ -189,15 +191,40 @@ bool BrepperPipeline::stage4_detect_boundaries() {
 
 bool BrepperPipeline::stage5_build_brep() {
     LOG_INFO("Stage 5: Building B-Rep from surfaces");
-    // TODO: Implement OCCT B-Rep construction
-    LOG_WARN("Stage 5: Not implemented yet");
+    
+    if (results_.fitted_surfaces.empty()) {
+        LOG_WARN("No fitted surfaces available for B-Rep construction - creating empty result");
+        // This can happen for very simple meshes that don't segment well
+        // Return success but the brep_result_ will be null
+        return true;
+    }
+    
+    BRepBuilder builder(config_);
+    if (!builder.build(results_.fitted_surfaces, results_.boundary_curves, brep_result_)) {
+        LOG_ERROR("B-Rep construction failed");
+        return false;
+    }
+    
+    LOG_INFO("Stage 5 complete: B-Rep shape built successfully");
     return true;
 }
 
 bool BrepperPipeline::stage6_export_step() {
     LOG_INFO("Stage 6: Exporting STEP file");
-    // TODO: Implement STEP export
-    LOG_WARN("Stage 6: Not implemented yet");
+    
+    if (brep_result_.IsNull()) {
+        LOG_WARN("No B-Rep shape available for export - skipping STEP output");
+        // This can happen for very simple meshes or when no surfaces were fitted
+        return true;
+    }
+    
+    STEPWriter writer(config_);
+    if (!writer.write(brep_result_, config_.output_file)) {
+        LOG_ERROR("STEP export failed");
+        return false;
+    }
+    
+    LOG_INFO("Stage 6 complete: STEP file written to ", config_.output_file);
     return true;
 }
 

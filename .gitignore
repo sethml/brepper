@@ -1,6 +1,7 @@
 # Build artifacts
 build/
-*.o
+build-release/
+build-debug/
 *.so
 *.dylib
 *.a
@@ -24,4 +25,4 @@ test_*.ply
 
 # Debug outputs
 debug_*
-*.logbuild-release/
+*.log

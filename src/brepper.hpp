@@ -2,6 +2,7 @@
 
 #include "common/types.hpp"
 #include "common/config.hpp"
+#include <TopoDS_Shape.hxx>
 
 namespace brepper {
 
@@ -29,6 +30,7 @@ private:
     
     Config config_;
     ProcessingResults results_;
+    TopoDS_Shape brep_result_;  // B-Rep construction result
 };
 
 } // namespace brepper
