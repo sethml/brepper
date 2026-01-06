@@ -25,6 +25,15 @@ private:
         const Eigen::Vector3f& normal,
         const FittedSurface& surface
     );
+    
+    // Surface-specific distance computations
+    double compute_plane_distance(const Eigen::Vector3f& point, const FittedSurface& surface);
+    double compute_cylinder_distance(const Eigen::Vector3f& point, const FittedSurface& surface);
+    double compute_sphere_distance(const Eigen::Vector3f& point, const FittedSurface& surface);
+    double compute_cone_distance(const Eigen::Vector3f& point, const FittedSurface& surface);
+    
+    // Compute expected surface normal at a given point
+    Eigen::Vector3f compute_surface_normal(const Eigen::Vector3f& point, const FittedSurface& surface);
 };
 
 } // namespace brepper

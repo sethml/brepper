@@ -3,6 +3,7 @@
 #include "mesh/stl_reader.hpp"
 #include "mesh/mesh_sampling.hpp"
 #include "segmentation/ransac_segmenter.hpp"
+#include "boundary/triangle_assignment.hpp"
 #include <pcl/io/pcd_io.h>
 #include <pcl/io/ply_io.h>
 #include <pcl/conversions.h>
@@ -152,8 +153,14 @@ bool BrepperPipeline::stage2_segment_surfaces() {
 
 bool BrepperPipeline::stage3_assign_triangles() {
     LOG_INFO("Stage 3: Assigning triangles to surfaces");
-    // TODO: Implement triangle assignment
-    LOG_WARN("Stage 3: Not implemented yet");
+    
+    TriangleAssigner assigner(config_);
+    if (!assigner.assign(results_.input_mesh, results_.fitted_surfaces, results_.assignments)) {
+        LOG_ERROR("Triangle assignment failed");
+        return false;
+    }
+    
+    LOG_INFO("Stage 3 complete: assigned ", results_.assignments.size(), " triangles");
     return true;
 }
 

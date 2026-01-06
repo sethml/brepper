@@ -469,7 +469,7 @@ brepper/
 ### Phase 3: NURBS & Assignment (Week 5-6)
 - [ ] Euclidean clustering
 - [ ] NURBS surface fitting
-- [ ] Triangle-to-surface assignment
+- [x] Triangle-to-surface assignment
 - [ ] Segmented mesh visualization
 
 ### Phase 4: Boundary Detection (Week 7-8)
