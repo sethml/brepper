@@ -24,6 +24,9 @@ private:
     bool stage5_build_brep();
     bool stage6_export_step();
     
+    // Utilities
+    void print_mesh_dimensions();
+    
     Config config_;
     ProcessingResults results_;
 };

@@ -22,6 +22,17 @@ bool validate_files(const Config& config) {
         return false;
     }
     
+    // Skip output validation if no output requested
+    if (config.skip_output) {
+        return true;
+    }
+    
+    // Require output file if not skipping
+    if (config.output_file.empty()) {
+        LOG_ERROR("Output file required (use --output or --no-output)");
+        return false;
+    }
+    
     // Check output file has .step extension
     std::filesystem::path output_path(config.output_file);
     if (output_path.extension() != ".step" && output_path.extension() != ".stp") {
@@ -53,14 +64,15 @@ int main(int argc, char* argv[]) {
         ->required()
         ->check(CLI::ExistingFile);
         
-    app.add_option("-o,--output", config.output_file, "Output STEP file")
-        ->required();
+    app.add_option("-o,--output", config.output_file, "Output STEP file");
     
     // General options
     app.add_flag("-v,--verbose", config.verbose, "Enable verbose output");
     app.add_flag("-q,--quiet", config.quiet, "Suppress non-error output");
     app.add_flag("--debug", config.debug, "Enable debug output and intermediate files");
     app.add_option("--threads", config.num_threads, "Number of threads (default: auto)");
+    app.add_flag("--dimensions", config.print_dimensions, "Print mesh bounding box dimensions");
+    app.add_flag("--no-output", config.skip_output, "Skip output file (for analysis only)");
     
     // Units option
     std::string units_str = "mm";

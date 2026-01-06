@@ -145,6 +145,22 @@ bool MeshSampler::sample(const pcl::PolygonMesh& mesh, PointCloudNormalPtr& clou
         total_estimated_points += num_samples;
     }
     
+    // Check if we would exceed the maximum allowed samples
+    if (total_estimated_points > config_.max_total_samples) {
+        LOG_WARN("Estimated ", total_estimated_points, " samples exceeds max_total_samples (", 
+                 config_.max_total_samples, "). Reducing sampling density.");
+        
+        // Scale down sample counts proportionally
+        double scale_factor = static_cast<double>(config_.max_total_samples) / total_estimated_points;
+        total_estimated_points = 0;
+        for (size_t tri_idx = 0; tri_idx < num_triangles; ++tri_idx) {
+            int scaled = static_cast<int>(samples_per_triangle[tri_idx] * scale_factor);
+            samples_per_triangle[tri_idx] = std::max(scaled, config_.min_samples_per_triangle);
+            total_estimated_points += samples_per_triangle[tri_idx];
+        }
+        LOG_DEBUG("Adjusted to ", total_estimated_points, " samples");
+    }
+    
 #ifdef BREPPER_USE_OPENMP
     // Parallel sampling using per-thread clouds
     int num_threads = config_.num_threads > 0 ? config_.num_threads : omp_get_max_threads();

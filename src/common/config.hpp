@@ -36,6 +36,7 @@ struct Config {
     // Mesh preprocessing 
     double max_point_distance_mm = 0.2;  // Maximum distance between sampled points (in mm)
     int min_samples_per_triangle = 1;
+    size_t max_total_samples = 10000000;  // Cap to prevent runaway memory usage (10M points)
     
     // RANSAC segmentation
     double ransac_distance_threshold = 0.01;
@@ -83,6 +84,10 @@ struct Config {
     std::string save_point_cloud;
     std::string save_segmentation;  
     std::string save_boundaries;
+    
+    // Analysis options
+    bool print_dimensions = false;  // Print mesh bounding box dimensions
+    bool skip_output = false;       // Skip output file (for analysis only)
 };
 
 } // namespace brepper

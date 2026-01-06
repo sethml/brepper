@@ -48,3 +48,22 @@ When implementing features that use external libraries:
 - Build system is CMake 3.20+
 - Target platform is macOS with Homebrew-installed dependencies
 - See DEVELOPMENT_PLAN.md for the overall architecture and implementation stages
+
+## Development Plan Maintenance
+
+Keep DEVELOPMENT_PLAN.md up to date with each commit:
+
+1. **Mark completed items** - Check off (`[x]`) any Implementation Phases items that are completed by the commit
+2. **Add new tasks** - If work reveals new tasks or sub-tasks not in the plan, add them to the appropriate phase
+3. **Modify existing tasks** - If a planned approach changes (e.g., different algorithm, new dependency), update the relevant sections
+4. **Include in commit** - Changes to DEVELOPMENT_PLAN.md should be part of the same commit as the implementation work
+
+## README Maintenance
+
+Keep README.md up to date when changes affect user-facing behavior:
+
+1. **New dependencies** - Add to the dependencies list with installation instructions
+2. **New CLI options** - Update the usage examples and options documentation
+3. **Changed defaults** - Document any changes to default parameter values
+4. **New features** - Add brief descriptions of significant new capabilities
+5. **Include in commit** - README updates should be part of the same commit as the feature work

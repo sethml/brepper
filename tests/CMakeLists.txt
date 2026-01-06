@@ -24,6 +24,8 @@ configure_file(
 set(TEST_SOURCES
     test_stl_reader.cpp
     test_mesh_sampling.cpp
+    test_onshape_models.cpp
+    test_e2e.cpp
 )
 
 # Create test executable

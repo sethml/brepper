@@ -4,6 +4,10 @@
 #include "mesh/mesh_sampling.hpp"
 #include <pcl/io/pcd_io.h>
 #include <pcl/io/ply_io.h>
+#include <pcl/conversions.h>
+#include <iostream>
+#include <iomanip>
+#include <limits>
 
 namespace brepper {
 
@@ -24,12 +28,25 @@ BrepperPipeline::BrepperPipeline(const Config& config) : config_(config) {
 bool BrepperPipeline::process() {
     LOG_INFO("Starting brepper pipeline");
     LOG_INFO("Input: ", config_.input_file);
-    LOG_INFO("Output: ", config_.output_file);
+    if (!config_.skip_output) {
+        LOG_INFO("Output: ", config_.output_file);
+    }
     
     // Execute pipeline stages
     if (!stage1_load_mesh()) {
         LOG_ERROR("Stage 1 (load mesh) failed");
         return false;
+    }
+    
+    // Print dimensions if requested
+    if (config_.print_dimensions) {
+        print_mesh_dimensions();
+    }
+    
+    // Skip remaining stages if no output requested
+    if (config_.skip_output) {
+        LOG_INFO("Skipping output (--no-output specified)");
+        return true;
     }
     
     if (!stage2_segment_surfaces()) {
@@ -131,6 +148,31 @@ bool BrepperPipeline::stage6_export_step() {
     // TODO: Implement STEP export
     LOG_WARN("Stage 6: Not implemented yet");
     return true;
+}
+
+void BrepperPipeline::print_mesh_dimensions() {
+    pcl::PointCloud<pcl::PointXYZ>::Ptr vertices(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::fromPCLPointCloud2(results_.input_mesh.cloud, *vertices);
+    
+    float min_x = std::numeric_limits<float>::max();
+    float max_x = std::numeric_limits<float>::lowest();
+    float min_y = std::numeric_limits<float>::max();
+    float max_y = std::numeric_limits<float>::lowest();
+    float min_z = std::numeric_limits<float>::max();
+    float max_z = std::numeric_limits<float>::lowest();
+    
+    for (const auto& pt : *vertices) {
+        min_x = std::min(min_x, pt.x); max_x = std::max(max_x, pt.x);
+        min_y = std::min(min_y, pt.y); max_y = std::max(max_y, pt.y);
+        min_z = std::min(min_z, pt.z); max_z = std::max(max_z, pt.z);
+    }
+    
+    // Note: coordinates are already converted to mm during load
+    std::cout << std::fixed << std::setprecision(2);
+    std::cout << "Mesh dimensions (mm):\n";
+    std::cout << "  X: " << (max_x - min_x) << " mm  (range: " << min_x << " to " << max_x << ")\n";
+    std::cout << "  Y: " << (max_y - min_y) << " mm  (range: " << min_y << " to " << max_y << ")\n";
+    std::cout << "  Z: " << (max_z - min_z) << " mm  (range: " << min_z << " to " << max_z << ")\n";
 }
 
 } // namespace brepper

@@ -30,7 +30,7 @@ When exporting from Fusion 360 or Onshape, use the following models to test diff
    - Export at: Normal mesh
 
 ### Multi-Surface Models
-4. **rounded_cube_10mm_r2.stl** - 10mm cube with 2mm edge fillets
+4. **rounded_cube_10mm_r2.stl** - S cube with 2mm edge fillets
    - Tests: plane + cylindrical fillet detection, surface transitions
    - Export at: Fine mesh to capture fillets
 
@@ -44,7 +44,7 @@ When exporting from Fusion 360 or Onshape, use the following models to test diff
 
 ### Varying Triangle Sizes
 7. **plate_with_hole_100x50.stl** - 100x50mm plate with 10mm center hole
-   - Tests: large flat faces vs small curved faces
+   - Tests: large flat faces vs small curved facesc
    - Important: Do NOT use adaptive mesh - want to see large triangles on plate
    - Export at: Coarse mesh
 
