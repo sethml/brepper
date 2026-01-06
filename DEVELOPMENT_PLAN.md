@@ -454,10 +454,10 @@ brepper/
 ## Implementation Phases
 
 ### Phase 1: Foundation (Week 1-2)
-- [ ] Project setup (CMake, dependencies)
-- [ ] STL file reading
-- [ ] Point cloud generation with normals
-- [ ] Basic CLI framework
+- [x] Project setup (CMake, dependencies)
+- [x] STL file reading
+- [x] Point cloud generation with normals
+- [x] Basic CLI framework
 
 ### Phase 2: Surface Segmentation (Week 3-4)
 - [ ] RANSAC plane fitting
@@ -487,8 +487,8 @@ brepper/
 ### Phase 6: Export & Polish (Week 11-12)
 - [ ] STEP export
 - [ ] Error handling & validation
-- [ ] Performance optimization
-- [ ] Testing & documentation
+- [x] Performance optimization (OpenMP parallelization)
+- [x] Testing & documentation (Catch2 unit tests)
 
 ---
 
