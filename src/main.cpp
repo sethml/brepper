@@ -62,10 +62,16 @@ int main(int argc, char* argv[]) {
     app.add_flag("--debug", config.debug, "Enable debug output and intermediate files");
     app.add_option("--threads", config.num_threads, "Number of threads (default: auto)");
     
+    // Units option
+    std::string units_str = "mm";
+    app.add_option("--units", units_str, 
+                  "Units of STL file coordinates (converted to mm internally): mm|cm|m|in (default: mm)")
+        ->check(CLI::IsMember({"mm", "cm", "m", "in"}));
+    
     // Mesh preprocessing
     auto* mesh_group = app.add_option_group("Mesh Preprocessing");
-    mesh_group->add_option("--sample-density", config.sample_density, 
-                          "Points per unit area (default: auto)");
+    mesh_group->add_option("--max-point-distance-mm", config.max_point_distance_mm, 
+                          "Maximum distance between sampled points in mm (default: 0.2)");
     mesh_group->add_option("--min-samples", config.min_samples_per_triangle,
                           "Min samples per triangle (default: 1)");
     
@@ -150,6 +156,12 @@ int main(int argc, char* argv[]) {
     
     // Parse command line
     CLI11_PARSE(app, argc, argv);
+    
+    // Convert units string to enum
+    if (units_str == "mm") config.stl_units = Units::Millimeters;
+    else if (units_str == "cm") config.stl_units = Units::Centimeters;
+    else if (units_str == "m") config.stl_units = Units::Meters;
+    else if (units_str == "in") config.stl_units = Units::Inches;
     
     // Validate inputs
     if (!validate_files(config)) {

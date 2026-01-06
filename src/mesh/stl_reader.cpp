@@ -1,6 +1,7 @@
 #include "stl_reader.hpp"
 #include "common/logging.hpp"
 #include <pcl/io/vtk_lib_io.h>
+#include <pcl/conversions.h>
 #include <filesystem>
 
 namespace brepper {
@@ -40,6 +41,26 @@ bool STLReader::load(const std::string& filename, pcl::PolygonMesh& mesh) {
             LOG_ERROR("STL file contains non-triangular faces");
             return false;
         }
+    }
+    
+    // Convert coordinates to mm (OpenCASCADE works internally in mm)
+    if (config_.stl_units != Units::Millimeters) {
+        double scale = units_to_mm(config_.stl_units);
+        LOG_DEBUG("Converting from ", 
+                  (config_.stl_units == Units::Meters ? "meters" :
+                   config_.stl_units == Units::Centimeters ? "centimeters" : "inches"),
+                  " to mm (scale: ", scale, ")");
+        
+        pcl::PointCloud<pcl::PointXYZ>::Ptr vertices(new pcl::PointCloud<pcl::PointXYZ>);
+        pcl::fromPCLPointCloud2(mesh.cloud, *vertices);
+        
+        for (auto& pt : *vertices) {
+            pt.x *= scale;
+            pt.y *= scale;
+            pt.z *= scale;
+        }
+        
+        pcl::toPCLPointCloud2(*vertices, mesh.cloud);
     }
     
     LOG_INFO("Loaded STL: ", num_vertices_, " vertices, ", num_triangles_, " triangles");

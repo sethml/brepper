@@ -4,6 +4,24 @@
 
 namespace brepper {
 
+// Units for input STL files
+enum class Units {
+    Millimeters,  // mm (default)
+    Centimeters,  // cm
+    Meters,       // m
+    Inches        // in
+};
+
+inline double units_to_mm(Units units) {
+    switch (units) {
+        case Units::Millimeters: return 1.0;
+        case Units::Centimeters: return 10.0;
+        case Units::Meters: return 1000.0;
+        case Units::Inches: return 25.4;
+    }
+    return 1.0;
+}
+
 // Configuration parameters for all processing stages
 struct Config {
     // Input/Output
@@ -13,9 +31,10 @@ struct Config {
     bool quiet = false;
     bool debug = false;
     int num_threads = 0;  // 0 = auto-detect
+    Units stl_units = Units::Millimeters;  // Units of STL file; coordinates converted to mm internally
 
     // Mesh preprocessing 
-    double sample_density = 0.0;  // 0 = auto-compute
+    double max_point_distance_mm = 0.2;  // Maximum distance between sampled points (in mm)
     int min_samples_per_triangle = 1;
     
     // RANSAC segmentation

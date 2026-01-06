@@ -122,14 +122,11 @@ bool MeshSampler::sample(const pcl::PolygonMesh& mesh, PointCloudNormalPtr& clou
     
     avg_triangle_area_ = total_area / std::max(size_t(1), mesh.polygons.size());
     
-    // Determine sampling density
-    double sample_density = config_.sample_density;
-    if (sample_density <= 0.0) {
-        // Auto-compute: aim for roughly uniform point density
-        // Target approximately 10 points per average triangle
-        sample_density = 10.0 / std::max(avg_triangle_area_, 1e-10);
-        LOG_DEBUG("Auto-computed sample density: ", sample_density, " points/unit²");
-    }
+    // Use max_point_distance_mm to determine sampling
+    // Target spacing: points should be no more than max_point_distance_mm apart
+    // For a triangle, we want roughly (edge_length / max_point_distance_mm)^2 samples
+    double max_dist = config_.max_point_distance_mm;
+    LOG_DEBUG("Max point distance: ", max_dist);
     
     // Second pass: sample each triangle
     size_t tri_idx = 0;
@@ -173,10 +170,18 @@ bool MeshSampler::sample(const pcl::PolygonMesh& mesh, PointCloudNormalPtr& clou
             cloud->push_back(vpn);
         }
         
-        // Compute additional samples based on area
+        // Compute additional samples based on triangle size vs max_point_distance
+        // The number of samples should ensure points are spaced ~max_dist apart
+        // For a triangle with longest edge L, we want roughly (L/max_dist)^2 samples
         double area = triangle_areas[tri_idx];
-        int num_additional = static_cast<int>(area * sample_density);
-        num_additional = std::max(num_additional, config_.min_samples_per_triangle - 4);
+        
+        // Approximate characteristic length from area (sqrt(area) for equilateral-ish triangles)
+        double char_length = std::sqrt(area);
+        int samples_per_length = static_cast<int>(std::ceil(char_length / max_dist));
+        int num_additional = samples_per_length * samples_per_length;
+        
+        // Ensure minimum samples
+        num_additional = std::max(num_additional, config_.min_samples_per_triangle) - 4;  // -4 for centroid + 3 vertices
         
         if (num_additional > 0) {
             sampleTriangle(v0, v1, v2, normal, num_additional, *cloud);
