@@ -58,10 +58,12 @@ target_link_libraries(brepper_tests PRIVATE
     ${OCCT_LIBS}
     Eigen3::Eigen
     Catch2::Catch2WithMain
+    $<$<BOOL:${OpenMP_CXX_FOUND}>:OpenMP::OpenMP_CXX>
 )
 
 target_compile_definitions(brepper_tests PRIVATE
     ${PCL_DEFINITIONS}
+    $<$<BOOL:${OpenMP_CXX_FOUND}>:BREPPER_USE_OPENMP>
 )
 
 # Register tests with CTest
