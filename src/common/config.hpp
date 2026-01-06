@@ -49,7 +49,7 @@ struct Config {
     size_t max_total_samples = 10000000;  // Cap to prevent runaway memory usage (10M points)
     
     // RANSAC segmentation
-    double ransac_distance_threshold = 0.01;
+    double ransac_distance_threshold = 0.02;
     int ransac_max_iterations = 1000;
     double normal_distance_weight = 0.1;
     int min_inliers = 100;

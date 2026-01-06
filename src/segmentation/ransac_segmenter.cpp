@@ -4,6 +4,7 @@
 #include <pcl/filters/extract_indices.h>
 #include <pcl/sample_consensus/model_types.h>
 #include <pcl/sample_consensus/method_types.h>
+#include <pcl/console/print.h>
 
 namespace brepper {
 
@@ -11,6 +12,10 @@ RANSACSegmenter::RANSACSegmenter(const Config& config) : config_(config) {}
 
 bool RANSACSegmenter::segment(PointCloudNormalPtr cloud, std::vector<FittedSurface>& surfaces) {
     LOG_DEBUG("Starting RANSAC segmentation with ", cloud->size(), " points");
+    
+    // Suppress all PCL console output during RANSAC
+    // These warnings are normal when fitting surface types that don't match the data
+    pcl::console::setVerbosityLevel(pcl::console::L_ALWAYS);
     
     surfaces.clear();
     int surface_id = 0;
@@ -112,6 +117,9 @@ bool RANSACSegmenter::segment(PointCloudNormalPtr cloud, std::vector<FittedSurfa
     
     LOG_INFO("RANSAC segmentation complete: found ", surfaces.size(), " surfaces, ",
              remaining->size(), " points remaining");
+    
+    // Restore default PCL verbosity
+    pcl::console::setVerbosityLevel(pcl::console::L_INFO);
     
     return true;
 }
