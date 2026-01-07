@@ -97,13 +97,27 @@ Small `#ifdef` blocks (e.g., platform-specific includes, debug logging) are acce
 When building and running tests, combine commands with `&&` to avoid unnecessary waits:
 
 ```bash
-# Good: single command, stops on failure
-cmake --build build && ctest --test-dir build --output-on-failure
+# Good: single command, stops on failure, parallel tests
+cmake --build build && ctest --test-dir build -j8 --output-on-failure
 
 # Bad: separate commands requiring multiple tool invocations
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+### Run Tests in Parallel
+
+Always run tests with `-j8` (or similar) for parallel execution:
+
+```bash
+# Good: parallel test execution (~21 seconds)
+ctest --test-dir build -j8 --output-on-failure
+
+# Bad: sequential execution (~98 seconds)
+ctest --test-dir build --output-on-failure
+```
+
+The test suite is structured with separate `TEST_CASE`s (rather than `SECTION`s) specifically to enable parallel execution via ctest.
 
 ### Don't Truncate Build or Test Output
 

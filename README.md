@@ -53,6 +53,20 @@ GENERAL OPTIONS:
 
 See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for full documentation.
 
+## Testing
+
+```bash
+# Build with tests enabled
+cmake -B build -DBUILD_TESTS=ON
+cmake --build build
+
+# Run tests in parallel (recommended - ~4x faster)
+ctest --test-dir build -j8 --output-on-failure
+
+# Run tests sequentially
+ctest --test-dir build --output-on-failure
+```
+
 ## Dependencies
 
 - PCL (Point Cloud Library) ≥1.12
