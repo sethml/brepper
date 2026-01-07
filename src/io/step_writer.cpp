@@ -4,6 +4,8 @@
 // OpenCASCADE STEP export headers
 #include <STEPControl_Writer.hxx>
 #include <IFSelect_ReturnStatus.hxx>
+#include <Message.hxx>
+#include <Message_PrinterOStream.hxx>
 
 namespace brepper {
 
@@ -13,6 +15,9 @@ bool STEPWriter::write(const TopoDS_Shape& shape, const std::string& filename) {
     LOG_DEBUG("Exporting STEP file: ", filename);
     
     try {
+        // Suppress OCCT verbose "Statistics on Transfer" messages
+        Message::DefaultMessenger()->RemovePrinters(STANDARD_TYPE(Message_PrinterOStream));
+        
         STEPControl_Writer writer;
         
         // Transfer shape

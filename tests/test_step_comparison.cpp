@@ -23,13 +23,15 @@ using namespace brepper;
 /// Helper: Run brepper pipeline and return the generated STEP file path
 static std::string run_brepper_pipeline(const std::string& input_stl, 
                                         const std::string& output_step,
-                                        double point_distance = 0.5) {
+                                        double point_distance = 0.5,
+                                        int min_inliers = 100) {
     Config config;
     config.verbose = false;
     config.quiet = true;
     config.input_file = input_stl;
     config.output_file = output_step;
     config.max_point_distance_mm = point_distance;
+    config.min_inliers = min_inliers;
     
     BrepperPipeline pipeline(config);
     bool success = pipeline.process();
@@ -49,6 +51,12 @@ static std::string get_output_path(const std::string& model_name) {
 /// Helper: Get Onshape reference paths
 static std::pair<std::string, std::string> get_onshape_paths(const std::string& model_name) {
     std::string base = std::string(TEST_DATA_DIR) + "/onshape/" + model_name;
+    return {base + ".stl", base + ".step"};
+}
+
+/// Helper: Get manual test reference paths
+static std::pair<std::string, std::string> get_manual_paths(const std::string& model_name) {
+    std::string base = std::string(TEST_DATA_DIR) + "/manual/" + model_name;
     return {base + ".stl", base + ".step"};
 }
 
@@ -310,4 +318,72 @@ TEST_CASE("Strict comparison - planar models should match closely", "[step_compa
         // Volume and bounding box should be very close for planar models
         CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.01));
     }
+}
+
+// ============================================================================
+// Cube Test: Simplest possible planar model for debugging B-Rep issues
+// ============================================================================
+
+TEST_CASE("Compare generated STEP against reference - unit cube", "[step_comparison][integration][cube]") {
+    auto [input_stl, reference_step] = get_manual_paths("cube");
+    std::string generated_step = get_output_path("cube");
+    
+    INFO("Input STL: " << input_stl);
+    INFO("Reference STEP: " << reference_step);
+    
+    // First verify our reference STEP file is valid
+    STEPComparator comparator;
+    auto ref_shape = comparator.read_step(reference_step);
+    REQUIRE(ref_shape.has_value());
+    
+    // Check reference topology
+    int ref_v, ref_e, ref_f, ref_sh, ref_so;
+    STEPComparator::count_topology(*ref_shape, ref_v, ref_e, ref_f, ref_sh, ref_so);
+    INFO("Reference: vertices=" << ref_v << ", edges=" << ref_e << ", faces=" << ref_f 
+         << ", shells=" << ref_sh << ", solids=" << ref_so);
+    
+    double ref_volume = STEPComparator::compute_volume(*ref_shape);
+    double ref_area = STEPComparator::compute_surface_area(*ref_shape);
+    double ref_bbox = STEPComparator::compute_bbox_diagonal(*ref_shape);
+    gp_Pnt ref_centroid = STEPComparator::compute_centroid(*ref_shape);
+    
+    INFO("Reference volume: " << ref_volume << " (expected 1.0)");
+    INFO("Reference area: " << ref_area << " (expected 6.0)");
+    INFO("Reference bbox diagonal: " << ref_bbox << " (expected sqrt(3) ≈ 1.732)");
+    INFO("Reference centroid: (" << ref_centroid.X() << ", " << ref_centroid.Y() << ", " << ref_centroid.Z() << ")");
+    
+    // Unit cube should have these exact properties
+    CHECK(ref_f == 6);
+    CHECK(ref_so == 1);
+    CHECK_THAT(ref_volume, Catch::Matchers::WithinRel(1.0, 0.01));
+    CHECK_THAT(ref_area, Catch::Matchers::WithinRel(6.0, 0.01));
+    CHECK_THAT(ref_bbox, Catch::Matchers::WithinRel(std::sqrt(3.0), 0.01));
+    
+    // Now generate STEP from STL - use finer point sampling and lower min_inliers for small cube
+    // Cube is 1mm³ so default sampling is too coarse
+    std::string result_path = run_brepper_pipeline(input_stl, generated_step, 0.1, 20);
+    REQUIRE_FALSE(result_path.empty());
+    REQUIRE(std::filesystem::exists(generated_step));
+    
+    // Compare generated vs reference
+    comparator.set_tolerance(0.05);
+    auto result = comparator.compare_files(reference_step, generated_step);
+    
+    INFO(result.summary());
+    
+    // Diagnostic output for debugging
+    INFO("Generated volume: " << result.gen_volume);
+    INFO("Generated surface area: " << result.gen_surface_area);
+    INFO("Generated bbox diagonal: " << result.gen_bbox_diagonal);
+    INFO("Generated centroid: (" << result.gen_centroid.X() << ", " << result.gen_centroid.Y() 
+         << ", " << result.gen_centroid.Z() << ")");
+    INFO("Generated solids: " << result.gen_solids);
+    INFO("Generated shells: " << result.gen_shells);
+    
+    // Essential checks for cube
+    CHECK(result.gen_faces == 6);  // Must have 6 faces for a cube
+    CHECK(result.gen_solids == 1); // Must form a valid solid
+    CHECK_THAT(result.gen_volume, Catch::Matchers::WithinRel(1.0, 0.05));
+    CHECK_THAT(result.gen_surface_area, Catch::Matchers::WithinRel(6.0, 0.05));
+    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(std::sqrt(3.0), 0.01));
 }

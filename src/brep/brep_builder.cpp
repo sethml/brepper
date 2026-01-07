@@ -16,12 +16,14 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
+#include <BRepCheck_Shell.hxx>
 #include <ShapeFix_Shape.hxx>
 #include <ShapeFix_Shell.hxx>
 #include <ShapeFix_Solid.hxx>
 #include <ShapeFix_Wire.hxx>
 #include <ShapeFix_Face.hxx>
 #include <ShapeExtend_Status.hxx>
+#include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Shell.hxx>
 #include <TopoDS_Solid.hxx>
@@ -589,6 +591,8 @@ bool BRepBuilder::sew_faces(const std::vector<TopoDS_Face>& faces, TopoDS_Shape&
     
     try {
         BRepBuilderAPI_Sewing sewing(config_.sewing_tolerance);
+        sewing.SetNonManifoldMode(false);  // We want a manifold solid
+        sewing.SetFloatingEdgesMode(false);
         
         for (const auto& face : faces) {
             sewing.Add(face);
@@ -605,6 +609,50 @@ bool BRepBuilder::sew_faces(const std::vector<TopoDS_Face>& faces, TopoDS_Shape&
         LOG_DEBUG("Sewing complete: ", nb_free_edges, " free edges, ",
                   nb_multiple_edges, " multiple edges, ",
                   nb_degenerated, " degenerated shapes");
+        
+        // If sewing produced a shell, try to make it into a solid
+        if (!result.IsNull()) {
+            TopoDS_Shell shell;
+            bool found_shell = false;
+            
+            // Look for a shell in the result
+            for (TopExp_Explorer exp(result, TopAbs_SHELL); exp.More(); exp.Next()) {
+                shell = TopoDS::Shell(exp.Current());
+                found_shell = true;
+                break;
+            }
+            
+            if (found_shell) {
+                // Fix the shell orientation and try to make a solid
+                ShapeFix_Shell shell_fixer(shell);
+                shell_fixer.SetPrecision(config_.sewing_tolerance);
+                shell_fixer.Perform();
+                
+                if (shell_fixer.Status(ShapeExtend_DONE)) {
+                    shell = shell_fixer.Shell();
+                    LOG_DEBUG("Shell fixing applied");
+                }
+                
+                // Check if shell is closed
+                BRepCheck_Shell shell_checker(shell);
+                if (shell_checker.Closed() == BRepCheck_NoError) {
+                    LOG_DEBUG("Shell is closed, creating solid");
+                    
+                    // Try to create a solid from the closed shell
+                    ShapeFix_Solid solid_fixer;
+                    solid_fixer.SetPrecision(config_.sewing_tolerance);
+                    TopoDS_Solid solid = solid_fixer.SolidFromShell(shell);
+                    
+                    if (!solid.IsNull()) {
+                        result = solid;
+                        LOG_DEBUG("Created solid from shell");
+                    }
+                } else {
+                    LOG_DEBUG("Shell is not closed, keeping as shell");
+                    result = shell;
+                }
+            }
+        }
         
         return !result.IsNull();
     } catch (...) {

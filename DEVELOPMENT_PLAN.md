@@ -483,9 +483,12 @@ brepper/
 - [x] Trimmed face construction
 - [x] Face sewing
 - [x] Solid creation & healing
+- [x] Shell orientation fixing (ShapeFix_Shell)
+- [x] Solid creation from closed shells (ShapeFix_Solid::SolidFromShell)
 
 ### Phase 6: Export & Polish (Week 11-12)
 - [x] STEP export
+- [x] STEP comparison test framework (compare against reference STEP files)
 - [ ] Error handling & validation
 - [x] Performance optimization (OpenMP parallelization)
 - [x] Testing & documentation (Catch2 unit tests)
@@ -514,13 +517,13 @@ brepper/
 
 ### Test Cases
 
-| Test Case | Input | Expected Output |
-|-----------|-------|-----------------|
-| Cube | 12 triangles | 6 planes |
-| Cylinder | Tessellated cylinder | 1 cylinder + 2 planes |
-| Sphere | Tessellated sphere | 1 sphere |
-| Fillet | Blended edge | Planes + fillet surface |
-| Complex part | Real CAD export | Matching topology |
+| Test Case | Input | Expected Output | Status |
+|-----------|-------|-----------------|--------|
+| Cube | 12 triangles | 6 planes, 1 solid | ✓ Passing |
+| Cylinder | Tessellated cylinder | 1 cylinder + 2 planes | ✓ Passing |
+| Sphere | Tessellated sphere | 1 sphere | ✓ Passing |
+| Fillet | Blended edge | Planes + fillet surface | |
+| Complex part | Real CAD export | Matching topology | |
 
 ---
 
