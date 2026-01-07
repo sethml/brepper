@@ -25,6 +25,28 @@ User prompt(s):
   (include context for prompts that reference previous options/decisions)
 ```
 
+**Shell Quoting**: Use heredoc or `$'...'` quoting for commit messages to avoid shell parsing issues:
+
+```bash
+# Good: heredoc (recommended)
+git commit -m "$(cat <<'EOF'
+Fix UV bounds for spheres
+
+- Detailed change 1
+- Detailed change 2
+
+---
+Generated with assistance from Model Name (Provider, 2026)
+
+User prompt(s):
+- 'Prompt with "quotes" and other special chars'
+EOF
+)"
+
+# Also good: ANSI-C quoting for simple cases
+git commit -m $'Fix issue\n\nUser prompt:\n- \'Fix the thing\''
+```
+
 ## API Documentation
 
 When implementing features that use external libraries:
