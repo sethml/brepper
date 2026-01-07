@@ -5,6 +5,35 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Sanitizer options (use with Debug builds)
+option(ENABLE_ASAN "Enable Address Sanitizer" OFF)
+option(ENABLE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
+option(ENABLE_TSAN "Enable Thread Sanitizer" OFF)
+
+# Apply sanitizers
+if(ENABLE_ASAN OR ENABLE_UBSAN OR ENABLE_TSAN)
+    if(ENABLE_TSAN AND ENABLE_ASAN)
+        message(FATAL_ERROR "TSAN and ASAN cannot be used together")
+    endif()
+    
+    set(SANITIZER_FLAGS "")
+    if(ENABLE_ASAN)
+        message(STATUS "Address Sanitizer enabled")
+        list(APPEND SANITIZER_FLAGS -fsanitize=address)
+    endif()
+    if(ENABLE_UBSAN)
+        message(STATUS "Undefined Behavior Sanitizer enabled")
+        list(APPEND SANITIZER_FLAGS -fsanitize=undefined)
+    endif()
+    if(ENABLE_TSAN)
+        message(STATUS "Thread Sanitizer enabled")
+        list(APPEND SANITIZER_FLAGS -fsanitize=thread)
+    endif()
+    
+    add_compile_options(${SANITIZER_FLAGS} -fno-omit-frame-pointer)
+    add_link_options(${SANITIZER_FLAGS})
+endif()
+
 # Find dependencies
 find_package(PCL 1.12 REQUIRED COMPONENTS common io filters segmentation surface)
 find_package(OpenCASCADE REQUIRED)
@@ -81,7 +110,14 @@ target_compile_definitions(brepper PRIVATE
 
 # Enable warnings
 target_compile_options(brepper PRIVATE
-    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wpedantic>
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:
+        -Wall -Wextra -Wpedantic
+        -Werror=return-type
+        -Wshadow
+        -Wunused
+        -Wnull-dereference
+        -Wimplicit-fallthrough
+    >
 )
 
 # Install

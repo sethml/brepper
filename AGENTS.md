@@ -119,6 +119,22 @@ ctest --test-dir build --output-on-failure
 
 The test suite is structured with separate `TEST_CASE`s (rather than `SECTION`s) specifically to enable parallel execution via ctest.
 
+### Sanitizer Testing
+
+Periodically run tests with sanitizers enabled to catch memory and concurrency issues:
+
+```bash
+# Build with Address Sanitizer + Undefined Behavior Sanitizer
+cmake -B build-sanitize -DBUILD_TESTS=ON -DENABLE_ASAN=ON -DENABLE_UBSAN=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-sanitize && ctest --test-dir build-sanitize -j4 --output-on-failure
+
+# Build with Thread Sanitizer (for OpenMP race conditions)
+cmake -B build-tsan -DBUILD_TESTS=ON -DENABLE_TSAN=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-tsan && ctest --test-dir build-tsan -j4 --output-on-failure
+```
+
+Note: Use `-j4` instead of `-j8` with sanitizers as they increase memory usage significantly.
+
 ### Don't Truncate Build or Test Output
 
 Never pipe build or test commands through `head`, `tail`, or other truncating filters:

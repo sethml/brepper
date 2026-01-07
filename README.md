@@ -67,6 +67,22 @@ ctest --test-dir build -j8 --output-on-failure
 ctest --test-dir build --output-on-failure
 ```
 
+### Debug Builds with Sanitizers
+
+For catching memory corruption, undefined behavior, and concurrency issues:
+
+```bash
+# Address Sanitizer + Undefined Behavior Sanitizer (recommended)
+cmake -B build-sanitize -DBUILD_TESTS=ON -DENABLE_ASAN=ON -DENABLE_UBSAN=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-sanitize && ctest --test-dir build-sanitize -j4 --output-on-failure
+
+# Thread Sanitizer (for data races in OpenMP code)
+cmake -B build-tsan -DBUILD_TESTS=ON -DENABLE_TSAN=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-tsan && ctest --test-dir build-tsan -j4 --output-on-failure
+```
+
+Note: TSAN cannot be combined with ASAN. Use `-j4` with sanitizers due to increased memory usage.
+
 ## Dependencies
 
 - PCL (Point Cloud Library) ≥1.12

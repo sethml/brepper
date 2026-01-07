@@ -1,7 +1,6 @@
 # Build artifacts
 build/
-build-release/
-build-debug/
+build-*/
 *.so
 *.dylib
 *.a
