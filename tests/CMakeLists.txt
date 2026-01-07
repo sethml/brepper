@@ -26,6 +26,7 @@ set(TEST_SOURCES
     test_mesh_sampling.cpp
     test_onshape_models.cpp
     test_e2e.cpp
+    test_step_comparison.cpp
 )
 
 # Create test executable
