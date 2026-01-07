@@ -541,11 +541,35 @@ TopoDS_Face BRepBuilder::create_face_with_bounds(const Handle(Geom_Surface)& sur
     // Add a small margin to ensure we don't clip points at the boundary
     double u_range = umax - umin;
     double v_range = vmax - vmin;
-    double margin = 0.01 * std::max(u_range, v_range);
-    umin -= margin;
-    umax += margin;
-    vmin -= margin;
-    vmax += margin;
+    
+    // Use per-dimension margin to respect partial fits (e.g. thin strips)
+    // Ensure a minimum margin to handle degenerate/noisy cases
+    double u_margin = std::max(0.01 * u_range, 1e-4);
+    double v_margin = std::max(0.01 * v_range, 1e-4);
+    
+    umin -= u_margin;
+    umax += u_margin;
+    vmin -= v_margin;
+    vmax += v_margin;
+    
+    // Clamp bounds to valid ranges for specific surface types
+    if (fitted.type == SurfaceType::SPHERE) {
+        // V must be in [-PI/2, PI/2]
+        vmin = std::max(vmin, -M_PI / 2.0);
+        vmax = std::min(vmax, M_PI / 2.0);
+        
+        // If U covers full circle (approx), snap to full range
+        if (umax - umin >= 2.0 * M_PI - 0.1) {
+            umin = 0.0;
+            umax = 2.0 * M_PI;
+        }
+    } else if (fitted.type == SurfaceType::CYLINDER || fitted.type == SurfaceType::CONE) {
+        // U is periodic 0..2PI
+        if (umax - umin >= 2.0 * M_PI - 0.1) {
+            umin = 0.0;
+            umax = 2.0 * M_PI;
+        }
+    }
     
     try {
         // Create face with bounded parameters
