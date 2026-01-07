@@ -480,7 +480,7 @@ brepper/
 
 ### Phase 5: B-Rep Construction (Week 9-10)
 - [x] OCCT surface creation
-- [ ] Trimmed face construction
+- [x] Trimmed face construction
 - [x] Face sewing
 - [x] Solid creation & healing
 

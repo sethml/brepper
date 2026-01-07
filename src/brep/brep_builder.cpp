@@ -13,16 +13,23 @@
 #include <Geom_SphericalSurface.hxx>
 #include <Geom_ConicalSurface.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
 #include <ShapeFix_Shape.hxx>
 #include <ShapeFix_Shell.hxx>
 #include <ShapeFix_Solid.hxx>
+#include <ShapeFix_Wire.hxx>
+#include <ShapeFix_Face.hxx>
+#include <ShapeExtend_Status.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Shell.hxx>
 #include <TopoDS_Solid.hxx>
 #include <BRep_Builder.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <cmath>
 #include <limits>
+#include <set>
 
 namespace brepper {
 
@@ -30,7 +37,7 @@ BRepBuilder::BRepBuilder(const Config& config) : config_(config) {}
 
 bool BRepBuilder::build(
     const std::vector<FittedSurface>& surfaces,
-    const std::vector<BoundaryCurve>& /*boundaries*/,
+    const std::vector<BoundaryCurve>& boundaries,
     TopoDS_Shape& result
 ) {
     if (surfaces.empty()) {
@@ -38,27 +45,59 @@ bool BRepBuilder::build(
         return false;
     }
     
-    LOG_INFO("Building B-Rep from ", surfaces.size(), " surfaces");
+    LOG_INFO("Building B-Rep from ", surfaces.size(), " surfaces and ", 
+             boundaries.size(), " boundary curves");
+    
+    // Store created OCCT surfaces for reuse
+    std::map<int, Handle(Geom_Surface)> surface_map;
+    for (const auto& surface : surfaces) {
+        Handle(Geom_Surface) geom_surface = create_surface(surface);
+        if (!geom_surface.IsNull()) {
+            surface_map[surface.surface_id] = geom_surface;
+        }
+    }
     
     std::vector<TopoDS_Face> faces;
     faces.reserve(surfaces.size());
     
     for (const auto& surface : surfaces) {
-        Handle(Geom_Surface) geom_surface = create_surface(surface);
-        if (geom_surface.IsNull()) {
+        auto it = surface_map.find(surface.surface_id);
+        if (it == surface_map.end()) {
             LOG_WARN("Failed to create OCCT surface for surface #", surface.surface_id, 
                      " (type: ", static_cast<int>(surface.type), ")");
             continue;
         }
         
-        TopoDS_Face face = create_face(geom_surface, surface);
+        const Handle(Geom_Surface)& geom_surface = it->second;
+        
+        // Build boundary wires for this surface
+        std::vector<TopoDS_Wire> boundary_wires = build_boundary_wires(
+            surface.surface_id, geom_surface, boundaries);
+        
+        TopoDS_Face face;
+        if (!boundary_wires.empty()) {
+            // Try to create trimmed face with boundary wires
+            face = create_trimmed_face(geom_surface, surface, boundary_wires);
+            if (!face.IsNull()) {
+                LOG_DEBUG("Created trimmed face for surface #", surface.surface_id,
+                         " with ", boundary_wires.size(), " boundary wires");
+            }
+        }
+        
+        // Fall back to bounding box face if trimmed face creation failed
+        if (face.IsNull()) {
+            face = create_face_with_bounds(geom_surface, surface);
+            if (!face.IsNull()) {
+                LOG_DEBUG("Created bbox-bounded face for surface #", surface.surface_id);
+            }
+        }
+        
         if (face.IsNull()) {
             LOG_WARN("Failed to create face for surface #", surface.surface_id);
             continue;
         }
         
         faces.push_back(face);
-        LOG_DEBUG("Created face for surface #", surface.surface_id);
     }
     
     if (faces.empty()) {
@@ -68,15 +107,12 @@ bool BRepBuilder::build(
     
     LOG_INFO("Created ", faces.size(), " faces from ", surfaces.size(), " surfaces");
     
-    // For now, just create a compound of faces (full sewing requires boundary trimming)
-    // TODO: Implement proper face sewing once boundary curve trimming is complete
     if (faces.size() == 1) {
         result = faces[0];
     } else {
         // Try to sew faces together
         if (!sew_faces(faces, result)) {
             LOG_WARN("Face sewing failed, creating compound of faces");
-            // Fall back to a compound
             BRep_Builder builder;
             TopoDS_Compound compound;
             builder.MakeCompound(compound);
@@ -284,7 +320,7 @@ Handle(Geom_Surface) BRepBuilder::create_cone(const FittedSurface& surface) {
     }
 }
 
-TopoDS_Face BRepBuilder::create_face(const Handle(Geom_Surface)& surface, const FittedSurface& fitted) {
+TopoDS_Face BRepBuilder::create_face_with_bounds(const Handle(Geom_Surface)& surface, const FittedSurface& fitted) {
     if (surface.IsNull()) {
         return TopoDS_Face();
     }
@@ -386,6 +422,157 @@ TopoDS_Face BRepBuilder::create_face(const Handle(Geom_Surface)& surface, const 
         return make_face.Face();
     } catch (...) {
         LOG_ERROR("Exception while creating face");
+        return TopoDS_Face();
+    }
+}
+
+std::vector<TopoDS_Wire> BRepBuilder::build_boundary_wires(
+    int surface_id,
+    const Handle(Geom_Surface)& surface,
+    const std::vector<BoundaryCurve>& boundaries)
+{
+    std::vector<TopoDS_Wire> wires;
+    
+    // Find all boundary curves that touch this surface
+    for (const auto& curve : boundaries) {
+        if (curve.surface_id_left == surface_id || curve.surface_id_right == surface_id) {
+            TopoDS_Wire wire = create_wire_from_curve(curve, surface);
+            if (!wire.IsNull()) {
+                wires.push_back(wire);
+            }
+        }
+    }
+    
+    LOG_DEBUG("Built ", wires.size(), " boundary wires for surface #", surface_id);
+    return wires;
+}
+
+TopoDS_Wire BRepBuilder::create_wire_from_curve(
+    const BoundaryCurve& curve,
+    const Handle(Geom_Surface)& /*surface*/)
+{
+    if (curve.points.size() < 2) {
+        return TopoDS_Wire();
+    }
+    
+    try {
+        BRepBuilderAPI_MakeWire wire_maker;
+        
+        // Create edges from consecutive points
+        for (size_t i = 0; i < curve.points.size() - 1; ++i) {
+            const auto& p1 = curve.points[i];
+            const auto& p2 = curve.points[i + 1];
+            
+            gp_Pnt gp_p1(p1.x(), p1.y(), p1.z());
+            gp_Pnt gp_p2(p2.x(), p2.y(), p2.z());
+            
+            // Skip degenerate edges
+            if (gp_p1.Distance(gp_p2) < 1e-9) {
+                continue;
+            }
+            
+            TopoDS_Edge edge = create_edge(gp_p1, gp_p2);
+            if (!edge.IsNull()) {
+                wire_maker.Add(edge);
+            }
+        }
+        
+        // Check if the curve is closed (first and last points close together)
+        const auto& first = curve.points.front();
+        const auto& last = curve.points.back();
+        gp_Pnt gp_first(first.x(), first.y(), first.z());
+        gp_Pnt gp_last(last.x(), last.y(), last.z());
+        
+        if (gp_first.Distance(gp_last) < config_.sewing_tolerance * 10) {
+            // Close the wire by adding an edge from last to first
+            TopoDS_Edge closing_edge = create_edge(gp_last, gp_first);
+            if (!closing_edge.IsNull()) {
+                wire_maker.Add(closing_edge);
+            }
+        }
+        
+        if (!wire_maker.IsDone()) {
+            LOG_DEBUG("Wire construction incomplete for boundary curve");
+            return TopoDS_Wire();
+        }
+        
+        TopoDS_Wire wire = wire_maker.Wire();
+        
+        // Apply wire fixing
+        ShapeFix_Wire wire_fixer(wire, TopoDS_Face(), config_.sewing_tolerance);
+        wire_fixer.Perform();
+        wire = wire_fixer.Wire();
+        
+        return wire;
+    } catch (...) {
+        LOG_DEBUG("Exception creating wire from boundary curve");
+        return TopoDS_Wire();
+    }
+}
+
+TopoDS_Edge BRepBuilder::create_edge(const gp_Pnt& p1, const gp_Pnt& p2) {
+    try {
+        BRepBuilderAPI_MakeEdge edge_maker(p1, p2);
+        if (edge_maker.IsDone()) {
+            return edge_maker.Edge();
+        }
+    } catch (...) {
+        // Ignore exceptions from degenerate edges
+    }
+    return TopoDS_Edge();
+}
+
+TopoDS_Face BRepBuilder::create_trimmed_face(
+    const Handle(Geom_Surface)& surface,
+    const FittedSurface& /*fitted*/,
+    const std::vector<TopoDS_Wire>& boundary_wires)
+{
+    if (surface.IsNull() || boundary_wires.empty()) {
+        return TopoDS_Face();
+    }
+    
+    try {
+        // First create an unbounded face on the surface
+        BRepBuilderAPI_MakeFace face_maker(surface, config_.sewing_tolerance);
+        
+        if (!face_maker.IsDone()) {
+            LOG_DEBUG("Failed to create base face for trimming");
+            return TopoDS_Face();
+        }
+        
+        // Try to add boundary wires as face boundaries
+        for (const auto& wire : boundary_wires) {
+            if (wire.IsNull()) continue;
+            
+            // Add the wire to the face
+            face_maker.Add(wire);
+            
+            if (face_maker.Error() != BRepBuilderAPI_FaceDone) {
+                LOG_DEBUG("Failed to add boundary wire to face, error: ", 
+                         static_cast<int>(face_maker.Error()));
+                // Continue trying other wires
+            }
+        }
+        
+        if (!face_maker.IsDone()) {
+            LOG_DEBUG("Face construction incomplete after adding wires");
+            return TopoDS_Face();
+        }
+        
+        TopoDS_Face face = face_maker.Face();
+        
+        // Apply face fixing
+        ShapeFix_Face face_fixer(face);
+        face_fixer.SetPrecision(config_.sewing_tolerance);
+        face_fixer.Perform();
+        
+        if (face_fixer.Status(ShapeExtend_DONE)) {
+            face = face_fixer.Face();
+        }
+        
+        return face;
+    } catch (...) {
+        LOG_DEBUG("Exception creating trimmed face");
         return TopoDS_Face();
     }
 }
