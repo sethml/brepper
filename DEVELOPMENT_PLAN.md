@@ -485,6 +485,7 @@ brepper/
 - [x] Solid creation & healing
 - [x] Shell orientation fixing (ShapeFix_Shell)
 - [x] Solid creation from closed shells (ShapeFix_Solid::SolidFromShell)
+- [x] PCurve computation for boundary wires on non-planar surfaces (ShapeFix_Wire::FixEdgeCurves)
 
 ### Phase 6: Export & Polish (Week 11-12)
 - [x] STEP export
@@ -522,6 +523,9 @@ brepper/
 | Cube | 12 triangles | 6 planes, 1 solid | ✓ Passing |
 | Cylinder | Tessellated cylinder | 1 cylinder + 2 planes | ✓ Passing |
 | Sphere | Tessellated sphere | 1 sphere | ✓ Passing |
+| Cone | Tessellated cone | 1 cone + 1 plane | ✓ Passing |
+| Stepped Block | Complex planar | Multiple planes | ✓ Passing |
+| L Bracket | Complex planar | Multiple planes | ✓ Passing |
 | Fillet | Blended edge | Planes + fillet surface | |
 | Complex part | Real CAD export | Matching topology | |
 

@@ -22,13 +22,16 @@
 #include <ShapeFix_Solid.hxx>
 #include <ShapeFix_Wire.hxx>
 #include <ShapeFix_Face.hxx>
+#include <ShapeFix_Edge.hxx>
 #include <ShapeExtend_Status.hxx>
+#include <ShapeExtend_WireData.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Shell.hxx>
 #include <TopoDS_Solid.hxx>
 #include <BRep_Builder.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
+#include <Standard_Failure.hxx>
 #include <cmath>
 #include <limits>
 #include <set>
@@ -327,76 +330,95 @@ TopoDS_Face BRepBuilder::create_face_with_bounds(const Handle(Geom_Surface)& sur
         return TopoDS_Face();
     }
     
-    // Compute bounds from the point cloud
+    // Compute bounds from the point cloud by projecting points onto the surface
+    // and finding the UV parameter extents
     double umin = std::numeric_limits<double>::max();
     double umax = std::numeric_limits<double>::lowest();
     double vmin = std::numeric_limits<double>::max();
     double vmax = std::numeric_limits<double>::lowest();
     
-    // If we have points, compute parametric bounds
     if (fitted.points && !fitted.points->empty()) {
-        // For now, use a simpler approach: compute bounding box in 3D
-        // and use that to estimate parametric bounds
-        
-        double xmin = std::numeric_limits<double>::max();
-        double xmax = std::numeric_limits<double>::lowest();
-        double ymin = std::numeric_limits<double>::max();
-        double ymax = std::numeric_limits<double>::lowest();
-        double zmin = std::numeric_limits<double>::max();
-        double zmax = std::numeric_limits<double>::lowest();
-        
+        // Project points onto surface to get UV parameters
         for (const auto& pt : *fitted.points) {
-            xmin = std::min(xmin, static_cast<double>(pt.x));
-            xmax = std::max(xmax, static_cast<double>(pt.x));
-            ymin = std::min(ymin, static_cast<double>(pt.y));
-            ymax = std::max(ymax, static_cast<double>(pt.y));
-            zmin = std::min(zmin, static_cast<double>(pt.z));
-            zmax = std::max(zmax, static_cast<double>(pt.z));
+            gp_Pnt point(pt.x, pt.y, pt.z);
+            
+            try {
+                GeomAPI_ProjectPointOnSurf projector(point, surface);
+                if (projector.NbPoints() > 0) {
+                    double u, v;
+                    projector.LowerDistanceParameters(u, v);
+                    umin = std::min(umin, u);
+                    umax = std::max(umax, u);
+                    vmin = std::min(vmin, v);
+                    vmax = std::max(vmax, v);
+                }
+            } catch (...) {
+                // Skip points that fail to project
+            }
         }
         
-        // Use bounding box size for parametric bounds (rough approximation)
-        double size = std::max({xmax - xmin, ymax - ymin, zmax - zmin});
-        
-        switch (fitted.type) {
-            case SurfaceType::PLANE:
-                // Planes: parametric u,v correspond to distances along XDir/YDir
-                umin = -size;
-                umax = size;
-                vmin = -size;
-                vmax = size;
-                break;
-                
-            case SurfaceType::CYLINDER:
-                // Cylinder: u is angle [0, 2*pi], v is distance along axis
-                umin = 0;
-                umax = 2.0 * M_PI;
-                vmin = -size;
-                vmax = size;
-                break;
-                
-            case SurfaceType::SPHERE:
-                // Sphere: u is longitude [0, 2*pi], v is latitude [-pi/2, pi/2]
-                umin = 0;
-                umax = 2.0 * M_PI;
-                vmin = -M_PI / 2.0;
-                vmax = M_PI / 2.0;
-                break;
-                
-            case SurfaceType::CONE:
-                // Cone: u is angle [0, 2*pi], v is distance from apex
-                umin = 0;
-                umax = 2.0 * M_PI;
-                vmin = 0;
-                vmax = size * 2.0;
-                break;
-                
-            default:
-                umin = -size;
-                umax = size;
-                vmin = -size;
-                vmax = size;
-                break;
+        // If projection failed for all points, fall back to surface-type defaults
+        if (umin > umax || vmin > vmax) {
+            LOG_DEBUG("UV projection failed, using surface-type defaults");
+            
+            double xmin = std::numeric_limits<double>::max();
+            double xmax = std::numeric_limits<double>::lowest();
+            double ymin = std::numeric_limits<double>::max();
+            double ymax = std::numeric_limits<double>::lowest();
+            double zmin = std::numeric_limits<double>::max();
+            double zmax = std::numeric_limits<double>::lowest();
+            
+            for (const auto& pt : *fitted.points) {
+                xmin = std::min(xmin, static_cast<double>(pt.x));
+                xmax = std::max(xmax, static_cast<double>(pt.x));
+                ymin = std::min(ymin, static_cast<double>(pt.y));
+                ymax = std::max(ymax, static_cast<double>(pt.y));
+                zmin = std::min(zmin, static_cast<double>(pt.z));
+                zmax = std::max(zmax, static_cast<double>(pt.z));
+            }
+            
+            double size = std::max({xmax - xmin, ymax - ymin, zmax - zmin});
+            
+            switch (fitted.type) {
+                case SurfaceType::PLANE:
+                    umin = -size;
+                    umax = size;
+                    vmin = -size;
+                    vmax = size;
+                    break;
+                    
+                case SurfaceType::CYLINDER:
+                    umin = 0;
+                    umax = 2.0 * M_PI;
+                    vmin = -size;
+                    vmax = size;
+                    break;
+                    
+                case SurfaceType::SPHERE:
+                    umin = 0;
+                    umax = 2.0 * M_PI;
+                    vmin = -M_PI / 2.0;
+                    vmax = M_PI / 2.0;
+                    break;
+                    
+                case SurfaceType::CONE:
+                    umin = 0;
+                    umax = 2.0 * M_PI;
+                    vmin = 0;
+                    vmax = size * 2.0;
+                    break;
+                    
+                default:
+                    umin = -size;
+                    umax = size;
+                    vmin = -size;
+                    vmax = size;
+                    break;
+            }
         }
+        
+        LOG_DEBUG("Surface #", fitted.surface_id, " UV bounds from projection: ",
+                  "U=[", umin, ", ", umax, "], V=[", vmin, ", ", vmax, "]");
     } else {
         // Default bounds
         umin = -100.0;
@@ -405,8 +427,10 @@ TopoDS_Face BRepBuilder::create_face_with_bounds(const Handle(Geom_Surface)& sur
         vmax = 100.0;
     }
     
-    // Add some margin
-    double margin = 0.1 * std::max(umax - umin, vmax - vmin);
+    // Add a small margin to ensure we don't clip points at the boundary
+    double u_range = umax - umin;
+    double v_range = vmax - vmin;
+    double margin = 0.01 * std::max(u_range, v_range);
     umin -= margin;
     umax += margin;
     vmin -= margin;
@@ -417,13 +441,16 @@ TopoDS_Face BRepBuilder::create_face_with_bounds(const Handle(Geom_Surface)& sur
         BRepBuilderAPI_MakeFace make_face(surface, umin, umax, vmin, vmax, 1e-6);
         
         if (!make_face.IsDone()) {
-            LOG_ERROR("BRepBuilderAPI_MakeFace failed");
+            LOG_ERROR("BRepBuilderAPI_MakeFace failed for surface #", fitted.surface_id);
             return TopoDS_Face();
         }
         
         return make_face.Face();
+    } catch (Standard_Failure const& e) {
+        LOG_ERROR("OCCT exception while creating face: ", e.GetMessageString());
+        return TopoDS_Face();
     } catch (...) {
-        LOG_ERROR("Exception while creating face");
+        LOG_ERROR("Unknown exception while creating face");
         return TopoDS_Face();
     }
 }
@@ -451,8 +478,10 @@ std::vector<TopoDS_Wire> BRepBuilder::build_boundary_wires(
 
 TopoDS_Wire BRepBuilder::create_wire_from_curve(
     const BoundaryCurve& curve,
-    const Handle(Geom_Surface)& /*surface*/)
+    const Handle(Geom_Surface)& surface)
 {
+    (void)surface;  // Will be used later for pcurve computation
+    
     if (curve.points.size() < 2) {
         return TopoDS_Wire();
     }
@@ -500,9 +529,12 @@ TopoDS_Wire BRepBuilder::create_wire_from_curve(
         
         TopoDS_Wire wire = wire_maker.Wire();
         
-        // Apply wire fixing
-        ShapeFix_Wire wire_fixer(wire, TopoDS_Face(), config_.sewing_tolerance);
-        wire_fixer.Perform();
+        // Basic wire fixing (without face context - pcurves will be added later)
+        // We only do basic connectivity fixes here
+        ShapeFix_Wire wire_fixer;
+        wire_fixer.Load(wire);
+        wire_fixer.SetPrecision(config_.sewing_tolerance);
+        wire_fixer.FixConnected(config_.sewing_tolerance);
         wire = wire_fixer.Wire();
         
         return wire;
@@ -526,7 +558,7 @@ TopoDS_Edge BRepBuilder::create_edge(const gp_Pnt& p1, const gp_Pnt& p2) {
 
 TopoDS_Face BRepBuilder::create_trimmed_face(
     const Handle(Geom_Surface)& surface,
-    const FittedSurface& /*fitted*/,
+    const FittedSurface& fitted,
     const std::vector<TopoDS_Wire>& boundary_wires)
 {
     if (surface.IsNull() || boundary_wires.empty()) {
@@ -534,38 +566,79 @@ TopoDS_Face BRepBuilder::create_trimmed_face(
     }
     
     try {
-        // First create an unbounded face on the surface
+        // Create a base face from the surface
+        // For non-planar surfaces, we create an unbounded/naturally-bounded face first
         BRepBuilderAPI_MakeFace face_maker(surface, config_.sewing_tolerance);
         
         if (!face_maker.IsDone()) {
-            LOG_DEBUG("Failed to create base face for trimming");
+            LOG_DEBUG("Failed to create base face for surface #", fitted.surface_id);
             return TopoDS_Face();
         }
         
-        // Try to add boundary wires as face boundaries
+        TopoDS_Face base_face = face_maker.Face();
+        
+        // For each boundary wire, add pcurves to its edges using ShapeFix_Wire
+        // This projects the 3D edges onto the surface to create 2D pcurves
+        std::vector<TopoDS_Wire> fixed_wires;
+        
         for (const auto& wire : boundary_wires) {
             if (wire.IsNull()) continue;
             
-            // Add the wire to the face
-            face_maker.Add(wire);
+            // Use ShapeFix_Wire to add pcurves to the wire edges
+            ShapeFix_Wire wire_fixer(wire, base_face, config_.sewing_tolerance);
             
-            if (face_maker.Error() != BRepBuilderAPI_FaceDone) {
-                LOG_DEBUG("Failed to add boundary wire to face, error: ", 
-                         static_cast<int>(face_maker.Error()));
+            // Enable pcurve fixing
+            wire_fixer.FixAddPCurveMode() = 1;  // Add missing pcurves
+            wire_fixer.FixEdgeCurvesMode() = 1; // Fix edge curves including pcurves
+            wire_fixer.FixShiftedMode() = 1;    // Fix pcurves shifted on closed surfaces (cylinders)
+            
+            // Run fixes
+            wire_fixer.FixEdgeCurves();
+            
+            // Get the fixed wire
+            TopoDS_Wire fixed_wire = wire_fixer.Wire();
+            if (!fixed_wire.IsNull()) {
+                fixed_wires.push_back(fixed_wire);
+                LOG_DEBUG("Fixed wire for surface #", fitted.surface_id, 
+                         " - pcurves added");
+            }
+        }
+        
+        if (fixed_wires.empty()) {
+            LOG_DEBUG("No wires could be fixed for surface #", fitted.surface_id);
+            return TopoDS_Face();
+        }
+        
+        // Now try to create a face with the fixed boundary wires
+        // Create a new face with the wires as bounds
+        BRepBuilderAPI_MakeFace bounded_face_maker(surface, config_.sewing_tolerance);
+        
+        if (!bounded_face_maker.IsDone()) {
+            LOG_DEBUG("Failed to create bounded face for surface #", fitted.surface_id);
+            return TopoDS_Face();
+        }
+        
+        for (const auto& wire : fixed_wires) {
+            bounded_face_maker.Add(wire);
+            
+            if (bounded_face_maker.Error() != BRepBuilderAPI_FaceDone) {
+                LOG_DEBUG("Failed to add fixed wire to face, error: ", 
+                         static_cast<int>(bounded_face_maker.Error()));
                 // Continue trying other wires
             }
         }
         
-        if (!face_maker.IsDone()) {
-            LOG_DEBUG("Face construction incomplete after adding wires");
+        if (!bounded_face_maker.IsDone()) {
+            LOG_DEBUG("Face construction incomplete after adding fixed wires");
             return TopoDS_Face();
         }
         
-        TopoDS_Face face = face_maker.Face();
+        TopoDS_Face face = bounded_face_maker.Face();
         
         // Apply face fixing
         ShapeFix_Face face_fixer(face);
         face_fixer.SetPrecision(config_.sewing_tolerance);
+        face_fixer.FixAddNaturalBoundMode() = 1;  // Add natural bounds for periodic surfaces
         face_fixer.Perform();
         
         if (face_fixer.Status(ShapeExtend_DONE)) {
@@ -573,8 +646,11 @@ TopoDS_Face BRepBuilder::create_trimmed_face(
         }
         
         return face;
+    } catch (Standard_Failure const& e) {
+        LOG_DEBUG("OCCT exception creating trimmed face: ", e.GetMessageString());
+        return TopoDS_Face();
     } catch (...) {
-        LOG_DEBUG("Exception creating trimmed face");
+        LOG_DEBUG("Unknown exception creating trimmed face");
         return TopoDS_Face();
     }
 }
