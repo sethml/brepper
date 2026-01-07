@@ -47,6 +47,7 @@ struct Config {
     double max_point_distance_mm = 0.2;  // Maximum distance between sampled points (in mm)
     int min_samples_per_triangle = 1;
     size_t max_total_samples = 10000000;  // Cap to prevent runaway memory usage (10M points)
+    int random_seed = -1;  // Random seed for mesh sampling (-1 = non-deterministic)
     
     // RANSAC segmentation
     double ransac_distance_threshold = 0.02;
@@ -97,6 +98,7 @@ struct Config {
     
     // Analysis options
     bool print_dimensions = false;  // Print mesh bounding box dimensions
+    bool print_brep_diagnostics = false; // Print B-Rep/STEP solid/shell/face diagnostics
     PipelineStage stop_after_stage = PipelineStage::Export;  // Run pipeline up to this stage
 };
 

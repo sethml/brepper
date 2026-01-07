@@ -16,6 +16,7 @@ TEST_CASE("Full pipeline runs on simple primitives", "[e2e][pipeline]") {
     Config config;
     config.verbose = false;
     config.quiet = true;
+    config.random_seed = 42;  // Deterministic for reproducibility
     
     // Use temp directory for output
     std::string temp_dir = std::filesystem::temp_directory_path().string();
@@ -57,6 +58,7 @@ TEST_CASE("Pipeline handles various mesh sizes", "[e2e][pipeline][performance]")
     config.verbose = false;
     config.quiet = true;
     config.max_point_distance_mm = 0.5;  // Reasonable density for testing
+    config.random_seed = 42;  // Deterministic for reproducibility
     
     std::string temp_dir = std::filesystem::temp_directory_path().string();
     
@@ -82,6 +84,7 @@ TEST_CASE("Pipeline with different unit settings", "[e2e][pipeline][units]") {
     Config config;
     config.verbose = false;
     config.quiet = true;
+    config.random_seed = 42;  // Deterministic for reproducibility
     
     std::string temp_dir = std::filesystem::temp_directory_path().string();
     config.input_file = std::string(TEST_DATA_DIR) + "/onshape/cylinder_10x30_medium.stl";
@@ -116,6 +119,7 @@ TEST_CASE("Pipeline with debug output options", "[e2e][pipeline][debug]") {
     config.verbose = false;
     config.quiet = true;
     config.debug = true;
+    config.random_seed = 42;  // Deterministic for reproducibility
     
     std::string temp_dir = std::filesystem::temp_directory_path().string();
     config.input_file = std::string(TEST_DATA_DIR) + "/onshape/cone_15x20_medium.stl";
@@ -195,6 +199,7 @@ TEST_CASE("Pipeline processes all Onshape models", "[e2e][pipeline][smoke]") {
     config.verbose = false;
     config.quiet = true;
     config.max_point_distance_mm = 2.0;  // Coarse for speed
+    config.random_seed = 42;  // Deterministic for reproducibility
     
     std::string temp_dir = std::filesystem::temp_directory_path().string();
     

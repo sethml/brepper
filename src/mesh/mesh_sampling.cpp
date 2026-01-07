@@ -9,8 +9,12 @@ namespace brepper {
 
 MeshSampler::MeshSampler(const Config& config) 
     : config_(config)
-    , rng_(std::random_device{}()) 
-{}
+    , rng_(config.random_seed >= 0 ? static_cast<unsigned int>(config.random_seed) : std::random_device{}()) 
+{
+    if (config.random_seed >= 0) {
+        LOG_DEBUG("Using fixed random seed: ", config.random_seed);
+    }
+}
 
 Eigen::Vector3f MeshSampler::computeFaceNormal(
     const Eigen::Vector3f& v0,
@@ -174,7 +178,11 @@ bool MeshSampler::sample(const pcl::PolygonMesh& mesh, PointCloudNormalPtr& clou
         PointCloudNormal& local_cloud = thread_clouds[thread_id];
         
         // Thread-local RNG for random sampling
-        std::mt19937 local_rng(std::random_device{}() + thread_id);
+        // Use config seed + thread_id for deterministic per-thread seeding
+        unsigned int thread_seed = (config_.random_seed >= 0) 
+            ? static_cast<unsigned int>(config_.random_seed + thread_id)
+            : (std::random_device{}() + thread_id);
+        std::mt19937 local_rng(thread_seed);
         std::uniform_real_distribution<float> dist(0.0f, 1.0f);
         
         #pragma omp for schedule(dynamic, 100)

@@ -91,6 +91,8 @@ int main(int argc, char* argv[]) {
                           "Maximum distance between sampled points in mm (default: 0.2)");
     mesh_group->add_option("--min-samples", config.min_samples_per_triangle,
                           "Min samples per triangle (default: 1)");
+    mesh_group->add_option("--seed", config.random_seed,
+                          "Random seed for mesh sampling (-1 = non-deterministic, default: -1)");
     
     // RANSAC segmentation  
     auto* ransac_group = app.add_option_group("RANSAC Segmentation");

@@ -25,3 +25,6 @@ test_*.ply
 # Debug outputs
 debug_*
 *.log
+
+# Temporary code directory (used by AI assistants for debugging)
+temp_code/

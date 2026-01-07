@@ -34,11 +34,13 @@ if(ENABLE_ASAN OR ENABLE_UBSAN OR ENABLE_TSAN)
     add_link_options(${SANITIZER_FLAGS})
 endif()
 
+
 # Find dependencies
 find_package(PCL 1.12 REQUIRED COMPONENTS common io filters segmentation surface)
 find_package(OpenCASCADE REQUIRED)
 find_package(Eigen3 REQUIRED)  # Remove version constraint for now
 find_package(CLI11 CONFIG QUIET)
+find_package(fmt REQUIRED)
 
 # OpenMP support (required for parallel processing)
 if(APPLE)
@@ -70,6 +72,7 @@ set(SOURCES
     src/boundary/boundary_detector.cpp
     src/boundary/triangle_assignment.cpp
     src/brep/brep_builder.cpp
+    src/brep/surface_intersector.cpp
     src/io/step_writer.cpp
     src/mesh/mesh_sampling.cpp
     src/mesh/stl_reader.cpp
@@ -102,6 +105,7 @@ target_link_libraries(brepper PRIVATE
     Eigen3::Eigen
     CLI11::CLI11
     OpenMP::OpenMP_CXX
+    fmt::fmt
 )
 
 target_compile_definitions(brepper PRIVATE

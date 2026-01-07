@@ -90,8 +90,13 @@ Note: TSAN cannot be combined with ASAN. Use `-j4` with sanitizers due to increa
 - Eigen ≥3.4
 - CLI11 (header-only)
 - OpenMP (required for parallel processing)
+- fmt (C++ formatting library)
 
-On macOS, install OpenMP via: `brew install libomp`
+On macOS, install dependencies via:
+
+```bash
+brew install cmake pcl opencascade eigen cli11 libomp fmt
+```
 
 ## License
 

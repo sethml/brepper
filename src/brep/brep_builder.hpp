@@ -2,6 +2,7 @@
 
 #include "common/types.hpp"
 #include "common/config.hpp"
+#include "surface_intersector.hpp"
 
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Face.hxx>
@@ -25,11 +26,18 @@ public:
         TopoDS_Shape& result
     );
     
+    // Build using surface-surface intersection for exact edges
+    bool build_with_intersections(
+        const std::vector<FittedSurface>& surfaces,
+        const std::vector<BoundaryCurve>& boundaries,
+        TopoDS_Shape& result
+    );
+    
+    // Create OCCT surface from fitted surface (public for reuse)
+    Handle(Geom_Surface) create_surface(const FittedSurface& surface);
+    
 private:
     const Config& config_;
-    
-    // Convert a FittedSurface to an OCCT Geom_Surface
-    Handle(Geom_Surface) create_surface(const FittedSurface& surface);
     
     // Create surface for each type
     Handle(Geom_Surface) create_plane(const FittedSurface& surface);

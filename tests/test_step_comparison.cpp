@@ -6,6 +6,7 @@
 #include "test_config.hpp"
 #include <filesystem>
 #include <string>
+#include <unistd.h>  // for getpid()
 
 using namespace brepper;
 
@@ -24,7 +25,8 @@ using namespace brepper;
 static std::string run_brepper_pipeline(const std::string& input_stl, 
                                         const std::string& output_step,
                                         double point_distance = 0.5,
-                                        int min_inliers = 100) {
+                                        int min_inliers = 100,
+                                        int random_seed = 42) {
     Config config;
     config.verbose = false;
     config.quiet = true;
@@ -32,6 +34,7 @@ static std::string run_brepper_pipeline(const std::string& input_stl,
     config.output_file = output_step;
     config.max_point_distance_mm = point_distance;
     config.min_inliers = min_inliers;
+    config.random_seed = random_seed;  // Use deterministic seed for reproducibility
     
     BrepperPipeline pipeline(config);
     bool success = pipeline.process();
@@ -42,10 +45,11 @@ static std::string run_brepper_pipeline(const std::string& input_stl,
     return output_step;
 }
 
-/// Helper: Generate standard output path for a given model
+/// Helper: Generate unique output path for a given model (includes PID for parallel safety)
 static std::string get_output_path(const std::string& model_name) {
     std::string temp_dir = std::filesystem::temp_directory_path().string();
-    return temp_dir + "/brepper_test_" + model_name + "_generated.step";
+    // Include PID to avoid collisions when tests run in parallel
+    return temp_dir + "/brepper_test_" + std::to_string(getpid()) + "_" + model_name + "_generated.step";
 }
 
 /// Helper: Get Onshape reference paths

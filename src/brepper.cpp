@@ -13,6 +13,8 @@
 #include <iostream>
 #include <iomanip>
 #include <limits>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS.hxx>
 
 namespace brepper {
 
@@ -200,7 +202,8 @@ bool BrepperPipeline::stage5_build_brep() {
     }
     
     BRepBuilder builder(config_);
-    if (!builder.build(results_.fitted_surfaces, results_.boundary_curves, brep_result_)) {
+    // Use surface-surface intersection approach for proper edge sharing
+    if (!builder.build_with_intersections(results_.fitted_surfaces, results_.boundary_curves, brep_result_)) {
         LOG_ERROR("B-Rep construction failed");
         return false;
     }
@@ -225,6 +228,34 @@ bool BrepperPipeline::stage6_export_step() {
     }
     
     LOG_INFO("Stage 6 complete: STEP file written to ", config_.output_file);
+    if (config_.print_brep_diagnostics) {
+        // --- Diagnostic output: print B-Rep/STEP solid/shell/face info ---
+        std::cout << "\nB-Rep diagnostic info (after STEP export):\n";
+        std::cout << "Shape type: " << static_cast<int>(brep_result_.ShapeType())
+                  << " (0=COMPOUND, 1=COMPSOLID, 2=SOLID, 3=SHELL, 4=FACE)\n";
+
+        // Count solids
+        int solids = 0;
+        for (TopExp_Explorer exp(brep_result_, TopAbs_SOLID); exp.More(); exp.Next()) {
+            solids++;
+        }
+        std::cout << "  Solids: " << solids << "\n";
+
+        // Count shells
+        int shells = 0;
+        for (TopExp_Explorer exp(brep_result_, TopAbs_SHELL); exp.More(); exp.Next()) {
+            shells++;
+        }
+        std::cout << "  Shells: " << shells << "\n";
+
+        // Count faces
+        int faces = 0;
+        for (TopExp_Explorer exp(brep_result_, TopAbs_FACE); exp.More(); exp.Next()) {
+            faces++;
+        }
+        std::cout << "  Faces: " << faces << "\n";
+        // --- End diagnostic output ---
+    }
     return true;
 }
 

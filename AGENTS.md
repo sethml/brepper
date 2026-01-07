@@ -29,6 +29,16 @@ User prompt(s):
 
 When implementing features that use external libraries:
 
+## Shape Healing Warnings (OCCT)
+
+If you see a warning that shape healing (ShapeFix_Shape) has modified the geometry, this is a PRIORITY issue. It means a previous modeling step (face creation, trimming, sewing, etc.) produced invalid or suboptimal geometry that required repair.
+
+- Investigate and fix the root cause in the preceding step so that healing is not needed.
+- Do not ignore healing warnings or treat them as normal; they indicate a bug or robustness issue in the pipeline.
+- Only use healing as a last resort safety net, not as a substitute for correct modeling.
+
+Whenever a healing warning appears in logs or test output, file a task to address the underlying modeling problem.
+
 1. **Fetch official documentation first** - Use web fetch tools to retrieve current API documentation from official sources:
    - PCL: https://pointclouds.org/documentation/tutorials/
    - OpenCASCADE: https://dev.opencascade.org/doc/overview/html/
@@ -150,3 +160,46 @@ cmake --build build 2>&1 | head -100
 # Good: see all output
 cmake --build build
 ```
+
+## Temporary Test Code
+
+When writing temporary code for debugging or testing:
+
+1. **Put files in `temp_code/`** - This directory is in the project root and ignored by git. Don't use `/tmp` or other directories outside the workspace.
+
+2. **Don't delete temporary code** - Leave it in `temp_code/` in case it's useful later.
+
+3. **Compiling standalone OCCT code:**
+   ```bash
+   c++ -std=c++17 \
+       -I/opt/homebrew/include/opencascade \
+       -L/opt/homebrew/lib \
+       -lTKernel -lTKMath -lTKBRep -lTKTopAlgo -lTKDESTEP -lTKXSBase -lTKDE \
+       temp_code/my_test.cpp -o temp_code/my_test
+   ```
+   Note: OCCT 7.9+ renamed libraries (e.g., `TKSTEP` → `TKDESTEP`). Check `/opt/homebrew/lib/libTK*.dylib` for available libraries.
+
+4. **Prefer adding to test suite** - For code using project classes, it's easier to add a temporary `TEST_CASE` to an existing test file (like `tests/test_e2e.cpp`) rather than compiling standalone. Build and run with:
+   ```bash
+   cmake --build build && ./build/tests/brepper_tests "Your test name"
+   ```
+
+## Common Test Commands
+
+Specific test commands that are easy to get wrong:
+
+```bash
+# Run the cylinder STEP comparison test
+./build/tests/brepper_tests "Compare generated STEP against reference - cylinder"
+
+# Run all STEP comparison tests
+./build/tests/brepper_tests "[step_comparison]"
+
+# Run comparison table generation
+./build/tests/brepper_tests "Generate comparison table for all models"
+
+# Run a specific Onshape model test
+./build/tests/brepper_tests "Onshape: cylinder_10x30_medium"
+```
+
+Note: Test names use the exact string from `TEST_CASE()`. Use quotes around names with spaces.

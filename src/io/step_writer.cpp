@@ -13,6 +13,8 @@ STEPWriter::STEPWriter(const Config& config) : config_(config) {}
 
 bool STEPWriter::write(const TopoDS_Shape& shape, const std::string& filename) {
     LOG_DEBUG("Exporting STEP file: ", filename);
+    LOG_DEBUG("Shape type to export: ", static_cast<int>(shape.ShapeType()), 
+              " (0=COMPOUND, 1=COMPSOLID, 2=SOLID, 3=SHELL)");
     
     try {
         // Suppress OCCT verbose "Statistics on Transfer" messages

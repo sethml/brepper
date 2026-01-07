@@ -1,4 +1,5 @@
 #include "brep_builder.hpp"
+#include "surface_intersector.hpp"
 #include "common/logging.hpp"
 
 #include <gp_Pln.hxx>
@@ -75,26 +76,11 @@ bool BRepBuilder::build(
         
         const Handle(Geom_Surface)& geom_surface = it->second;
         
-        // Build boundary wires for this surface
-        std::vector<TopoDS_Wire> boundary_wires = build_boundary_wires(
-            surface.surface_id, geom_surface, boundaries);
-        
-        TopoDS_Face face;
-        if (!boundary_wires.empty()) {
-            // Try to create trimmed face with boundary wires
-            face = create_trimmed_face(geom_surface, surface, boundary_wires);
-            if (!face.IsNull()) {
-                LOG_DEBUG("Created trimmed face for surface #", surface.surface_id,
-                         " with ", boundary_wires.size(), " boundary wires");
-            }
-        }
-        
-        // Fall back to bounding box face if trimmed face creation failed
-        if (face.IsNull()) {
-            face = create_face_with_bounds(geom_surface, surface);
-            if (!face.IsNull()) {
-                LOG_DEBUG("Created bbox-bounded face for surface #", surface.surface_id);
-            }
+        // Use bbox-bounded faces for all surfaces
+        // The sewing step will handle trimming where surfaces intersect
+        TopoDS_Face face = create_face_with_bounds(geom_surface, surface);
+        if (!face.IsNull()) {
+            LOG_DEBUG("Created bbox-bounded face for surface #", surface.surface_id);
         }
         
         if (face.IsNull()) {
@@ -134,6 +120,131 @@ bool BRepBuilder::build(
     }
     
     LOG_INFO("B-Rep construction complete");
+    return true;
+}
+
+bool BRepBuilder::build_with_intersections(
+    const std::vector<FittedSurface>& surfaces,
+    const std::vector<BoundaryCurve>& boundaries,
+    TopoDS_Shape& result
+) {
+    if (surfaces.empty()) {
+        LOG_ERROR("No surfaces provided for B-Rep construction");
+        return false;
+    }
+    
+    LOG_INFO("Building B-Rep using surface-surface intersections from ", 
+             surfaces.size(), " surfaces and ", boundaries.size(), " boundary curves");
+    
+    // Step 1: Create OCCT surfaces for all fitted surfaces
+    std::map<int, Handle(Geom_Surface)> surface_map;
+    for (const auto& surface : surfaces) {
+        Handle(Geom_Surface) geom_surface = create_surface(surface);
+        if (!geom_surface.IsNull()) {
+            surface_map[surface.surface_id] = geom_surface;
+            LOG_DEBUG("Created OCCT surface #", surface.surface_id, 
+                      " type=", static_cast<int>(surface.type));
+        }
+    }
+    
+    // Step 2: Compute surface-surface intersections for all boundaries
+    // This gives us exact edges with pcurves on both surfaces
+    SurfaceIntersector intersector(config_);
+    auto shared_edges = intersector.create_all_shared_edges(
+        boundaries, surfaces, surface_map
+    );
+    
+    LOG_INFO("Created shared edges for ", shared_edges.size(), " surface pairs");
+    
+    // Step 3: Build faces - either trimmed faces if we have edges, or bbox-bounded
+    std::vector<TopoDS_Face> faces;
+    faces.reserve(surfaces.size());
+    
+    for (const auto& surface : surfaces) {
+        auto it = surface_map.find(surface.surface_id);
+        if (it == surface_map.end()) {
+            LOG_WARN("No OCCT surface for surface #", surface.surface_id);
+            continue;
+        }
+        
+        const Handle(Geom_Surface)& geom_surface = it->second;
+        
+        // Get all edges for this surface
+        auto edges = intersector.get_edges_for_surface(surface.surface_id, shared_edges);
+        
+        TopoDS_Face face;
+        
+        if (!edges.empty()) {
+            // Try single-wire approach first (for surfaces with single boundary loop)
+            auto wire_opt = intersector.build_wire_for_surface(surface.surface_id, shared_edges);
+            
+            if (wire_opt.has_value() && !wire_opt->IsNull()) {
+                // Single wire - simple case
+                auto face_opt = intersector.create_trimmed_face(geom_surface, *wire_opt);
+                if (face_opt.has_value()) {
+                    face = *face_opt;
+                    LOG_DEBUG("Created single-wire trimmed face for surface #", surface.surface_id);
+                }
+            }
+            
+            // If single wire failed, try multi-wire approach (for cylinders, etc.)
+            if (face.IsNull() && edges.size() > 1) {
+                auto wires = intersector.build_wires_for_surface(surface.surface_id, shared_edges);
+                if (!wires.empty()) {
+                    auto face_opt = intersector.create_face_with_wires(geom_surface, wires);
+                    if (face_opt.has_value()) {
+                        face = *face_opt;
+                        LOG_DEBUG("Created multi-wire face for surface #", surface.surface_id,
+                                  " with ", wires.size(), " wires");
+                    }
+                }
+            }
+        }
+        
+        // Fallback to bbox-bounded face if trimmed face failed
+        if (face.IsNull()) {
+            face = create_face_with_bounds(geom_surface, surface);
+            if (!face.IsNull()) {
+                LOG_DEBUG("Created bbox-bounded face for surface #", surface.surface_id);
+            }
+        }
+        
+        if (!face.IsNull()) {
+            faces.push_back(face);
+        } else {
+            LOG_WARN("Failed to create any face for surface #", surface.surface_id);
+        }
+    }
+    
+    if (faces.empty()) {
+        LOG_ERROR("No valid faces created");
+        return false;
+    }
+    
+    LOG_INFO("Created ", faces.size(), " faces");
+    
+    // Step 4: Sew faces together
+    if (faces.size() == 1) {
+        result = faces[0];
+    } else {
+        if (!sew_faces(faces, result)) {
+            LOG_WARN("Face sewing failed, creating compound of faces");
+            BRep_Builder builder;
+            TopoDS_Compound compound;
+            builder.MakeCompound(compound);
+            for (const auto& face : faces) {
+                builder.Add(compound, face);
+            }
+            result = compound;
+        }
+    }
+    
+    // Step 5: Apply shape healing
+    if (!heal_shape(result)) {
+        LOG_WARN("Shape healing had issues, but continuing");
+    }
+    
+    LOG_INFO("B-Rep construction with intersections complete");
     return true;
 }
 
@@ -666,9 +777,18 @@ bool BRepBuilder::sew_faces(const std::vector<TopoDS_Face>& faces, TopoDS_Shape&
     }
     
     try {
-        BRepBuilderAPI_Sewing sewing(config_.sewing_tolerance);
+        // Use a more generous sewing tolerance to connect faces whose boundary
+        // edges may not match exactly (e.g., polyline approximation of circles)
+        double sewing_tol = config_.sewing_tolerance;
+        
+        // Adaptive tolerance based on mesh characteristics
+        // For curved surfaces meeting planes, the boundary curves are approximated
+        // as polylines which won't exactly match the analytic curves
+        sewing_tol = std::max(sewing_tol, 0.1);  // At least 0.1mm tolerance
+        
+        BRepBuilderAPI_Sewing sewing(sewing_tol);
         sewing.SetNonManifoldMode(false);  // We want a manifold solid
-        sewing.SetFloatingEdgesMode(false);
+        sewing.SetFloatingEdgesMode(true);  // Allow floating edges to be sewn
         
         for (const auto& face : faces) {
             sewing.Add(face);
@@ -682,9 +802,9 @@ bool BRepBuilder::sew_faces(const std::vector<TopoDS_Face>& faces, TopoDS_Shape&
         int nb_multiple_edges = sewing.NbMultipleEdges();
         int nb_degenerated = sewing.NbDegeneratedShapes();
         
-        LOG_DEBUG("Sewing complete: ", nb_free_edges, " free edges, ",
-                  nb_multiple_edges, " multiple edges, ",
-                  nb_degenerated, " degenerated shapes");
+        LOG_INFO("Sewing complete: ", nb_free_edges, " free edges, ",
+                 nb_multiple_edges, " multiple edges, ",
+                 nb_degenerated, " degenerated shapes, tolerance=", sewing_tol);
         
         // If sewing produced a shell, try to make it into a solid
         if (!result.IsNull()) {
@@ -743,17 +863,36 @@ bool BRepBuilder::heal_shape(TopoDS_Shape& shape) {
     }
     
     try {
+        TopAbs_ShapeEnum original_type = shape.ShapeType();
+        LOG_DEBUG("Shape type before healing: ", static_cast<int>(original_type));
+
         ShapeFix_Shape fixer(shape);
         fixer.SetPrecision(config_.sewing_tolerance);
         fixer.Perform();
-        
+
         TopoDS_Shape fixed = fixer.Shape();
         if (!fixed.IsNull()) {
+            TopAbs_ShapeEnum fixed_type = fixed.ShapeType();
+            LOG_DEBUG("Shape type after healing: ", static_cast<int>(fixed_type));
+
+            // Warn if healing made any change to the shape
+            if (!shape.IsSame(fixed)) {
+                LOG_WARN("Shape healing modified the geometry. This indicates a problem in previous modeling steps. Please investigate and fix the root cause.");
+            }
+
+            // Don't allow healing to demote a solid to a shell
+            // This can happen if ShapeFix finds issues but we'd rather keep the solid
+            if (original_type == TopAbs_SOLID && fixed_type != TopAbs_SOLID) {
+                LOG_WARN("Shape healing demoted solid to ", static_cast<int>(fixed_type), 
+                         ", keeping original solid");
+                return true;  // Keep original shape
+            }
+
             shape = fixed;
             LOG_DEBUG("Shape healing applied successfully");
             return true;
         }
-        
+
         return false;
     } catch (...) {
         LOG_ERROR("Exception during shape healing");

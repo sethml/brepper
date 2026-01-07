@@ -27,6 +27,7 @@ set(TEST_SOURCES
     test_onshape_models.cpp
     test_e2e.cpp
     test_step_comparison.cpp
+    test_comparison_table.cpp
 )
 
 # Create test executable
@@ -62,6 +63,7 @@ target_link_libraries(brepper_tests PRIVATE
     Eigen3::Eigen
     Catch2::Catch2WithMain
     $<$<BOOL:${OpenMP_CXX_FOUND}>:OpenMP::OpenMP_CXX>
+    fmt::fmt
 )
 
 target_compile_definitions(brepper_tests PRIVATE
