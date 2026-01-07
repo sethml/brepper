@@ -198,16 +198,19 @@ TEST_CASE("Compare generated STEP against reference - cylinder", "[step_comparis
     
     // Compare against reference
     STEPComparator comparator;
-    comparator.set_tolerance(0.05);
-    
     auto result = comparator.compare_files(reference_step, generated_step);
     
     INFO(result.summary());
     
-    // For now, just verify we can generate and load a STEP file
-    // The geometry won't match until B-Rep builder issues are fixed
-    CHECK(result.ref_faces == 3);  // Reference has 3 faces
-    CHECK(result.gen_faces == 3);  // We also generate 3 faces
+    // Topology must match exactly
+    CHECK(result.ref_faces == result.gen_faces);
+    CHECK(result.ref_solids == result.gen_solids);
+    CHECK(result.gen_solids == 1);  // Must be a valid solid
+    
+    // Geometry must match within 0.1% tolerance
+    CHECK_THAT(result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.001));
+    CHECK_THAT(result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.001));
+    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.001));
 }
 
 TEST_CASE("Compare generated STEP against reference - sphere", "[step_comparison][integration]") {
@@ -219,14 +222,19 @@ TEST_CASE("Compare generated STEP against reference - sphere", "[step_comparison
     REQUIRE(std::filesystem::exists(generated_step));
     
     STEPComparator comparator;
-    comparator.set_tolerance(0.05);
-    
     auto result = comparator.compare_files(reference_step, generated_step);
     
     INFO(result.summary());
     
-    CHECK(result.ref_faces == 1);  // Sphere is one face
-    CHECK(result.gen_faces == 1);  // We generate 1 face
+    // Topology must match exactly
+    CHECK(result.ref_faces == result.gen_faces);
+    CHECK(result.ref_solids == result.gen_solids);
+    CHECK(result.gen_solids == 1);  // Must be a valid solid
+    
+    // Geometry must match within 0.1% tolerance
+    CHECK_THAT(result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.001));
+    CHECK_THAT(result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.001));
+    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.001));
 }
 
 TEST_CASE("Compare generated STEP against reference - cone", "[step_comparison][integration]") {
@@ -238,14 +246,19 @@ TEST_CASE("Compare generated STEP against reference - cone", "[step_comparison][
     REQUIRE(std::filesystem::exists(generated_step));
     
     STEPComparator comparator;
-    comparator.set_tolerance(0.05);
-    
     auto result = comparator.compare_files(reference_step, generated_step);
     
     INFO(result.summary());
     
-    CHECK(result.ref_faces == 2);  // Cone has 2 faces
-    CHECK(result.gen_faces == 2);  // We generate 2 faces
+    // Topology must match exactly
+    CHECK(result.ref_faces == result.gen_faces);
+    CHECK(result.ref_solids == result.gen_solids);
+    CHECK(result.gen_solids == 1);  // Must be a valid solid
+    
+    // Geometry must match within 0.1% tolerance
+    CHECK_THAT(result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.001));
+    CHECK_THAT(result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.001));
+    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.001));
 }
 
 TEST_CASE("Compare generated STEP against reference - stepped block", "[step_comparison][integration][straight_edges]") {
@@ -258,19 +271,19 @@ TEST_CASE("Compare generated STEP against reference - stepped block", "[step_com
     REQUIRE(std::filesystem::exists(generated_step));
     
     STEPComparator comparator;
-    comparator.set_tolerance(0.05);
-    
     auto result = comparator.compare_files(reference_step, generated_step);
     
     INFO(result.summary());
     
-    // Stepped block has 16 faces, we may generate fewer
-    CHECK(result.ref_faces == 16);
-    // Allow some variance in detected faces
-    CHECK(result.gen_faces >= 10);  // Should get most faces
+    // Topology must match exactly
+    CHECK(result.ref_faces == result.gen_faces);
+    CHECK(result.ref_solids == result.gen_solids);
+    CHECK(result.gen_solids == 1);  // Must be a valid solid
     
-    // BBox should be close even with issues
-    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.05));
+    // Geometry must match within 0.1% tolerance
+    CHECK_THAT(result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.001));
+    CHECK_THAT(result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.001));
+    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.001));
 }
 
 TEST_CASE("Compare generated STEP against reference - L bracket", "[step_comparison][integration][straight_edges]") {
@@ -283,16 +296,19 @@ TEST_CASE("Compare generated STEP against reference - L bracket", "[step_compari
     REQUIRE(std::filesystem::exists(generated_step));
     
     STEPComparator comparator;
-    comparator.set_tolerance(0.05);
-    
     auto result = comparator.compare_files(reference_step, generated_step);
     
     INFO(result.summary());
     
-    // L bracket has 10 faces
-    CHECK(result.ref_faces == 10);
-    // We may generate more or fewer due to segmentation
-    CHECK(result.gen_faces >= 5);
+    // Topology must match exactly
+    CHECK(result.ref_faces == result.gen_faces);
+    CHECK(result.ref_solids == result.gen_solids);
+    CHECK(result.gen_solids == 1);  // Must be a valid solid
+    
+    // Geometry must match within 0.1% tolerance
+    CHECK_THAT(result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.001));
+    CHECK_THAT(result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.001));
+    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.001));
 }
 
 // ============================================================================
@@ -302,27 +318,7 @@ TEST_CASE("Compare generated STEP against reference - L bracket", "[step_compari
 // to achieve much tighter tolerances.
 // ============================================================================
 
-TEST_CASE("Strict comparison - planar models should match closely", "[step_comparison][strict]") {
-    STEPComparator comparator;
-    comparator.set_tolerance(0.02);  // 2% tolerance for planar models
-    
-    SECTION("Stepped block - strict geometry check") {
-        auto [input_stl, reference_step] = get_onshape_paths("stepped_block_coarse");
-        std::string generated_step = get_output_path("stepped_block_strict");
-        
-        std::string result_path = run_brepper_pipeline(input_stl, generated_step, 0.3);
-        if (result_path.empty() || !std::filesystem::exists(generated_step)) {
-            SKIP("Pipeline failed to generate output");
-        }
-        
-        auto result = comparator.compare_files(reference_step, generated_step);
-        
-        INFO(result.summary());
-        
-        // Volume and bounding box should be very close for planar models
-        CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.01));
-    }
-}
+// Removed: "Strict comparison" test is now redundant - all tests are strict
 
 // ============================================================================
 // Cube Test: Simplest possible planar model for debugging B-Rep issues
