@@ -67,6 +67,15 @@ ctest --test-dir build -j8 --output-on-failure
 ctest --test-dir build --output-on-failure
 ```
 
+### Generating Test Models
+
+Some tests use models generated via [CodeCAD](https://codecad.xyz/). The generated STL/STEP files are committed to the repo, so CodeCAD is not required to run tests. 
+
+To add or modify these models:
+1. Install CodeCAD
+2. Edit files in `tests/ccad/parts/`
+3. Run `./tests/ccad/generate_models.sh`
+
 ### Debug Builds with Sanitizers
 
 For catching memory corruption, undefined behavior, and concurrency issues:

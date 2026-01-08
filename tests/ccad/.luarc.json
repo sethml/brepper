@@ -1,0 +1,66 @@
+{
+  "$schema": "https://raw.githubusercontent.com/sumneko/vscode-lua/master/setting/schema.json",
+  "diagnostics": {
+    "globals": [
+      "bbox",
+      "box",
+      "center_to",
+      "center_x",
+      "center_xy",
+      "center_xyz",
+      "center_y",
+      "center_z",
+      "chamfer",
+      "chamfer_all",
+      "cone",
+      "curved_plate_xy",
+      "cylinder",
+      "deg",
+      "difference",
+      "edges",
+      "emit",
+      "extrude",
+      "fillet",
+      "fillet_all",
+      "hex_prism",
+      "intersection",
+      "lathe",
+      "mm",
+      "param",
+      "pipe_adapter",
+      "poly_xy",
+      "profile_xz",
+      "rect",
+      "revolve",
+      "rod",
+      "rotate_x",
+      "rotate_y",
+      "rotate_z",
+      "save_step",
+      "save_stl",
+      "poisson_plate",
+      "scale",
+      "sphere",
+      "threaded_rod",
+      "translate",
+      "union",
+      "wedge",
+      "ThreadSpec",
+      "PoissonDiskSpec"
+    ]
+  },
+  "runtime": {
+    "version": "Lua 5.4"
+  },
+  "workspace": {
+    "checkThirdParty": false,
+    "library": [
+      "${workspaceFolder}/types",
+      "${workspaceFolder}/lib",
+      "/usr/local/share/codecad/lib",
+      "/usr/local/share/codecad/lib/?",
+      "/usr/local/share/codecad/types",
+      "/usr/local/share/codecad/types/?"
+    ]
+  }
+}

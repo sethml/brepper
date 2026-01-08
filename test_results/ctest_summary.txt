@@ -1,587 +1,320 @@
 Test project /Users/sethml/src/brepper/build
       Start  1: STLReader loads valid ASCII STL file
- 1/28 Test  #1: STLReader loads valid ASCII STL file ..........................   Passed    0.82 sec
+ 1/31 Test  #1: STLReader loads valid ASCII STL file ..........................   Passed    0.82 sec
       Start  2: STLReader handles missing file
- 2/28 Test  #2: STLReader handles missing file ................................   Passed    0.81 sec
+ 2/31 Test  #2: STLReader handles missing file ................................   Passed    0.79 sec
       Start  3: STLReader converts coordinates to mm based on units setting
- 3/28 Test  #3: STLReader converts coordinates to mm based on units setting ...   Passed    0.80 sec
+ 3/31 Test  #3: STLReader converts coordinates to mm based on units setting ...   Passed    0.80 sec
       Start  4: MeshSampler generates points from cube
- 4/28 Test  #4: MeshSampler generates points from cube ........................   Passed    0.79 sec
+ 4/31 Test  #4: MeshSampler generates points from cube ........................   Passed    0.79 sec
       Start  5: MeshSampler respects max_point_distance
- 5/28 Test  #5: MeshSampler respects max_point_distance .......................   Passed    0.80 sec
+ 5/31 Test  #5: MeshSampler respects max_point_distance .......................   Passed    0.80 sec
       Start  6: MeshSampler handles min_samples_per_triangle
- 6/28 Test  #6: MeshSampler handles min_samples_per_triangle ..................   Passed    0.80 sec
+ 6/31 Test  #6: MeshSampler handles min_samples_per_triangle ..................   Passed    0.80 sec
       Start  7: MeshSampler computes reasonable triangle area
- 7/28 Test  #7: MeshSampler computes reasonable triangle area .................   Passed    0.80 sec
+ 7/31 Test  #7: MeshSampler computes reasonable triangle area .................   Passed    0.80 sec
       Start  8: MeshSampler points stay within mesh bounds
- 8/28 Test  #8: MeshSampler points stay within mesh bounds ....................   Passed    0.80 sec
+ 8/31 Test  #8: MeshSampler points stay within mesh bounds ....................   Passed    0.81 sec
       Start  9: STLReader loads binary STL files from Onshape
- 9/28 Test  #9: STLReader loads binary STL files from Onshape .................   Passed    0.84 sec
+ 9/31 Test  #9: STLReader loads binary STL files from Onshape .................   Passed    0.82 sec
       Start 10: MeshSampler works on complex Onshape models
-10/28 Test #10: MeshSampler works on complex Onshape models ...................   Passed    0.94 sec
+10/31 Test #10: MeshSampler works on complex Onshape models ...................   Passed    0.92 sec
       Start 11: All Onshape STL files load successfully
-11/28 Test #11: All Onshape STL files load successfully .......................   Passed    0.83 sec
+11/31 Test #11: All Onshape STL files load successfully .......................   Passed    0.82 sec
       Start 12: ASCII and binary STL produce identical mesh data
-12/28 Test #12: ASCII and binary STL produce identical mesh data ..............   Passed    0.81 sec
+12/31 Test #12: ASCII and binary STL produce identical mesh data ..............   Passed    0.80 sec
       Start 13: Full pipeline runs on simple primitives
-13/28 Test #13: Full pipeline runs on simple primitives .......................   Passed    3.14 sec
+13/31 Test #13: Full pipeline runs on simple primitives .......................   Passed    3.13 sec
       Start 14: Pipeline handles various mesh sizes
-14/28 Test #14: Pipeline handles various mesh sizes ...........................   Passed   14.89 sec
+14/31 Test #14: Pipeline handles various mesh sizes ...........................   Passed   14.85 sec
       Start 15: Pipeline with different unit settings
-15/28 Test #15: Pipeline with different unit settings .........................   Passed    1.01 sec
+15/31 Test #15: Pipeline with different unit settings .........................   Passed    0.98 sec
       Start 16: Pipeline with debug output options
-16/28 Test #16: Pipeline with debug output options ............................   Passed    0.99 sec
+16/31 Test #16: Pipeline with debug output options ............................   Passed    0.97 sec
       Start 17: CLI executable runs successfully
-17/28 Test #17: CLI executable runs successfully ..............................   Passed    7.35 sec
+17/31 Test #17: CLI executable runs successfully ..............................   Passed    7.47 sec
       Start 18: Pipeline processes all Onshape models
-18/28 Test #18: Pipeline processes all Onshape models .........................   Passed   19.84 sec
-      Start 19: STEPComparator can read STEP files
-19/28 Test #19: STEPComparator can read STEP files ............................   Passed    0.81 sec
-      Start 20: STEPComparator topology counting
-20/28 Test #20: STEPComparator topology counting ..............................   Passed    0.81 sec
-      Start 21: STEPComparator geometric properties
-21/28 Test #21: STEPComparator geometric properties ...........................   Passed    0.81 sec
-      Start 22: Compare generated STEP against reference - cylinder
-22/28 Test #22: Compare generated STEP against reference - cylinder ...........   Passed    0.93 sec
-      Start 23: Compare generated STEP against reference - sphere
-23/28 Test #23: Compare generated STEP against reference - sphere .............   Passed    2.54 sec
-      Start 24: Compare generated STEP against reference - cone
-24/28 Test #24: Compare generated STEP against reference - cone ...............***Failed    0.84 sec
-Filters: "Compare generated STEP against reference - cone"
-Randomness seeded to: 2129520453
+18/31 Test #18: Pipeline processes all Onshape models .........................   Passed   19.92 sec
+      Start 19: STEPComparator functionality
+19/31 Test #19: STEPComparator functionality ..................................   Passed    0.81 sec
+      Start 20: Reconstruct_cylinder_10x30_medium
+20/31 Test #20: Reconstruct_cylinder_10x30_medium .............................   Passed    0.93 sec
+      Start 21: Reconstruct_sphere_25_fine
+21/31 Test #21: Reconstruct_sphere_25_fine ....................................   Passed    2.56 sec
+      Start 22: Reconstruct_cone_15x20_medium
+22/31 Test #22: Reconstruct_cone_15x20_medium .................................***Failed    0.85 sec
+Filters: "Reconstruct_cone_15x20_medium"
+Randomness seeded to: 101447341
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 brepper_tests is a Catch2 v3.5.2 host application.
 Run with -? for options
 
 -------------------------------------------------------------------------------
-Compare generated STEP against reference - cone
+Reconstruct_cone_15x20_medium
 -------------------------------------------------------------------------------
-/Users/sethml/src/brepper/tests/test_step_comparison.cpp:240
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:166
 ...............................................................................
 
-/Users/sethml/src/brepper/tests/test_step_comparison.cpp:255: FAILED:
-  CHECK( result.ref_solids == result.gen_solids )
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:145: FAILED:
+  CHECK( result.volume_error_percent < 5.0 )
 with expansion:
-  1 == 0
-with message:
-  === Shape Comparison Result ===
-  Overall: FAILED
-  
-Topology:
-    Vertices: ref=10, gen=16 (MISMATCH)
-    Edges:    ref=5, gen=8 (MISMATCH)
-    Faces:    ref=2, gen=2
-    Shells:   ref=1, gen=2 (MISMATCH)
-    Solids:   ref=1, gen=0 (MISMATCH)
-  
-Geometry (tolerance=1.00%):
-    Volume:       ref=1178.10, gen=3219.42 (error=173.27%)
-    Surface area: ref=680.00, gen=1362.17 (error=100.32%)
-    BBox diag:    ref=29.15, gen=40.55 (error=39.07%)
-    Centroid:     ref=(-51.43,0.00,25.15), gen=(-51.43,0.46,30.27) (dist=5.13)
-  
-Errors:
-    - Volume error 173.273029% exceeds tolerance 1.000000%
-    - Surface area error 100.319343% exceeds tolerance 1.000000%
-    - Bounding box error 39.068636% exceeds tolerance 1.000000%
-    - Centroid error 12.661260% exceeds tolerance 1.000000%
+  173.2730285785 < 5.0
+with messages:
+  Model: Cone
+  Volume Error: 173.273%
+  Area Error: 100.319%
 
-/Users/sethml/src/brepper/tests/test_step_comparison.cpp:256: FAILED:
-  CHECK( result.gen_solids == 1 )
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:147: FAILED:
+  CHECK( result.area_error_percent < 10.0 )
 with expansion:
-  0 == 1
-with message:
-  === Shape Comparison Result ===
-  Overall: FAILED
-  
-Topology:
-    Vertices: ref=10, gen=16 (MISMATCH)
-    Edges:    ref=5, gen=8 (MISMATCH)
-    Faces:    ref=2, gen=2
-    Shells:   ref=1, gen=2 (MISMATCH)
-    Solids:   ref=1, gen=0 (MISMATCH)
-  
-Geometry (tolerance=1.00%):
-    Volume:       ref=1178.10, gen=3219.42 (error=173.27%)
-    Surface area: ref=680.00, gen=1362.17 (error=100.32%)
-    BBox diag:    ref=29.15, gen=40.55 (error=39.07%)
-    Centroid:     ref=(-51.43,0.00,25.15), gen=(-51.43,0.46,30.27) (dist=5.13)
-  
-Errors:
-    - Volume error 173.273029% exceeds tolerance 1.000000%
-    - Surface area error 100.319343% exceeds tolerance 1.000000%
-    - Bounding box error 39.068636% exceeds tolerance 1.000000%
-    - Centroid error 12.661260% exceeds tolerance 1.000000%
-
-/Users/sethml/src/brepper/tests/test_step_comparison.cpp:259: FAILED:
-  CHECK_THAT( result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.003) )
-with expansion:
-  3219.4220212747 and 1178.1 are within 0.3% of each other
-with message:
-  === Shape Comparison Result ===
-  Overall: FAILED
-  
-Topology:
-    Vertices: ref=10, gen=16 (MISMATCH)
-    Edges:    ref=5, gen=8 (MISMATCH)
-    Faces:    ref=2, gen=2
-    Shells:   ref=1, gen=2 (MISMATCH)
-    Solids:   ref=1, gen=0 (MISMATCH)
-  
-Geometry (tolerance=1.00%):
-    Volume:       ref=1178.10, gen=3219.42 (error=173.27%)
-    Surface area: ref=680.00, gen=1362.17 (error=100.32%)
-    BBox diag:    ref=29.15, gen=40.55 (error=39.07%)
-    Centroid:     ref=(-51.43,0.00,25.15), gen=(-51.43,0.46,30.27) (dist=5.13)
-  
-Errors:
-    - Volume error 173.273029% exceeds tolerance 1.000000%
-    - Surface area error 100.319343% exceeds tolerance 1.000000%
-    - Bounding box error 39.068636% exceeds tolerance 1.000000%
-    - Centroid error 12.661260% exceeds tolerance 1.000000%
-
-/Users/sethml/src/brepper/tests/test_step_comparison.cpp:260: FAILED:
-  CHECK_THAT( result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.003) )
-with expansion:
-  1362.1674235996 and 679.998 are within 0.3% of each other
-with message:
-  === Shape Comparison Result ===
-  Overall: FAILED
-  
-Topology:
-    Vertices: ref=10, gen=16 (MISMATCH)
-    Edges:    ref=5, gen=8 (MISMATCH)
-    Faces:    ref=2, gen=2
-    Shells:   ref=1, gen=2 (MISMATCH)
-    Solids:   ref=1, gen=0 (MISMATCH)
-  
-Geometry (tolerance=1.00%):
-    Volume:       ref=1178.10, gen=3219.42 (error=173.27%)
-    Surface area: ref=680.00, gen=1362.17 (error=100.32%)
-    BBox diag:    ref=29.15, gen=40.55 (error=39.07%)
-    Centroid:     ref=(-51.43,0.00,25.15), gen=(-51.43,0.46,30.27) (dist=5.13)
-  
-Errors:
-    - Volume error 173.273029% exceeds tolerance 1.000000%
-    - Surface area error 100.319343% exceeds tolerance 1.000000%
-    - Bounding box error 39.068636% exceeds tolerance 1.000000%
-    - Centroid error 12.661260% exceeds tolerance 1.000000%
-
-/Users/sethml/src/brepper/tests/test_step_comparison.cpp:261: FAILED:
-  CHECK_THAT( result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.003) )
-with expansion:
-  40.5451266831 and 29.1548 are within 0.3% of each other
-with message:
-  === Shape Comparison Result ===
-  Overall: FAILED
-  
-Topology:
-    Vertices: ref=10, gen=16 (MISMATCH)
-    Edges:    ref=5, gen=8 (MISMATCH)
-    Faces:    ref=2, gen=2
-    Shells:   ref=1, gen=2 (MISMATCH)
-    Solids:   ref=1, gen=0 (MISMATCH)
-  
-Geometry (tolerance=1.00%):
-    Volume:       ref=1178.10, gen=3219.42 (error=173.27%)
-    Surface area: ref=680.00, gen=1362.17 (error=100.32%)
-    BBox diag:    ref=29.15, gen=40.55 (error=39.07%)
-    Centroid:     ref=(-51.43,0.00,25.15), gen=(-51.43,0.46,30.27) (dist=5.13)
-  
-Errors:
-    - Volume error 173.273029% exceeds tolerance 1.000000%
-    - Surface area error 100.319343% exceeds tolerance 1.000000%
-    - Bounding box error 39.068636% exceeds tolerance 1.000000%
-    - Centroid error 12.661260% exceeds tolerance 1.000000%
+  100.3193425251 < 10.0
+with messages:
+  Model: Cone
+  Volume Error: 173.273%
+  Area Error: 100.319%
 
 ===============================================================================
 test cases: 1 | 1 failed
-assertions: 8 | 3 passed | 5 failed
+assertions: 4 | 2 passed | 2 failed
 
 
-      Start 25: Compare generated STEP against reference - stepped block
-25/28 Test #25: Compare generated STEP against reference - stepped block ......***Failed    6.85 sec
-Filters: "Compare generated STEP against reference - stepped block"
-Randomness seeded to: 101329536
-[ERROR] Failed to transfer shapes from STEP file: /var/folders/r4/_7ft0br93fxgk7jjkwpf5xyc0000gn/T//brepper_test_82692_stepped_block_coarse_generated.step
+      Start 23: Reconstruct_stepped_block_coarse
+23/31 Test #23: Reconstruct_stepped_block_coarse ..............................   Passed    6.89 sec
+      Start 24: Reconstruct_l_bracket_simple_medium
+24/31 Test #24: Reconstruct_l_bracket_simple_medium ...........................***Failed    1.25 sec
+Filters: "Reconstruct_l_bracket_simple_medium"
+Randomness seeded to: 1951737372
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 brepper_tests is a Catch2 v3.5.2 host application.
 Run with -? for options
 
 -------------------------------------------------------------------------------
-Compare generated STEP against reference - stepped block
+Reconstruct_l_bracket_simple_medium
 -------------------------------------------------------------------------------
-/Users/sethml/src/brepper/tests/test_step_comparison.cpp:264
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:168
 ...............................................................................
 
-/Users/sethml/src/brepper/tests/test_step_comparison.cpp:281: FAILED:
-  CHECK( result.gen_solids == 1 )
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:145: FAILED:
+  CHECK( result.volume_error_percent < 5.0 )
 with expansion:
-  0 == 1
-with message:
-  === Shape Comparison Result ===
-  Overall: FAILED
-  
-Topology:
-    Vertices: ref=0, gen=0
-    Edges:    ref=0, gen=0
-    Faces:    ref=0, gen=0
-    Shells:   ref=0, gen=0
-    Solids:   ref=0, gen=0
-  
-Geometry (tolerance=1.00%):
-    Volume:       ref=0.00, gen=0.00 (error=0.00%)
-    Surface area: ref=0.00, gen=0.00 (error=0.00%)
-    BBox diag:    ref=0.00, gen=0.00 (error=0.00%)
-    Centroid:     ref=(0.00,0.00,0.00), gen=(0.00,0.00,0.00) (dist=0.00)
-  
-Errors:
-    - Failed to read generated STEP file: /var/folders/r4/
-  _7ft0br93fxgk7jjkwpf5xyc0000gn/T//
-  brepper_test_82692_stepped_block_coarse_generated.step
+  103.3745227447 < 5.0
+with messages:
+  Model: L Bracket
+  Volume Error: 103.375%
+  Area Error: 80.9281%
+
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:147: FAILED:
+  CHECK( result.area_error_percent < 10.0 )
+with expansion:
+  80.9280523795 < 10.0
+with messages:
+  Model: L Bracket
+  Volume Error: 103.375%
+  Area Error: 80.9281%
 
 ===============================================================================
 test cases: 1 | 1 failed
-assertions: 8 | 7 passed | 1 failed
+assertions: 4 | 2 passed | 2 failed
 
 
-      Start 26: Compare generated STEP against reference - L bracket
-26/28 Test #26: Compare generated STEP against reference - L bracket ..........***Failed    1.24 sec
-Filters: "Compare generated STEP against reference - L bracket"
-Randomness seeded to: 914348343
+      Start 25: Reconstruct_plate_with_hole_100x50_coarse
+25/31 Test #25: Reconstruct_plate_with_hole_100x50_coarse .....................***Failed    1.13 sec
+Filters: "Reconstruct_plate_with_hole_100x50_coarse"
+Randomness seeded to: 3463918208
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 brepper_tests is a Catch2 v3.5.2 host application.
 Run with -? for options
 
 -------------------------------------------------------------------------------
-Compare generated STEP against reference - L bracket
+Reconstruct_plate_with_hole_100x50_coarse
 -------------------------------------------------------------------------------
-/Users/sethml/src/brepper/tests/test_step_comparison.cpp:289
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:169
 ...............................................................................
 
-/Users/sethml/src/brepper/tests/test_step_comparison.cpp:304: FAILED:
-  CHECK( result.ref_faces == result.gen_faces )
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:145: FAILED:
+  CHECK( result.volume_error_percent < 5.0 )
 with expansion:
-  10 == 9
-with message:
-  === Shape Comparison Result ===
-  Overall: FAILED
-  
-Topology:
-    Vertices: ref=96, gen=146 (MISMATCH)
-    Edges:    ref=48, gen=73 (MISMATCH)
-    Faces:    ref=10, gen=9 (MISMATCH)
-    Shells:   ref=1, gen=1
-    Solids:   ref=1, gen=0 (MISMATCH)
-  
-Geometry (tolerance=1.00%):
-    Volume:       ref=1146.90, gen=-38.70 (error=103.37%)
-    Surface area: ref=1450.30, gen=276.60 (error=80.93%)
-    BBox diag:    ref=34.54, gen=34.55 (error=0.02%)
-    Centroid:     ref=(29.81,31.96,7.50), gen=(-58.82,124.43,35.18) (dist=131.
-  04)
-  
-Errors:
-    - Volume error 103.374523% exceeds tolerance 1.000000%
-    - Surface area error 80.928052% exceeds tolerance 1.000000%
-    - Centroid error 379.310892% exceeds tolerance 1.000000%
-  
-Warnings:
-    - Face count mismatch: ref=10, gen=9
-
-/Users/sethml/src/brepper/tests/test_step_comparison.cpp:305: FAILED:
-  CHECK( result.ref_solids == result.gen_solids )
-with expansion:
-  1 == 0
-with message:
-  === Shape Comparison Result ===
-  Overall: FAILED
-  
-Topology:
-    Vertices: ref=96, gen=146 (MISMATCH)
-    Edges:    ref=48, gen=73 (MISMATCH)
-    Faces:    ref=10, gen=9 (MISMATCH)
-    Shells:   ref=1, gen=1
-    Solids:   ref=1, gen=0 (MISMATCH)
-  
-Geometry (tolerance=1.00%):
-    Volume:       ref=1146.90, gen=-38.70 (error=103.37%)
-    Surface area: ref=1450.30, gen=276.60 (error=80.93%)
-    BBox diag:    ref=34.54, gen=34.55 (error=0.02%)
-    Centroid:     ref=(29.81,31.96,7.50), gen=(-58.82,124.43,35.18) (dist=131.
-  04)
-  
-Errors:
-    - Volume error 103.374523% exceeds tolerance 1.000000%
-    - Surface area error 80.928052% exceeds tolerance 1.000000%
-    - Centroid error 379.310892% exceeds tolerance 1.000000%
-  
-Warnings:
-    - Face count mismatch: ref=10, gen=9
-
-/Users/sethml/src/brepper/tests/test_step_comparison.cpp:306: FAILED:
-  CHECK( result.gen_solids == 1 )
-with expansion:
-  0 == 1
-with message:
-  === Shape Comparison Result ===
-  Overall: FAILED
-  
-Topology:
-    Vertices: ref=96, gen=146 (MISMATCH)
-    Edges:    ref=48, gen=73 (MISMATCH)
-    Faces:    ref=10, gen=9 (MISMATCH)
-    Shells:   ref=1, gen=1
-    Solids:   ref=1, gen=0 (MISMATCH)
-  
-Geometry (tolerance=1.00%):
-    Volume:       ref=1146.90, gen=-38.70 (error=103.37%)
-    Surface area: ref=1450.30, gen=276.60 (error=80.93%)
-    BBox diag:    ref=34.54, gen=34.55 (error=0.02%)
-    Centroid:     ref=(29.81,31.96,7.50), gen=(-58.82,124.43,35.18) (dist=131.
-  04)
-  
-Errors:
-    - Volume error 103.374523% exceeds tolerance 1.000000%
-    - Surface area error 80.928052% exceeds tolerance 1.000000%
-    - Centroid error 379.310892% exceeds tolerance 1.000000%
-  
-Warnings:
-    - Face count mismatch: ref=10, gen=9
-
-/Users/sethml/src/brepper/tests/test_step_comparison.cpp:309: FAILED:
-  CHECK_THAT( result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.003) )
-with expansion:
-  -38.7024912717 and 1146.9 are within 0.3% of each other
-with message:
-  === Shape Comparison Result ===
-  Overall: FAILED
-  
-Topology:
-    Vertices: ref=96, gen=146 (MISMATCH)
-    Edges:    ref=48, gen=73 (MISMATCH)
-    Faces:    ref=10, gen=9 (MISMATCH)
-    Shells:   ref=1, gen=1
-    Solids:   ref=1, gen=0 (MISMATCH)
-  
-Geometry (tolerance=1.00%):
-    Volume:       ref=1146.90, gen=-38.70 (error=103.37%)
-    Surface area: ref=1450.30, gen=276.60 (error=80.93%)
-    BBox diag:    ref=34.54, gen=34.55 (error=0.02%)
-    Centroid:     ref=(29.81,31.96,7.50), gen=(-58.82,124.43,35.18) (dist=131.
-  04)
-  
-Errors:
-    - Volume error 103.374523% exceeds tolerance 1.000000%
-    - Surface area error 80.928052% exceeds tolerance 1.000000%
-    - Centroid error 379.310892% exceeds tolerance 1.000000%
-  
-Warnings:
-    - Face count mismatch: ref=10, gen=9
-
-/Users/sethml/src/brepper/tests/test_step_comparison.cpp:310: FAILED:
-  CHECK_THAT( result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.003) )
-with expansion:
-  276.6006257284 and 1450.3 are within 0.3% of each other
-with message:
-  === Shape Comparison Result ===
-  Overall: FAILED
-  
-Topology:
-    Vertices: ref=96, gen=146 (MISMATCH)
-    Edges:    ref=48, gen=73 (MISMATCH)
-    Faces:    ref=10, gen=9 (MISMATCH)
-    Shells:   ref=1, gen=1
-    Solids:   ref=1, gen=0 (MISMATCH)
-  
-Geometry (tolerance=1.00%):
-    Volume:       ref=1146.90, gen=-38.70 (error=103.37%)
-    Surface area: ref=1450.30, gen=276.60 (error=80.93%)
-    BBox diag:    ref=34.54, gen=34.55 (error=0.02%)
-    Centroid:     ref=(29.81,31.96,7.50), gen=(-58.82,124.43,35.18) (dist=131.
-  04)
-  
-Errors:
-    - Volume error 103.374523% exceeds tolerance 1.000000%
-    - Surface area error 80.928052% exceeds tolerance 1.000000%
-    - Centroid error 379.310892% exceeds tolerance 1.000000%
-  
-Warnings:
-    - Face count mismatch: ref=10, gen=9
+  102.6050225464 < 5.0
+with messages:
+  Model: Plate+Hole
+  Volume Error: 102.605%
+  Area Error: 2.69635%
 
 ===============================================================================
 test cases: 1 | 1 failed
-assertions: 8 | 3 passed | 5 failed
+assertions: 4 | 3 passed | 1 failed
 
 
-      Start 27: Compare generated STEP against reference - unit cube
-27/28 Test #27: Compare generated STEP against reference - unit cube ..........   Passed    0.89 sec
-      Start 28: Generate comparison table for all models
-28/28 Test #28: Generate comparison table for all models ......................***Failed   27.95 sec
-Filters: "Generate comparison table for all models"
-Randomness seeded to: 1406276351
-
-## STL to STEP Reconstruction Quality Comparison
-
-| Model         |    Ref Vol |    Gen Vol |   Vol Δ% |    Ref Area |    Gen Area |  Area Δ% |    Faces |   Solids |
-|               |            |            |          |             |             |          |          |          |
-| Cylinder      |     2356.2 |     2351.4 |     -0.2 |      1099.6 |      1098.3 |     -0.1 |      3/3 |      1/1 |
-| Sphere        |     8181.2 |     8179.3 |     -0.0 |      1963.5 |      1963.2 |     -0.0 |      1/1 |      1/1 |
-| Cone          |     1178.1 |     3219.4 |    173.3 |       680.0 |      1362.2 |    100.3 |      2/2 |      1/0 |
+      Start 26: Reconstruct_chamfered_cube_10_c1_medium
+26/31 Test #26: Reconstruct_chamfered_cube_10_c1_medium .......................***Failed    1.04 sec
+Filters: "Reconstruct_chamfered_cube_10_c1_medium"
+Randomness seeded to: 3517069668
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 brepper_tests is a Catch2 v3.5.2 host application.
 Run with -? for options
 
 -------------------------------------------------------------------------------
-Generate comparison table for all models
+Reconstruct_chamfered_cube_10_c1_medium
 -------------------------------------------------------------------------------
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:43
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:170
 ...............................................................................
 
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:126: FAILED:
-explicitly with message:
-  Cone: expected 1 solid(s), got 0
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:141: FAILED:
-explicitly with message:
-  Cone: volume error 173.273% exceeds tolerance of 0.3%
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:153: FAILED:
-explicitly with message:
-  Cone: area error 100.319% exceeds tolerance of 0.3%
-
-[ERROR] Failed to transfer shapes from STEP file: /var/folders/r4/_7ft0br93fxgk7jjkwpf5xyc0000gn/T//brepper_cmp_stepped_block_coarse.step
-| Stepped Block |        0.0 |        N/A |      N/A |         0.0 |         N/A |      N/A |      0/0 |      0/0 |
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:126: FAILED:
-explicitly with message:
-  Stepped Block: expected 1 solid(s), got 0
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:133: FAILED:
-explicitly with message:
-  Stepped Block: expected 16 faces, got 0
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:145: FAILED:
-explicitly with message:
-  Stepped Block: no valid volume computed
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:157: FAILED:
-explicitly with message:
-  Stepped Block: no valid surface area computed
-
-| L Bracket     |     1146.9 |        N/A |      N/A |      1450.3 |       276.6 |    -80.9 |     10/9 |      1/0 |
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:126: FAILED:
-explicitly with message:
-  L Bracket: expected 1 solid(s), got 0
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:133: FAILED:
-explicitly with message:
-  L Bracket: expected 10 faces, got 9
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:145: FAILED:
-explicitly with message:
-  L Bracket: no valid volume computed
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:153: FAILED:
-explicitly with message:
-  L Bracket: area error -80.9281% exceeds tolerance of 0.3%
-
-| Plate+Hole    |     4921.5 |        N/A |      N/A |     10174.3 |      9900.0 |     -2.7 |      7/6 |      1/1 |
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:133: FAILED:
-explicitly with message:
-  Plate+Hole: expected 7 faces, got 6
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:145: FAILED:
-explicitly with message:
-  Plate+Hole: no valid volume computed
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:153: FAILED:
-explicitly with message:
-  Plate+Hole: area error -2.69635% exceeds tolerance of 0.3%
-
-| Chamf. Cube   |      945.3 |        0.0 |   -100.0 |       526.7 |       399.5 |    -24.1 |     26/6 |      1/0 |
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:126: FAILED:
-explicitly with message:
-  Chamf. Cube: expected 1 solid(s), got 0
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:133: FAILED:
-explicitly with message:
-  Chamf. Cube: expected 26 faces, got 6
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:141: FAILED:
-explicitly with message:
-  Chamf. Cube: volume error -100% exceeds tolerance of 0.3%
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:153: FAILED:
-explicitly with message:
-  Chamf. Cube: area error -24.1467% exceeds tolerance of 0.3%
-
-| Round. Cube   |      907.7 |        N/A |      N/A |       492.5 |       301.4 |    -38.8 |    26/31 |      1/0 |
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:126: FAILED:
-explicitly with message:
-  Round. Cube: expected 1 solid(s), got 0
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:133: FAILED:
-explicitly with message:
-  Round. Cube: expected 26 faces, got 31
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:145: FAILED:
-explicitly with message:
-  Round. Cube: no valid volume computed
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:153: FAILED:
-explicitly with message:
-  Round. Cube: area error -38.7943% exceeds tolerance of 0.3%
-
-| Pipe Elbow    |     3589.9 |        N/A |      N/A |      1593.0 |         N/A |      N/A |     5/10 |      1/1 |
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:133: FAILED:
-explicitly with message:
-  Pipe Elbow: expected 5 faces, got 10
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:145: FAILED:
-explicitly with message:
-  Pipe Elbow: no valid volume computed
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:157: FAILED:
-explicitly with message:
-  Pipe Elbow: no valid surface area computed
-
-| Hemisphere    |     2094.4 |        0.0 |   -100.0 |       942.5 |       157.1 |    -83.3 |      2/2 |      1/1 |
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:141: FAILED:
-explicitly with message:
-  Hemisphere: volume error -99.9998% exceeds tolerance of 0.3%
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:153: FAILED:
-explicitly with message:
-  Hemisphere: area error -83.3359% exceeds tolerance of 0.3%
-
-
-Notes:
-- Vol Δ% and Area Δ% show (generated - reference) / reference * 100
-- Faces shows ref/gen count
-- Solids shows ref/gen count (1/1 means valid closed solid)
-- Tolerance: 0.3% for volume and area
-
-/Users/sethml/src/brepper/tests/test_comparison_table.cpp:174: FAILED:
-  REQUIRE( total_failures == 0 )
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:145: FAILED:
+  CHECK( result.volume_error_percent < 5.0 )
 with expansion:
-  8 == 0
+  99.9999972749 < 5.0
+with messages:
+  Model: Chamf. Cube
+  Volume Error: 100%
+  Area Error: 24.1467%
+
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:147: FAILED:
+  CHECK( result.area_error_percent < 10.0 )
+with expansion:
+  24.1467375489 < 10.0
+with messages:
+  Model: Chamf. Cube
+  Volume Error: 100%
+  Area Error: 24.1467%
 
 ===============================================================================
-test cases:  1 |  1 failed
-assertions: 28 | 28 failed
+test cases: 1 | 1 failed
+assertions: 4 | 2 passed | 2 failed
 
 
+      Start 27: Reconstruct_rounded_cube_10_r2_fine
+27/31 Test #27: Reconstruct_rounded_cube_10_r2_fine ...........................***Failed    9.10 sec
+Filters: "Reconstruct_rounded_cube_10_r2_fine"
+Randomness seeded to: 3790537565
 
-86% tests passed, 4 tests failed out of 28
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+brepper_tests is a Catch2 v3.5.2 host application.
+Run with -? for options
 
-Total Test time (real) = 100.76 sec
+-------------------------------------------------------------------------------
+Reconstruct_rounded_cube_10_r2_fine
+-------------------------------------------------------------------------------
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:171
+...............................................................................
+
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:145: FAILED:
+  CHECK( result.volume_error_percent < 5.0 )
+with expansion:
+  107.4131282586 < 5.0
+with messages:
+  Model: Round. Cube
+  Volume Error: 107.413%
+  Area Error: 38.7943%
+
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:147: FAILED:
+  CHECK( result.area_error_percent < 10.0 )
+with expansion:
+  38.7942575175 < 10.0
+with messages:
+  Model: Round. Cube
+  Volume Error: 107.413%
+  Area Error: 38.7943%
+
+===============================================================================
+test cases: 1 | 1 failed
+assertions: 4 | 2 passed | 2 failed
+
+
+      Start 28: Reconstruct_pipe_elbow_10_fine
+28/31 Test #28: Reconstruct_pipe_elbow_10_fine ................................***Failed   10.19 sec
+Filters: "Reconstruct_pipe_elbow_10_fine"
+Randomness seeded to: 4283764431
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+brepper_tests is a Catch2 v3.5.2 host application.
+Run with -? for options
+
+-------------------------------------------------------------------------------
+Reconstruct_pipe_elbow_10_fine
+-------------------------------------------------------------------------------
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:172
+...............................................................................
+
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:145: FAILED:
+  CHECK( result.volume_error_percent < 5.0 )
+with expansion:
+  102.4729232161 < 5.0
+with messages:
+  Model: Pipe Elbow
+  Volume Error: 102.473%
+  Area Error: 111.306%
+
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:147: FAILED:
+  CHECK( result.area_error_percent < 10.0 )
+with expansion:
+  111.3055442655 < 10.0
+with messages:
+  Model: Pipe Elbow
+  Volume Error: 102.473%
+  Area Error: 111.306%
+
+===============================================================================
+test cases: 1 | 1 failed
+assertions: 4 | 2 passed | 2 failed
+
+
+      Start 29: Reconstruct_dome_hemisphere_20_fine
+29/31 Test #29: Reconstruct_dome_hemisphere_20_fine ...........................***Failed    1.63 sec
+Filters: "Reconstruct_dome_hemisphere_20_fine"
+Randomness seeded to: 3428045267
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+brepper_tests is a Catch2 v3.5.2 host application.
+Run with -? for options
+
+-------------------------------------------------------------------------------
+Reconstruct_dome_hemisphere_20_fine
+-------------------------------------------------------------------------------
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:173
+...............................................................................
+
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:145: FAILED:
+  CHECK( result.volume_error_percent < 5.0 )
+with expansion:
+  99.9998499337 < 5.0
+with messages:
+  Model: Hemisphere
+  Volume Error: 99.9998%
+  Area Error: 83.3359%
+
+/Users/sethml/src/brepper/tests/test_step_comparison.cpp:147: FAILED:
+  CHECK( result.area_error_percent < 10.0 )
+with expansion:
+  83.3358812117 < 10.0
+with messages:
+  Model: Hemisphere
+  Volume Error: 99.9998%
+  Area Error: 83.3359%
+
+===============================================================================
+test cases: 1 | 1 failed
+assertions: 4 | 2 passed | 2 failed
+
+
+      Start 30: Reconstruct_cube
+30/31 Test #30: Reconstruct_cube ..............................................   Passed    0.98 sec
+      Start 31: Generate comparison table for all models
+31/31 Test #31: Generate comparison table for all models ......................   Passed   28.27 sec
+
+77% tests passed, 7 tests failed out of 31
+
+Total Test time (real) = 122.74 sec
 
 The following tests FAILED:
-	 24 - Compare generated STEP against reference - cone (Failed)
-	 25 - Compare generated STEP against reference - stepped block (Failed)
-	 26 - Compare generated STEP against reference - L bracket (Failed)
-	 28 - Generate comparison table for all models (Failed)
+	 22 - Reconstruct_cone_15x20_medium (Failed)
+	 24 - Reconstruct_l_bracket_simple_medium (Failed)
+	 25 - Reconstruct_plate_with_hole_100x50_coarse (Failed)
+	 26 - Reconstruct_chamfered_cube_10_c1_medium (Failed)
+	 27 - Reconstruct_rounded_cube_10_r2_fine (Failed)
+	 28 - Reconstruct_pipe_elbow_10_fine (Failed)
+	 29 - Reconstruct_dome_hemisphere_20_fine (Failed)
+Errors while running CTest

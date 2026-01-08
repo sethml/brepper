@@ -227,17 +227,26 @@ Commit these files with your changes to track improvement over time.
 Specific test commands that are easy to get wrong:
 
 ```bash
-# Run the cylinder STEP comparison test
-./build/tests/brepper_tests "Compare generated STEP against reference - cylinder"
+# Run the cylinder reconstruction test
+./build/tests/brepper_tests "Reconstruct_cylinder_10x30_medium"
 
-# Run all STEP comparison tests
-./build/tests/brepper_tests "[step_comparison]"
+# Run all STEP comparison/integration tests
+./build/tests/brepper_tests "[step_comparison][integration]"
 
 # Run comparison table generation
-./build/tests/brepper_tests "Generate comparison table for all models"
+./build/tests/brepper_tests "[comparison_table]"
 
-# Run a specific Onshape model test
-./build/tests/brepper_tests "Onshape: cylinder_10x30_medium"
+# Run CCAD cube test
+./build/tests/brepper_tests "Reconstruct_cube"
+```
+
+## Generating CodeCAD Test Models
+
+To regenerate the STL and STEP files for CodeCAD-based tests:
+
+```bash
+# Requires 'ccad' tool installed (https://codecad.xyz)
+./tests/ccad/generate_models.sh
 ```
 
 Note: Test names use the exact string from `TEST_CASE()`. Use quotes around names with spaces.

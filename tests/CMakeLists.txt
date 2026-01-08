@@ -27,7 +27,6 @@ set(TEST_SOURCES
     test_onshape_models.cpp
     test_e2e.cpp
     test_step_comparison.cpp
-    test_comparison_table.cpp
 )
 
 # Create test executable
