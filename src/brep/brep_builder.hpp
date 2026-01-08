@@ -70,6 +70,9 @@ private:
     // Sew faces together into a shell/solid
     bool sew_faces(const std::vector<TopoDS_Face>& faces, TopoDS_Shape& result);
     
+    // Try to make a solid from a single face (for closed surfaces like spheres)
+    TopoDS_Shape try_make_solid_from_face(const TopoDS_Face& face);
+    
     // Apply shape healing/fixing
     bool heal_shape(TopoDS_Shape& shape);
 };

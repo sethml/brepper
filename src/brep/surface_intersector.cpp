@@ -8,15 +8,22 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <ShapeFix_Wire.hxx>
 #include <ShapeFix_Edge.hxx>
+#include <ShapeFix_Face.hxx>
+#include <ShapeExtend_Status.hxx>
 #include <BRep_Tool.hxx>
 #include <BRep_Builder.hxx>
 #include <TopoDS.hxx>
 #include <Geom_Line.hxx>
 #include <Geom_Circle.hxx>
+#include <Geom_TrimmedCurve.hxx>
 #include <Geom2d_Curve.hxx>
+#include <Geom2d_Line.hxx>
+#include <Geom2d_OffsetCurve.hxx>
 #include <ShapeConstruct_ProjectCurveOnSurface.hxx>
 #include <ShapeAnalysis_Surface.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Pnt2d.hxx>
+#include <gp_Vec2d.hxx>
 #include <gp_Lin.hxx>
 #include <gp_Circ.hxx>
 #include <Precision.hxx>
@@ -28,6 +35,45 @@
 #include <limits>
 
 namespace brepper {
+
+// Helper to shift pcurve U values into the canonical range [0, 2π) for U-periodic surfaces
+// We normalize based on the START point to ensure consistency across edges
+static Handle(Geom2d_Curve) normalize_pcurve_for_periodic_surface(
+    const Handle(Geom2d_Curve)& pcurve,
+    const Handle(Geom_Surface)& surface,
+    double param_start,
+    double /* param_end */
+) {
+    if (pcurve.IsNull() || surface.IsNull()) {
+        return pcurve;
+    }
+    
+    // Check if surface is U-periodic (cylinders, cones, spheres, etc.)
+    if (!surface->IsUPeriodic()) {
+        return pcurve;
+    }
+    
+    double u_period = surface->UPeriod();
+    
+    // Use the start point's U value to determine the shift
+    // This ensures all pcurves on the same surface are shifted consistently
+    gp_Pnt2d p_start = pcurve->Value(param_start);
+    double u_start = p_start.X();
+    
+    // Calculate shift needed to put u_start in [0, u_period)
+    double shift = -u_period * std::floor(u_start / u_period);
+    
+    // Only apply shift if it's significant
+    if (std::abs(shift) < 1e-10) {
+        return pcurve;
+    }
+    
+    // Create a translated copy of the pcurve
+    Handle(Geom2d_Geometry) geom = pcurve->Translated(gp_Vec2d(shift, 0.0));
+    Handle(Geom2d_Curve) shifted = Handle(Geom2d_Curve)::DownCast(geom);
+    
+    return shifted.IsNull() ? pcurve : shifted;
+}
 
 SurfaceIntersector::SurfaceIntersector(const Config& config) 
     : config_(config) 
@@ -193,21 +239,24 @@ TopoDS_Edge SurfaceIntersector::create_shared_edge(
     try {
         TopoDS_Edge edge;
         
+        // Get the underlying curve if this is a trimmed curve
+        Handle(Geom_Curve) basis_curve = curve;
+        Handle(Geom_TrimmedCurve) trimmed = Handle(Geom_TrimmedCurve)::DownCast(curve);
+        if (!trimmed.IsNull()) {
+            basis_curve = trimmed->BasisCurve();
+        }
+        
         // For periodic curves (circles, ellipses) spanning nearly the full period,
         // create a closed edge without explicit parameter bounds
-        if (curve->IsPeriodic()) {
-            double period = curve->Period();
+        if (basis_curve->IsPeriodic()) {
+            double period = basis_curve->Period();
             double range = param_end - param_start;
-            
-            LOG_DEBUG("Periodic curve check: range=", range, ", period=", period, 
-                      ", ratio=", range/period);
             
             // If we span more than 90% of the period, use the full curve
             if (range > 0.9 * period) {
-                LOG_DEBUG("Creating closed edge from periodic curve (range=", range, ", period=", period, ")");
                 
-                // For a closed edge, use the curve's natural bounds
-                BRepBuilderAPI_MakeEdge edgeBuilder(curve);
+                // For a closed edge, use the basis curve with its natural bounds
+                BRepBuilderAPI_MakeEdge edgeBuilder(basis_curve);
                 
                 if (!edgeBuilder.IsDone()) {
                     LOG_ERROR("Closed edge creation from periodic curve failed");
@@ -215,12 +264,16 @@ TopoDS_Edge SurfaceIntersector::create_shared_edge(
                 }
                 
                 edge = edgeBuilder.Edge();
+                
+                // Update param_start/param_end to match the basis curve's natural bounds
+                // This is important for pcurve computation below
+                param_start = basis_curve->FirstParameter();
+                param_end = basis_curve->LastParameter();
             }
         }
         
         // For non-periodic curves or partial periodic curves, use explicit bounds
         if (edge.IsNull()) {
-            LOG_DEBUG("Creating partial edge with params [", param_start, ", ", param_end, "]");
             BRepBuilderAPI_MakeEdge edgeBuilder(curve, param_start, param_end);
             
             if (!edgeBuilder.IsDone()) {
@@ -236,16 +289,19 @@ TopoDS_Edge SurfaceIntersector::create_shared_edge(
         BRep_Builder builder;
         TopLoc_Location identity;  // No transformation
         
+        // For pcurve projection, use the basis curve if available
+        Handle(Geom_Curve) curve_for_pcurve = basis_curve.IsNull() ? curve : basis_curve;
+        
         // Project 3D curve onto surface A to get pcurve A
         Handle(Geom2d_Curve) pcurve_a;
         {
-            Handle(Geom_Curve) c3d = curve;
             ShapeConstruct_ProjectCurveOnSurface projector;
             projector.Init(surf_a, tolerance_);
             
             Handle(Geom2d_Curve) c2d;
-            if (projector.Perform(c3d, param_start, param_end, c2d)) {
-                pcurve_a = c2d;
+            if (projector.Perform(curve_for_pcurve, param_start, param_end, c2d)) {
+                // Normalize pcurve to canonical parameter range for periodic surfaces
+                pcurve_a = normalize_pcurve_for_periodic_surface(c2d, surf_a, param_start, param_end);
                 LOG_DEBUG("Computed pcurve A for edge");
             } else {
                 LOG_WARN("Failed to project curve onto surface A");
@@ -255,13 +311,13 @@ TopoDS_Edge SurfaceIntersector::create_shared_edge(
         // Project 3D curve onto surface B to get pcurve B
         Handle(Geom2d_Curve) pcurve_b;
         {
-            Handle(Geom_Curve) c3d = curve;
             ShapeConstruct_ProjectCurveOnSurface projector;
             projector.Init(surf_b, tolerance_);
             
             Handle(Geom2d_Curve) c2d;
-            if (projector.Perform(c3d, param_start, param_end, c2d)) {
-                pcurve_b = c2d;
+            if (projector.Perform(curve_for_pcurve, param_start, param_end, c2d)) {
+                // Normalize pcurve to canonical parameter range for periodic surfaces
+                pcurve_b = normalize_pcurve_for_periodic_surface(c2d, surf_b, param_start, param_end);
                 LOG_DEBUG("Computed pcurve B for edge");
             } else {
                 LOG_WARN("Failed to project curve onto surface B");
@@ -594,6 +650,25 @@ std::optional<TopoDS_Face> SurfaceIntersector::create_face_with_wires(
         }
         
         TopoDS_Face face = faceBuilder.Face();
+        
+        // For U-periodic surfaces, use ShapeFix_Face to fix the pcurve parameterization
+        // This should handle cases where different edges have pcurves in different periods
+        if (surface->IsUPeriodic()) {
+            ShapeFix_Face fixer(face);
+            fixer.SetPrecision(tolerance_);
+            
+            // Fix all issues
+            fixer.FixOrientation();
+            fixer.FixAddNaturalBound();
+            fixer.FixPeriodicDegenerated();
+            fixer.Perform();
+            
+            if (fixer.Status(ShapeExtend_DONE)) {
+                face = fixer.Face();
+                LOG_DEBUG("Applied ShapeFix_Face to periodic surface face");
+            }
+        }
+        
         return face;
         
     } catch (const Standard_Failure& e) {

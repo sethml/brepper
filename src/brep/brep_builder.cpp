@@ -223,9 +223,10 @@ bool BRepBuilder::build_with_intersections(
     
     LOG_INFO("Created ", faces.size(), " faces");
     
-    // Step 4: Sew faces together
+    // Step 4: Sew faces together (or create solid from single closed face)
     if (faces.size() == 1) {
-        result = faces[0];
+        // Single face - try to make a solid if it's a closed surface (e.g., sphere)
+        result = try_make_solid_from_face(faces[0]);
     } else {
         if (!sew_faces(faces, result)) {
             LOG_WARN("Face sewing failed, creating compound of faces");
@@ -790,6 +791,55 @@ TopoDS_Face BRepBuilder::create_trimmed_face(
     }
 }
 
+TopoDS_Shape BRepBuilder::try_make_solid_from_face(const TopoDS_Face& face) {
+    if (face.IsNull()) {
+        return face;
+    }
+    
+    try {
+        // Build a shell from the single face
+        BRep_Builder builder;
+        TopoDS_Shell shell;
+        builder.MakeShell(shell);
+        builder.Add(shell, face);
+        
+        // Fix the shell
+        ShapeFix_Shell shell_fixer(shell);
+        shell_fixer.SetPrecision(config_.sewing_tolerance);
+        shell_fixer.Perform();
+        
+        if (shell_fixer.Status(ShapeExtend_DONE)) {
+            shell = shell_fixer.Shell();
+        }
+        
+        // Check if the shell is closed (e.g., a complete sphere)
+        BRepCheck_Shell shell_checker(shell);
+        if (shell_checker.Closed() == BRepCheck_NoError) {
+            LOG_DEBUG("Single face forms closed shell, creating solid");
+            
+            // Create a solid from the closed shell
+            ShapeFix_Solid solid_fixer;
+            solid_fixer.SetPrecision(config_.sewing_tolerance);
+            TopoDS_Solid solid = solid_fixer.SolidFromShell(shell);
+            
+            if (!solid.IsNull()) {
+                LOG_DEBUG("Created solid from single closed face");
+                return solid;
+            }
+        }
+        
+        // Not a closed surface, return the original face
+        LOG_DEBUG("Single face is not closed, keeping as face");
+        return face;
+    } catch (Standard_Failure const& e) {
+        LOG_DEBUG("Exception trying to make solid from face: ", e.GetMessageString());
+        return face;
+    } catch (...) {
+        LOG_DEBUG("Unknown exception trying to make solid from face");
+        return face;
+    }
+}
+
 bool BRepBuilder::sew_faces(const std::vector<TopoDS_Face>& faces, TopoDS_Shape& result) {
     if (faces.empty()) {
         return false;
@@ -826,7 +876,7 @@ bool BRepBuilder::sew_faces(const std::vector<TopoDS_Face>& faces, TopoDS_Shape&
         int nb_multiple_edges = sewing.NbMultipleEdges();
         int nb_degenerated = sewing.NbDegeneratedShapes();
         
-        LOG_INFO("Sewing complete: ", nb_free_edges, " free edges, ",
+        LOG_DEBUG("Sewing complete: ", nb_free_edges, " free edges, ",
                  nb_multiple_edges, " multiple edges, ",
                  nb_degenerated, " degenerated shapes, tolerance=", sewing_tol);
         

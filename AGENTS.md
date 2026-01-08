@@ -25,7 +25,7 @@ User prompt(s):
   (include context for prompts that reference previous options/decisions)
 ```
 
-**Shell Quoting**: Use heredoc or `$'...'` quoting for commit messages to avoid shell parsing issues:
+**Shell Quoting**: Use heredoc quoting for commit messages to avoid shell parsing issues:
 
 ```bash
 # Good: heredoc (recommended)
@@ -42,9 +42,6 @@ User prompt(s):
 - 'Prompt with "quotes" and other special chars'
 EOF
 )"
-
-# Also good: ANSI-C quoting for simple cases
-git commit -m $'Fix issue\n\nUser prompt:\n- \'Fix the thing\''
 ```
 
 ## API Documentation
