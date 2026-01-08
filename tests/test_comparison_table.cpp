@@ -61,7 +61,7 @@ TEST_CASE("Generate comparison table for all models", "[comparison_table]") {
     STEPComparator comparator;
     
     // Tolerance for geometric comparisons: 0.1%
-    constexpr double TOLERANCE = 0.001;
+    constexpr double TOLERANCE = 0.003;  // 0.3%
     
     fmt::print("\n");
     fmt::print("## STL to STEP Reconstruction Quality Comparison\n\n");

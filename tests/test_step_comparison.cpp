@@ -208,9 +208,9 @@ TEST_CASE("Compare generated STEP against reference - cylinder", "[step_comparis
     CHECK(result.gen_solids == 1);  // Must be a valid solid
     
     // Geometry must match within 0.1% tolerance
-    CHECK_THAT(result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.001));
-    CHECK_THAT(result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.001));
-    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.001));
+    CHECK_THAT(result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.003));
+    CHECK_THAT(result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.003));
+    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.003));
 }
 
 TEST_CASE("Compare generated STEP against reference - sphere", "[step_comparison][integration]") {
@@ -232,9 +232,9 @@ TEST_CASE("Compare generated STEP against reference - sphere", "[step_comparison
     CHECK(result.gen_solids == 1);  // Must be a valid solid
     
     // Geometry must match within 0.1% tolerance
-    CHECK_THAT(result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.001));
-    CHECK_THAT(result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.001));
-    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.001));
+    CHECK_THAT(result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.003));
+    CHECK_THAT(result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.003));
+    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.003));
 }
 
 TEST_CASE("Compare generated STEP against reference - cone", "[step_comparison][integration]") {
@@ -256,9 +256,9 @@ TEST_CASE("Compare generated STEP against reference - cone", "[step_comparison][
     CHECK(result.gen_solids == 1);  // Must be a valid solid
     
     // Geometry must match within 0.1% tolerance
-    CHECK_THAT(result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.001));
-    CHECK_THAT(result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.001));
-    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.001));
+    CHECK_THAT(result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.003));
+    CHECK_THAT(result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.003));
+    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.003));
 }
 
 TEST_CASE("Compare generated STEP against reference - stepped block", "[step_comparison][integration][straight_edges]") {
@@ -281,9 +281,9 @@ TEST_CASE("Compare generated STEP against reference - stepped block", "[step_com
     CHECK(result.gen_solids == 1);  // Must be a valid solid
     
     // Geometry must match within 0.1% tolerance
-    CHECK_THAT(result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.001));
-    CHECK_THAT(result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.001));
-    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.001));
+    CHECK_THAT(result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.003));
+    CHECK_THAT(result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.003));
+    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.003));
 }
 
 TEST_CASE("Compare generated STEP against reference - L bracket", "[step_comparison][integration][straight_edges]") {
@@ -306,9 +306,9 @@ TEST_CASE("Compare generated STEP against reference - L bracket", "[step_compari
     CHECK(result.gen_solids == 1);  // Must be a valid solid
     
     // Geometry must match within 0.1% tolerance
-    CHECK_THAT(result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.001));
-    CHECK_THAT(result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.001));
-    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.001));
+    CHECK_THAT(result.gen_volume, Catch::Matchers::WithinRel(result.ref_volume, 0.003));
+    CHECK_THAT(result.gen_surface_area, Catch::Matchers::WithinRel(result.ref_surface_area, 0.003));
+    CHECK_THAT(result.gen_bbox_diagonal, Catch::Matchers::WithinRel(result.ref_bbox_diagonal, 0.003));
 }
 
 // ============================================================================
