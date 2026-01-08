@@ -203,6 +203,25 @@ When writing temporary code for debugging or testing:
    cmake --build build && ./build/tests/brepper_tests "Your test name"
    ```
 
+## Generating Test Results for Commit
+
+To track test progress over time, generate test results files before committing:
+
+```bash
+# Build first
+cmake --build build
+
+# Generate comparison table (shows volume/area accuracy for each model)
+OMP_NUM_THREADS=1 ./build/tests/brepper_tests "[comparison_table]" 2>&1 > test_results/comparison_table.txt
+
+# Generate full test summary
+OMP_NUM_THREADS=1 ctest --test-dir build -j1 --output-on-failure 2>&1 > test_results/ctest_summary.txt
+```
+
+Note: `OMP_NUM_THREADS=1` and `-j1` ensure deterministic ordering for diff-friendly output.
+
+Commit these files with your changes to track improvement over time.
+
 ## Common Test Commands
 
 Specific test commands that are easy to get wrong:
