@@ -177,15 +177,14 @@ bool MeshSampler::sample(const pcl::PolygonMesh& mesh, PointCloudNormalPtr& clou
         int thread_id = omp_get_thread_num();
         PointCloudNormal& local_cloud = thread_clouds[thread_id];
         
-        // Thread-local RNG for random sampling
-        // Use config seed + thread_id for deterministic per-thread seeding
-        unsigned int thread_seed = (config_.random_seed >= 0) 
-            ? static_cast<unsigned int>(config_.random_seed + thread_id)
-            : (std::random_device{}() + thread_id);
-        std::mt19937 local_rng(thread_seed);
-        std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+        // Base seed for deterministic results
+        unsigned int base_seed = (config_.random_seed >= 0) 
+            ? static_cast<unsigned int>(config_.random_seed)
+            : (std::random_device{}() + thread_id);  // Non-deterministic only when no seed set
         
-        #pragma omp for schedule(dynamic, 100)
+        // Use static scheduling for deterministic results - each thread always
+        // processes the same triangles, ensuring reproducible point generation
+        #pragma omp for schedule(static)
         for (size_t tri_idx = 0; tri_idx < num_triangles; ++tri_idx) {
             const auto& polygon = mesh.polygons[tri_idx];
             if (polygon.vertices.size() != 3) continue;
@@ -218,20 +217,26 @@ bool MeshSampler::sample(const pcl::PolygonMesh& mesh, PointCloudNormalPtr& clou
                 local_cloud.push_back(vpn);
             }
             
-            // Random samples
+            // Random samples - seed based on triangle index for thread-count independence
             int num_additional = samples_per_triangle[tri_idx] - 4;
-            for (int i = 0; i < num_additional; ++i) {
-                float r1 = dist(local_rng);
-                float r2 = dist(local_rng);
-                if (r1 + r2 > 1.0f) { r1 = 1.0f - r1; r2 = 1.0f - r2; }
-                float r3 = 1.0f - r1 - r2;
+            if (num_additional > 0) {
+                // Each triangle gets its own deterministic seed based on triangle index
+                std::mt19937 tri_rng(base_seed + static_cast<unsigned int>(tri_idx));
+                std::uniform_real_distribution<float> dist(0.0f, 1.0f);
                 
-                Eigen::Vector3f pt = r1 * v0 + r2 * v1 + r3 * v2;
-                pcl::PointNormal spn;
-                spn.x = pt.x(); spn.y = pt.y(); spn.z = pt.z();
-                spn.normal_x = normal.x(); spn.normal_y = normal.y(); spn.normal_z = normal.z();
-                spn.curvature = 0.0f;
-                local_cloud.push_back(spn);
+                for (int i = 0; i < num_additional; ++i) {
+                    float r1 = dist(tri_rng);
+                    float r2 = dist(tri_rng);
+                    if (r1 + r2 > 1.0f) { r1 = 1.0f - r1; r2 = 1.0f - r2; }
+                    float r3 = 1.0f - r1 - r2;
+                    
+                    Eigen::Vector3f pt = r1 * v0 + r2 * v1 + r3 * v2;
+                    pcl::PointNormal spn;
+                    spn.x = pt.x(); spn.y = pt.y(); spn.z = pt.z();
+                    spn.normal_x = normal.x(); spn.normal_y = normal.y(); spn.normal_z = normal.z();
+                    spn.curvature = 0.0f;
+                    local_cloud.push_back(spn);
+                }
             }
         }
     }
