@@ -25,11 +25,11 @@ User prompt(s):
   (include context for prompts that reference previous options/decisions)
 ```
 
-**Shell Quoting**: Use heredoc quoting for commit messages to avoid shell parsing issues:
+**Shell Quoting**: Use heredoc quoting for commit messages and when writing test scripts to avoid shell parsing issues:
 
 ```bash
 # Good: heredoc (recommended)
-git commit -m "$(cat <<'EOF'
+git commit -F - <<'EOF'
 Fix UV bounds for spheres
 
 - Detailed change 1
@@ -41,42 +41,7 @@ Generated with assistance from Model Name (Provider, 2026)
 User prompt(s):
 - 'Prompt with "quotes" and other special chars'
 EOF
-)"
 ```
-
-## API Documentation
-
-When implementing features that use external libraries:
-
-## Shape Healing Warnings (OCCT)
-
-If you see a warning that shape healing (ShapeFix_Shape) has modified the geometry, this is a PRIORITY issue. It means a previous modeling step (face creation, trimming, sewing, etc.) produced invalid or suboptimal geometry that required repair.
-
-- Investigate and fix the root cause in the preceding step so that healing is not needed.
-- Do not ignore healing warnings or treat them as normal; they indicate a bug or robustness issue in the pipeline.
-- Only use healing as a last resort safety net, not as a substitute for correct modeling.
-
-Whenever a healing warning appears in logs or test output, file a task to address the underlying modeling problem.
-
-1. **Fetch official documentation first** - Use web fetch tools to retrieve current API documentation from official sources:
-   - PCL: https://pointclouds.org/documentation/tutorials/
-   - OpenCASCADE: https://dev.opencascade.org/doc/overview/html/
-   - Eigen: https://eigen.tuxfamily.org/dox/
-
-2. **Consult header files if needed** - If documentation is insufficient or unclear, read the relevant header files from the installed libraries to understand:
-   - Function signatures and parameter types
-   - Available overloads
-   - Template parameters
-   - Expected usage patterns
-
-3. **Avoid assumptions** - Do not guess at API details. When uncertain, gather more context before implementing.
-
-## Project-Specific Context
-
-- This project uses PCL 1.15+, OpenCASCADE 7.9+, and Eigen 3.4+
-- Build system is CMake 3.20+
-- Target platform is macOS with Homebrew-installed dependencies
-- See DEVELOPMENT_PLAN.md for the overall architecture and implementation stages
 
 ## Development Plan Maintenance
 
@@ -97,148 +62,46 @@ Keep README.md up to date when changes affect user-facing behavior:
 4. **New features** - Add brief descriptions of significant new capabilities
 5. **Include in commit** - README updates should be part of the same commit as the feature work
 
-## Code Style Preferences
+## File Editing
 
-### Avoid Large Conditional Compilation Blocks
+When reading files for editing, use `#tool:hashlineRead` instead of the
+built-in file read tool. It returns lines tagged with content hashes in the
+format `{lineNumber}:{hash}|{content}`.
 
-Prefer making dependencies required rather than optional if it would require large `#ifdef` blocks:
+When editing files, use `#tool:hashlineEdit` instead of string-replace tools.
+Reference lines by their `{line}:{hash}` pairs from the read output. This
+avoids needing to reproduce existing file content and prevents edits to stale
+files.
 
-- Large conditional blocks lead to hidden build breakages and bugs
-- Code paths that aren't regularly compiled tend to bit-rot
-- Testing burden doubles when code has multiple compilation configurations
-- If a dependency is important enough to use, make it required
+Example workflow:
+1. Read: `hashline_read({filePath: "src/app.ts", startLine: 1, endLine: 20})`
+   Returns: `1:qk|import React...`
+2. Edit: `hashline_edit({edits: [{filePath: "src/app.ts", lineHashes: "4:mp", content: "  return <div>Hello</div>;"}]})`
 
-**Bad:**
-```cpp
-#ifdef USE_FEATURE_X
-    // 50+ lines of code using feature X
-#else
-    // 50+ lines of fallback code
-#endif
-```
-
-**Better:** Make the dependency required, or isolate the feature into a separate optional component that can be tested independently.
-
-Small `#ifdef` blocks (e.g., platform-specific includes, debug logging) are acceptable.
-
-### Command Line Efficiency
-
-When building and running tests, combine commands with `&&` to avoid unnecessary waits:
-
-```bash
-# Good: single command, stops on failure, parallel tests
-cmake --build build && ctest --test-dir build -j8 --output-on-failure
-
-# Bad: separate commands requiring multiple tool invocations
-cmake --build build
-ctest --test-dir build --output-on-failure
-```
-
-### Run Tests in Parallel
-
-Always run tests with `-j8` (or similar) for parallel execution:
-
-```bash
-# Good: parallel test execution (~21 seconds)
-ctest --test-dir build -j8 --output-on-failure
-
-# Bad: sequential execution (~98 seconds)
-ctest --test-dir build --output-on-failure
-```
-
-The test suite is structured with separate `TEST_CASE`s (rather than `SECTION`s) specifically to enable parallel execution via ctest.
-
-### Sanitizer Testing
-
-Periodically run tests with sanitizers enabled to catch memory and concurrency issues:
-
-```bash
-# Build with Address Sanitizer + Undefined Behavior Sanitizer
-cmake -B build-sanitize -DBUILD_TESTS=ON -DENABLE_ASAN=ON -DENABLE_UBSAN=ON -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-sanitize && ctest --test-dir build-sanitize -j4 --output-on-failure
-
-# Build with Thread Sanitizer (for OpenMP race conditions)
-cmake -B build-tsan -DBUILD_TESTS=ON -DENABLE_TSAN=ON -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-tsan && ctest --test-dir build-tsan -j4 --output-on-failure
-```
-
-Note: Use `-j4` instead of `-j8` with sanitizers as they increase memory usage significantly.
+Operations:
+- **Replace**: set `lineHashes` to all lines being replaced, `content` to new text
+- **Insert after**: set `insertAfter: true`, `lineHashes` to anchor line
+- **Delete**: set `content` to empty string
+- Multiple edits can be batched in one call across files
 
 ### Don't Truncate Build or Test Output
 
 Never pipe build or test commands through `head`, `tail`, or other truncating filters:
-
 - Errors often appear at unexpected locations in the output
 - Truncating can hide the actual failure while showing misleading context
 - Build systems and test frameworks already produce focused error output
 
-```bash
-# Bad: might hide the actual error
-cmake --build build 2>&1 | head -100
+### Time Builds and Tests
 
-# Good: see all output
-cmake --build build
-```
+Run builds and tests with `time`. When they take more than 5 minutes, stop and ask the user whether to speed them up.
 
 ## Temporary Test Code
 
 When writing temporary code for debugging or testing:
 
-1. **Put files in `temp_code/`** - This directory is in the project root and ignored by git. Don't use `/tmp` or other directories outside the workspace.
+1. **Put files in `tmp/`** - This directory is in the project root and ignored by git. Don't use `/tmp` or other directories outside the workspace.
 
-2. **Don't delete temporary code** - Leave it in `temp_code/` in case it's useful later.
-
-3. **Compiling standalone OCCT code:**
-   ```bash
-   c++ -std=c++17 \
-       -I/opt/homebrew/include/opencascade \
-       -L/opt/homebrew/lib \
-       -lTKernel -lTKMath -lTKBRep -lTKTopAlgo -lTKDESTEP -lTKXSBase -lTKDE \
-       temp_code/my_test.cpp -o temp_code/my_test
-   ```
-   Note: OCCT 7.9+ renamed libraries (e.g., `TKSTEP` → `TKDESTEP`). Check `/opt/homebrew/lib/libTK*.dylib` for available libraries.
-
-4. **Prefer adding to test suite** - For code using project classes, it's easier to add a temporary `TEST_CASE` to an existing test file (like `tests/test_e2e.cpp`) rather than compiling standalone. Build and run with:
-   ```bash
-   cmake --build build && ./build/tests/brepper_tests "Your test name"
-   ```
-
-## Generating Test Results for Commit
-
-To track test progress over time, generate test results files before committing:
-
-```bash
-# Build first
-cmake --build build
-
-# Generate comparison table (shows volume/area accuracy for each model)
-OMP_NUM_THREADS=1 ./build/tests/brepper_tests "[comparison_table]" 2>&1 > test_results/comparison_table.txt
-
-# Generate full test summary
-OMP_NUM_THREADS=1 ctest --test-dir build -j1 --output-on-failure 2>&1 > test_results/ctest_summary.txt
-```
-
-Note: `OMP_NUM_THREADS=1` and `-j1` ensure deterministic ordering for diff-friendly output.
-
-Commit these files with your changes to track improvement over time.
-
-## Common Test Commands
-
-Specific test commands that are easy to get wrong:
-
-```bash
-# Run the cylinder reconstruction test
-./build/tests/brepper_tests "Reconstruct_cylinder_10x30_medium"
-
-# Run all STEP comparison/integration tests
-./build/tests/brepper_tests "[step_comparison][integration]"
-
-# Run comparison table generation
-./build/tests/brepper_tests "[comparison_table]"
-
-# Run CCAD cube test
-./build/tests/brepper_tests "Reconstruct_cube"
-```
+2. **Don't delete temporary code** - Leave it in `tmp/` in case it's useful later.
 
 ## Generating CodeCAD Test Models
 
@@ -248,5 +111,3 @@ To regenerate the STL and STEP files for CodeCAD-based tests:
 # Requires 'ccad' tool installed (https://codecad.xyz)
 ./tests/ccad/generate_models.sh
 ```
-
-Note: Test names use the exact string from `TEST_CASE()`. Use quotes around names with spaces.

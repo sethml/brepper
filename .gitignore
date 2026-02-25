@@ -1,9 +1,5 @@
 # Build artifacts
-build/
-build-*/
-*.so
-*.dylib
-*.a
+/target/
 
 # IDE files
 .vscode/
@@ -16,15 +12,5 @@ build-*/
 .DS_Store
 *.dSYM/
 
-# Test files
-test_*.stl
-test_*.step
-test_*.pcd
-test_*.ply
-
-# Debug outputs
-debug_*
-*.log
-
 # Temporary code directory (used by AI assistants for debugging)
-temp_code/
+tmp/

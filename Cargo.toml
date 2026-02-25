@@ -1,0 +1,15 @@
+[package]
+name = "brepper"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+opencascade-sys = { path = "../opencascade-rs/crates/opencascade-sys" }
+
+[lib]
+name = "brepper"
+path = "src/lib.rs"
+
+[[bin]]
+name = "step-distance"
+path = "src/bin/step_distance.rs"

@@ -6,18 +6,20 @@
 
 ## Assumptions
 
-Assumes the vertices of the mesh lie precisely on the CAD surfaces, modulo numerical error/stability.
+- Assumes the vertices of the mesh lie precisely on the CAD surfaces, modulo numerical error/stability.
+- Assumes transitions between shapes always have a seam.
+- Assumes manifold mesh (each edge shared by exactly 2 faces).
+- Assumes consistent face orientation (all normals point outward).
 
-Assumes transitions between shapes always have a seam.
-
-*Comment: These assumptions are reasonable for CAD-origin meshes. However, consider adding: (1) Assumes manifold mesh (each edge shared by exactly 2 faces). (2) Assumes consistent face orientation (all normals point outward). You may want to explicitly state what happens when these assumptions are violated—fail gracefully with diagnostics, or attempt repair?*
+Fails noisily if any of the assumptions are violated. Possible future work: offer a repair mode.
 
 ## Dependencies
 
 | Library | Purpose | Version |
 |---------|---------|---------|
-| OpenCASCADE (OCCT) | STL import, B-Rep modeling, surface fitting, STEP export | ≥7.6 |
-| cxxopts | Command-line argument parsing | latest |
+| OpenCASCADE (OCCT) | STL import, B-Rep modeling, surface fitting, STEP export | latest |
+
+Use the opencascade binding in ../opencascade-rs/crates/opencascade-sys, including porting instructions in PORTING.md and details on the FFI mapping in ../opencascade-rs/crates/opencascade-binding-generator/README.md. It's a reasonably complete binding of the C++ API of the opencascade library which resides in ../opencascade-rs/crates/occt-sys/OCCT, with source code in src/ and documentation in dox/.
 
 ### Required OCCT Functionality
 
@@ -90,72 +92,8 @@ This section enumerates the OCCT classes and functions needed, for evaluating Ru
 - `BRepTools::Write` — Write BREP format (OCCT native, for debugging)
 - `IGESControl_Writer` — Write IGES format (future enhancement)
 
-### Candidate Rust Libraries
-
-**1. opencascade-rs** ([github.com/bschwind/opencascade-rs](https://github.com/bschwind/opencascade-rs))
-- Crates: `opencascade` (high-level), `opencascade-sys` (low-level FFI), `occt-sys` (OCCT build)
-- Status: Last updated ~3 months ago, 216 stars, 14 contributors
-- License: LGPL-2.1 (same as OCCT)
-- Approach: Uses cxx.rs for C++/Rust interop with a header-only wrapper
-
-*Coverage of required functionality:*
-| Category | Coverage | Notes |
-|----------|----------|-------|
-| Basic geometry (`gp_*`) | ✓ Good | `gp_Pnt`, `gp_Dir`, `gp_Vec`, `gp_Ax1/2/3`, `gp_Trsf` |
-| Analytic surfaces | Partial | `Geom_CylindricalSurface`, `Geom_Plane` present; sphere/cone/torus unclear |
-| B-spline geometry | Partial | `Geom_BSplineCurve`, `Geom_BezierSurface`; `Geom_BSplineSurface` unclear |
-| 2D curves (pcurves) | Partial | `Geom2d_Curve`, `Geom2d_Ellipse`, `Geom2d_TrimmedCurve` |
-| Topology types | ✓ Good | All `TopoDS_*` types, `TopExp_Explorer`, `TopExp::MapShapes` |
-| BRepBuilderAPI | Partial | `MakeVertex`, `MakeEdge`, `MakeWire`, `MakeFace`, `MakeSolid`; `Sewing` unclear |
-| GeomAPI | ✗ Missing | No `GeomAPI_IntSS`, `GeomAPI_ProjectPointOnCurve`, `GeomAPI_PointsToBSplineSurface` |
-| ShapeFix | ✗ Missing | No `ShapeFix_*` classes (critical gap) |
-| BRepCheck | ✗ Missing | No `BRepCheck_Analyzer` |
-| STEP I/O | ✓ Good | `STEPControl_Reader`, `STEPControl_Writer` |
-| IGES I/O | ✓ Good | `IGESControl_Reader`, `IGESControl_Writer` |
-| STL I/O | Partial | `StlAPI_Writer`; reader unclear (uses `BRepBuilderAPI_MakeShapeOnMesh`) |
-| Shape properties | ✓ Good | `BRepGProp`, `GProp_GProps` |
-
-*Assessment:* Designed for forward CAD modeling (create shapes from primitives), not reverse engineering. Missing critical functionality for surface fitting (`GeomAPI_IntSS`, `GeomAPI_PointsToBSplineSurface`) and shape repair (`ShapeFix_*`). Would require significant binding additions.
-
-**2. truck** ([github.com/ricosjp/truck](https://github.com/ricosjp/truck))
-- Crates: `truck-modeling`, `truck-topology`, `truck-geometry`, `truck-stepio`, `truck-polymesh`, etc.
-- Status: Actively maintained (commits within hours), 1.4k stars, 14 contributors
-- License: Apache-2.0
-- Approach: Pure Rust B-Rep kernel (not OCCT bindings)
-
-*Coverage of required functionality:*
-| Category | Coverage | Notes |
-|----------|----------|-------|
-| Basic geometry | ✓ Own types | Uses cgmath, own point/vector types |
-| B-spline/NURBS | ✓ Good | Native B-spline curves and surfaces |
-| Topology | ✓ Good | Vertex, Edge, Wire, Face, Shell, Solid |
-| Surface fitting | ✗ Missing | No RANSAC, no analytic surface fitting from points |
-| Surface-surface intersection | ? Unclear | `truck-shapeops` has boolean ops, intersection unclear |
-| Shape healing | ✗ Missing | No equivalent to ShapeFix |
-| STEP I/O | Partial | Output works; input "will come further down the road" |
-| Mesh operations | ✓ Good | `truck-meshalgo`, `truck-polymesh` |
-
-*Assessment:* Modern pure-Rust kernel, but focused on forward modeling. No surface fitting from point clouds. STEP input not yet implemented. Missing analytic surface types (plane, cylinder, sphere as primitives). Not suitable for mesh-to-B-Rep reconstruction.
-
-**3. Fornjot** ([github.com/hannobraun/fornjot](https://github.com/hannobraun/fornjot))
-- Status: Early-stage pure-Rust B-Rep kernel
-- Assessment: Too immature for production use. Interesting long-term, but lacks the functionality needed.
-
-**Recommendation:**
-
-For brepper's requirements (mesh → B-Rep reconstruction), **none of the existing Rust libraries are sufficient**. The options are:
-
-1. **Extend opencascade-rs** — Add bindings for `GeomAPI_IntSS`, `GeomAPI_PointsToBSplineSurface`, `GeomAPI_ProjectPointOnCurve`, and the `ShapeFix_*` family. This is feasible but significant work (estimate: 2-4 weeks of binding development).
-
-2. **Use C++ directly** — Continue with C++ and OCCT, which has all required functionality. Optionally create a Rust CLI wrapper later.
-
-3. **Hybrid approach** — Write mesh processing and surface fitting in Rust (using e.g., `nalgebra`, custom RANSAC), then call out to OCCT via FFI only for B-Rep construction and STEP export.
-
-*Recommended path:* Option 2 (C++) for initial implementation, with potential migration to Option 3 once the algorithms are proven.
-
 ## Open Questions
 
-- Implementation language: C++ or Rust? Use Rust OCCT bindings? Low-level or higher-level?
 - Links between data structures (face => edge, edge => vertex, etc): Use indices or pointers or references or other?
 - Data structure management: Vectors? Reference counting?
 
@@ -168,7 +106,7 @@ For brepper's requirements (mesh → B-Rep reconstruction), **none of the existi
 TODO: make collection variable names consistently plural rather than singular.
 
 ### 1.1 Read STL File
-Read the input STL file and generate an in-memory representation of the triangle mesh, with fields for future stages to traverse the mesh and fit shapes to sets of mesh faces.
+Read the input STL file and generate an in-memory representation of the triangle mesh, with fields for future stages to traverse the mesh and fit shapes to sets of mesh faces. Weld vertices by position (with tolerance) to build connectivity.
 - **Library**: OCCT `TKSTL::RWStl_Reader` from `RWSTL.hxx`
 - **Input**: Binary or ASCII STL file
 - **Output**: `ConnectedMesh`, storing:
@@ -181,10 +119,10 @@ Read the input STL file and generate an in-memory representation of the triangle
         - planar_hypothesis;  // Index of active planar hypothesis, or -1 if none, or -2 if not yet deduced.
         - cylindrical_hypothesis;  // Index of active cylindrical hypothesis, or -1 if none.
         - spherical_hypothesis;  // Index of active spherical hypothesis, or -1 if none.
-    - Vector of planar hypotheses, cylindrical hypotheses, and spherical hypotheses - defined later. Consider using polymorphism for hypothesis representation.
+    - Vector of planar hypotheses, cylindrical hypotheses, and spherical hypotheses - defined later.
     - Statistics described in stage 1.2.
 
-*Comment: The hypothesis indices on mesh faces suggest a face can belong to at most one hypothesis of each type. But a mesh face might legitimately fit multiple cylindrical hypotheses (e.g., at the intersection of two cylinders) during the fitting phase. Consider using a vector or set of candidate hypothesis indices per type, then selecting the best one in stage 2.6. Also, STL doesn't preserve vertex sharing—you'll need to weld vertices by position (with tolerance) to build connectivity. This should be mentioned explicitly.*
+For now, each face can belong to a single hypothesis of each type. Hopefully that's sufficient since hypotheses should nearly exactly match the vertices, but it's possible that in the future we may need to keep set of candidate hypothesis indices per type, then select the best one in stage 2.6.
 
 ### 1.2 Mesh Validation
 Traverse the faces of the mesh, collecting some basic statistics, validating the geometry, and populating normals and neighbors.
@@ -192,13 +130,17 @@ Traverse the faces of the mesh, collecting some basic statistics, validating the
 - Compute and populate mesh face normals.
 - Compute mesh face neighbors based on shared mesh edges.
 
-*Comment: "Edges with >1 neighbors" indicates non-manifold geometry—you should decide whether to reject such meshes or attempt to handle them. Also consider validating: degenerate triangles (zero area), flipped normals (inconsistent orientation within a shell), and self-intersections. The "number of solids" and "voids" computation is non-trivial and may require ray casting or signed volume analysis—consider deferring this to after surface reconstruction.*
+At this stage, validate the mesh: Edges with >1 neighbor indicate non-manifold geometry; degenerate triangles (zero area), flipped normals (inconsistent orientation within a shell), and self-intersections.
+
+The "number of solids" and "voids" computation is non-trivial and may require ray casting or signed volume analysis—consider deferring this to after surface reconstruction.
 
 ---
 
 ## Stage 2: Surface Fitting
 
 *Comment: The approach described here is "region growing" from seed faces—this works but may produce suboptimal results because the first seed determines the region boundaries. An alternative is RANSAC-style fitting: randomly sample minimal point sets, fit surfaces, count inliers, and keep the best. RANSAC is more robust to the mesh traversal order. The region-growing approach described here also doesn't naturally handle the case where the same surface type appears in disconnected regions (e.g., two separate planar faces with the same orientation). Consider a hybrid: use RANSAC or global clustering first, then refine with region growing.*
+
+**Response: Given vertices that lie within epsilon of precisely on the surfaces involved, hopefully the first seed will grow to the entire region. I think the depth-first search or breadth-first search should effectively find planar surfaces that are partially disconnected. If they're fully disconnected, we'll consider them independent planar surfaces, which is fine.**
 
 ### 2.1 Deduce planar hypotheses
 Fit planar hypotheses to all sets of more than one face which are coplanar. A planar hypothesis consists of:
@@ -364,59 +306,9 @@ And a vector of vertices, each containing:
 
 ## Implementation Phases
 
-### Phase 1: Foundation (Week 1-2)
-- [x] Project setup (CMake, dependencies)
-- [x] STL file reading
-- [x] Point cloud generation with normals
-- [x] Basic CLI framework
-
-### Phase 2: Surface Segmentation (Week 3-4)
-- [x] RANSAC plane fitting
-- [x] RANSAC cylinder fitting
-- [x] RANSAC sphere/cone fitting
-- [x] Iterative extraction loop
-- [ ] Segment clustering
-
-### Phase 3: NURBS & Assignment (Week 5-6)
-- [ ] Euclidean clustering
-- [ ] NURBS surface fitting
-- [x] Triangle-to-surface assignment
-- [ ] Segmented mesh visualization
-
-### Phase 4: Boundary Detection (Week 7-8)
-- [x] Boundary edge detection
-- [x] Edge chain extraction
-- [ ] Analytic curve fitting
-- [ ] B-spline curve fitting
-
-### Phase 5: B-Rep Construction (Week 9-10)
-- [x] OCCT surface creation
-- [x] Trimmed face construction
-- [x] Face sewing
-- [x] Solid creation & healing
-- [x] Shell orientation fixing (ShapeFix_Shell)
-- [x] Solid creation from closed shells (ShapeFix_Solid::SolidFromShell)
-- [x] PCurve computation for boundary wires on non-planar surfaces (ShapeFix_Wire::FixEdgeCurves)
-
-### Phase 6: Export & Polish (Week 11-12)
-- [x] STEP export
-- [x] STEP comparison test framework (compare against reference STEP files)
-- [ ] Error handling & validation
-- [x] Performance optimization (OpenMP parallelization)
-- [x] Testing & documentation (Catch2 unit tests)
-
----
-
-## Key Challenges & Mitigations
-
-| Challenge | Mitigation Strategy |
-|-----------|---------------------|
-| Noisy STL meshes | Robust RANSAC, adjustable thresholds |
-| Degenerate triangles | Pre-filter invalid geometry |
-| Ambiguous surface types | Score-based selection, user hints |
-| Boundary curve discontinuities | Smoothing, tolerance handling |
-| Topology errors in B-Rep | OCCT ShapeFix, iterative healing |
-| Performance with large meshes | Spatial indexing (KD-tree), parallelization |
+### Phase 1: Foundation
+- [x] Project setup (crates, cargo.toml, dependencies)
+- [x] Test utility: read an STL and a STEP, compute maximum distance between STL vertices and STEP surfaces, and print it out. Create a script in scripts/ to apply it to all of the stl/step file pairs under tests/ and print out a table of maximum distances.
 
 ---
 
@@ -456,7 +348,6 @@ And a vector of vertices, each containing:
 
 - [ ] Support for OBJ, PLY input formats
 - [ ] IGES export option
-- [ ] GUI for interactive parameter tuning
 - [ ] Machine learning for surface type classification
 - [ ] Hole detection and filling
 - [ ] Feature recognition (holes, pockets, bosses)
