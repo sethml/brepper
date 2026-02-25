@@ -2,452 +2,363 @@
 
 ## Project Overview
 
-**brepper** (B-Rep from Mesh) - A C++ utility to convert triangulated STL meshes from CAD exports into parametric STEP files with fitted analytic and freeform surfaces.
+**brepper** (B-Rep from Mesh) - A utility to convert triangulated STL meshes from CAD exports into parametric STEP files with fitted analytic and freeform surfaces.
+
+## Assumptions
+
+Assumes the vertices of the mesh lie precisely on the CAD surfaces, modulo numerical error/stability.
+
+Assumes transitions between shapes always have a seam.
+
+*Comment: These assumptions are reasonable for CAD-origin meshes. However, consider adding: (1) Assumes manifold mesh (each edge shared by exactly 2 faces). (2) Assumes consistent face orientation (all normals point outward). You may want to explicitly state what happens when these assumptions are violated—fail gracefully with diagnostics, or attempt repair?*
 
 ## Dependencies
 
 | Library | Purpose | Version |
 |---------|---------|---------|
-| PCL (Point Cloud Library) | Mesh I/O, point cloud processing, RANSAC segmentation | ≥1.12 |
-| OpenCASCADE (OCCT) | B-Rep modeling, surface fitting, STEP export | ≥7.6 |
-| Eigen | Linear algebra (bundled with PCL) | ≥3.4 |
-| CLI11 or cxxopts | Command-line argument parsing | latest |
+| OpenCASCADE (OCCT) | STL import, B-Rep modeling, surface fitting, STEP export | ≥7.6 |
+| cxxopts | Command-line argument parsing | latest |
+
+### Required OCCT Functionality
+
+This section enumerates the OCCT classes and functions needed, for evaluating Rust binding coverage.
+
+**Stage 1: Mesh Input**
+- `RWStl` / `RWStl_Reader` — Read binary/ASCII STL files
+- `gp_Pnt` — 3D point representation
+- `gp_Dir` / `gp_Vec` — Direction and vector types
+
+**Stage 2: Surface Fitting**
+- `gp_Pln` — Plane geometry (normal + distance representation)
+- `gp_Cylinder` / `gp_Ax3` — Cylindrical surface geometry (axis + radius)
+- `gp_Sphere` — Spherical surface geometry (center + radius)
+- `gp_Cone` — Conical surface geometry (axis + half-angle)
+- `gp_Torus` — Toroidal surface geometry (for fillets)
+
+**Stage 3: Surface Reconstruction**
+
+*Geometry (infinite surfaces and curves):*
+- `Geom_Plane`, `Geom_CylindricalSurface`, `Geom_SphericalSurface`, `Geom_ConicalSurface`, `Geom_ToroidalSurface` — Analytic surface objects
+- `Geom_BSplineSurface` — NURBS/B-spline surfaces
+- `Geom_Line`, `Geom_Circle`, `Geom_Ellipse` — Analytic curve types
+- `Geom_BSplineCurve` — Freeform curves
+- `Geom2d_Curve`, `Geom2d_Line`, `Geom2d_Circle`, `Geom2d_BSplineCurve` — 2D curves for pcurves
+
+*Surface fitting:*
+- `GeomAPI_PointsToBSplineSurface` — Fit B-spline surface to points
+
+*Surface-surface intersection:*
+- `GeomAPI_IntSS` — Compute intersection curves between two surfaces
+
+*Point-curve projection:*
+- `GeomAPI_ProjectPointOnCurve` — Project point onto curve (for trimming)
+- `ShapeAnalysis_Curve` — Curve analysis utilities
+
+*Topology (B-Rep construction):*
+- `TopoDS_Vertex`, `TopoDS_Edge`, `TopoDS_Wire`, `TopoDS_Face`, `TopoDS_Shell`, `TopoDS_Solid`, `TopoDS_Compound` — Topological entities
+- `BRep_Builder` — Low-level topology construction
+- `BRepBuilderAPI_MakeVertex` — Create vertices
+- `BRepBuilderAPI_MakeEdge` — Create edges from curves (with optional pcurves)
+- `BRepBuilderAPI_MakeWire` — Assemble edges into wires
+- `BRepBuilderAPI_MakeFace` — Create faces from surface + bounding wires
+- `BRepBuilderAPI_Sewing` — Stitch faces into shells
+- `BRepBuilderAPI_MakeSolid` — Create solids from shells
+
+*Topology exploration:*
+- `TopExp_Explorer` — Iterate over sub-shapes
+- `TopExp::MapShapes` — Build maps of topology
+- `BRep_Tool` — Extract geometry from topology (IsSeam, SameParameter, etc.)
+
+*Shape healing and fixing:*
+- `ShapeFix_Shape` — General shape repair
+- `ShapeFix_Face` — Face-specific repairs
+- `ShapeFix_Wire` — Wire repairs, including `FixEdgeCurves` for pcurve computation
+- `ShapeFix_Shell` — Shell orientation fixing
+- `ShapeFix_Solid` — Solid creation/repair, `SolidFromShell`
+
+*Shape analysis and validation:*
+- `BRepCheck_Analyzer` — Validate B-Rep topology/geometry
+- `ShapeAnalysis_Shell` — Shell analysis (e.g., `CheckOrientedShells`)
+- `GProp_GProps` / `BRepGProp` — Compute volume, area, center of mass
+
+**Stage 4: Output**
+- `STEPControl_Writer` — Write STEP files
+- `STEPControl_StepModelType` — Control STEP output mode (`AsIs`, `ManifoldSolidBrep`)
+- `Interface_Static` — Set STEP header metadata
+
+*Optional/debugging:*
+- `BRepTools::Write` — Write BREP format (OCCT native, for debugging)
+- `IGESControl_Writer` — Write IGES format (future enhancement)
+
+### Candidate Rust Libraries
+
+**1. opencascade-rs** ([github.com/bschwind/opencascade-rs](https://github.com/bschwind/opencascade-rs))
+- Crates: `opencascade` (high-level), `opencascade-sys` (low-level FFI), `occt-sys` (OCCT build)
+- Status: Last updated ~3 months ago, 216 stars, 14 contributors
+- License: LGPL-2.1 (same as OCCT)
+- Approach: Uses cxx.rs for C++/Rust interop with a header-only wrapper
+
+*Coverage of required functionality:*
+| Category | Coverage | Notes |
+|----------|----------|-------|
+| Basic geometry (`gp_*`) | ✓ Good | `gp_Pnt`, `gp_Dir`, `gp_Vec`, `gp_Ax1/2/3`, `gp_Trsf` |
+| Analytic surfaces | Partial | `Geom_CylindricalSurface`, `Geom_Plane` present; sphere/cone/torus unclear |
+| B-spline geometry | Partial | `Geom_BSplineCurve`, `Geom_BezierSurface`; `Geom_BSplineSurface` unclear |
+| 2D curves (pcurves) | Partial | `Geom2d_Curve`, `Geom2d_Ellipse`, `Geom2d_TrimmedCurve` |
+| Topology types | ✓ Good | All `TopoDS_*` types, `TopExp_Explorer`, `TopExp::MapShapes` |
+| BRepBuilderAPI | Partial | `MakeVertex`, `MakeEdge`, `MakeWire`, `MakeFace`, `MakeSolid`; `Sewing` unclear |
+| GeomAPI | ✗ Missing | No `GeomAPI_IntSS`, `GeomAPI_ProjectPointOnCurve`, `GeomAPI_PointsToBSplineSurface` |
+| ShapeFix | ✗ Missing | No `ShapeFix_*` classes (critical gap) |
+| BRepCheck | ✗ Missing | No `BRepCheck_Analyzer` |
+| STEP I/O | ✓ Good | `STEPControl_Reader`, `STEPControl_Writer` |
+| IGES I/O | ✓ Good | `IGESControl_Reader`, `IGESControl_Writer` |
+| STL I/O | Partial | `StlAPI_Writer`; reader unclear (uses `BRepBuilderAPI_MakeShapeOnMesh`) |
+| Shape properties | ✓ Good | `BRepGProp`, `GProp_GProps` |
+
+*Assessment:* Designed for forward CAD modeling (create shapes from primitives), not reverse engineering. Missing critical functionality for surface fitting (`GeomAPI_IntSS`, `GeomAPI_PointsToBSplineSurface`) and shape repair (`ShapeFix_*`). Would require significant binding additions.
+
+**2. truck** ([github.com/ricosjp/truck](https://github.com/ricosjp/truck))
+- Crates: `truck-modeling`, `truck-topology`, `truck-geometry`, `truck-stepio`, `truck-polymesh`, etc.
+- Status: Actively maintained (commits within hours), 1.4k stars, 14 contributors
+- License: Apache-2.0
+- Approach: Pure Rust B-Rep kernel (not OCCT bindings)
+
+*Coverage of required functionality:*
+| Category | Coverage | Notes |
+|----------|----------|-------|
+| Basic geometry | ✓ Own types | Uses cgmath, own point/vector types |
+| B-spline/NURBS | ✓ Good | Native B-spline curves and surfaces |
+| Topology | ✓ Good | Vertex, Edge, Wire, Face, Shell, Solid |
+| Surface fitting | ✗ Missing | No RANSAC, no analytic surface fitting from points |
+| Surface-surface intersection | ? Unclear | `truck-shapeops` has boolean ops, intersection unclear |
+| Shape healing | ✗ Missing | No equivalent to ShapeFix |
+| STEP I/O | Partial | Output works; input "will come further down the road" |
+| Mesh operations | ✓ Good | `truck-meshalgo`, `truck-polymesh` |
+
+*Assessment:* Modern pure-Rust kernel, but focused on forward modeling. No surface fitting from point clouds. STEP input not yet implemented. Missing analytic surface types (plane, cylinder, sphere as primitives). Not suitable for mesh-to-B-Rep reconstruction.
+
+**3. Fornjot** ([github.com/hannobraun/fornjot](https://github.com/hannobraun/fornjot))
+- Status: Early-stage pure-Rust B-Rep kernel
+- Assessment: Too immature for production use. Interesting long-term, but lacks the functionality needed.
+
+**Recommendation:**
+
+For brepper's requirements (mesh → B-Rep reconstruction), **none of the existing Rust libraries are sufficient**. The options are:
+
+1. **Extend opencascade-rs** — Add bindings for `GeomAPI_IntSS`, `GeomAPI_PointsToBSplineSurface`, `GeomAPI_ProjectPointOnCurve`, and the `ShapeFix_*` family. This is feasible but significant work (estimate: 2-4 weeks of binding development).
+
+2. **Use C++ directly** — Continue with C++ and OCCT, which has all required functionality. Optionally create a Rust CLI wrapper later.
+
+3. **Hybrid approach** — Write mesh processing and surface fitting in Rust (using e.g., `nalgebra`, custom RANSAC), then call out to OCCT via FFI only for B-Rep construction and STEP export.
+
+*Recommended path:* Option 2 (C++) for initial implementation, with potential migration to Option 3 once the algorithms are proven.
+
+## Open Questions
+
+- Implementation language: C++ or Rust? Use Rust OCCT bindings? Low-level or higher-level?
+- Links between data structures (face => edge, edge => vertex, etc): Use indices or pointers or references or other?
+- Data structure management: Vectors? Reference counting?
+
+*Comment: Indices into vectors are generally the right choice for this domain—they're stable under serialization, easily debuggable, and avoid lifetime complexity. Pointers/references become problematic when hypotheses are deleted or vectors reallocate. Consider using "generation counters" or a slot-map pattern if you need to detect stale indices.*
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Pipeline Stages                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐  │
-│  │  Stage 1 │ → │  Stage 2 │ → │  Stage 3 │ → │  Stage 4 │ → │  Stage 5 │  │
-│  │  Mesh    │   │  Point   │   │  Surface │   │  Boundary│   │  B-Rep   │  │
-│  │  Input   │   │  Cloud   │   │  Fitting │   │  Detect  │   │  Output  │  │
-│  └──────────┘   └──────────┘   └──────────┘   └──────────┘   └──────────┘  │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
 ## Stage 1: Mesh Input & Preprocessing
 
+TODO: make collection variable names consistently plural rather than singular.
+
 ### 1.1 Read STL File
-- **Library**: `pcl::io::loadPolygonFileSTL()` or `pcl::io::loadPolygonFile()`
+Read the input STL file and generate an in-memory representation of the triangle mesh, with fields for future stages to traverse the mesh and fit shapes to sets of mesh faces.
+- **Library**: OCCT `TKSTL::RWStl_Reader` from `RWSTL.hxx`
 - **Input**: Binary or ASCII STL file
-- **Output**: `pcl::PolygonMesh`
+- **Output**: `ConnectedMesh`, storing:
+    - Vector of mesh vertices with double-precision 3d coordinates.
+    - Vector of mesh faces with:
+        - vertex_count;  // 3 or 4 (or 0 if the face is unused).
+        - vertex_idx[4];  // Index of vertices, ordered by right-hand rule. Must be coplanar.
+        - neighbors[4];  // Index of the mesh face across each edge, or -1 if none. Filled in stage 1.2.
+        - gp_Dir normal;  // Mesh face normal, computed from vertices in stage 1.2.
+        - planar_hypothesis;  // Index of active planar hypothesis, or -1 if none, or -2 if not yet deduced.
+        - cylindrical_hypothesis;  // Index of active cylindrical hypothesis, or -1 if none.
+        - spherical_hypothesis;  // Index of active spherical hypothesis, or -1 if none.
+    - Vector of planar hypotheses, cylindrical hypotheses, and spherical hypotheses - defined later. Consider using polymorphism for hypothesis representation.
+    - Statistics described in stage 1.2.
 
-### 1.2 Compute Triangle Normals
-- Compute face normals for each triangle: `n = normalize((v1-v0) × (v2-v0))`
-- Store face normals in a parallel data structure
-- Optionally compute vertex normals by averaging adjacent face normals
+*Comment: The hypothesis indices on mesh faces suggest a face can belong to at most one hypothesis of each type. But a mesh face might legitimately fit multiple cylindrical hypotheses (e.g., at the intersection of two cylinders) during the fitting phase. Consider using a vector or set of candidate hypothesis indices per type, then selecting the best one in stage 2.6. Also, STL doesn't preserve vertex sharing—you'll need to weld vertices by position (with tolerance) to build connectivity. This should be mentioned explicitly.*
 
-### 1.3 Uniform Triangle Sampling
-- Sample additional points within triangles for denser point clouds
-- Use barycentric coordinate sampling: `P = α·v0 + β·v1 + γ·v2` where `α+β+γ=1`
-- Sampling density should be configurable (points per unit area or per triangle)
+### 1.2 Mesh Validation
+Traverse the faces of the mesh, collecting some basic statistics, validating the geometry, and populating normals and neighbors.
+- Collect stats and optionally print: number of mesh faces, number of mesh vertices, number of mesh edges with 0 neighbors, number of mesh edges with >1 neighbors, number of connected shells, number of solids, number of voids within solids.
+- Compute and populate mesh face normals.
+- Compute mesh face neighbors based on shared mesh edges.
 
-**Parameters:**
-- `--sample-density <float>` - Points per unit area (default: auto-compute based on mesh resolution)
-- `--min-samples-per-triangle <int>` - Minimum samples per triangle (default: 1)
-
-### 1.4 Convert to Point Cloud with Normals
-- **Output**: `pcl::PointCloud<pcl::PointNormal>`
-- Interpolate normals at sampled points from vertex normals or use face normal
-
----
-
-## Stage 2: Surface Segmentation (Iterative RANSAC)
-
-### 2.1 RANSAC Surface Fitting Loop
-
-```cpp
-while (remaining_points > threshold) {
-    // 1. Run SAC segmentation for each model type
-    // 2. Select best fit (highest inlier count meeting quality threshold)
-    // 3. Extract inliers, add to surface list
-    // 4. Remove inliers from point cloud
-}
-```
-
-### 2.2 Supported Surface Types (Priority Order)
-
-| Surface Type | PCL Model | OCCT Surface |
-|--------------|-----------|--------------|
-| Plane | `SACMODEL_PLANE` | `Geom_Plane` |
-| Cylinder | `SACMODEL_CYLINDER` | `Geom_CylindricalSurface` |
-| Sphere | `SACMODEL_SPHERE` | `Geom_SphericalSurface` |
-| Cone | `SACMODEL_CONE` | `Geom_ConicalSurface` |
-| Torus | Custom implementation | `Geom_ToroidalSurface` |
-
-### 2.3 PCL Segmentation Setup
-
-```cpp
-pcl::SACSegmentationFromNormals<PointT, NormalT> seg;
-seg.setOptimizeCoefficients(true);
-seg.setMethodType(pcl::SAC_RANSAC);
-seg.setMaxIterations(max_iterations);
-seg.setDistanceThreshold(distance_threshold);
-seg.setNormalDistanceWeight(normal_weight);
-```
-
-### 2.4 Extract Inliers
-
-```cpp
-pcl::ExtractIndices<PointT> extract;
-extract.setInputCloud(cloud);
-extract.setIndices(inliers);
-extract.setNegative(false);  // Get inliers
-extract.filter(*surface_cloud);
-extract.setNegative(true);   // Get remaining
-extract.filter(*remaining_cloud);
-```
-
-**Parameters:**
-- `--ransac-distance <float>` - RANSAC distance threshold (default: 0.01)
-- `--ransac-iterations <int>` - Max RANSAC iterations (default: 1000)
-- `--normal-weight <float>` - Normal consistency weight (default: 0.1)
-- `--min-inliers <int>` - Minimum inliers for valid surface (default: 100)
-- `--min-inlier-ratio <float>` - Minimum ratio of inliers (default: 0.01)
+*Comment: "Edges with >1 neighbors" indicates non-manifold geometry—you should decide whether to reject such meshes or attempt to handle them. Also consider validating: degenerate triangles (zero area), flipped normals (inconsistent orientation within a shell), and self-intersections. The "number of solids" and "voids" computation is non-trivial and may require ray casting or signed volume analysis—consider deferring this to after surface reconstruction.*
 
 ---
 
-## Stage 3: Clustering & NURBS Fitting
+## Stage 2: Surface Fitting
 
-### 3.1 Cluster Similar Primitive Segments
+*Comment: The approach described here is "region growing" from seed faces—this works but may produce suboptimal results because the first seed determines the region boundaries. An alternative is RANSAC-style fitting: randomly sample minimal point sets, fit surfaces, count inliers, and keep the best. RANSAC is more robust to the mesh traversal order. The region-growing approach described here also doesn't naturally handle the case where the same surface type appears in disconnected regions (e.g., two separate planar faces with the same orientation). Consider a hybrid: use RANSAC or global clustering first, then refine with region growing.*
 
-Merge segments of the same type with similar parameters:
-- Planes with similar normals and close distances
-- Cylinders with similar axes and radii
-- etc.
+### 2.1 Deduce planar hypotheses
+Fit planar hypotheses to all sets of more than one face which are coplanar. A planar hypothesis consists of:
+- gp_Dir normal;  // Vector normal to plane. Points toward the outside of the shell/solid.
+- double distance;  // Distance from origin to plane in direction of normal.
+- faces;  // Set of mesh face indices which fit this hypothesis.
+- vertices;  // Set of mesh face vertex indices which fit this hypothesis, in right-hand-rule order.
+- error_max, error_min;  // Maximum (positive) and minimum (negative) distance from a vertex to the plane.
+- error_abs_sum;  // Sum of absolute value of distance from vertex to plane.
+The algorithm:
+- Initialize all planar_hypothesis to -2.
+- For every face index fi:
+    - If face[fi].planar_hypothesis != -2: continue
+    - Push a new planar_hypothesis index hi, initialized with this face.
+    - Call explore_neighbors(fi, hi). TODO: this is a depth-first search - should we do a breadth-first search instead?
+    - Re-fit the planar hypothesis and update error metrics.
+    - TODO: If there is only one face in the planar_hypothesis, should we delete it?
+- Function explore_neighbors(fi, hi):
+    - Set face[fi].planar_hypothesis to hi.
+    - Add fi to planar_hypothesis[hi].faces.
+    - Add vertices of this face to planar_hypothesis[hi].vertices.
+    - For each neighbor ni of face[fi]:
+        - If face[ni].planar_hypothesis != -2, continue.
+        - If face[ni] is not sufficiently coplanar with planar_hypothesis[hi], continue. TODO: define parameters for coplanarity, probably an acceptable angular deviation and vertex distance. At this step, accept a vertex distance greater than the parameter, since we can attempt to re-fit if it's out of range.
+        - If an vertex of face[ni] has a distance greater from the hypothesis than the acceptable vertex distance:
+            - Test re-fitting the planar hypothesis to planar_hypothesis[hi].vertices plus this face's vertices that are not already in planar_hypothesis[hi].vertices.
+            - If after re-fitting there is still a vertex with greater error than the acceptable vertex distance, continue.
+            - Otherwise, assign the re-fit plane to planar_hypothesis[hi].
+        - Call explore_neighbors(ni, hi).
 
-**Parameters:**
-- `--plane-angle-threshold <float>` - Max angle between plane normals to merge (degrees, default: 5.0)
-- `--plane-distance-threshold <float>` - Max distance between planes to merge (default: 0.01)
-- `--cylinder-radius-threshold <float>` - Max radius difference to merge (default: 0.01)
+*Comment on 2.1: The DFS vs BFS question is worth considering: DFS can get "trapped" in a narrow corridor and accumulate drift before exploring the main region. BFS explores more uniformly. However, the re-fitting step partially mitigates this. A bigger issue: once you re-fit the plane, previously accepted faces might no longer fit the new plane! Consider a final validation pass that removes faces whose vertices exceed the tolerance after the final fit. Also: the "vertices in right-hand-rule order" for the hypothesis is unclear—planar regions aren't simply connected in general (they can have holes), so you'll need a more complex boundary representation.*
 
-### 3.2 Euclidean Clustering for Remaining Points
+### 2.2 Deduce cylindrical hypotheses
+TODO. Optional: Worthwhile to generalize to conic/cylindrical? Be sure to handle surfaces with negative curavature correctly - negative radius?
 
-```cpp
-pcl::EuclideanClusterExtraction<PointT> ec;
-ec.setClusterTolerance(cluster_tolerance);
-ec.setMinClusterSize(min_cluster_size);
-ec.setMaxClusterSize(max_cluster_size);
-ec.setInputCloud(remaining_cloud);
-ec.extract(cluster_indices);
-```
+*Comment: Cylinders are parameterized by axis (point + direction) and radius—6 DOF total. Minimum 5 points needed for a unique fit, but robust fitting requires more. Key considerations: (1) A cylindrical patch has principal curvature in one direction only—use this to distinguish from spheres/cones. (2) "Negative radius" isn't the right framing; instead, track whether the surface normal points toward or away from the axis (convex vs concave). (3) For cones: 7 DOF (axis point, direction, half-angle). Cones degenerate to cylinders when half-angle→0, so you might fit cones first and detect near-zero angles. (4) Watch out for nearly-planar cylindrical patches (large radius)—they may fit planes better.*
 
-**Parameters:**
-- `--cluster-tolerance <float>` - Clustering distance (default: 0.02)
-- `--min-cluster-size <int>` - Minimum cluster points (default: 50)
-- `--max-cluster-size <int>` - Maximum cluster points (default: 1000000)
+### 2.3 Deduce spherical hypotheses
+TODO. Be sure to handle surfaces with negative curavature correctly - negative radius?
 
-### 3.3 Fit NURBS Surfaces to Clusters
+*Comment: Spheres are 4 DOF (center + radius). Minimum 4 non-coplanar points for a unique fit. For "negative curvature" (concave spherical patch), track normal orientation relative to center rather than using negative radius. Key challenge: partial spherical patches are hard to distinguish from cylinders or even planes if the patch is small relative to the radius. Consider requiring a minimum angular extent or using curvature analysis to disambiguate. Also consider toroidal surfaces (donuts, fillets)—they're common in CAD and combine characteristics of cylinders and spheres.*
 
-For remaining organic/freeform regions:
-- Use OCCT's `GeomAPI_PointsToBSplineSurface`
-- Or PCL's B-spline fitting: `pcl::on_nurbs::FittingSurface`
+### 2.4 Deduce ruled surface hypotheses
+TODO Optional. Find mesh which is coplanar on one axis, and model as an extruded curve surface/ruled surface.
 
-**Parameters:**
-- `--nurbs-degree <int>` - NURBS surface degree (default: 3)
-- `--nurbs-control-points <int>` - Control points per direction (default: 10)
-- `--nurbs-fitting-tolerance <float>` - Fitting tolerance (default: 0.001)
+*Comment: This is a good idea for capturing linear extrusions and sweeps. A ruled surface is defined by two boundary curves with linear interpolation between them. For extrusions, one "curve" is a point (the surface degenerates to a generalized cylinder). Detection: look for parallel mesh edges that share the same direction. Fitting: project to a plane perpendicular to the ruling direction and fit a 2D curve. Watch out for twisted ruled surfaces (rulings aren't parallel)—these are harder to detect and fit.*
 
----
+### 2.5 Deduce NURBS hypotheses
+TODO: for groups of adjacent faces which are covered by one- or two-face planar hypotheses and not cylindrical or spherical hypotheses, try to fit a NURBS or b-spline surface to the vertices.
 
-## Stage 4: Mesh Segmentation & Boundary Detection
+*Comment: NURBS fitting is complex and requires careful consideration: (1) Parameterization: you need to assign (u,v) parameters to each mesh vertex before fitting. Common approaches: conformal mapping, Floater's mean value coordinates, or discrete harmonic mapping. (2) Degree and knot selection: start with bicubic (degree 3×3); knot placement can use chord-length parameterization or be optimized. (3) Regularization: without it, the surface may oscillate. Consider smoothness penalties. (4) An alternative worth considering: use OCCT's `GeomAPI_PointsToBSplineSurface` which handles much of this automatically. (5) For "freeform" regions that are nearly planar, a plane with small tolerance may be preferable to a NURBS that overfits noise.*
 
-### 4.1 Assign Triangles to Surfaces
+### 2.6 Select surfaces to use for reconstruction
+- Iterate until out of valid hypotheses:
+    - Select the hypothesis that fits some metric TODO of fitting the most area precisely. Add it to a list of selected surfaces.
+    - Mark all faces using that hypothesis used.
+    - Delete those faces from all other hypotheses that use them. Delete or mark invalid any hypothesis that ends up with insufficient faces left.
+- Every face should be covered by one selected hypothesis.
 
-For each mesh triangle:
-1. Compute centroid and normal
-2. Find closest fitted surface
-3. Check distance and normal consistency
-4. Assign triangle to surface ID
-
-```cpp
-struct TriangleAssignment {
-    int triangle_id;
-    int surface_id;
-    double distance;
-    double normal_deviation;
-};
-```
-
-**Parameters:**
-- `--assignment-distance <float>` - Max distance for triangle assignment (default: 0.02)
-- `--assignment-angle <float>` - Max normal deviation (degrees, default: 15.0)
-
-### 4.2 Detect Boundary Edges
-
-```cpp
-for each edge (v0, v1) in mesh:
-    tri1 = adjacent_triangle_1(edge)
-    tri2 = adjacent_triangle_2(edge)
-    if surface_id[tri1] != surface_id[tri2]:
-        boundary_edges.add(edge, surface_id[tri1], surface_id[tri2])
-```
-
-### 4.3 Group Edges into Boundary Curves
-
-1. Build edge adjacency graph
-2. Extract connected chains of boundary edges
-3. Order vertices along each chain
-
-```cpp
-struct BoundaryCurve {
-    std::vector<Eigen::Vector3d> points;
-    int surface_id_left;
-    int surface_id_right;
-};
-```
+*Comment: This greedy selection has a potential failure mode: selecting a large-but-poor-fit surface early can fragment remaining regions into pieces too small to fit well. Consider: (1) A quality metric that balances area coverage AND fit quality (e.g., area × (1 - normalized_error)). (2) Penalizing hypotheses that would leave "orphan" faces (faces with no valid remaining hypothesis). (3) Preferring analytic surfaces (plane, cylinder, sphere) over NURBS when fits are comparable, since analytic surfaces are more robust for downstream operations. (4) A backtracking mechanism if selection leads to uncoverable faces. Also: what if a face has no hypothesis at all after this process? This needs explicit handling—possibly flag as error or create a single-face planar patch.*
 
 ---
 
-## Stage 5: Curve Fitting & B-Rep Construction
+## Stage 3: Surface Reconstruction
 
-### 5.1 Fit Curves to Boundary Chains
+*Comment: This stage has the most complexity and is where most CAD reconstruction projects run into trouble. The core challenge is that surface intersections in 3D are numerically delicate—small perturbations in surfaces can cause large changes in intersection curves, or cause intersections to disappear entirely. Consider adding explicit tolerance parameters throughout, and building in diagnostic output for debugging.*
 
-| Surface Pair | Curve Type | OCCT Class |
-|--------------|------------|------------|
-| Plane-Plane | Line | `Geom_Line` |
-| Plane-Cylinder | Line or Ellipse | `Geom_Line` / `Geom_Ellipse` |
-| Cylinder-Cylinder | Line or Ellipse | varies |
-| Plane-Sphere | Circle | `Geom_Circle` |
-| Any-NURBS | B-Spline | `Geom_BSplineCurve` |
-| Other | B-Spline | `Geom_BSplineCurve` |
+Create a vector of face descriptors, one for each selected surface hypothesis, containing:
+    - Reference to the hypothesis.
+    - OCCT surface object. (Infinite or bounded?) (Created in 3.1.)
+    - OCCT face object. (Created in 3.4.)
+    - Vector of indices of adjacent surface face descriptors, ordered topologically (consecutive faces are adjacent to each other). NOTE: if a face connects to this one twice (with some other face(s) in between), it will occur more than once in the vector.
+    - Vector of edge wire indices, one for each adjacent surface face. Edge wire i connects this face to adjacent face i.
+    - Vector of vertex point indices, once for each pair of adjacent faces. Vertex index i represents the intersection between this face, adjacent face i, and adjacent face i+1%N. If there is only one adjacent face, then this vector is empty; otherwise it contains N points. (This assumes we have a solid - we'll need to adjust this assumption if we ever handle non-solid bodies.)
 
-**Implementation:**
-```cpp
-// For analytic curves
-Handle(Geom_Curve) fitBoundaryCurve(
-    const BoundaryCurve& boundary,
-    SurfaceType type1, 
-    SurfaceType type2
-);
-```
+*Comment: The "one adjacent face" case is actually impossible for a closed solid—every edge has exactly two adjacent faces, and every face has at least 3 edges, so at least 3 neighbors (possibly with repeats). The edge case you probably mean is a face that's topologically a disk vs a face with holes. Also, faces can be adjacent to themselves (e.g., a cylindrical face wrapping around has one edge connecting it to itself). The data structure should handle this explicitly.*
 
-**Parameters:**
-- `--curve-fitting-tolerance <float>` - Curve fitting tolerance (default: 0.001)
-- `--prefer-analytic-curves <bool>` - Prefer lines/circles over splines (default: true)
+Also create a vector of edge wires, each containing:
+    - Indices of two adjacent faces.
+    - Indices of two adjacent vertices.
+    - Vector<Geom_Curve> for intersections of adjacent faces. TODO: vector or just one curve?
+    - For each adjacent face, a Vector<Geom2d_Curve> for intersections in the UV-space of that face's surface. TODO: vector or just one curve?
+    - Whether there's a tangency relationship. (More details?)
 
-### 5.2 Create OCCT Surfaces
+*Comment: For the "vector or one curve" question: mathematically, two surfaces can intersect in multiple disjoint curves (e.g., a plane cutting through a torus). However, if your mesh connectivity is correct, each edge wire should correspond to exactly one connected component of the intersection, so one curve (which may be a composite/piecewise curve) should suffice. The 2D pcurves are essential for OCCT face construction—make sure they're computed consistently (same parameterization direction, matching endpoints). Consider storing orientation flags to track which direction along the curve corresponds to which adjacent vertex.*
+And a vector of vertices, each containing:
+    - Indices of N adjacent faces, in topological order. (The faces connected to this vertex.) NOTE: There may be duplicates if a face connects to a vertex in multiple ways.
+    - Indices of N adjacent wires, in topological order.
+    - 3D point of vertex location.
+    - Vector of N 2D points of vertex location in U-V space of the corresponding face.
 
-Convert fitted surfaces to OCCT:
+*Comment: The vertex data structure looks correct. One refinement: the "3D point" should ideally be computed as the intersection of all adjacent surfaces (when possible), not just averaged from mesh vertices, to ensure the B-Rep is geometrically consistent. When three or more surfaces meet at a vertex, over-determination can cause the intersection to fail numerically—you may need least-squares fitting or to accept a small positional tolerance.*
 
-```cpp
-Handle(Geom_Surface) toOCCT(const FittedSurface& surface) {
-    switch (surface.type) {
-        case PLANE:
-            return new Geom_Plane(gp_Pln(origin, normal));
-        case CYLINDER:
-            return new Geom_CylindricalSurface(gp_Ax3(origin, axis), radius);
-        // ... etc
-    }
-}
-```
+### 3.1 Create OCCT surface objects
+- For each face descriptor:
+    - Populate the OCCT surface object with a surface constructed from the hypothesis. Keep track of the mapping from hypothesis to surface index.
 
-### 5.3 Trim Surfaces with Curves
+*Comment: OCCT surfaces (Geom_Plane, Geom_CylindricalSurface, etc.) are infinite. This is fine, but be aware that some surfaces have natural parameterization bounds (e.g., cylinder's U ∈ [0, 2π]). For consistency with OCCT conventions, ensure: planes use gp_Ax3 with Z as normal; cylinders/cones have Z along axis; spheres have poles at Z extremes. This affects pcurve computation later.*
 
-1. Create `TopoDS_Edge` from each boundary curve
-2. Create `TopoDS_Wire` from connected edges
-3. Create `TopoDS_Face` from surface + wire boundary
+- Second pass over face descriptors:
+    - Populate the adjacent face indices with the indices of adjacent faces as determined from hypotheses sharing a hypothesis mesh vertex index.
+    - For each adjacent face:   
+        - Look up the adjacent edge wire descriptor, or create one if it doesn't exist yet. Populate it with:
+            - Adjacent face indices.
+            - Look up or create adjacent vertex descriptor indices. Populate them. For each adjacent vertex descriptor, populate:
+                - Adjacent face indices.
+                - Adjacent wire indices.
 
-```cpp
-BRepBuilderAPI_MakeFace faceMaker(surface, wire, true);
-TopoDS_Face face = faceMaker.Face();
-```
+### 3.2 Detect and create tangency relationships
+- Detect edges between faces where there is numerically a very close to tangent relationship. Mark those edges as tangent.
+- TODO: should we modify the surfaces to be numerically tangent? This may be challenging - if a surface is numerically close to tangent to two or more adjacent faces, we may need to do some sort of global optimization or iterate to a fixpoint. I suppose we can try to achieve numerical tangency, and if that's not possible, at least ensure that there's intersection along the extend of the shared edge.
 
-### 5.4 Heal and Sew Faces into Shell
+*Comment: Tangent detection is critical for fillets and blends. Suggested approach: compute surface normals at several sample points along the shared mesh boundary; if normals agree within tolerance (e.g., < 0.1°), mark as tangent. For enforcing tangency: modifying analytic surfaces is usually wrong (it changes the geometry), but for NURBS you can add tangency constraints to the fit. A more robust approach: accept near-tangency and use a larger intersection tolerance when computing the shared edge. Also consider G2 (curvature) continuity for high-quality fillets—this matters for rendering/machining but may be overkill for your use case.*
 
-```cpp
-BRepBuilderAPI_Sewing sewing(tolerance);
-for (auto& face : faces) {
-    sewing.Add(face);
-}
-sewing.Perform();
-TopoDS_Shape shell = sewing.SewedShape();
-```
+### 3.3 Create OCCT edge wires
+- For each edge wire:
+    - Compute the intersection between the adjacent faces to create candidate wires - there may be more than one, except for faces with a tangent relationship, special handling may be necessary:
+        - For plane tangent to cylinder, create a linear wire where the cylinder's normal matches the plane's normal.
+        - For cylinder tangent to cylinder, create a linear wire where the two cylinders' normals match.
+        - For cylinder tangent to sphere, create a circular wire where the normals match.
+        - ...?
 
-**Parameters:**
-- `--sewing-tolerance <float>` - Sewing tolerance (default: 0.001)
+*Comment: The tangent cases are well-identified. Additional cases: sphere tangent to sphere (point contact—degenerate), torus tangent to plane (circle), cone tangent to plane (line through apex or ellipse). For general surface-surface intersection, use OCCT's `GeomAPI_IntSS`. However, IntSS can fail or produce spurious curves for near-tangent surfaces. Consider: (1) Using the mesh boundary as a guide—project mesh boundary vertices onto both surfaces and fit a curve. (2) For analytic surfaces, compute intersections analytically when possible (they have closed-form solutions). (3) Always validate that the computed curve lies on both surfaces within tolerance.*
+    - If there are vertices adjacent to this edge, then cut the wire at each vertex. I'm not sure how best to do this, perhaps either cut the wire with one or more adjacent surfaces (what if they're tangent?), or in a separate pass find the intersection of all of the wires at a vertex and cut them there.
 
-### 5.5 Create Solid from Shell
+*Comment: Cutting at vertices is the right idea but tricky in practice. Recommended approach: (1) Compute all edge curves first (full intersection curves, not yet trimmed). (2) For each B-Rep vertex, compute its 3D position as intersection of three surfaces, or use mesh vertex position as initial guess and project onto each surface. (3) For each edge curve, find the parameter values corresponding to the vertex positions and trim. Use `GeomAPI_ProjectPointOnCurve` for this. The vertex position should be consistent across all edges meeting there—if not, you have a gap that needs tolerance handling.*
+    - Take all of the cut wires, and pick a set which is closest to the mesh vertices which lie along the edge, and which chain together to connect the adjacent vertices (or which form a loop, if there are no adjacent vertices).
+    - Assemble that set into an OCCT curve to store into the edge wire descriptor.
 
-```cpp
-BRepBuilderAPI_MakeSolid solidMaker;
-solidMaker.Add(TopoDS::Shell(shell));
-TopoDS_Solid solid = solidMaker.Solid();
+*Comment: Using mesh vertices as a guide for selecting among multiple intersection curves is a good idea. Be aware that mesh vertices along an edge may not lie exactly on the fitted surfaces (due to fitting error), so use projection rather than direct distance. For seams (edges where a face is adjacent to itself, like a cylinder's wraparound), you won't have two distinct intersection curves—instead, you need to create an iso-parametric curve at a U or V seam of the surface.*
+    - Store the vertices at the end of the wire into the adjacent vertex descriptors. Give some kind of error if the vertex is too far from any existing vertex. (TODO: what should we do here? Average them? Store a different vertex coordinate per edge?)
+    - TODO: should we represent each wire in 3D space and UV space of each face during the operation? Or compute in one coordinate system and convert to the others after?
 
-// Fix orientation
-BRepLib::OrientClosedSolid(solid);
-```
+*Comment: For the vertex position question: OCCT's B-Rep model requires that all edges meeting at a vertex share the same TopoDS_Vertex (same 3D point). If edges disagree about vertex position, you have a few options: (1) Average and accept the tolerance. (2) Use the vertex with smallest fitting error. (3) Re-fit surfaces with constrained vertex positions. Option 1 is most practical. OCCT TopoDS_Vertex has a tolerance field specifically for this—set it to the maximum deviation. For 3D vs UV: compute in 3D, then derive pcurves using `ShapeAnalysis_Curve::ProjectPointOnCurve` or by evaluating surface inverse. OCCT's BRepBuilderAPI_MakeEdge can create edges with 3D curve + pcurves on both faces simultaneously.*
 
-### 5.6 Shape Healing
+### 3.4 Create OCCT faces
+- For each face descriptor:
+    - Populate OCCT face object via surface bounded by wires extracted from adjacent edge wire descriptors.
 
-```cpp
-ShapeFix_Shape fixer(solid);
-fixer.SetPrecision(tolerance);
-fixer.Perform();
-TopoDS_Shape fixed = fixer.Shape();
-```
+*Comment: This step uses `BRepBuilderAPI_MakeFace`. Key considerations: (1) The outer wire must be oriented counter-clockwise when viewed from outside the solid (along the face normal). (2) Inner wires (holes) must be clockwise. (3) Wires must be closed and edges must connect end-to-end within tolerance. (4) If face construction fails, ShapeFix_Face can often repair minor issues. (5) For periodic surfaces (cylinders, spheres), ensure pcurves handle the seam correctly—you may need to add a seam edge explicitly. This is often the most debugging-intensive step.*
 
-**Parameters:**
-- `--healing-tolerance <float>` - Shape healing tolerance (default: 0.001)
+### 3.5 Construct Shells
+- Find sets of connected face descriptors via DFS over the face graph (expore from each face to adjacent faces). For each set:
+    - Stitch together an OCCT shell.
 
----
+*Comment: Use `BRepBuilderAPI_Sewing` for this. Key settings: (1) Set sewing tolerance based on your vertex tolerance from earlier. (2) Enable "SameParameterMode" to ensure edge geometry is consistent. (3) After sewing, check `SewedShape()` for the result. Sewing can merge edges that are geometrically close—this is usually desired but verify the topology matches your intent. If sewing produces a compound instead of a shell, faces weren't connected properly. Also verify shell orientability—`ShapeAnalysis_Shell::CheckOrientedShells` can detect Möbius-strip-like errors.*
 
-## Stage 6: STEP Export
+### 3.6 Construct Solids
+- Convert shells to solid bodies. 
+    - TODO: figure out which shells are voids? Does face orientation help here?
 
-```cpp
-STEPControl_Writer writer;
-writer.Transfer(solid, STEPControl_AsIs);
-IFSelect_ReturnStatus status = writer.Write(output_path);
-```
-
-**Parameters:**
-- `--step-schema <string>` - STEP schema: AP203, AP214, AP242 (default: AP214)
+*Comment: Yes, face orientation is the key. OCCT convention: face normals point outward from material. For a solid: outer shell normals point out, void shell normals point in (toward the void interior, away from material). To classify: compute signed volume of each shell—positive = outer, negative = inner. Alternatively, pick a point inside the shell and ray-cast to determine if it's inside any other shells. Use `BRepBuilderAPI_MakeSolid` to combine an outer shell with void shells. `ShapeFix_Solid::SolidFromShell` can also create a solid from a single closed shell and orient it correctly. Final validation: `BRepCheck_Analyzer` will verify the solid is valid.*
 
 ---
+## Stage 4: Output
 
-## Command Line Interface
+### 4.1 Output objects
+- Write constructed objects to a STEP file (or potentially other formats).
 
-```
-brepper - Convert STL mesh to STEP with fitted surfaces
-
-USAGE:
-    brepper [OPTIONS] <input.stl> -o <output.step>
-
-REQUIRED:
-    <input.stl>              Input STL file (binary or ASCII)
-    -o, --output <file>      Output STEP file
-
-GENERAL OPTIONS:
-    -v, --verbose            Enable verbose output
-    -q, --quiet              Suppress non-error output
-    --debug                  Enable debug output and intermediate files
-    --threads <N>            Number of threads (default: auto)
-
-MESH PREPROCESSING:
-    --sample-density <F>     Points per unit area (default: auto)
-    --min-samples <N>        Min samples per triangle (default: 1)
-
-RANSAC SEGMENTATION:
-    --ransac-distance <F>    Distance threshold (default: 0.01)
-    --ransac-iterations <N>  Max iterations (default: 1000)
-    --normal-weight <F>      Normal weight 0-1 (default: 0.1)
-    --min-inliers <N>        Min points per surface (default: 100)
-    --min-inlier-ratio <F>   Min ratio of cloud (default: 0.01)
-
-SURFACE TYPES:
-    --fit-planes             Fit planes (default: on)
-    --fit-cylinders          Fit cylinders (default: on)
-    --fit-spheres            Fit spheres (default: on)
-    --fit-cones              Fit cones (default: on)
-    --fit-tori               Fit tori (default: off)
-    --no-<type>              Disable specific surface type
-
-CLUSTERING:
-    --plane-merge-angle <F>  Plane merge angle threshold (deg, default: 5.0)
-    --plane-merge-dist <F>   Plane merge distance (default: 0.01)
-    --cluster-tolerance <F>  Euclidean cluster tolerance (default: 0.02)
-    --min-cluster-size <N>   Minimum cluster size (default: 50)
-
-NURBS FITTING:
-    --nurbs-degree <N>       B-spline degree (default: 3)
-    --nurbs-refinement <N>   Control point density (default: 10)
-    --nurbs-tolerance <F>    Fitting tolerance (default: 0.001)
-
-TRIANGLE ASSIGNMENT:
-    --assign-distance <F>    Max assignment distance (default: 0.02)
-    --assign-angle <F>       Max normal deviation (deg, default: 15.0)
-
-CURVE FITTING:
-    --curve-tolerance <F>    Curve fitting tolerance (default: 0.001)
-    --prefer-analytic        Prefer analytic curves (default: true)
-
-B-REP CONSTRUCTION:
-    --sewing-tolerance <F>   Face sewing tolerance (default: 0.001)
-    --healing-tolerance <F>  Shape healing tolerance (default: 0.001)
-    --step-schema <S>        STEP schema: AP203|AP214|AP242 (default: AP214)
-
-DEBUG OUTPUT:
-    --save-point-cloud <F>   Save sampled point cloud (PCD/PLY)
-    --save-segmentation <F>  Save segmented mesh (PLY with colors)
-    --save-boundaries <F>    Save boundary curves (PLY)
-
-PRESETS:
-    --preset <name>          Use parameter preset:
-                             - tight: High precision CAD export
-                             - loose: Low-quality mesh repair
-                             - default: Balanced settings
-```
-
----
-
-## File Structure
-
-```
-brepper/
-├── CMakeLists.txt
-├── README.md
-├── DEVELOPMENT_PLAN.md
-├── src/
-│   ├── main.cpp                    # Entry point, CLI parsing
-│   ├── brepper.hpp                 # Main pipeline orchestration
-│   ├── brepper.cpp
-│   ├── mesh/
-│   │   ├── stl_reader.hpp          # STL file reading
-│   │   ├── stl_reader.cpp
-│   │   ├── mesh_sampling.hpp       # Triangle sampling
-│   │   ├── mesh_sampling.cpp
-│   │   ├── normal_computation.hpp  # Normal computation
-│   │   └── normal_computation.cpp
-│   ├── segmentation/
-│   │   ├── ransac_segmenter.hpp    # RANSAC surface fitting
-│   │   ├── ransac_segmenter.cpp
-│   │   ├── surface_clustering.hpp  # Segment merging
-│   │   ├── surface_clustering.cpp
-│   │   ├── nurbs_fitter.hpp        # NURBS surface fitting
-│   │   └── nurbs_fitter.cpp
-│   ├── boundary/
-│   │   ├── triangle_assignment.hpp # Triangle-to-surface mapping
-│   │   ├── triangle_assignment.cpp
-│   │   ├── edge_detection.hpp      # Boundary edge detection
-│   │   ├── edge_detection.cpp
-│   │   ├── curve_extraction.hpp    # Edge chain grouping
-│   │   ├── curve_extraction.cpp
-│   │   ├── curve_fitting.hpp       # Analytic curve fitting
-│   │   └── curve_fitting.cpp
-│   ├── brep/
-│   │   ├── surface_converter.hpp   # PCL → OCCT surface
-│   │   ├── surface_converter.cpp
-│   │   ├── face_builder.hpp        # Trimmed face construction
-│   │   ├── face_builder.cpp
-│   │   ├── shell_builder.hpp       # Sewing & shell construction
-│   │   ├── shell_builder.cpp
-│   │   ├── solid_builder.hpp       # Solid creation & healing
-│   │   └── solid_builder.cpp
-│   ├── io/
-│   │   ├── step_writer.hpp         # STEP export
-│   │   └── step_writer.cpp
-│   └── common/
-│       ├── types.hpp               # Common data structures
-│       ├── config.hpp              # Configuration parameters
-│       └── logging.hpp             # Logging utilities
-├── tests/
-│   ├── test_stl_reader.cpp
-│   ├── test_ransac.cpp
-│   ├── test_boundary.cpp
-│   └── test_data/
-│       ├── cube.stl
-│       ├── cylinder.stl
-│       └── complex.stl
-└── examples/
-    ├── simple_cube.stl
-    └── README.md
-```
+*Comment: Use `STEPControl_Writer` with `STEPControl_AsIs` mode to preserve your exact geometry. Consider also offering `STEPControl_ManifoldSolidBrep` mode which enforces stricter solid validity. Before export, run `ShapeFix_Shape` as a final cleanup pass (but heed your AGENTS.md warning about investigating root causes of any fixes). Set appropriate STEP header metadata (author, organization, etc.) for traceability. For debugging, also consider outputting intermediate formats: BREP (OCCT native), or individual surfaces/curves to help diagnose reconstruction issues.*
 
 ---
 
