@@ -70,9 +70,12 @@ extrema::ExtAlgo::Grad
 ```
 
 ### Shape Downcasting
-Requires unsafe:
+`topo_ds::face_shape` is a safe function, but it panics if the shape is not a Face. Always guard with `shape_type()`:
 ```rust
-let face = topo_ds::face_shape(shape_ref);  // &topo_ds::Shape → &topo_ds::Face
+if shape_ref.shape_type() == top_abs::ShapeEnum::Face {
+    let face = topo_ds::face_shape(shape_ref);  // &topo_ds::Shape → &topo_ds::Face
+    ...
+}
 ```
 
 ### Static Methods → Free Functions
