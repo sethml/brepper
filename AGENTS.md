@@ -232,6 +232,14 @@ When writing temporary code for debugging or testing:
 
 2. **Don't delete temporary code** - Leave it in `tmp/` in case it's useful later.
 
+## Chat Log Export
+
+After committing, export the current chat session to `agent-logs/`. Use this
+command exactly:
+`../vscode-export-chat-log/export-chat-log.py </dev/null && git add agent-logs/ && git commit --amend --no-edit`
+
+Do not add any commentary after running this command - if you want to output a summary, do it before the command. After the command: No "Done.", no summary, nothing. Run the command and stop.
+
 ## Generating CodeCAD Test Models
 
 To regenerate the STL and STEP files for CodeCAD-based tests:

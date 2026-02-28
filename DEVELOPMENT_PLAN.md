@@ -103,8 +103,6 @@ This section enumerates the OCCT classes and functions needed, for evaluating Ru
 
 ## Stage 1: Mesh Input & Preprocessing
 
-TODO: make collection variable names consistently plural rather than singular.
-
 ### 1.1 Read STL File
 Read the input STL file and generate an in-memory representation of the triangle mesh, with fields for future stages to traverse the mesh and fit shapes to sets of mesh faces. Weld vertices by position (with tolerance) to build connectivity.
 - **Library**: OCCT `TKSTL::RWStl_Reader` from `RWSTL.hxx`
@@ -113,7 +111,7 @@ Read the input STL file and generate an in-memory representation of the triangle
     - Vector of mesh vertices with double-precision 3d coordinates.
     - Vector of mesh faces with:
         - vertex_count;  // 3 or 4 (or 0 if the face is unused).
-        - vertex_idx[4];  // Index of vertices, ordered by right-hand rule. Must be coplanar.
+        - vertex_indices[4];  // Indices of vertices, ordered by right-hand rule. Must be coplanar.
         - neighbors[4];  // Index of the mesh face across each edge, or -1 if none. Filled in stage 1.2.
         - gp_Dir normal;  // Mesh face normal, computed from vertices in stage 1.2.
         - planar_hypothesis;  // Index of active planar hypothesis, or -1 if none, or -2 if not yet deduced.
