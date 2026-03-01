@@ -15,8 +15,10 @@ REQUIRED:
 
 GENERAL OPTIONS:
     -o <step>, --output=<step>  Output STEP file
+    --stl-units=<units>      Units used by the STL file. (default: mm)
     --compare=<step>         STEP file to compare to at each step
-    --tolerance=<meters>     Fitting tolerance - default 1e-6 = 1 micron
+    --vertex-tolerance=<meters>     Fitting tolerance - default 1e-6 = 1 micron
+    --surface-tolerance=<meters>   Tolerance for offset from surface to triangle faces
     -v, --verbose            Enable verbose output
     -q, --quiet              Suppress non-error output
     --debug                  Enable debug output and intermediate files

@@ -1,5 +1,7 @@
-#!/bin/bash
-# Run step-distance on all STL/STEP pairs under tests/ and print a table.
+#!/bin/zsh
+# Run step-distance on all STL/STEP pairs under tests/ and print a table
+# with per-group (suffix) summary rows.
+# Distances displayed in microns (µm). Max dimension in model units.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -10,43 +12,119 @@ BINARY="$PROJECT_DIR/target/release/step-distance"
 echo "Building step-distance (release)..." >&2
 cargo build --release --bin step-distance --manifest-path "$PROJECT_DIR/Cargo.toml" 2>&1 | tail -1 >&2
 
-# Print header
-printf "%-40s %15s %15s %15s %15s %8s %8s\n" "Test Case" "Vtx Max Dist" "Vtx Avg Dist" "Ctr Max Dist" "Ctr Avg Dist" "Nodes" "Faces"
-printf "%-40s %15s %15s %15s %15s %8s %8s\n" \
-    "$(printf '%0.s-' {1..40})" \
-    "$(printf '%0.s-' {1..15})" \
-    "$(printf '%0.s-' {1..15})" \
-    "$(printf '%0.s-' {1..15})" \
-    "$(printf '%0.s-' {1..15})" \
-    "$(printf '%0.s-' {1..8})" \
-    "$(printf '%0.s-' {1..8})"
+ROW_FMT="%-40s %12s %12s %12s %12s %10s %8s %8s\n"
 
-# Find all STL files and look for matching STEP files
-find "$PROJECT_DIR/tests" -name "*.stl" -not -name "*.ascii.stl" | sort | while read -r stl_file; do
-    step_file="${stl_file%.stl}.step"
-    if [ -f "$step_file" ]; then
-        rel_path="${stl_file#"$PROJECT_DIR"/tests/}"
-        base="${rel_path%.stl}"
+print_header() {
+    printf "$ROW_FMT" "Test Case" "Vtx Max µm" "Vtx Avg µm" "Ctr Max µm" "Ctr Avg µm" "Max Dim" "Nodes" "Faces"
+    print_sep
+}
 
-        # Run tool, capture stderr for diagnostics and stdout for distances
-        diag_file=$(mktemp)
-        output=$($BINARY "$stl_file" "$step_file" 2>"$diag_file") || {
-            printf "%-40s %15s\n" "$base" "ERROR"
-            rm -f "$diag_file"
-            continue
-        }
+print_sep() {
+    printf "$ROW_FMT" \
+        "$(printf '%0.s-' {1..40})" \
+        "$(printf '%0.s-' {1..12})" \
+        "$(printf '%0.s-' {1..12})" \
+        "$(printf '%0.s-' {1..12})" \
+        "$(printf '%0.s-' {1..12})" \
+        "$(printf '%0.s-' {1..10})" \
+        "$(printf '%0.s-' {1..8})" \
+        "$(printf '%0.s-' {1..8})"
+}
 
-        # Parse stdout (tab-separated: vtx_max_dist ctr_max_dist)
-        vtx_max_dist=$(echo "$output" | cut -f1)
-        ctr_max_dist=$(echo "$output" | cut -f2)
+# Convert value to microns for display
+to_microns() {
+    awk "BEGIN { v = $1 * 1e6; if (v == 0) printf \"0\"; else printf \"%.2e\", v }"
+}
 
-        # Parse diagnostic output
-        nodes=$(grep "^STL:" "$diag_file" | sed 's/STL: \([0-9]*\) nodes.*/\1/')
-        faces=$(grep "^STEP:" "$diag_file" | sed 's/STEP: \([0-9]*\) faces/\1/')
-        vtx_avg_dist=$(grep "^Vertex" "$diag_file" | sed 's/.*avg: \([^ ]*\).*/\1/')
-        ctr_avg_dist=$(grep "^Centroid" "$diag_file" | sed 's/.*avg: \([^ ]*\).*/\1/')
-        rm -f "$diag_file"
+# Collect all STL files into an array (avoids subshell from pipe)
+stl_files=(${(f)"$(find "$PROJECT_DIR/tests" -name '*.stl' -not -name '*.ascii.stl' | sort)"})
 
-        printf "%-40s %15s %15s %15s %15s %8s %8s\n" "$base" "$vtx_max_dist" "$vtx_avg_dist" "$ctr_max_dist" "$ctr_avg_dist" "$nodes" "$faces"
+# Track per-group maximums
+typeset -A group_vtx_max group_vtx_avg group_ctr_max group_ctr_avg
+prev_dir=""
+group_order=()
+
+flush_groups() {
+    if [[ ${#group_order[@]} -gt 0 ]]; then
+        for g in "${group_order[@]}"; do
+            local vm=$(to_microns "${group_vtx_max[$g]}")
+            local va=$(to_microns "${group_vtx_avg[$g]}")
+            local cm=$(to_microns "${group_ctr_max[$g]}")
+            local ca=$(to_microns "${group_ctr_avg[$g]}")
+            printf "$ROW_FMT" "  ** MAX ($g) **" "$vm" "$va" "$cm" "$ca" "" "" ""
+        done
     fi
+    typeset -A group_vtx_max group_vtx_avg group_ctr_max group_ctr_avg
+    group_order=()
+}
+
+update_group_max() {
+    local group="$1" vm="$2" va="$3" cm="$4" ca="$5"
+    if [[ -z "${group_vtx_max[$group]:-}" ]]; then
+        group_vtx_max[$group]="$vm"
+        group_vtx_avg[$group]="$va"
+        group_ctr_max[$group]="$cm"
+        group_ctr_avg[$group]="$ca"
+        group_order+=("$group")
+    else
+        group_vtx_max[$group]=$(awk "BEGIN { a=${group_vtx_max[$group]}; b=$vm; print (a>b) ? a : b }")
+        group_vtx_avg[$group]=$(awk "BEGIN { a=${group_vtx_avg[$group]}; b=$va; print (a>b) ? a : b }")
+        group_ctr_max[$group]=$(awk "BEGIN { a=${group_ctr_max[$group]}; b=$cm; print (a>b) ? a : b }")
+        group_ctr_avg[$group]=$(awk "BEGIN { a=${group_ctr_avg[$group]}; b=$ca; print (a>b) ? a : b }")
+    fi
+}
+
+print_header
+
+for stl_file in "${stl_files[@]}"; do
+    step_file="${stl_file%.stl}.step"
+    [ -f "$step_file" ] || continue
+
+    rel_path="${stl_file#${PROJECT_DIR}/tests/}"
+    base="${rel_path%.stl}"
+    dir=$(dirname "$base")
+
+    # On directory change, print group summaries
+    if [ "$dir" != "$prev_dir" ] && [ -n "$prev_dir" ]; then
+        flush_groups
+        echo
+    fi
+    prev_dir="$dir"
+
+    # Extract group suffix (after last _)
+    filename=$(basename "$base")
+    group="${filename##*_}"
+
+    # Run tool, capture both stdout and stderr
+    diag_file=$(mktemp)
+    output=$("$BINARY" "$stl_file" "$step_file" 2>"$diag_file") || {
+        printf "$ROW_FMT" "$base" "ERROR" "" "" "" "" "" ""
+        rm -f "$diag_file"
+        continue
+    }
+
+    # Parse tab-separated stdout: vtx_max vtx_avg ctr_max ctr_avg max_dim
+    vtx_max_raw=$(echo "$output" | cut -f1)
+    vtx_avg_raw=$(echo "$output" | cut -f2)
+    ctr_max_raw=$(echo "$output" | cut -f3)
+    ctr_avg_raw=$(echo "$output" | cut -f4)
+    max_dim=$(echo "$output" | cut -f5)
+
+    # Parse stderr for node/face counts
+    nodes=$(grep "^STL:" "$diag_file" | sed 's/STL: \([0-9]*\) nodes.*/\1/')
+    faces=$(grep "^STEP:" "$diag_file" | sed 's/STEP: \([0-9]*\) faces/\1/')
+    rm -f "$diag_file"
+
+    # Convert to microns for display
+    vm=$(to_microns "$vtx_max_raw")
+    va=$(to_microns "$vtx_avg_raw")
+    cm=$(to_microns "$ctr_max_raw")
+    ca=$(to_microns "$ctr_avg_raw")
+
+    printf "$ROW_FMT" "$base" "$vm" "$va" "$cm" "$ca" "$max_dim" "$nodes" "$faces"
+
+    update_group_max "$group" "$vtx_max_raw" "$vtx_avg_raw" "$ctr_max_raw" "$ctr_avg_raw"
 done
+
+# Print final group summaries
+flush_groups

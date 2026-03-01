@@ -3,6 +3,8 @@
 /// Reads an STL file to extract vertex positions and triangle centroids, reads a
 /// STEP file to extract surfaces, and computes the minimum distance from each
 /// point to any STEP surface. Reports max distance for both vertices and centroids.
+///
+/// Units: distances are in the same units as the STEP file (typically mm).
 use opencascade_sys::{
     b_rep, extrema, geom_api, gp, message, rw_stl, step_control, top_abs, top_exp, topo_ds,
 };
@@ -58,7 +60,26 @@ fn main() {
         process::exit(1);
     }
 
-    // Helper: find minimum distance from a point to any STEP surface
+    // Compute STL bounding box and max dimension
+    let mut bb_min = [f64::MAX; 3];
+    let mut bb_max = [f64::MIN; 3];
+    for i in 1..=num_nodes {
+        let pt = tri.node(i);
+        let coords = [pt.x(), pt.y(), pt.z()];
+        for d in 0..3 {
+            bb_min[d] = bb_min[d].min(coords[d]);
+            bb_max[d] = bb_max[d].max(coords[d]);
+        }
+    }
+    let extents = [
+        bb_max[0] - bb_min[0],
+        bb_max[1] - bb_min[1],
+        bb_max[2] - bb_min[2],
+    ];
+    let max_dimension = extents[0].max(extents[1]).max(extents[2]);
+    eprintln!("Bounding box: {:.6} x {:.6} x {:.6}", extents[0], extents[1], extents[2]);
+    eprintln!("Max dimension: {:.6}", max_dimension);
+
     let min_distance_to_surfaces = |pt: &gp::Pnt| -> f64 {
         let mut min_dist = f64::MAX;
         for surface in &surfaces {
@@ -137,6 +158,10 @@ fn main() {
     eprintln!("Vertex   avg: {:.10}  max: {:.10}", vtx_avg_dist, vtx_max_dist);
     eprintln!("Centroid avg: {:.10}  max: {:.10}", ctr_avg_dist, ctr_max_dist);
 
-    // Print both max distances to stdout for scripting (tab-separated)
-    println!("{:.10}\t{:.10}", vtx_max_dist, ctr_max_dist);
+    // Print tab-separated values to stdout for scripting:
+    // vtx_max  vtx_avg  ctr_max  ctr_avg  max_dimension
+    println!(
+        "{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6}",
+        vtx_max_dist, vtx_avg_dist, ctr_max_dist, ctr_avg_dist, max_dimension
+    );
 }
