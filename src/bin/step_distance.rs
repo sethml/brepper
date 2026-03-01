@@ -1,10 +1,10 @@
-/// Compute maximum distance between STL mesh vertices and STEP model surfaces.
+/// Compute maximum distance between STL mesh vertices/centroids and STEP model surfaces.
 ///
-/// Reads an STL file to extract vertex positions, reads a STEP file to extract
-/// surfaces, and computes the minimum distance from each STL vertex to any STEP
-/// surface. Reports the maximum such distance (i.e., the worst-case vertex error).
+/// Reads an STL file to extract vertex positions and triangle centroids, reads a
+/// STEP file to extract surfaces, and computes the minimum distance from each
+/// point to any STEP surface. Reports max distance for both vertices and centroids.
 use opencascade_sys::{
-    b_rep, extrema, geom_api, message, rw_stl, step_control, top_abs, top_exp, topo_ds,
+    b_rep, extrema, geom_api, gp, message, rw_stl, step_control, top_abs, top_exp, topo_ds,
 };
 use std::env;
 use std::process;
@@ -58,18 +58,12 @@ fn main() {
         process::exit(1);
     }
 
-    // For each STL vertex, find minimum distance to any STEP surface
-    let mut max_dist = 0.0_f64;
-    let mut max_vertex_idx = 1_i32;
-    let mut dist_sum = 0.0_f64;
-
-    for i in 1..=num_nodes {
-        let pt = tri.node(i);
+    // Helper: find minimum distance from a point to any STEP surface
+    let min_distance_to_surfaces = |pt: &gp::Pnt| -> f64 {
         let mut min_dist = f64::MAX;
-
         for surface in &surfaces {
             let projector = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
-                &pt,
+                pt,
                 surface,
                 extrema::ExtAlgo::Grad,
             );
@@ -80,28 +74,69 @@ fn main() {
                 }
             }
         }
+        min_dist
+    };
 
+    // Vertex distances
+    let mut vtx_max_dist = 0.0_f64;
+    let mut vtx_max_idx = 1_i32;
+    let mut vtx_dist_sum = 0.0_f64;
+
+    for i in 1..=num_nodes {
+        let pt = tri.node(i);
+        let min_dist = min_distance_to_surfaces(&pt);
         if min_dist < f64::MAX {
-            dist_sum += min_dist;
-            if min_dist > max_dist {
-                max_dist = min_dist;
-                max_vertex_idx = i;
+            vtx_dist_sum += min_dist;
+            if min_dist > vtx_max_dist {
+                vtx_max_dist = min_dist;
+                vtx_max_idx = i;
             }
         }
     }
 
-    let avg_dist = dist_sum / num_nodes as f64;
-    let worst_pt = tri.node(max_vertex_idx);
+    // Centroid distances
+    let mut ctr_max_dist = 0.0_f64;
+    let mut _ctr_max_idx = 1_i32;
+    let mut ctr_dist_sum = 0.0_f64;
+
+    for i in 1..=num_triangles {
+        let triangle = tri.triangle(i);
+        let mut n1 = 0_i32;
+        let mut n2 = 0_i32;
+        let mut n3 = 0_i32;
+        triangle.get(&mut n1, &mut n2, &mut n3);
+        let p1 = tri.node(n1);
+        let p2 = tri.node(n2);
+        let p3 = tri.node(n3);
+        let centroid = gp::Pnt::new_real3(
+            (p1.x() + p2.x() + p3.x()) / 3.0,
+            (p1.y() + p2.y() + p3.y()) / 3.0,
+            (p1.z() + p2.z() + p3.z()) / 3.0,
+        );
+        let min_dist = min_distance_to_surfaces(&centroid);
+        if min_dist < f64::MAX {
+            ctr_dist_sum += min_dist;
+            if min_dist > ctr_max_dist {
+                ctr_max_dist = min_dist;
+                _ctr_max_idx = i;
+            }
+        }
+    }
+
+    let vtx_avg_dist = vtx_dist_sum / num_nodes as f64;
+    let ctr_avg_dist = ctr_dist_sum / num_triangles as f64;
+
+    let worst_pt = tri.node(vtx_max_idx);
     eprintln!(
         "Worst vertex #{}: ({:.6}, {:.6}, {:.6})",
-        max_vertex_idx,
+        vtx_max_idx,
         worst_pt.x(),
         worst_pt.y(),
         worst_pt.z()
     );
-    eprintln!("Average distance: {:.10}", avg_dist);
-    eprintln!("Maximum distance: {:.10}", max_dist);
+    eprintln!("Vertex   avg: {:.10}  max: {:.10}", vtx_avg_dist, vtx_max_dist);
+    eprintln!("Centroid avg: {:.10}  max: {:.10}", ctr_avg_dist, ctr_max_dist);
 
-    // Print max distance to stdout for scripting
-    println!("{:.10}", max_dist);
+    // Print both max distances to stdout for scripting (tab-separated)
+    println!("{:.10}\t{:.10}", vtx_max_dist, ctr_max_dist);
 }
