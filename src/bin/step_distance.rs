@@ -4,7 +4,9 @@
 /// STEP file to extract surfaces, and computes the minimum distance from each
 /// point to any STEP surface. Reports max distance for both vertices and centroids.
 ///
-/// Units: distances are in the same units as the STEP file (typically mm).
+/// Units: all distances are in mm. OCCT's STEPControl_Reader converts STEP
+/// file units (typically meters for Onshape exports) to mm internally.
+/// STL files have no unit metadata; coordinates are assumed to be in mm.
 use opencascade_sys::{
     b_rep, extrema, geom_api, gp, message, rw_stl, step_control, top_abs, top_exp, topo_ds,
 };
@@ -155,8 +157,8 @@ fn main() {
         worst_pt.y(),
         worst_pt.z()
     );
-    eprintln!("Vertex   avg: {:.10}  max: {:.10}", vtx_avg_dist, vtx_max_dist);
-    eprintln!("Centroid avg: {:.10}  max: {:.10}", ctr_avg_dist, ctr_max_dist);
+    eprintln!("Vertex   avg: {:.10} mm  max: {:.10} mm", vtx_avg_dist, vtx_max_dist);
+    eprintln!("Centroid avg: {:.10} mm  max: {:.10} mm", ctr_avg_dist, ctr_max_dist);
 
     // Print tab-separated values to stdout for scripting:
     // vtx_max  vtx_avg  ctr_max  ctr_avg  max_dimension

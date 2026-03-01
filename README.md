@@ -40,6 +40,18 @@ GENERAL OPTIONS:
 
 See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for full documentation.
 
+### Deviation Settings
+
+Onshape calls this "Chordal tolerance (mm)", and the preset values are:
+- Coarse: 0.24 mm
+- Medium: 0.12 mm
+- Fine: 0.06 mm
+
+Fusion 360 calls this "Surface Deviation", and the preset values seem to vary based on model size:
+- Low: 1x
+- Medium: 2.5x
+- High: 8x
+
 ### Generating Test Models
 
 Some tests use models generated via [CodeCAD](https://codecad.xyz/). The generated STL/STEP files are committed to the repo, so CodeCAD is not required to run tests. 

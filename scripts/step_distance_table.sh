@@ -1,7 +1,8 @@
 #!/bin/zsh
+
 # Run step-distance on all STL/STEP pairs under tests/ and print a table
 # with per-group (suffix) summary rows.
-# Distances displayed in microns (µm). Max dimension in model units.
+# Distances displayed in mm. OCCT converts STEP units to mm internally.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -15,7 +16,7 @@ cargo build --release --bin step-distance --manifest-path "$PROJECT_DIR/Cargo.to
 ROW_FMT="%-40s %12s %12s %12s %12s %10s %8s %8s\n"
 
 print_header() {
-    printf "$ROW_FMT" "Test Case" "Vtx Max µm" "Vtx Avg µm" "Ctr Max µm" "Ctr Avg µm" "Max Dim" "Nodes" "Faces"
+    printf "$ROW_FMT" "Test Case" "Vtx Max mm" "Vtx Avg mm" "Ctr Max mm" "Ctr Avg mm" "Max Dim" "Nodes" "Faces"
     print_sep
 }
 
@@ -31,9 +32,14 @@ print_sep() {
         "$(printf '%0.s-' {1..8})"
 }
 
-# Convert value to microns for display
-to_microns() {
-    awk "BEGIN { v = $1 * 1e6; if (v == 0) printf \"0\"; else printf \"%.2e\", v }"
+# Format vertex distance (mm, 6 decimal places)
+fmt_vtx() {
+    awk "BEGIN { v = $1 + 0; if (v == 0) printf \"0\"; else printf \"%.6f\", v }"
+}
+
+# Format centroid distance (mm, 3 decimal places)
+fmt_ctr() {
+    awk "BEGIN { v = $1 + 0; if (v == 0) printf \"0\"; else printf \"%.3f\", v }"
 }
 
 # Collect all STL files into an array (avoids subshell from pipe)
@@ -47,14 +53,17 @@ group_order=()
 flush_groups() {
     if [[ ${#group_order[@]} -gt 0 ]]; then
         for g in "${group_order[@]}"; do
-            local vm=$(to_microns "${group_vtx_max[$g]}")
-            local va=$(to_microns "${group_vtx_avg[$g]}")
-            local cm=$(to_microns "${group_ctr_max[$g]}")
-            local ca=$(to_microns "${group_ctr_avg[$g]}")
+            local vm=$(fmt_vtx "${group_vtx_max[$g]}")
+            local va=$(fmt_vtx "${group_vtx_avg[$g]}")
+            local cm=$(fmt_ctr "${group_ctr_max[$g]}")
+            local ca=$(fmt_ctr "${group_ctr_avg[$g]}")
             printf "$ROW_FMT" "  ** MAX ($g) **" "$vm" "$va" "$cm" "$ca" "" "" ""
         done
     fi
-    typeset -A group_vtx_max group_vtx_avg group_ctr_max group_ctr_avg
+    group_vtx_max=()
+    group_vtx_avg=()
+    group_ctr_max=()
+    group_ctr_avg=()
     group_order=()
 }
 
@@ -115,11 +124,11 @@ for stl_file in "${stl_files[@]}"; do
     faces=$(grep "^STEP:" "$diag_file" | sed 's/STEP: \([0-9]*\) faces/\1/')
     rm -f "$diag_file"
 
-    # Convert to microns for display
-    vm=$(to_microns "$vtx_max_raw")
-    va=$(to_microns "$vtx_avg_raw")
-    cm=$(to_microns "$ctr_max_raw")
-    ca=$(to_microns "$ctr_avg_raw")
+    # Format distances for display (mm)
+    vm=$(fmt_vtx "$vtx_max_raw")
+    va=$(fmt_vtx "$vtx_avg_raw")
+    cm=$(fmt_ctr "$ctr_max_raw")
+    ca=$(fmt_ctr "$ctr_avg_raw")
 
     printf "$ROW_FMT" "$base" "$vm" "$va" "$cm" "$ca" "$max_dim" "$nodes" "$faces"
 
