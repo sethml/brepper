@@ -239,7 +239,7 @@ The algorithm uses BFS region growing, analogous to stage 2.1 but seeded from pa
     - If ni belongs to a multi-face planar hypothesis, skip.
     - **Vertex distance check**: for each vertex of ni, compute `| ||v - axis_closest|| - radius |`. If all are within `--vertex-tolerance`, accept directly. If any exceeds `2 * vertex_tolerance`, skip immediately (re-fitting cannot help, same reasoning as for planar hypotheses). If between 1x and 2x, proceed to re-fit attempt.
     - **Convexity check**: compute the vector from the axis to ni's centroid. Check that ni's face normal agrees with the hypothesis convexity (dot product with radial vector has the expected sign). Reject if inconsistent — this prevents merging the inner and outer surfaces of a thin-walled cylinder.
-    - **Angular tolerance check**: compute the dihedral angle between ni and the current BFS-parent face. If it exceeds `--angular-tolerance`, reject. This limits how fast the surface can curve between adjacent faces.
+    - **Angular tolerance check**: for each of ni's mesh neighbors that is already assigned to this hypothesis, compute the dihedral angle between ni and that neighbor. If any exceeds `--angular-tolerance`, reject. Checking all assigned neighbors (not just the BFS parent) provides defense-in-depth against creased NURBS surfaces where BFS might approach a face from a low-angle direction while a high-angle assigned neighbor exists on a different axis.
     - **Re-fit attempt**: if any vertex exceeds tolerance but none exceeds 2x, re-fit the cylinder from all current faces plus ni (see Cylinder Fitting below). Check that **all** vertices (existing and new) are within tolerance of the re-fitted cylinder. If so, accept the re-fit; otherwise skip ni.
     - If accepted: assign ni to the hypothesis, add its vertices to the vertex set, push ni onto the BFS queue.
 - After BFS completes: final re-fit from all accumulated faces and vertices. Compute error metrics.
@@ -303,7 +303,7 @@ The algorithm uses BFS region growing, analogous to stages 2.1 and 2.2 but seede
     - If ni already has a spherical hypothesis, skip.
     - **Vertex distance check**: for each vertex of ni, compute `| ||v - center|| - radius |`. If all within `--vertex-tolerance`, accept directly. If any exceeds `2 * vertex_tolerance`, skip. If between 1x and 2x, re-fit.
     - **Convexity check**: verify ni's normal agrees with the hypothesis convexity (dot product of normal with radial vector has the expected sign).
-    - **Angular tolerance check**: compute the dihedral angle between ni and the current BFS-parent face. If it exceeds `--angular-tolerance`, reject.
+    - **Angular tolerance check**: for each of ni's mesh neighbors that is already assigned to this hypothesis, compute the dihedral angle between ni and that neighbor. If any exceeds `--angular-tolerance`, reject. Same all-neighbors check as cylindrical (defense-in-depth).
     - **Re-fit attempt**: re-fit sphere from all current faces plus ni. Check all vertices within tolerance and radius within `max_sphere_radius`. Accept or reject.
     - If accepted: assign ni, add vertices, push onto BFS queue.
 - After BFS completes: final re-fit, compute error metrics.

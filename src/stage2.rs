@@ -942,12 +942,25 @@ fn deduce_cylindrical_hypotheses(
                         continue;
                     }
 
-                    // Angular tolerance: reject if dihedral angle exceeds limit
-                    if let (Some(n1), Some(n2)) = (mesh.faces[current_fi].normal, mesh.faces[cni].normal) {
-                        let cos_a = dot3(&n1, &n2).clamp(-1.0, 1.0);
-                        if cos_a.acos() > angular_tol {
-                            continue;
+                    // Angular tolerance: reject if dihedral angle with ANY already-assigned
+                    // neighbor exceeds the limit (defense-in-depth against creased surfaces)
+                    if let Some(n_cni) = mesh.faces[cni].normal {
+                        let cni_vc2 = mesh.faces[cni].vertex_count as usize;
+                        let cni_neighbors = mesh.faces[cni].neighbors;
+                        let mut angular_reject = false;
+                        for &adj in &cni_neighbors[..cni_vc2] {
+                            if adj < 0 { continue; }
+                            let adj = adj as usize;
+                            if mesh.faces[adj].cylindrical_hypothesis != hi { continue; }
+                            if let Some(n_adj) = mesh.faces[adj].normal {
+                                let cos_a = dot3(&n_adj, &n_cni).clamp(-1.0, 1.0);
+                                if cos_a.acos() > angular_tol {
+                                    angular_reject = true;
+                                    break;
+                                }
+                            }
                         }
+                        if angular_reject { continue; }
                     }
 
                     // Vertex distance check
@@ -1449,12 +1462,25 @@ fn deduce_spherical_hypotheses(
                             continue;
                         }
 
-                        // Angular tolerance: reject if dihedral angle exceeds limit
-                        if let (Some(n1), Some(n2)) = (mesh.faces[current_fi].normal, mesh.faces[cni].normal) {
-                            let cos_a = dot3(&n1, &n2).clamp(-1.0, 1.0);
-                            if cos_a.acos() > angular_tol {
-                                continue;
+                        // Angular tolerance: reject if dihedral angle with ANY already-assigned
+                        // neighbor exceeds the limit (defense-in-depth against creased surfaces)
+                        if let Some(n_cni) = mesh.faces[cni].normal {
+                            let cni_vc2 = mesh.faces[cni].vertex_count as usize;
+                            let cni_neighbors = mesh.faces[cni].neighbors;
+                            let mut angular_reject = false;
+                            for &adj in &cni_neighbors[..cni_vc2] {
+                                if adj < 0 { continue; }
+                                let adj = adj as usize;
+                                if mesh.faces[adj].spherical_hypothesis != hi { continue; }
+                                if let Some(n_adj) = mesh.faces[adj].normal {
+                                    let cos_a = dot3(&n_adj, &n_cni).clamp(-1.0, 1.0);
+                                    if cos_a.acos() > angular_tol {
+                                        angular_reject = true;
+                                        break;
+                                    }
+                                }
                             }
+                            if angular_reject { continue; }
                         }
 
                         // Vertex distance check
