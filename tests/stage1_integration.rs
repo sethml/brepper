@@ -67,6 +67,11 @@ test_stl_stage1!(ccad_cube_stage1, "tests/ccad/generated/cube.stl");
 test_stl_stage1!(ccad_wedge_stage1, "tests/ccad/generated/wedge.stl");
 test_stl_stage1!(ccad_t_shape_stage1, "tests/ccad/generated/t_shape.stl");
 test_stl_stage1!(ccad_staircase_stage1, "tests/ccad/generated/staircase.stl");
+test_stl_stage1!(ccad_simple_cylinder_stage1, "tests/ccad/generated/simple_cylinder.stl");
+test_stl_stage1!(ccad_block_with_hole_stage1, "tests/ccad/generated/block_with_hole.stl");
+test_stl_stage1!(ccad_pipe_stage1, "tests/ccad/generated/pipe.stl");
+test_stl_stage1!(ccad_stepped_cylinder_stage1, "tests/ccad/generated/stepped_cylinder.stl");
+test_stl_stage1!(ccad_two_holes_stage1, "tests/ccad/generated/two_holes.stl");
 
 // --- tests/onshape/ ---
 test_stl_stage1!(
@@ -152,6 +157,31 @@ test_stl_step_compare!(
     ccad_staircase_compare,
     "tests/ccad/generated/staircase.stl",
     "tests/ccad/generated/staircase.step"
+);
+test_stl_step_compare!(
+    ccad_simple_cylinder_compare,
+    "tests/ccad/generated/simple_cylinder.stl",
+    "tests/ccad/generated/simple_cylinder.step"
+);
+test_stl_step_compare!(
+    ccad_block_with_hole_compare,
+    "tests/ccad/generated/block_with_hole.stl",
+    "tests/ccad/generated/block_with_hole.step"
+);
+test_stl_step_compare!(
+    ccad_pipe_compare,
+    "tests/ccad/generated/pipe.stl",
+    "tests/ccad/generated/pipe.step"
+);
+test_stl_step_compare!(
+    ccad_stepped_cylinder_compare,
+    "tests/ccad/generated/stepped_cylinder.stl",
+    "tests/ccad/generated/stepped_cylinder.step"
+);
+test_stl_step_compare!(
+    ccad_two_holes_compare,
+    "tests/ccad/generated/two_holes.stl",
+    "tests/ccad/generated/two_holes.step"
 );
 
 // --- tests/onshape/ ---

@@ -58,6 +58,62 @@
       },
       "visible": true
     }
+    ,
+    {
+      "id": "simple_cylinder",
+      "name": "simple_cylinder",
+      "source": "parts/simple_cylinder.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
+    },
+    {
+      "id": "block_with_hole",
+      "name": "block_with_hole",
+      "source": "parts/block_with_hole.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
+    },
+    {
+      "id": "pipe",
+      "name": "pipe",
+      "source": "parts/pipe.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
+    },
+    {
+      "id": "stepped_cylinder",
+      "name": "stepped_cylinder",
+      "source": "parts/stepped_cylinder.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
+    },
+    {
+      "id": "two_holes",
+      "name": "two_holes",
+      "source": "parts/two_holes.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
+    }
   ],
   "version": 1
 }

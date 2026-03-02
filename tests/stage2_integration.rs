@@ -146,6 +146,31 @@ test_stl_step_stage2_compare!(
     "tests/ccad/generated/staircase.stl",
     "tests/ccad/generated/staircase.step"
 );
+test_stl_step_stage2_compare!(
+    ccad_simple_cylinder_stage2_compare,
+    "tests/ccad/generated/simple_cylinder.stl",
+    "tests/ccad/generated/simple_cylinder.step"
+);
+test_stl_step_stage2_compare!(
+    ccad_block_with_hole_stage2_compare,
+    "tests/ccad/generated/block_with_hole.stl",
+    "tests/ccad/generated/block_with_hole.step"
+);
+test_stl_step_stage2_compare!(
+    ccad_pipe_stage2_compare,
+    "tests/ccad/generated/pipe.stl",
+    "tests/ccad/generated/pipe.step"
+);
+test_stl_step_stage2_compare!(
+    ccad_stepped_cylinder_stage2_compare,
+    "tests/ccad/generated/stepped_cylinder.stl",
+    "tests/ccad/generated/stepped_cylinder.step"
+);
+test_stl_step_stage2_compare!(
+    ccad_two_holes_stage2_compare,
+    "tests/ccad/generated/two_holes.stl",
+    "tests/ccad/generated/two_holes.step"
+);
 
 // --- tests/onshape/ (planar models) ---
 test_stl_step_stage2_compare!(

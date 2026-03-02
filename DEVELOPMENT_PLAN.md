@@ -182,7 +182,7 @@ Plane fitting uses **area-weighted normal averaging**: each face's unit normal i
 *Comment on 2.1: ~~The DFS vs BFS question is worth considering: DFS can get "trapped" in a narrow corridor and accumulate drift before exploring the main region. BFS explores more uniformly. However, the re-fitting step partially mitigates this.~~ Resolved: BFS was chosen for the implementation. ~~A bigger issue: once you re-fit the plane, previously accepted faces might no longer fit the new plane! Consider a final validation pass that removes faces whose vertices exceed the tolerance after the final fit.~~ Resolved: the re-fit step checks all vertices (existing + new) before accepting, and a final re-fit with error metrics is computed at the end. ~~Also: the "vertices in right-hand-rule order" for the hypothesis is unclear—planar regions aren't simply connected in general (they can have holes), so you'll need a more complex boundary representation.~~ Resolved: vertices are stored as an unordered set; boundary representation is deferred to stage 3.*
 
 #### 2.2 Deduce cylindrical hypotheses
-Fit cylindrical hypotheses to connected sets of faces that lie on a common cylinder. Only faces with single-face planar hypotheses (from stage 2.1) are candidates — faces belonging to multi-face planar hypotheses are genuinely flat and get `cylindrical_hypothesis = NO_HYPOTHESIS` (-1). A cylindrical hypothesis consists of:
+Fit cylindrical hypotheses to connected sets of faces that lie on a common cylinder. Only faces with "small" planar hypotheses (from stage 2.1) are candidates — faces belonging to large multi-face planar hypotheses (with many faces) are genuinely flat and get `cylindrical_hypothesis = NO_HYPOTHESIS` (-1). NOTE: The original plan said "single-face" but testing shows that tessellated cylinders with quad-strip patterns produce 2-face coplanar hypotheses (pairs of triangles on each quad facet). The threshold should be a small face count (e.g., ≤ 4) rather than strictly 1. A cylindrical hypothesis consists of:
 - `axis_origin: [f64; 3]` — A point on the cylinder axis.
 - `axis_direction: [f64; 3]` — Unit direction vector along the axis.
 - `radius: f64` — Radius of the cylinder (always positive).
@@ -197,7 +197,7 @@ The algorithm uses BFS region growing, analogous to stage 2.1 but seeded from pa
 **Seeding:**
 - Initialize all `cylindrical_hypothesis` to `UNDEDUCED` (-2).
 - For each face fi where `cylindrical_hypothesis == -2`:
-    - If fi belongs to a multi-face planar hypothesis: set `cylindrical_hypothesis = -1`, skip.
+    - If fi belongs to a large multi-face planar hypothesis (e.g., > 4 faces): set `cylindrical_hypothesis = -1`, skip.
     - Search fi's neighbors for a seed partner ni: an adjacent face that is also unassigned (`cylindrical_hypothesis == -2`), also has a single-face planar hypothesis, and has a sufficiently different normal (their cross product magnitude exceeds a minimum threshold, e.g. 0.01, to avoid near-parallel normals that would produce an unreliable axis estimate).
     - If no valid seed partner found: set `cylindrical_hypothesis = -1`, skip. (This face will be considered for spherical or other hypotheses in later stages.)
     - Estimate initial cylinder parameters from the seed pair (fi, ni) — see Cylinder Fitting below.
@@ -407,7 +407,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 ### Stage 2: Surface Fitting
 - [x] Understand stage 2.1 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.1. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
 - [x] Implement stage 2.1. Make sure --compare passes for all test shapes composed only of planar surfaces.
-- [ ] Understand stage 2.2 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.2. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
+- [x] Understand stage 2.2 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.2. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
 - [ ] Implement stage 2.2: Deduce cylindrical hypotheses.
 - [ ] Understand stage 2.3 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.2. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
 - [ ] Implement stage 2.3: Deduce spherical hypotheses.
@@ -435,6 +435,11 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 | Stepped Block | Complex planar | Multiple planes | ✓ Stage 2.1 |
 | L Bracket | Complex planar | Multiple planes | ✓ Stage 2.1 |
 | Cylinder | Tessellated cylinder | 1 cylinder + 2 planes | ✓ Stage 1 |
+| Simple Cylinder (ccad) | 124 triangles | 1 cylinder + 2 planes | ✓ Stage 1 |
+| Block with Hole (ccad) | 44 triangles | 6 planes + 1 concave cylinder | ✓ Stage 1 |
+| Pipe (ccad) | 244 triangles | 2 cylinders (in/out) + 2 annular planes | ✓ Stage 1 |
+| Stepped Cylinder (ccad) | 240 triangles | 2 cylinders + 3 planes | ✓ Stage 1 |
+| Two Holes (ccad) | 76 triangles | 6 planes + 2 concave cylinders | ✓ Stage 1 |
 | Sphere | Tessellated sphere | 1 sphere | ✓ Stage 1 |
 | Cone | Tessellated cone | 1 cone + 1 plane | ✓ Stage 1 |
 | Fillet | Blended edge | Planes + fillet surface | |

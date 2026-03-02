@@ -153,7 +153,7 @@ export the current chat session to `agent-logs/`. Use this command exactly:
 
 ## Generating CodeCAD Test Models
 
-To regenerate the STL and STEP files for CodeCAD-based tests:
+Test models can be generated with ccad - see `../codecad/docs` for documentation. To regenerate the STL and STEP files for CodeCAD-based tests:
 
 ```bash
 # Requires 'ccad' tool installed (https://codecad.xyz)
