@@ -33,7 +33,12 @@ fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() {
-    let config = config::parse_config();
+    let mut config = config::parse_config();
+
+    if let Err(e) = config.load_compare_step() {
+        eprintln!("Error loading comparison STEP file: {e}");
+        process::exit(1);
+    }
 
     if let Err(e) = run(&config) {
         eprintln!("Error: {e}");

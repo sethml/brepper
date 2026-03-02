@@ -1,4 +1,5 @@
 use clap::{Parser, ValueEnum};
+use opencascade_sys::{b_rep, message, step_control, top_abs, top_exp, topo_ds};
 use std::fmt::{Display, Formatter};
 
 // ---------------------------------------------------------------------------
@@ -172,7 +173,6 @@ struct CliArgs {
 // ---------------------------------------------------------------------------
 
 /// Resolved configuration used by the pipeline. Tolerances are stored in mm.
-#[derive(Debug, Clone)]
 pub struct Config {
     /// Input STL file path.
     pub input_stl: String,
@@ -182,8 +182,10 @@ pub struct Config {
     pub stl_units: Units,
     /// Units for the output STEP file.
     pub step_units: Units,
-    /// STEP file to compare against at each stage.
+    /// STEP file path to compare against at each stage.
     pub compare_step: Option<String>,
+    /// Surfaces extracted from the --compare STEP file, for comparison checks.
+    pub compare_surfaces: Vec<opencascade_sys::OwnedPtr<opencascade_sys::shape_extend::HandleGeomSurface>>,
     /// Fitting tolerance for vertex-to-surface distance, in mm.
     pub vertex_tolerance_mm: f64,
     /// Tolerance for surface-to-triangle-face offset, in mm.
@@ -198,6 +200,25 @@ pub struct Config {
     pub stage: Stage,
 }
 
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("input_stl", &self.input_stl)
+            .field("output_step", &self.output_step)
+            .field("stl_units", &self.stl_units)
+            .field("step_units", &self.step_units)
+            .field("compare_step", &self.compare_step)
+            .field("compare_surfaces", &format!("[{} surfaces]", self.compare_surfaces.len()))
+            .field("vertex_tolerance_mm", &self.vertex_tolerance_mm)
+            .field("surface_tolerance_mm", &self.surface_tolerance_mm)
+            .field("verbose", &self.verbose)
+            .field("quiet", &self.quiet)
+            .field("debug", &self.debug)
+            .field("stage", &self.stage)
+            .finish()
+    }
+}
+
 impl Config {
     fn from_cli(args: CliArgs) -> Self {
         let scale = args.stl_units.to_mm();
@@ -207,6 +228,7 @@ impl Config {
             stl_units: args.stl_units,
             step_units: args.step_units,
             compare_step: args.compare_step,
+            compare_surfaces: Vec::new(),
             vertex_tolerance_mm: args.vertex_tolerance * scale,
             surface_tolerance_mm: args.surface_tolerance * scale,
             verbose: args.verbose,
@@ -215,8 +237,43 @@ impl Config {
             stage: args.stage.unwrap_or_default(),
         }
     }
-}
 
+    /// If --compare was specified, load the STEP file and extract surfaces for comparison.
+    pub fn load_compare_step(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let step_path = match &self.compare_step {
+            Some(p) => p.clone(),
+            None => return Ok(()),
+        };
+
+        let mut reader = step_control::Reader::new();
+        reader.read_file_charptr(&step_path);
+        let progress = message::ProgressRange::new();
+        reader.transfer_roots(&progress);
+        let step_shape = reader.one_shape();
+
+        let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
+            &step_shape,
+            top_abs::ShapeEnum::Face,
+            top_abs::ShapeEnum::Shape,
+        );
+        while explorer.more() {
+            let shape_ref = explorer.value();
+            let face = topo_ds::face_shape(shape_ref);
+            self.compare_surfaces.push(b_rep::Tool::surface_face(face));
+            explorer.next();
+        }
+
+        if self.compare_surfaces.is_empty() {
+            return Err(format!("STEP file {step_path} contains no faces").into());
+        }
+
+        if !self.quiet {
+            eprintln!("Loaded {} surfaces from comparison STEP file", self.compare_surfaces.len());
+        }
+
+        Ok(())
+    }
+}
 /// Parse command-line arguments and return a resolved Config.
 pub fn parse_config() -> Config {
     Config::from_cli(CliArgs::parse())

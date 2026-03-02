@@ -2,6 +2,20 @@
 
 This file contains guidelines for AI/LLM coding assistants working on this project.
 
+## When instructed to iterate:
+
+- Read LEARNINGS.md.
+- Read README.md.
+- Read DEVELOPMENT_PLAN.md.
+- Find the next incomplete item in the "## Implementation Phases" section of DEVELOPMENT_PLAN.md.
+- Implement that item. Make sure tests pass. Don't skip important functionality. If there's enough ambiguity in the specification that you're unsure how to proceed, ask the user what to do. Don't be afraid to modify existing data structures or code if it's helpful.
+- Update README.md and DEVELOPMENT_PLAN to refect your changes.
+- Think about whether items in LEARNINGS.md are obsolete - if so, delete or rewrite them.
+- Think about whether you've learned things that may be useful to a future AI agent editing the code - if so, add them to LEARNINGS.md.
+- Commit your changes, including any pre-existing staged files.
+- Think about whether you encountered code that would be clearer or more correct if refactored or improved. If so, make the improvements, test, and commit.
+- Tell the user a limmerick inspired by your work this session.
+
 ## Project Layout
 
 This is a **Rust** project. Key locations:
@@ -32,107 +46,6 @@ The project uses the `opencascade-sys` crate (auto-generated Rust FFI bindings t
 
 The `builtin` feature (default) compiles OCCT from source — first build takes ~8 minutes. Subsequent builds are fast.
 
-## opencascade-sys API Patterns
-
-The Rust bindings mirror OCCT C++ closely but with automatic name transformations:
-
-### Module and Type Naming
-- `BRepBuilderAPI_MakeEdge` → `b_rep_builder_api::MakeEdge`
-- `BRep_Tool` → `b_rep::Tool`
-- `gp_Pnt` → `gp::Pnt`
-- `TopExp_Explorer` → `top_exp::Explorer`
-- `GeomAPI_ProjectPointOnSurf` → `geom_api::ProjectPointOnSurf`
-- `STEPControl_Reader` → `step_control::Reader`
-- `RWStl` → `rw_stl` (free functions)
-
-### Constructors
-Named `::new_<compressed_param_types>()`. For example:
-```rust
-gp::Pnt::new_real3(x, y, z)           // gp_Pnt(double, double, double)
-gp::Dir::new_real3(dx, dy, dz)
-top_exp::Explorer::new_shape_shapeenum2(shape, from_type, avoid_type)
-geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(pt, surf, algo)
-```
-
-### Ownership
-- All objects are returned as `OwnedPtr<T>` which auto-derefs via `Deref`/`DerefMut`
-- `OwnedPtr<T>` is essentially `Box<T>` for OCCT heap objects
-
-### Handles (OCCT `Handle<T>`)
-- `Type::to_handle(owned_ptr)` consumes `OwnedPtr<T>` → `OwnedPtr<HandleT>`
-- `.get()` dereferences a handle to access the underlying object
-- Upcasting: `.to_handle_surface()`, `.to_handle_curve()`, etc.
-- Downcasting: `.downcast_to_plane()` returns `Option<OwnedPtr<HandleDerived>>`
-
-### Enums
-Typed Rust enums, not raw integers:
-```rust
-top_abs::ShapeEnum::Face
-extrema::ExtAlgo::Grad
-```
-
-### Shape Downcasting
-`topo_ds::face_shape` is a safe function, but it panics if the shape is not a Face. Always guard with `shape_type()`:
-```rust
-if shape_ref.shape_type() == top_abs::ShapeEnum::Face {
-    let face = topo_ds::face_shape(shape_ref);  // &topo_ds::Shape → &topo_ds::Face
-    ...
-}
-```
-
-### Static Methods → Free Functions
-OCCT utility classes (e.g., `BRep_Tool`) become module-level free functions or associated functions on the type.
-
-## Common API Recipes
-
-### Read an STL file → vertex positions
-```rust
-use opencascade_sys::{rw_stl, message};
-let progress = message::ProgressRange::new();
-let tri_handle = rw_stl::read_file_charptr_progressrange_2(path, &progress);
-let tri = tri_handle.get();  // &Poly_Triangulation
-for i in 1..=tri.nb_nodes() {
-    let pt = tri.node(i);  // OwnedPtr<gp::Pnt>
-    let (x, y, z) = (pt.x(), pt.y(), pt.z());
-}
-```
-
-### Read a STEP file → TopoDS_Shape
-```rust
-use opencascade_sys::{step_control, message};
-let mut reader = step_control::Reader::new();
-reader.read_file_charptr(path);
-reader.transfer_roots(&message::ProgressRange::new());
-let shape = reader.one_shape();  // OwnedPtr<topo_ds::Shape>
-```
-
-### Iterate faces of a shape
-```rust
-use opencascade_sys::{top_exp, top_abs, topo_ds};
-let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
-    &shape, top_abs::ShapeEnum::Face, top_abs::ShapeEnum::Shape,
-);
-while explorer.more() {
-    let face = topo_ds::face_shape(explorer.value());
-    // ... use face
-    explorer.next();
-}
-```
-
-### Project a point onto a surface (compute distance)
-```rust
-use opencascade_sys::{b_rep, geom_api, extrema};
-let surface = b_rep::Tool::surface_face(face);  // OwnedPtr<HandleGeomSurface>
-let projector = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
-    &point, &surface, extrema::ExtAlgo::Grad,
-);
-if projector.is_done() && projector.nb_points() > 0 {
-    let dist = projector.lower_distance();
-}
-```
-
-### Poly_Triangulation index convention
-All node/triangle indices are **1-based** (OCCT convention).
 ## Commit Messages
 
 All commit messages must include:

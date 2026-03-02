@@ -4,7 +4,7 @@
 //! 1.2: Validate mesh topology, compute normals and neighbors.
 
 use crate::config::Config;
-use opencascade_sys::{message, rw_stl};
+use opencascade_sys::{extrema, geom_api, gp, message, rw_stl};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -133,6 +133,7 @@ impl Error for MeshValidationError {}
 pub enum Stage1Error {
     Read(MeshReadError),
     Validation(MeshValidationError),
+    Compare(CompareError),
 }
 
 impl Display for Stage1Error {
@@ -140,6 +141,7 @@ impl Display for Stage1Error {
         match self {
             Stage1Error::Read(e) => write!(f, "stage 1.1 (read STL): {e}"),
             Stage1Error::Validation(e) => write!(f, "stage 1.2 (validation): {e}"),
+            Stage1Error::Compare(e) => write!(f, "stage 1.2 (compare): {e}"),
         }
     }
 }
@@ -149,6 +151,7 @@ impl Error for Stage1Error {
         match self {
             Stage1Error::Read(e) => Some(e),
             Stage1Error::Validation(e) => Some(e),
+            Stage1Error::Compare(e) => Some(e),
         }
     }
 }
@@ -162,6 +165,12 @@ impl From<MeshReadError> for Stage1Error {
 impl From<MeshValidationError> for Stage1Error {
     fn from(e: MeshValidationError) -> Self {
         Stage1Error::Validation(e)
+    }
+}
+
+impl From<CompareError> for Stage1Error {
+    fn from(e: CompareError) -> Self {
+        Stage1Error::Compare(e)
     }
 }
 
@@ -494,9 +503,128 @@ fn compute_face_normal(face: &MeshFace, vertices: &[MeshVertex]) -> Option<[f64;
 }
 
 // ---------------------------------------------------------------------------
-// Stage 1 entry point
+// Compare mesh against STEP surfaces
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
+pub struct CompareError {
+    pub vertex_max_distance: f64,
+    pub vertex_max_index: usize,
+    pub vertex_tolerance: f64,
+    pub centroid_max_distance: f64,
+    pub centroid_max_face_index: usize,
+    pub centroid_tolerance: f64,
+}
+
+impl Display for CompareError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut parts = Vec::new();
+        if self.vertex_max_distance > self.vertex_tolerance {
+            parts.push(format!(
+                "vertex {} is {:.6e} mm from nearest STEP surface (tolerance: {:.6e} mm)",
+                self.vertex_max_index, self.vertex_max_distance, self.vertex_tolerance
+            ));
+        }
+        if self.centroid_max_distance > self.centroid_tolerance {
+            parts.push(format!(
+                "face {} centroid is {:.6e} mm from nearest STEP surface (tolerance: {:.6e} mm)",
+                self.centroid_max_face_index, self.centroid_max_distance, self.centroid_tolerance
+            ));
+        }
+        write!(f, "comparison failed: {}", parts.join("; "))
+    }
+}
+
+impl Error for CompareError {}
+
+/// Compute the minimum distance from a point to any of the compare surfaces.
+fn min_distance_to_surfaces(
+    pt: &gp::Pnt,
+    surfaces: &[opencascade_sys::OwnedPtr<opencascade_sys::shape_extend::HandleGeomSurface>],
+) -> f64 {
+    let mut min_dist = f64::MAX;
+    for surface in surfaces {
+        let projector = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
+            pt,
+            surface,
+            extrema::ExtAlgo::Grad,
+        );
+        if projector.is_done() && projector.nb_points() > 0 {
+            let d = projector.lower_distance();
+            if d < min_dist {
+                min_dist = d;
+            }
+        }
+    }
+    min_dist
+}
+
+/// Check mesh vertices and face centroids against comparison STEP surfaces.
+fn compare_mesh_to_step(mesh: &ConnectedMesh, config: &Config) -> Result<(), CompareError> {
+    let surfaces = &config.compare_surfaces;
+
+    // Check all vertices
+    let mut vtx_max_dist = 0.0_f64;
+    let mut vtx_max_idx = 0_usize;
+    for (i, v) in mesh.vertices.iter().enumerate() {
+        let pt = gp::Pnt::new_real3(v.x, v.y, v.z);
+        let d = min_distance_to_surfaces(&pt, surfaces);
+        if d > vtx_max_dist {
+            vtx_max_dist = d;
+            vtx_max_idx = i;
+        }
+    }
+
+    // Check all face centroids
+    let mut ctr_max_dist = 0.0_f64;
+    let mut ctr_max_face = 0_usize;
+    for (fi, face) in mesh.faces.iter().enumerate() {
+        let n = face.vertex_count as usize;
+        let mut cx = 0.0_f64;
+        let mut cy = 0.0_f64;
+        let mut cz = 0.0_f64;
+        for vi in 0..n {
+            let v = &mesh.vertices[face.vertex_indices[vi]];
+            cx += v.x;
+            cy += v.y;
+            cz += v.z;
+        }
+        let inv_n = 1.0 / n as f64;
+        let pt = gp::Pnt::new_real3(cx * inv_n, cy * inv_n, cz * inv_n);
+        let d = min_distance_to_surfaces(&pt, surfaces);
+        if d > ctr_max_dist {
+            ctr_max_dist = d;
+            ctr_max_face = fi;
+        }
+    }
+
+    if !config.quiet {
+        eprintln!(
+            "  Compare: vertex max dist {:.6e} mm, centroid max dist {:.6e} mm",
+            vtx_max_dist, ctr_max_dist
+        );
+    }
+
+    let vtx_fail = vtx_max_dist > config.vertex_tolerance_mm;
+    let ctr_fail = ctr_max_dist > config.surface_tolerance_mm;
+
+    if vtx_fail || ctr_fail {
+        return Err(CompareError {
+            vertex_max_distance: vtx_max_dist,
+            vertex_max_index: vtx_max_idx,
+            vertex_tolerance: config.vertex_tolerance_mm,
+            centroid_max_distance: ctr_max_dist,
+            centroid_max_face_index: ctr_max_face,
+            centroid_tolerance: config.surface_tolerance_mm,
+        });
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Stage 1 entry point
+// ---------------------------------------------------------------------------
 /// Run stage 1: read STL (1.1) and validate mesh (1.2).
 pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
     // Stage 1.1: Read STL
@@ -534,8 +662,10 @@ pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
         }
     }
 
-    // TODO: With --compare flag, check that all vertices are within
-    // --vertex-tolerance of the surface of a solid from the STEP file.
+    // Compare against STEP file if --compare was specified.
+    if !config.compare_surfaces.is_empty() {
+        compare_mesh_to_step(&mesh, config)?;
+    }
 
     Ok(mesh)
 }

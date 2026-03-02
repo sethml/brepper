@@ -35,8 +35,8 @@ GENERAL OPTIONS:
 # Just load and validate mesh (stage 1.2)
 ./build/brepper input.stl --stage 1.2 -v
 
-# Warn and return with error code if mesh differs from 
-./build/brepper input.stl --stage 2 -v
+# Compare mesh against reference STEP at each stage
+./build/brepper input.stl --compare reference.step --stage 1 -v
 ```
 
 See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for full documentation.
