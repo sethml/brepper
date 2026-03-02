@@ -560,14 +560,9 @@ fn smallest_eigenvector_3x3(m: &[f64; 6]) -> [f64; 3] {
     };
 
     // Find the smallest eigenvalue
-    let mut min_idx = 0;
-    let mut min_val = eigenvalues[0];
-    for i in 1..3 {
-        if eigenvalues[i] < min_val {
-            min_val = eigenvalues[i];
-            min_idx = i;
-        }
-    }
+    let (min_idx, _) = eigenvalues.iter().enumerate()
+        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .unwrap();
 
     // Compute eigenvector for the smallest eigenvalue using inverse iteration:
     // (M - λI)v = 0, find null space
@@ -647,8 +642,6 @@ fn fit_cylinder(
     }
 
     // Step 2: Compute orthogonal basis perpendicular to axis.
-    let u;
-    let w;
     let (ax, ay, az) = (axis_dir[0].abs(), axis_dir[1].abs(), axis_dir[2].abs());
     let perp = if ax <= ay && ax <= az {
         [1.0, 0.0, 0.0]
@@ -657,11 +650,9 @@ fn fit_cylinder(
     } else {
         [0.0, 0.0, 1.0]
     };
-    let mut u_vec = cross3(&axis_dir, &perp);
-    normalize3(&mut u_vec);
-    let w_vec = cross3(&axis_dir, &u_vec);
-    u = u_vec;
-    w = w_vec;
+    let mut u = cross3(&axis_dir, &perp);
+    normalize3(&mut u);
+    let w = cross3(&axis_dir, &u);
 
     // Step 3: Project vertices onto 2D plane perpendicular to axis and fit circle.
     let verts: Vec<usize> = vertex_set.iter().copied().collect();
@@ -842,8 +833,7 @@ fn deduce_cylindrical_hypotheses(
         let fi_neighbors = mesh.faces[fi].neighbors;
         let mut seed_found = false;
 
-        for edge_idx in 0..fi_vc {
-            let ni = fi_neighbors[edge_idx];
+        for &ni in &fi_neighbors[..fi_vc] {
             if ni < 0 {
                 continue;
             }
@@ -876,13 +866,11 @@ fn deduce_cylindrical_hypotheses(
             normalize3(&mut axis_dir);
 
             // Collect vertices of both seed faces
-            let mut vertex_set = HashSet::new();
-            for vi_idx in 0..fi_vc {
-                vertex_set.insert(mesh.faces[fi].vertex_indices[vi_idx]);
-            }
+            let mut vertex_set: HashSet<usize> = mesh.faces[fi].vertex_indices[..fi_vc]
+                .iter().copied().collect();
             let ni_vc = mesh.faces[ni].vertex_count as usize;
-            for vi_idx in 0..ni_vc {
-                vertex_set.insert(mesh.faces[ni].vertex_indices[vi_idx]);
+            for &vi in &mesh.faces[ni].vertex_indices[..ni_vc] {
+                vertex_set.insert(vi);
             }
 
             let face_list = vec![fi, ni];
@@ -910,7 +898,6 @@ fn deduce_cylindrical_hypotheses(
             mesh.faces[ni].cylindrical_hypothesis = hi;
 
             let mut face_list = vec![fi, ni];
-            let mut vertex_set = vertex_set;
 
             let mut current_axis_origin = axis_origin;
             let mut current_axis_direction = axis_direction;
@@ -925,8 +912,7 @@ fn deduce_cylindrical_hypotheses(
                 let vc = mesh.faces[current_fi].vertex_count as usize;
                 let neighbors = mesh.faces[current_fi].neighbors;
 
-                for edge_idx in 0..vc {
-                    let cni = neighbors[edge_idx];
+                for &cni in &neighbors[..vc] {
                     if cni < 0 {
                         continue;
                     }
@@ -955,9 +941,9 @@ fn deduce_cylindrical_hypotheses(
                     let cni_vi = mesh.faces[cni].vertex_indices;
                     let mut all_ok = true;
                     let mut any_far = false;
-                    for vi_idx in 0..cni_vc {
+                    for &vi in &cni_vi[..cni_vc] {
                         let d = vertex_to_cylinder_distance(
-                            &mesh.vertices[cni_vi[vi_idx]],
+                            &mesh.vertices[vi],
                             &current_axis_origin,
                             &current_axis_direction,
                             current_radius,
@@ -978,8 +964,8 @@ fn deduce_cylindrical_hypotheses(
                     if !all_ok {
                         // Try re-fitting with new face included
                         let mut trial_vertices = vertex_set.clone();
-                        for vi_idx in 0..cni_vc {
-                            trial_vertices.insert(cni_vi[vi_idx]);
+                        for &vi in &cni_vi[..cni_vc] {
+                            trial_vertices.insert(vi);
                         }
                         let mut trial_faces = face_list.clone();
                         trial_faces.push(cni);
@@ -1008,8 +994,8 @@ fn deduce_cylindrical_hypotheses(
                     // Accept this face
                     mesh.faces[cni].cylindrical_hypothesis = hi;
                     face_list.push(cni);
-                    for vi_idx in 0..cni_vc {
-                        vertex_set.insert(cni_vi[vi_idx]);
+                    for &vi in &cni_vi[..cni_vc] {
+                        vertex_set.insert(vi);
                     }
                     queue.push_back(cni);
                 }
