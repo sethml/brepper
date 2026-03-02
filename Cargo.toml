@@ -16,5 +16,5 @@ name = "brepper"
 path = "src/bin/brepper.rs"
 
 [[bin]]
-name = "step-distance"
-path = "src/bin/step_distance.rs"
+name = "step-measure-tolerance"
+path = "src/bin/step_measure_tolerance.rs"

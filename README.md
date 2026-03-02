@@ -20,6 +20,7 @@ GENERAL OPTIONS:
     --compare=<step>         STEP file to compare to at each step
     --vertex-tolerance=<value>  Fitting tolerance in STL units (default: 1e-5)
     --surface-tolerance=<value> Surface-to-face offset tolerance in STL units (default: 0.4)
+    --angular-tolerance=<deg>   Max dihedral angle between adjacent triangles on the same surface (default: 17.5)
     -v, --verbose            Enable verbose output
     -q, --quiet              Suppress non-error output
     --debug                  Enable debug output and intermediate files
@@ -41,7 +42,11 @@ GENERAL OPTIONS:
 
 See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for full documentation.
 
-### Deviation Settings
+### Tolerance Settings
+
+#### Surface Tolerance
+
+This is how far the surface of a mesh triangle is allowed to deviate from the surface it is approximating.
 
 Onshape calls this "Chordal tolerance (mm)", and the preset values are:
 - Coarse: 0.24 mm
@@ -52,6 +57,21 @@ Fusion 360 calls this "Surface Deviation", and the preset values seem to vary ba
 - Low: 1x
 - Medium: 2.5x
 - High: 8x
+
+#### Angular Tolerance
+
+This is the maximum angle between adjacent triangle faces that approximate a smooth surface.
+
+Onshape calls this "Angular deviation (deg)", and the present values are:
+- Coarse: 12.5 deg
+- Medium: 6.25 deg
+- Fine: 2.5 deg
+
+Fusion 360 calls this "Normal Deviation", and the preset values are:
+- Low: 30.0
+- Medium: 15.0
+- High: 10.0
+In theory "Normal Deviation" should be the maximum angular error of the face relative to the surface normal, but in practice it seems to result in the given maximum angular deviation.
 
 ### Generating Test Models
 
