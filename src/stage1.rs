@@ -1,10 +1,24 @@
+//! Stage 1: Mesh Input & Preprocessing
+//!
+//! 1.1: Read STL file into ConnectedMesh with welded vertices.
+//! 1.2: Validate mesh topology, compute normals and neighbors.
+
+use crate::config::Config;
 use opencascade_sys::{message, rw_stl};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
 pub const UNDEDUCED_PLANAR_HYPOTHESIS: i32 = -2;
 pub const NO_HYPOTHESIS: i32 = -1;
+
+// ---------------------------------------------------------------------------
+// Data structures — Stage 1 output
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeshVertex {
@@ -14,7 +28,7 @@ pub struct MeshVertex {
 }
 
 impl MeshVertex {
-    fn from_xyz(x: f64, y: f64, z: f64) -> Self {
+    pub fn from_xyz(x: f64, y: f64, z: f64) -> Self {
         Self { x, y, z }
     }
 }
@@ -31,15 +45,6 @@ pub struct MeshFace {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct PlanarHypothesis;
-
-#[derive(Debug, Clone, Default)]
-pub struct CylindricalHypothesis;
-
-#[derive(Debug, Clone, Default)]
-pub struct SphericalHypothesis;
-
-#[derive(Debug, Clone, Default)]
 pub struct MeshValidationStats {
     pub mesh_faces: usize,
     pub mesh_vertices: usize,
@@ -52,15 +57,18 @@ pub struct MeshValidationStats {
     pub voids_within_solids: usize,
 }
 
+/// The output of Stage 1: a connected mesh with welded vertices, computed normals,
+/// edge neighbors, and validation statistics.
 #[derive(Debug, Clone, Default)]
 pub struct ConnectedMesh {
     pub vertices: Vec<MeshVertex>,
     pub faces: Vec<MeshFace>,
-    pub planar_hypotheses: Vec<PlanarHypothesis>,
-    pub cylindrical_hypotheses: Vec<CylindricalHypothesis>,
-    pub spherical_hypotheses: Vec<SphericalHypothesis>,
     pub stats: MeshValidationStats,
 }
+
+// ---------------------------------------------------------------------------
+// STL reading (Stage 1.1)
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
 pub struct VertexWeldOptions {
@@ -120,6 +128,46 @@ impl Display for MeshValidationError {
 }
 
 impl Error for MeshValidationError {}
+
+#[derive(Debug)]
+pub enum Stage1Error {
+    Read(MeshReadError),
+    Validation(MeshValidationError),
+}
+
+impl Display for Stage1Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Stage1Error::Read(e) => write!(f, "stage 1.1 (read STL): {e}"),
+            Stage1Error::Validation(e) => write!(f, "stage 1.2 (validation): {e}"),
+        }
+    }
+}
+
+impl Error for Stage1Error {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Stage1Error::Read(e) => Some(e),
+            Stage1Error::Validation(e) => Some(e),
+        }
+    }
+}
+
+impl From<MeshReadError> for Stage1Error {
+    fn from(e: MeshReadError) -> Self {
+        Stage1Error::Read(e)
+    }
+}
+
+impl From<MeshValidationError> for Stage1Error {
+    fn from(e: MeshValidationError) -> Self {
+        Stage1Error::Validation(e)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Vertex welding internals
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct CellKey {
@@ -236,12 +284,13 @@ pub fn read_connected_mesh_from_stl(
     Ok(ConnectedMesh {
         vertices: welder.vertices,
         faces,
-        planar_hypotheses: Vec::new(),
-        cylindrical_hypotheses: Vec::new(),
-        spherical_hypotheses: Vec::new(),
         stats: MeshValidationStats::default(),
     })
 }
+
+// ---------------------------------------------------------------------------
+// Mesh validation (Stage 1.2)
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct EdgeKey {
@@ -444,12 +493,60 @@ fn compute_face_normal(face: &MeshFace, vertices: &[MeshVertex]) -> Option<[f64;
     Some([nx * inv_len, ny * inv_len, nz * inv_len])
 }
 
+// ---------------------------------------------------------------------------
+// Stage 1 entry point
+// ---------------------------------------------------------------------------
+
+/// Run stage 1: read STL (1.1) and validate mesh (1.2).
+pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
+    // Stage 1.1: Read STL
+    let mut mesh = read_connected_mesh_from_stl(
+        &config.input_stl,
+        VertexWeldOptions {
+            tolerance: config.vertex_tolerance.min(1e-9_f64.max(config.vertex_tolerance * 0.01)),
+        },
+    )?;
+
+    if !config.quiet {
+        eprintln!(
+            "Stage 1.1: Read {} vertices, {} faces from STL",
+            mesh.vertices.len(),
+            mesh.faces.len()
+        );
+    }
+
+    if !config.stage.at_least(1, 2) {
+        return Ok(mesh);
+    }
+
+    // Stage 1.2: Validate and populate topology
+    mesh.validate_and_populate_topology()?;
+
+    if !config.quiet {
+        let s = &mesh.stats;
+        eprintln!("Stage 1.2: Mesh validation passed");
+        eprintln!(
+            "  {} faces, {} vertices, {} shells, {} solids",
+            s.mesh_faces, s.mesh_vertices, s.connected_shells, s.solids
+        );
+        if s.mesh_edges_open > 0 {
+            eprintln!("  {} open edges", s.mesh_edges_open);
+        }
+    }
+
+    // TODO: With --compare flag, check that all vertices are within
+    // --vertex-tolerance of the surface of a solid from the STEP file.
+
+    Ok(mesh)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
-    use super::{
-        read_connected_mesh_from_stl, ConnectedMesh, MeshFace, MeshValidationError, MeshVertex,
-        VertexWeldOptions, NO_HYPOTHESIS, UNDEDUCED_PLANAR_HYPOTHESIS,
-    };
+    use super::*;
 
     fn make_triangle_face(a: usize, b: usize, c: usize) -> MeshFace {
         MeshFace {
@@ -471,9 +568,6 @@ mod tests {
 
         assert_eq!(mesh.faces.len(), 12);
         assert_eq!(mesh.vertices.len(), 8);
-        assert!(mesh.planar_hypotheses.is_empty());
-        assert!(mesh.cylindrical_hypotheses.is_empty());
-        assert!(mesh.spherical_hypotheses.is_empty());
 
         for face in &mesh.faces {
             assert_eq!(face.vertex_count, 3);
@@ -488,8 +582,9 @@ mod tests {
     #[test]
     fn validates_cube_mesh_topology() {
         let stl_path = format!("{}/tests/manual/cube.stl", env!("CARGO_MANIFEST_DIR"));
-        let mut mesh = read_connected_mesh_from_stl(&stl_path, VertexWeldOptions { tolerance: 1.0e-9 })
-            .expect("cube mesh should load");
+        let mut mesh =
+            read_connected_mesh_from_stl(&stl_path, VertexWeldOptions { tolerance: 1.0e-9 })
+                .expect("cube mesh should load");
 
         mesh.validate_and_populate_topology()
             .expect("cube should be a valid closed manifold");

@@ -11,5 +11,9 @@ name = "brepper"
 path = "src/lib.rs"
 
 [[bin]]
+name = "brepper"
+path = "src/bin/brepper.rs"
+
+[[bin]]
 name = "step-distance"
 path = "src/bin/step_distance.rs"

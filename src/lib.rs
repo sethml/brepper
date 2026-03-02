@@ -1,3 +1,7 @@
 // brepper - B-Rep from Mesh
 
-pub mod mesh;
+pub mod config;
+pub mod stage1;
+pub mod stage2;
+pub mod stage3;
+pub mod stage4;
