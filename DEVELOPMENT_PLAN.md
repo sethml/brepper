@@ -373,6 +373,20 @@ This simple priority rule works because a face can have at most one hypothesis o
     - Compute face centroids and project them onto the selected surface.
     - Measure distance from each projected centroid to the nearest surface in the reference STEP file.
     - Report an error if any projected centroid exceeds `--surface-tolerance`.
+    - (Weak check — only samples at centroid positions. See stronger check below.)
+
+- **Stronger `--compare_step` check** (to be implemented later, after stage 3.1 adjacency graph provides boundary infrastructure):
+    - For each selected surface, identify the boundary of its mesh face set: walk mesh edges and find those separating faces assigned to different selected surfaces (or at the mesh boundary).
+    - Project the boundary edge vertices onto the fitted surface to define a closed boundary curve in the surface's parameter space (UV coords).
+    - Sample a grid of points within the bounded UV region on the fitted surface. The sampling density should be sufficient to detect surface deviations — e.g., at least 10 samples per edge-length span in each parameter direction.
+    - For each sample point (a 3D point on the fitted surface), measure distance to the nearest surface in the reference STEP file using `BRepExtrema_DistShapeShape`.
+    - Report an error if any sample point exceeds `--vertex-tolerance`.
+    - This is stronger than the centroid check in two ways: (1) denser sampling across the entire surface region rather than just at face centroids, and (2) tighter tolerance (`--vertex-tolerance` rather than `--surface-tolerance`) since we're comparing two analytic surface representations that should agree closely.
+    - UV parameterization per surface type:
+        - **Plane**: project boundary vertices onto plane's local (u, v) coordinates, form a 2D polygon, sample interior points via grid + point-in-polygon test, lift back to 3D.
+        - **Cylinder**: map boundary vertices to (θ, z) parameter space, handle angular wrapping, sample grid within the bounded (θ, z) domain, map back to 3D via `axis_origin + z * axis_direction + radius * (cos(θ) * u_vec + sin(θ) * w_vec)`.
+        - **Sphere**: map boundary vertices to (θ, φ) parameter space, handle polar singularities, sample grid within bounded (θ, φ) domain, map back to 3D.
+    - This check validates that the fitted surface is the *correct* surface (not just that it passes near some centroids), catching misidentified surface types, slightly wrong parameters (axis direction, radius, center), and spurious hypotheses that happen to pass the centroid check by coincidence.
 
 ---
 
@@ -567,6 +581,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 
 ### Stage 3: Surface Reconstruction
 - [x] Implement stage 3.1: Create OCCT surface objects and build adjacency graph from mesh connectivity.
+- [ ] Revisit stage 2.6: Implement stronger --compare_step surface validation that samples a grid of points across each selected surface's bounded region and checks against --vertex-tolerance.
 - [ ] Implement stage 3.2: Detect tangency relationships between adjacent surfaces (initially mark all as non-tangent).
 - [ ] Implement stage 3.3: Compute edge curves via surface-surface intersection, trim to vertices, derive pcurves.
 - [ ] Implement stage 3.4: Create OCCT faces from surfaces bounded by edge wires.
