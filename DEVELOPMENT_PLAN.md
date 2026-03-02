@@ -382,49 +382,48 @@ Build OCCT B-Rep topology (faces, edges, vertices) from the selected surfaces. T
 
 **Core data structures:**
 
-A vector of `ReconFace` descriptors, one per selected surface:
-- `selected_surface_index: usize` — Index into the selected surfaces from stage 2.6.
-- `surface: Handle<Geom_Surface>` — Infinite OCCT surface (created in 3.1).
-- `adj_faces: Vec<usize>` — Indices of adjacent ReconFaces, ordered topologically around this face's boundary. A face may appear multiple times if it shares multiple edges with this face (e.g., a cylindrical face adjacent to itself via a seam edge).
-- `adj_edges: Vec<usize>` — ReconEdge indices. `adj_edges[i]` is the edge between this face and `adj_faces[i]`.
-- `adj_vertices: Vec<usize>` — ReconVertex indices at corners. `adj_vertices[i]` is the vertex between `adj_edges[i]` and `adj_edges[(i+1) % N]`.
-- `occt_face: Option<TopoDS_Face>` — Populated in 3.4.
+A vector of `FaceDescriptor` structs, one per selected surface:
+- `selected_surface_idx: usize` — Index into the selected surfaces from stage 2.6.
+- `surface: OwnedPtr<HandleGeomSurface>` — Infinite OCCT surface, type-erased (created in 3.1).
+- `adjacent_faces: Vec<usize>` — Indices of adjacent FaceDescriptors, ordered topologically around this face's boundary. A face may appear multiple times if it shares multiple edges with this face (e.g., a cylindrical face adjacent to itself via a seam edge).
+- `edge_indices: Vec<usize>` — ReconEdge indices. `edge_indices[i]` is the edge between this face and `adjacent_faces[i]`.
+- `vertex_indices: Vec<usize>` — BRepVertex indices at corners. `vertex_indices[i]` is the vertex between `edge_indices[i]` and `edge_indices[(i+1) % N]`.
+- (TODO) `occt_face: Option<TopoDS_Face>` — Populated in 3.4.
 
-A vector of `ReconEdge` descriptors:
-- `face_indices: [usize; 2]` — Indices of the two adjacent ReconFaces.
-- `vertex_indices: [usize; 2]` — Indices of the ReconVertices at each end. For closed-loop edges (no vertices), both are `usize::MAX`.
-- `curve_3d: Handle<Geom_Curve>` — 3D intersection curve, trimmed to vertex endpoints. One curve per edge suffices — each edge corresponds to one connected component of the surface-surface intersection (the mesh connectivity guarantees this).
-- `pcurves: [Handle<Geom2d_Curve>; 2]` — 2D parametric curve on each adjacent face's surface.
+A vector of `ReconEdge` structs:
+- `face_indices: [usize; 2]` — Indices of the two adjacent FaceDescriptors.
+- `vertex_indices: [usize; 2]` — Indices of the two BRepVertices at each end. For closed-loop edges (no vertices), both are `usize::MAX`.
+- (TODO) `curve_3d: Handle<Geom_Curve>` — 3D intersection curve, trimmed to vertex endpoints.
+- (TODO) `pcurves: [Handle<Geom2d_Curve>; 2]` — 2D parametric curve on each adjacent face's surface.
 - `tangent: bool` — Whether the adjacent surfaces are tangent along this edge (detected in 3.2).
-- `mesh_boundary_vertices: Vec<usize>` — Mesh vertex indices along this boundary, used to guide curve selection and validate the intersection curve.
+- `mesh_boundary_vertices: Vec<usize>` — Mesh vertex indices along this boundary, ordered along the boundary.
 
-A vector of `ReconVertex` descriptors:
-- `point: gp_Pnt` — 3D position, computed by projecting the mesh vertex onto all adjacent surfaces and averaging (rather than raw mesh vertex position, for B-Rep consistency).
-- `adj_faces: Vec<usize>` — Indices of ReconFaces meeting at this vertex, in topological order.
-- `adj_edges: Vec<usize>` — Indices of ReconEdges meeting at this vertex, in topological order.
-- `uv_coords: Vec<(f64, f64)>` — UV coordinates of this vertex on each adjacent face's surface.
-- `tolerance: f64` — Maximum deviation from any adjacent surface (used for OCCT's `TopoDS_Vertex` tolerance).
+A vector of `BRepVertex` structs:
+- `point: [f64; 3]` — 3D position (currently raw mesh vertex position; future: project onto adjacent surfaces and average).
+- `adjacent_faces: Vec<usize>` — Indices of FaceDescriptors meeting at this vertex, in topological order.
+- `adjacent_edges: Vec<usize>` — Indices of ReconEdges meeting at this vertex, in topological order.
+- (TODO) `uv_coords: Vec<(f64, f64)>` — UV coordinates of this vertex on each adjacent face's surface.
+- (TODO) `tolerance: f64` — Maximum deviation from any adjacent surface.
 
 #### 3.1 Create OCCT surface objects and build adjacency graph
 
-**Surface creation:**
+**Surface creation** (`create_occt_surface`):
 - For each selected surface, create the corresponding infinite OCCT surface:
-    - Planar → `Geom_Plane` from `gp_Pln` (gp_Ax3 with Z as face normal).
-    - Cylindrical → `Geom_CylindricalSurface` from `gp_Cylinder` (axis direction along Z, origin on axis, radius).
-    - Spherical → `Geom_SphericalSurface` from `gp_Sphere` (center, radius).
+    - Planar → `geom::Plane::new_pnt_dir` with `gp::Pnt` at centroid and `gp::Dir` along normal. Wrapped via `to_handle().to_handle_surface()`.
+    - Cylindrical → `geom::CylindricalSurface::new_ax3_real` with `gp::Ax3` from axis origin/direction and radius. Wrapped via `to_handle().to_handle_surface()`.
+    - Spherical → `geom::SphericalSurface::new_ax3_real` with `gp::Ax3` from center and Z-axis direction. Wrapped via `to_handle().to_handle_surface()`.
     - (Future: BSpline → `Geom_BSplineSurface` via `GeomAPI_PointsToBSplineSurface`, etc.)
 - For consistency with OCCT conventions: planes use gp_Ax3 with Z as normal; cylinders have Z along axis; spheres have poles at Z extremes. This affects pcurve computation in 3.3.
 
 **Adjacency graph construction:**
-- Two selected surfaces are adjacent if they share mesh edges (neighboring mesh faces that belong to different selected surfaces).
-- For each mesh edge between faces assigned to different selected surfaces:
-    - Record the pair of selected surfaces.
-    - Collect the mesh vertices along the shared boundary.
-- Group shared mesh edges into contiguous boundary segments (connected sequences between the same pair of surfaces). Each segment becomes a ReconEdge.
-- Identify B-Rep vertices: mesh vertices where 3+ selected surfaces meet. For each, create a ReconVertex.
-    - Compute its 3D position by projecting the mesh vertex position onto all adjacent surfaces and averaging.
-    - Record adjacent faces and edges in topological order (walking around the vertex).
-- Populate the `adj_faces`, `adj_edges`, and `adj_vertices` vectors of each ReconFace from the constructed graph.
+1. Build face-to-surface map: for each mesh face, record which selected surface it belongs to (`build_face_to_surface_map`).
+2. Collect boundary edges: walk all mesh edges; when an edge separates faces belonging to different surfaces, record it as an `UndirectedEdge` keyed by `SurfacePair` (`collect_boundary_edges`).
+3. Chain boundary edges: for each surface pair, chain connected boundary edges into ordered vertex sequences (`chain_boundary_edges`). Each chain becomes a `ReconEdge` with the mesh boundary vertices in order.
+4. Find corner vertices: mesh vertices where 3+ selected surfaces meet become `BRepVertex` entries (`find_corner_vertices`). Their 3D position is taken from the mesh vertex.
+5. Assign vertex indices to edges: for each `ReconEdge`, check if its first/last mesh boundary vertex is a corner vertex and set `vertex_indices` accordingly (or `usize::MAX` for closed-loop edges).
+6. Build face descriptors: for each selected surface, create a `FaceDescriptor` with the OCCT surface handle. Walk the boundary edges, ordering them topologically around the face boundary (`walk_edges_around_face`). This uses a rotation-order algorithm: at each vertex, pick the next edge that rotates counter-clockwise around the face. This populates `adjacent_faces`, `edge_indices`, and `vertex_indices` for each face.
+7. Build vertex adjacency: for each `BRepVertex`, walk the edges meeting at that vertex in topological order, recording `adjacent_faces` and `adjacent_edges`.
+8. Validate topology: check Euler's formula V-E+F=2 for genus-0 models.
 
 #### 3.2 Detect tangency relationships
 For each ReconEdge, determine whether the two adjacent surfaces are tangent along the shared boundary. This matters because `GeomAPI_IntSS` can fail or produce degenerate results for tangent/near-tangent surfaces, requiring special handling in edge curve computation (3.3).
@@ -567,7 +566,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Implement the --angular-tolerance flag for cylindrical and spherical surface hypothesis generation.
 
 ### Stage 3: Surface Reconstruction
-- [ ] Implement stage 3.1: Create OCCT surface objects and build adjacency graph from mesh connectivity.
+- [x] Implement stage 3.1: Create OCCT surface objects and build adjacency graph from mesh connectivity.
 - [ ] Implement stage 3.2: Detect tangency relationships between adjacent surfaces (initially mark all as non-tangent).
 - [ ] Implement stage 3.3: Compute edge curves via surface-surface intersection, trim to vertices, derive pcurves.
 - [ ] Implement stage 3.4: Create OCCT faces from surfaces bounded by edge wires.
@@ -602,23 +601,23 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 
 | Test Case | Input | Expected Output | Status |
 |-----------|-------|-----------------|--------|
-| Cube | 12 triangles | 6 planes, 1 solid | ✓ Stage 2.1 |
-| Wedge | 12 triangles | 6 planes (incl. angled) | ✓ Stage 2.1 |
+| Cube | 12 triangles | 6 planes, 1 solid | ✓ Stage 3.1 (6F/12E/8V) |
+| Wedge | 12 triangles | 6 planes (incl. angled) | ✓ Stage 3.1 (6F/12E/8V) |
 | T-Shape | 28 triangles | 10 planes | ✓ Stage 2.1 |
 | Staircase | 48 triangles | 12 planes | ✓ Stage 2.1 |
-| Chamfered Cube | 44 triangles | 26 planes | ✓ Stage 2.1 |
+|| Chamfered Cube (onshape) | 44 triangles | 26 planes | ✓ Stage 3.1 (26F/48E/24V) |
 | Stepped Block | Complex planar | Multiple planes | ✓ Stage 2.1 |
 | L Bracket | Complex planar | Multiple planes | ✓ Stage 2.1 |
 | Cylinder | Tessellated cylinder | 1 cylinder + 2 planes | ✓ Stage 1 |
-|| Simple Cylinder (ccad) | 124 triangles | 1 cylinder + 2 planes | ✓ Stage 2.2 |
-|| Block with Hole (ccad) | 44 triangles | 6 planes + 1 concave cylinder | ✓ Stage 2.2 |
-|| Pipe (ccad) | 244 triangles | 2 cylinders (in/out) + 2 annular planes | ✓ Stage 2.2 |
+|| Simple Cylinder (ccad) | 124 triangles | 1 cylinder + 2 planes | ✓ Stage 3.1 (3F/2E/0V) |
+|| Block with Hole (ccad) | 44 triangles | 6 planes + 1 concave cylinder | ✓ Stage 3.1 (7F/15E/10V) |
+|| Pipe (ccad) | 244 triangles | 2 cylinders (in/out) + 2 annular planes | ✓ Stage 3.1 (4F) |
 || Stepped Cylinder (ccad) | 240 triangles | 2 cylinders + 3 planes | ✓ Stage 2.2 |
 || Two Holes (ccad) | 244 triangles | 6 planes + 2 concave cylinders | ✓ Stage 2.2 |
-|| Simple Sphere (ccad) | 974 triangles | 1 sphere | ✓ Stage 2.3 |
-|| Hemisphere (ccad) | 518 triangles | 1 sphere + 1 plane | ✓ Stage 2.3 |
-|| Spherical Pocket (ccad) | 486 triangles | 6 planes + 1 concave sphere | ✓ Stage 2.3 |
-|| Ball on Cylinder (ccad) | 764 triangles | 1 sphere + 1 cylinder + 1 plane | ✓ Stage 2.3 |
+|| Simple Sphere (ccad) | 974 triangles | 1 sphere | ✓ Stage 3.1 (1F/0E/0V) |
+|| Hemisphere (ccad) | 518 triangles | 1 sphere + 1 plane | ✓ Stage 3.1 (2F/1E/0V) |
+|| Spherical Pocket (ccad) | 486 triangles | 6 planes + 1 concave sphere | ✓ Stage 3.1 (7F) |
+|| Ball on Cylinder (ccad) | 764 triangles | 1 sphere + 1 cylinder + 1 plane | ✓ Stage 3.1 (3F/2E/0V) |
 || Sphere | Tessellated sphere | 1 sphere | ✓ Stage 2.3 |
 | Cone | Tessellated cone | 1 cone + 1 plane | ✓ Stage 1 |
 | Fillet | Blended edge | Planes + fillet surface | |

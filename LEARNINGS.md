@@ -159,3 +159,14 @@ All node/triangle indices are **1-based** (OCCT convention).
 - Simple per-face priority rule: multi-face planar > spherical > cylindrical > single-face planar.
 - Previously known issue (now fixed): small cubes (e.g., manual/cube.stl at 1mm) got spurious sphere/cylinder hypotheses because all 8 vertices lie exactly on a circumscribed sphere. Fixed by the `--angular-tolerance` flag (default 17.5°): adjacent cube faces meet at 90°, far exceeding the angular tolerance, so the seed pair is rejected.
 - The `select_surfaces` function only needs the mesh and planar hypotheses (to check face count > 1); it reads cylindrical/spherical hypothesis indices from the per-face fields.
+
+
+### Stage 3.1 adjacency graph construction
+- OCCT surface creation: `geom::Plane::new_pnt_dir`, `geom::CylindricalSurface::new_ax3_real`, `geom::SphericalSurface::new_ax3_real`. Type erasure via `.to_handle().to_handle_surface()` to get `OwnedPtr<HandleGeomSurface>`.
+- Adjacency is determined from mesh edges: an edge between mesh faces assigned to different selected surfaces is a boundary edge.
+- Boundary edges are grouped by `SurfacePair` (canonical ordering), then chained into ordered vertex sequences. Each chain becomes a `ReconEdge`.
+- Corner vertices (where 3+ surfaces meet) become `BRepVertex` entries.
+- Topological ordering of edges around each face uses rotation-order walk: at each vertex, pick the edge to the face that comes next in counter-clockwise order. For faces without vertices (closed loops like cylinder caps), all edges incident on that face are included.
+- Bug encountered: closing vertex in topological walk was missing — after walking N edges around a face, the vertex connecting the last edge back to the first edge must be added separately.
+- `wedge(10, 10, 10, 5)` in CodeCAD is a truncated wedge (8 vertices, 6 faces), NOT a triangular prism (6 vertices, 5 faces). The 4th parameter `ltx` is the top face X dimension.
+- Euler formula V-E+F=2 is a good sanity check for genus-0 (no holes through the model) manifold solids. Models with through-holes have different Euler characteristics.
