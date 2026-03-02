@@ -1020,62 +1020,15 @@ fn deduce_cylindrical_hypotheses(
                 error_abs_sum += d;
             }
 
-            // Validate: require at least 3 faces with sufficient angular spread
-            // around the cylinder circumference. Any real CAD tessellation produces
-            // facets spanning multiple angular positions. This rejects:
-            // - 2-face fits (e.g. adjacent torus facets)
-            // - 3+ faces stacked along the axis with no circumferential coverage
-            // Check by computing radial directions from axis to face centroids,
-            // projected perpendicular to the axis, and requiring that these
-            // directions span at least ~10° of arc.
-            let mut circumferential_ok = false;
-            if face_list.len() >= 3 {
-                // Compute 2D radial directions (perpendicular to axis) for each face centroid
-                let mut radials: Vec<[f64; 2]> = Vec::with_capacity(face_list.len());
-                // Build perpendicular basis vectors u, w for the axis
-                let ax = current_axis_direction;
-                let u_basis;
-                let w_basis;
-                {
-                    let ref_vec = if ax[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
-                    let u0 = [
-                        ax[1] * ref_vec[2] - ax[2] * ref_vec[1],
-                        ax[2] * ref_vec[0] - ax[0] * ref_vec[2],
-                        ax[0] * ref_vec[1] - ax[1] * ref_vec[0],
-                    ];
-                    let u_len = (u0[0]*u0[0] + u0[1]*u0[1] + u0[2]*u0[2]).sqrt();
-                    u_basis = [u0[0]/u_len, u0[1]/u_len, u0[2]/u_len];
-                    w_basis = [
-                        ax[1] * u_basis[2] - ax[2] * u_basis[1],
-                        ax[2] * u_basis[0] - ax[0] * u_basis[2],
-                        ax[0] * u_basis[1] - ax[1] * u_basis[0],
-                    ];
-                }
-                for &f in &face_list {
-                    let c = face_centroid(&mesh.faces[f], &mesh.vertices);
-                    let v = [c[0] - current_axis_origin[0], c[1] - current_axis_origin[1], c[2] - current_axis_origin[2]];
-                    let pu = v[0]*u_basis[0] + v[1]*u_basis[1] + v[2]*u_basis[2];
-                    let pw = v[0]*w_basis[0] + v[1]*w_basis[1] + v[2]*w_basis[2];
-                    let len = (pu*pu + pw*pw).sqrt();
-                    if len > 1e-15 {
-                        radials.push([pu / len, pw / len]);
-                    }
-                }
-                // Check that radial directions span a significant angle.
-                // Find max |cross product| among all pairs — this equals sin(angle).
-                // sin(10°) ≈ 0.17; use 0.15 as threshold.
-                const MIN_ANGULAR_SPREAD: f64 = 0.15;
-                let mut max_cross = 0.0_f64;
-                for i in 0..radials.len() {
-                    for j in (i+1)..radials.len() {
-                        let cross = (radials[i][0] * radials[j][1] - radials[i][1] * radials[j][0]).abs();
-                        max_cross = max_cross.max(cross);
-                    }
-                }
-                circumferential_ok = max_cross >= MIN_ANGULAR_SPREAD;
-            }
+            // Validate: require at least 3 faces for a cylindrical hypothesis.
+            // Any real CAD tessellation of a cylinder produces at least 3 facets
+            // around the circumference. This rejects spurious 2-face fits from
+            // e.g. adjacent torus facets that locally approximate a cylinder.
+            // Also validate that face centroids lie within surface_tol of the
+            // cylinder, catching spurious fits from perpendicular planar faces.
+            let min_faces_ok = face_list.len() >= 3;
             let mut centroid_ok = true;
-            if circumferential_ok {
+            if min_faces_ok {
                 for &f in &face_list {
                     let c = face_centroid(&mesh.faces[f], &mesh.vertices);
                     let d = vertex_to_cylinder_distance(
@@ -1089,7 +1042,7 @@ fn deduce_cylindrical_hypotheses(
                 }
             }
 
-            if !circumferential_ok || !centroid_ok {
+            if !min_faces_ok || !centroid_ok {
                 // Undo assignments
                 for &f in &face_list {
                     mesh.faces[f].cylindrical_hypothesis = UNDEDUCED_CYLINDRICAL_HYPOTHESIS;
