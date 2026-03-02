@@ -5,6 +5,7 @@
 
 use brepper::config;
 use brepper::{stage1, stage2};
+use opencascade_sys::{b_rep_adaptor, geom_abs, gp, top_abs, top_exp, topo_ds};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -43,6 +44,98 @@ fn run_stage2(config: &config::Config) -> stage2::Stage2Output {
     stage2::stage2(config, mesh).expect("stage2 should pass")
 }
 
+/// Compute the centroid of a mesh face.
+fn face_centroid(face: &stage1::MeshFace, vertices: &[stage1::MeshVertex]) -> [f64; 3] {
+    let n = face.vertex_count as usize;
+    let mut cx = 0.0_f64;
+    let mut cy = 0.0_f64;
+    let mut cz = 0.0_f64;
+    for vi in 0..n {
+        let v = &vertices[face.vertex_indices[vi]];
+        cx += v.x;
+        cy += v.y;
+        cz += v.z;
+    }
+    let inv_n = 1.0 / n as f64;
+    [cx * inv_n, cy * inv_n, cz * inv_n]
+}
+
+/// For every face in the STEP file whose surface type is in `check_types`,
+/// assert that there's at least one hypothesis of the matching type with a mesh face
+/// centroid within surface_tolerance of that STEP face.
+fn assert_step_surfaces_covered(
+    output: &stage2::Stage2Output,
+    config: &config::Config,
+    check_types: &[geom_abs::SurfaceType],
+) {
+    let compare_shape = config.compare_shape.as_ref().expect("compare_shape must be loaded");
+    let tol = config.surface_tolerance_mm;
+
+    let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
+        compare_shape,
+        top_abs::ShapeEnum::Face,
+        top_abs::ShapeEnum::Shape,
+    );
+
+    let mut step_face_idx = 0_usize;
+    while explorer.more() {
+        let shape = explorer.current();
+        let face = topo_ds::face_shape(shape);
+        let adaptor = b_rep_adaptor::Surface::new_face(face);
+        let surf_type = adaptor.get_type();
+
+        if !check_types.contains(&surf_type) {
+            explorer.next();
+            step_face_idx += 1;
+            continue;
+        }
+
+        let type_name = match surf_type {
+            geom_abs::SurfaceType::Plane => "Plane",
+            geom_abs::SurfaceType::Cylinder => "Cylinder",
+            geom_abs::SurfaceType::Sphere => "Sphere",
+            _ => unreachable!(),
+        };
+
+        // Collect centroids from all hypotheses of the matching type
+        let hypothesis_centroids: Vec<[f64; 3]> = match surf_type {
+            geom_abs::SurfaceType::Plane => {
+                output.planar_hypotheses.iter()
+                    .flat_map(|h| h.faces.iter().map(|&fi| face_centroid(&output.mesh.faces[fi], &output.mesh.vertices)))
+                    .collect()
+            }
+            geom_abs::SurfaceType::Cylinder => {
+                output.cylindrical_hypotheses.iter()
+                    .flat_map(|h| h.faces.iter().map(|&fi| face_centroid(&output.mesh.faces[fi], &output.mesh.vertices)))
+                    .collect()
+            }
+            geom_abs::SurfaceType::Sphere => {
+                output.spherical_hypotheses.iter()
+                    .flat_map(|h| h.faces.iter().map(|&fi| face_centroid(&output.mesh.faces[fi], &output.mesh.vertices)))
+                    .collect()
+            }
+            _ => unreachable!(),
+        };
+
+        // Check if any centroid from a matching hypothesis is within tolerance of this STEP face
+        let face_shape = face.as_shape();
+        let covered = hypothesis_centroids.iter().any(|c| {
+            let pt = gp::Pnt::new_real3(c[0], c[1], c[2]);
+            let d = stage1::min_distance_to_shape(&pt, face_shape);
+            d <= tol
+        });
+
+        assert!(
+            covered,
+            "STEP face {} (type {}) has no matching {} hypothesis with a centroid within tolerance {}",
+            step_face_idx, type_name, type_name, tol,
+        );
+
+        explorer.next();
+        step_face_idx += 1;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Macros for generating test cases
 // ---------------------------------------------------------------------------
@@ -61,6 +154,8 @@ macro_rules! test_stl_step_stage2_compare {
 }
 
 /// Generate a test that runs stage 2.2 with --compare against a STEP file.
+/// Also checks that every Plane/Cylinder STEP face is covered by a
+/// hypothesis of the corresponding type.
 macro_rules! test_stl_step_stage22_compare {
     ($name:ident, $stl_path:literal, $step_path:literal) => {
         #[test]
@@ -68,7 +163,11 @@ macro_rules! test_stl_step_stage22_compare {
             let stl = format!("{}/{}", manifest_dir(), $stl_path);
             let step = format!("{}/{}", manifest_dir(), $step_path);
             let config = config_for_compare_stage22(&stl, &step);
-            run_stage2(&config);
+            let output = run_stage2(&config);
+            assert_step_surfaces_covered(
+                &output, &config,
+                &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder],
+            );
         }
     };
 }
@@ -381,6 +480,13 @@ fn chamfered_cube_produces_no_cylindrical_hypotheses() {
 // Stage 2.2: Compare tests (all models should pass --compare at stage 2.2)
 // ===========================================================================
 
+// --- tests/manual/ ---
+test_stl_step_stage22_compare!(
+    manual_cube_stage22_compare,
+    "tests/manual/cube.stl",
+    "tests/manual/cube.step"
+);
+
 // --- tests/ccad/generated/ ---
 test_stl_step_stage22_compare!(
     ccad_cube_stage22_compare,
@@ -489,6 +595,8 @@ fn config_for_compare_stage23(stl_path: &str, step_path: &str) -> config::Config
 }
 
 /// Generate a test that runs stage 2.3 with --compare against a STEP file.
+/// Also checks that every Plane/Cylinder/Sphere STEP face is covered by a
+/// hypothesis of the corresponding type.
 macro_rules! test_stl_step_stage23_compare {
     ($name:ident, $stl_path:literal, $step_path:literal) => {
         #[test]
@@ -496,7 +604,11 @@ macro_rules! test_stl_step_stage23_compare {
             let stl = format!("{}/{}", manifest_dir(), $stl_path);
             let step = format!("{}/{}", manifest_dir(), $step_path);
             let config = config_for_compare_stage23(&stl, &step);
-            run_stage2(&config);
+            let output = run_stage2(&config);
+            assert_step_surfaces_covered(
+                &output, &config,
+                &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere],
+            );
         }
     };
 }
@@ -625,6 +737,13 @@ fn onshape_dome_hemisphere_produces_one_spherical_hypothesis() {
 // ===========================================================================
 // Stage 2.3: Compare tests (all models should pass --compare at stage 2.3)
 // ===========================================================================
+
+// --- tests/manual/ ---
+test_stl_step_stage23_compare!(
+    manual_cube_stage23_compare,
+    "tests/manual/cube.stl",
+    "tests/manual/cube.step"
+);
 
 // --- tests/ccad/generated/ ---
 test_stl_step_stage23_compare!(
