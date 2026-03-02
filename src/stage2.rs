@@ -1608,6 +1608,185 @@ fn compare_spherical_hypotheses(
     Ok(())
 }
 
+
+// ---------------------------------------------------------------------------
+// Stage 2.6: Select surfaces for reconstruction
+// ---------------------------------------------------------------------------
+
+/// Apply per-face priority rule to select exactly one surface hypothesis per face.
+/// Returns a vector of unique SelectedSurface entries covering all mesh faces.
+///
+/// Priority (highest first):
+/// 1. Multi-face planar hypothesis (face count > 1)
+/// 2. Spherical hypothesis
+/// 3. Cylindrical hypothesis
+/// 4. Single-face planar hypothesis (fallback)
+fn select_surfaces(
+    mesh: &ConnectedMesh,
+    planar_hypotheses: &[PlanarHypothesis],
+) -> Vec<SelectedSurface> {
+    // For each face, determine which hypothesis wins
+    let mut face_selection: Vec<Option<SelectedSurface>> = vec![None; mesh.faces.len()];
+
+    for (fi, face) in mesh.faces.iter().enumerate() {
+        let pi = face.planar_hypothesis;
+        let ci = face.cylindrical_hypothesis;
+        let si = face.spherical_hypothesis;
+
+        // Priority 1: multi-face planar hypothesis
+        if pi >= 0 {
+            let ph = &planar_hypotheses[pi as usize];
+            if ph.faces.len() > 1 {
+                face_selection[fi] = Some(SelectedSurface::Planar(pi as usize));
+                continue;
+            }
+        }
+
+        // Priority 2: spherical hypothesis
+        if si >= 0 {
+            face_selection[fi] = Some(SelectedSurface::Spherical(si as usize));
+            continue;
+        }
+
+        // Priority 3: cylindrical hypothesis
+        if ci >= 0 {
+            face_selection[fi] = Some(SelectedSurface::Cylindrical(ci as usize));
+            continue;
+        }
+
+        // Priority 4: single-face planar hypothesis (fallback)
+        if pi >= 0 {
+            face_selection[fi] = Some(SelectedSurface::Planar(pi as usize));
+            continue;
+        }
+
+        // Should not happen — every face should have at least a planar hypothesis
+        panic!("face {fi} has no hypothesis assigned (planar={pi}, cylindrical={ci}, spherical={si})");
+    }
+
+    // Collect unique selected surfaces
+    let mut seen = HashSet::new();
+    let mut selected = Vec::new();
+    for sel in face_selection.iter().flatten() {
+        let key = match sel {
+            SelectedSurface::Planar(i) => (0, *i),
+            SelectedSurface::Cylindrical(i) => (1, *i),
+            SelectedSurface::Spherical(i) => (2, *i),
+        };
+        if seen.insert(key) {
+            selected.push(*sel);
+        }
+    }
+
+    selected
+}
+
+/// Validate selected surfaces against a reference STEP file.
+/// For each selected surface, project face centroids onto the fitted surface
+/// and check that the projected points are within surface_tolerance of the STEP file.
+fn compare_selected_surfaces(
+    selected_surfaces: &[SelectedSurface],
+    planar_hypotheses: &[PlanarHypothesis],
+    cylindrical_hypotheses: &[CylindricalHypothesis],
+    spherical_hypotheses: &[SphericalHypothesis],
+    mesh: &ConnectedMesh,
+    config: &Config,
+) -> Result<(), Stage2CompareError> {
+    let compare_shape = config.compare_shape.as_ref().unwrap();
+
+    for (si, surface) in selected_surfaces.iter().enumerate() {
+        let mut max_dist = 0.0_f64;
+
+        let (hyp_type, face_indices) = match surface {
+            SelectedSurface::Planar(i) => ("planar", &planar_hypotheses[*i].faces),
+            SelectedSurface::Cylindrical(i) => ("cylindrical", &cylindrical_hypotheses[*i].faces),
+            SelectedSurface::Spherical(i) => ("spherical", &spherical_hypotheses[*i].faces),
+        };
+
+        for &fi in face_indices {
+            let centroid = face_centroid(&mesh.faces[fi], &mesh.vertices);
+
+            let projected = match surface {
+                SelectedSurface::Planar(i) => {
+                    let hyp = &planar_hypotheses[*i];
+                    let dist_to_plane = hyp.normal[0] * centroid[0]
+                        + hyp.normal[1] * centroid[1]
+                        + hyp.normal[2] * centroid[2]
+                        - hyp.distance;
+                    [
+                        centroid[0] - dist_to_plane * hyp.normal[0],
+                        centroid[1] - dist_to_plane * hyp.normal[1],
+                        centroid[2] - dist_to_plane * hyp.normal[2],
+                    ]
+                }
+                SelectedSurface::Cylindrical(i) => {
+                    let hyp = &cylindrical_hypotheses[*i];
+                    let d = [
+                        centroid[0] - hyp.axis_origin[0],
+                        centroid[1] - hyp.axis_origin[1],
+                        centroid[2] - hyp.axis_origin[2],
+                    ];
+                    let t = dot3(&d, &hyp.axis_direction);
+                    let radial = [
+                        d[0] - t * hyp.axis_direction[0],
+                        d[1] - t * hyp.axis_direction[1],
+                        d[2] - t * hyp.axis_direction[2],
+                    ];
+                    let radial_dist = (radial[0] * radial[0]
+                        + radial[1] * radial[1]
+                        + radial[2] * radial[2])
+                        .sqrt();
+                    if radial_dist > 1e-15 {
+                        let scale = hyp.radius / radial_dist;
+                        [
+                            hyp.axis_origin[0] + t * hyp.axis_direction[0] + radial[0] * scale,
+                            hyp.axis_origin[1] + t * hyp.axis_direction[1] + radial[1] * scale,
+                            hyp.axis_origin[2] + t * hyp.axis_direction[2] + radial[2] * scale,
+                        ]
+                    } else {
+                        centroid
+                    }
+                }
+                SelectedSurface::Spherical(i) => {
+                    let hyp = &spherical_hypotheses[*i];
+                    let d = [
+                        centroid[0] - hyp.center[0],
+                        centroid[1] - hyp.center[1],
+                        centroid[2] - hyp.center[2],
+                    ];
+                    let dist_to_center =
+                        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    if dist_to_center > 1e-15 {
+                        let scale = hyp.radius / dist_to_center;
+                        [
+                            hyp.center[0] + d[0] * scale,
+                            hyp.center[1] + d[1] * scale,
+                            hyp.center[2] + d[2] * scale,
+                        ]
+                    } else {
+                        centroid
+                    }
+                }
+            };
+
+            let pt = gp::Pnt::new_real3(projected[0], projected[1], projected[2]);
+            let dist = stage1::min_distance_to_shape(&pt, compare_shape);
+            max_dist = max_dist.max(dist);
+        }
+
+        if max_dist > config.surface_tolerance_mm {
+            return Err(Stage2CompareError {
+                hypothesis_type: hyp_type,
+                hypothesis_index: si,
+                max_distance: max_dist,
+                tolerance: config.surface_tolerance_mm,
+            });
+        }
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Stage 2 entry point
 // ---------------------------------------------------------------------------
@@ -1791,9 +1970,40 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
     }
 
     // Stage 2.6: Select surfaces for reconstruction
-    // TODO: greedy selection of best-fitting hypotheses covering all faces
+    let selected_surfaces = select_surfaces(
+        &mesh, &planar_hypotheses,
+    );
+
     if !config.quiet {
-        eprintln!("Stage 2.6: Select surfaces (not yet implemented)");
+        let mut planar_count = 0;
+        let mut cylindrical_count = 0;
+        let mut spherical_count = 0;
+        for s in &selected_surfaces {
+            match s {
+                SelectedSurface::Planar(_) => planar_count += 1,
+                SelectedSurface::Cylindrical(_) => cylindrical_count += 1,
+                SelectedSurface::Spherical(_) => spherical_count += 1,
+            }
+        }
+        eprintln!(
+            "Stage 2.6: Selected {} surfaces ({} planar, {} cylindrical, {} spherical) covering {} faces",
+            selected_surfaces.len(),
+            planar_count,
+            cylindrical_count,
+            spherical_count,
+            mesh.faces.len(),
+        );
+    }
+
+    // Compare against STEP file if --compare was specified
+    if config.compare_shape.is_some() {
+        compare_selected_surfaces(
+            &selected_surfaces, &planar_hypotheses, &cylindrical_hypotheses,
+            &spherical_hypotheses, &mesh, config,
+        )?;
+        if !config.quiet {
+            eprintln!("  Compare: all selected surface centroids within tolerance");
+        }
     }
 
     Ok(Stage2Output {
@@ -1801,7 +2011,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
         planar_hypotheses,
         cylindrical_hypotheses,
         spherical_hypotheses,
-        selected_surfaces: Vec::new(),
+        selected_surfaces,
     })
 }
 

@@ -152,3 +152,8 @@ All node/triangle indices are **1-based** (OCCT convention).
 - All faces are candidates (including those with cylindrical hypotheses). This allows equator faces to have both cylinder and sphere hypotheses. Stage 2.6 resolves using per-face priority.
 - Torus faces locally fit spheres (e.g., pipe_elbow produces 36 sphere hypotheses). This is expected — stage 2.6 with torus hypothesis support will resolve it.
 - Concave spheres (bowls/pockets) have normals pointing toward center — same convexity logic as cylinders.
+
+### Stage 2.6 surface selection
+- Simple per-face priority rule: multi-face planar > spherical > cylindrical > single-face planar.
+- Known issue: small cubes (e.g., manual/cube.stl at 1mm) get a spurious sphere hypothesis from stage 2.3 because all 8 vertices of a regular cube lie exactly on a sphere. The sphere is selected over single-face planar hypotheses. This is a stage 2.3 false positive issue, not a stage 2.6 bug. Larger cubes (ccad cube at 10mm) don't trigger this because the min-face or centroid checks in stage 2.3 catch them. The `--compare` validation still passes because the surface_tolerance is generous relative to the sagitta.
+- The `select_surfaces` function only needs the mesh and planar hypotheses (to check face count > 1); it reads cylindrical/spherical hypothesis indices from the per-face fields.

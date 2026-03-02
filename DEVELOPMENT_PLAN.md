@@ -561,7 +561,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Implement stage 2.2: Deduce cylindrical hypotheses.
 - [x] Understand stage 2.3 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.3. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
 - [x] Implement stage 2.3: Deduce spherical hypotheses.
-- [ ] Implement stage 2.6: Select surfaces for reconstruction using per-face priority rule.
+- [x] Implement stage 2.6: Select surfaces for reconstruction using per-face priority rule.
 
 ### Stage 3: Surface Reconstruction
 - [ ] Implement stage 3.1: Create OCCT surface objects and build adjacency graph from mesh connectivity.
