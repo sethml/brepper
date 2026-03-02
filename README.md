@@ -78,6 +78,10 @@ Integration tests in `tests/stage1_integration.rs` verify that:
 - All STL/STEP pairs pass `--compare` surface distance checks
 - Bad files in `tests/bad/` fail with expected error types (degenerate faces, non-manifold edges, inconsistent winding, compare failures)
 
+Integration tests in `tests/stage2_integration.rs` verify that:
+- Planar hypothesis deduction produces correct counts for known planar models (cube=6, wedge=6, chamfered cube=26)
+- All STL/STEP pairs pass `--compare` validation at stage 2.1 (fitted planes are close to reference STEP surfaces)
+
 Bad test STL files can be regenerated with `python3 scripts/generate_bad_tests.py`.
 
 ## License

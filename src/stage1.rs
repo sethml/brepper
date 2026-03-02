@@ -539,7 +539,7 @@ impl Error for CompareError {}
 
 /// Compute the minimum distance from a point to the bounded compare shape
 /// using BRepExtrema_DistShapeShape, which respects face trimming boundaries.
-fn min_distance_to_shape(
+pub fn min_distance_to_shape(
     pt: &gp::Pnt,
     compare_shape: &opencascade_sys::topo_ds::Shape,
 ) -> f64 {

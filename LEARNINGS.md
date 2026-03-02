@@ -103,3 +103,17 @@ All node/triangle indices are **1-based** (OCCT convention).
 
 ### Bounded vs unbounded distance: BRepExtrema vs GeomAPI_ProjectPointOnSurf
 `GeomAPI_ProjectPointOnSurf` projects onto the *infinite* underlying `Geom_Surface`, not the bounded face. Use `BRepExtrema_DistShapeShape` (via `b_rep_extrema::DistShapeShape`) instead to compute distance to bounded `TopoDS_Face` shapes. Create a `BRepBuilderAPI_MakeVertex` from the point, then compute `DistShapeShape` between the vertex shape and the target shape. This correctly reports nonzero distance for points that lie on an infinite surface extension but outside the bounded face.
+
+### Stage 2.1 planar hypothesis algorithm
+- BFS region growing from seed faces using angular + vertex-distance tolerance.
+- Angular threshold of `1e-6` (1 - cos ≈ 0.08°) prevents grouping faces with slightly different normals.
+- Re-fitting via area-weighted normal averaging + vertex centroid for plane distance.
+- For CAD meshes, vertices lie precisely on surfaces, so fit errors are typically 0 or near-epsilon.
+- Coplanar but disconnected faces correctly get separate hypotheses (not a bug).
+- The `vertex_tolerance_mm` config parameter controls the maximum vertex-to-plane distance for grouping.
+
+### CodeCAD (ccad) test model generation
+- `ccad build` in `tests/ccad/` generates both STL and STEP files from Lua scripts.
+- `wedge(dx, dy, dz, ltx)` requires `ltx > 0` (cannot be 0).
+- Boolean operations like `union()` work with pre-translated shapes.
+- Parts are registered in `project.json`; each entry needs a unique `id`.

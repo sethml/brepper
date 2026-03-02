@@ -64,6 +64,9 @@ test_stl_stage1!(manual_cube_stage1, "tests/manual/cube.stl");
 
 // --- tests/ccad/generated/ ---
 test_stl_stage1!(ccad_cube_stage1, "tests/ccad/generated/cube.stl");
+test_stl_stage1!(ccad_wedge_stage1, "tests/ccad/generated/wedge.stl");
+test_stl_stage1!(ccad_t_shape_stage1, "tests/ccad/generated/t_shape.stl");
+test_stl_stage1!(ccad_staircase_stage1, "tests/ccad/generated/staircase.stl");
 
 // --- tests/onshape/ ---
 test_stl_stage1!(
@@ -134,6 +137,21 @@ test_stl_step_compare!(
     ccad_cube_compare,
     "tests/ccad/generated/cube.stl",
     "tests/ccad/generated/cube.step"
+);
+test_stl_step_compare!(
+    ccad_wedge_compare,
+    "tests/ccad/generated/wedge.stl",
+    "tests/ccad/generated/wedge.step"
+);
+test_stl_step_compare!(
+    ccad_t_shape_compare,
+    "tests/ccad/generated/t_shape.stl",
+    "tests/ccad/generated/t_shape.step"
+);
+test_stl_step_compare!(
+    ccad_staircase_compare,
+    "tests/ccad/generated/staircase.stl",
+    "tests/ccad/generated/staircase.step"
 );
 
 // --- tests/onshape/ ---

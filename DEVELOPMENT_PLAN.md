@@ -332,15 +332,21 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 
 ## Implementation Phases
 
-### Phase 1: Foundation
+### Foundation
 - [x] Project setup (crates, cargo.toml, dependencies)
 - [x] Test utility: read an STL and a STEP, compute maximum distance between STL vertices and STEP surfaces, and print it out. Create a script in scripts/ to apply it to all of the stl/step file pairs under tests/ and print out a table of maximum distances.
 - [x] Program skeleton: implement main program, flag parsing, and create stub source files for each stage. Create stage output data structures. For portions of the data structures which are unclear at this point, stub them out with comments. Take existing stage 1.1 and stage 1.2 implementations in mesh.rs and reformulate them into stage1.rs and appropriate output data structures.
 
-### Phase 2: Stage 1 Mesh Input
+### Stage 1 Mesh Input
 - [x] Stage 1.1: Read STL file into `ConnectedMesh`, including welded vertices and per-face placeholder fields for neighbors, normals, and hypotheses.
 - [x] Stage 1.2: Mesh validation pass to compute face normals, edge neighbors, manifold stats, connected shells, and orientation consistency checks.
-- [x] Implement tests that all stl/step file pairs in tests/ pass consistency checks and pass when fed to brepper with the --compare flag. Also invent a few file pairs in tests/bad that will fail with the --compare flag by editing the location of one or more vertices to fail surface closeness tests. Also invent some bad cases that fail the mesh validation tests in various ways. Ensure that these bad cases fail in the correct way.
+- [x] Implement tests that all stl/step file pairs in tests/ pass consistency checks and pass when fed to brepper with the --compare flag. Also invent a few file pairs in tests/bad that will fail with the --compare_step flag by editing the location of one or more vertices to fail surface closeness tests. Also invent some bad cases that fail the mesh validation tests in various ways. Ensure that these bad cases fail in the correct way.
+
+### Stage 2: Surface Fitting
+- [x] Understand stage 2.1 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.1. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
+- [x] Implement stage 2.1. Make sure --compare passes for all test shapes composed only of planar surfaces.
+- [ ] Implement stage 2.2: Deduce cylindrical hypotheses.
+- [ ] Implement stage 2.3: Deduce spherical hypotheses.
 
 ---
 
@@ -357,12 +363,16 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 
 | Test Case | Input | Expected Output | Status |
 |-----------|-------|-----------------|--------|
-| Cube | 12 triangles | 6 planes, 1 solid | ✓ Passing |
-| Cylinder | Tessellated cylinder | 1 cylinder + 2 planes | ✓ Passing |
-| Sphere | Tessellated sphere | 1 sphere | ✓ Passing |
-| Cone | Tessellated cone | 1 cone + 1 plane | ✓ Passing |
-| Stepped Block | Complex planar | Multiple planes | ✓ Passing |
-| L Bracket | Complex planar | Multiple planes | ✓ Passing |
+| Cube | 12 triangles | 6 planes, 1 solid | ✓ Stage 2.1 |
+| Wedge | 12 triangles | 6 planes (incl. angled) | ✓ Stage 2.1 |
+| T-Shape | 28 triangles | 10 planes | ✓ Stage 2.1 |
+| Staircase | 48 triangles | 12 planes | ✓ Stage 2.1 |
+| Chamfered Cube | 44 triangles | 26 planes | ✓ Stage 2.1 |
+| Stepped Block | Complex planar | Multiple planes | ✓ Stage 2.1 |
+| L Bracket | Complex planar | Multiple planes | ✓ Stage 2.1 |
+| Cylinder | Tessellated cylinder | 1 cylinder + 2 planes | ✓ Stage 1 |
+| Sphere | Tessellated sphere | 1 sphere | ✓ Stage 1 |
+| Cone | Tessellated cone | 1 cone + 1 plane | ✓ Stage 1 |
 | Fillet | Blended edge | Planes + fillet surface | |
 | Complex part | Real CAD export | Matching topology | |
 

@@ -24,6 +24,39 @@
         ]
       },
       "visible": true
+    },
+    {
+      "id": "wedge",
+      "name": "wedge",
+      "source": "parts/wedge.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
+    },
+    {
+      "id": "t_shape",
+      "name": "t_shape",
+      "source": "parts/t_shape.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
+    },
+    {
+      "id": "staircase",
+      "name": "staircase",
+      "source": "parts/staircase.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
     }
   ],
   "version": 1
