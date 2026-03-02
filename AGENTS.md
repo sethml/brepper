@@ -147,7 +147,7 @@ When writing temporary code for debugging or testing:
 
 ## Chat Log Export
 
-After committing, give a written summary of what you accomplished in this session, then
+After **every** commit, give a written summary of what you accomplished in this session, then
 export the current chat session to `agent-logs/`. Use this command exactly:
 `( ../vscode-export-chat-log/export-chat-log.py --wait && git add agent-logs/ && git commit --amend --no-edit ) &`
 

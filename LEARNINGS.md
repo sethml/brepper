@@ -123,7 +123,8 @@ All node/triangle indices are **1-based** (OCCT convention).
 - Construction: `extrude(face, height)`, `revolve(profile, angle)`.
 - Edge ops: `fillet_all(s, r)`, `chamfer_all(s, d)`.
 
-### Cylinder tessellation pattern observation
-- Tessellated cylinders from CodeCAD use quad-strip patterns where each quad facet splits into 2 coplanar triangles.
-- Stage 2.1 groups these into 2-face planar hypotheses (not single-face), so the stage 2.2 "single-face only" criterion needs adjustment.
-- Use a small face-count threshold (e.g., ≤ 4) instead of strictly 1 for identifying cylinder candidates.
+### CAD tessellation quad-strip patterns
+- Tessellated cylinders and spheres from CAD tools (CodeCAD/OCCT, Onshape) use quad-strip patterns where each quad facet splits into 2 coplanar triangles.
+- Solution: stage 1.3 merges coplanar triangle pairs back into quads, so curved-surface facets become single faces with single-face planar hypotheses.
+- This restores the clean "single-face = curved surface candidate" criterion for stages 2.2 and 2.3.
+- Sphere poles are an exception: triangles in the polar fan pattern don't have coplanar neighbors and correctly remain as triangles.

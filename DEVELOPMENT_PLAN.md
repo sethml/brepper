@@ -110,7 +110,7 @@ Read the input STL file and generate an in-memory representation of the triangle
 - **Output**: `ConnectedMesh`, storing:
     - `vertices: Vec<MeshVertex>` — Mesh vertices with double-precision 3D coordinates (`x`, `y`, `z: f64`).
     - `faces: Vec<MeshFace>` — Mesh faces with:
-        - `vertex_count: u8` — Always 3 for STL input (4 reserved for future quad support).
+        - `vertex_count: u8` — 3 for triangles, 4 for quads. Always 3 after initial STL input; stage 1.3 may merge coplanar triangle pairs into quads.
         - `vertex_indices: [usize; 4]` — Indices of vertices, ordered by right-hand rule.
         - `neighbors: [i32; 4]` — Index of the mesh face across each edge, or -1 if none. Filled in stage 1.2.
         - `normal: Option<[f64; 3]>` — Mesh face normal, computed from vertices in stage 1.2. `None` for degenerate faces. (Changed from `gp_Dir` in original plan — native Rust arrays avoid OCCT binding complexity and keep the mesh data structure self-contained.)
@@ -139,6 +139,24 @@ Validation checks, in priority order (first failure is reported):
 3. **Inconsistent orientation**: adjacent faces that traverse a shared edge in the same direction (indicating flipped normals within a shell).
 4. **Self-intersections**: intentionally deferred to a later stage where richer geometric predicates are available and O(N²) triangle checks can be avoided.
 
+#### 1.3 Coplanar Triangle Fusion (Triangle → Quad Merging)
+Merge adjacent coplanar triangle pairs that share a diagonal edge into quads. This is important because CAD tessellators (including CodeCAD/OCCT and Onshape) typically produce quad-strip patterns on curved surfaces (cylinders, spheres, cones). Each quad is split into two coplanar triangles sharing a diagonal. Without fusion, stage 2.1 groups these into 2-face planar hypotheses, which complicates the "single-face = curved surface candidate" criterion in stages 2.2 and 2.3.
+
+**Algorithm:**
+- After stage 1.2 (normals and neighbors are populated), iterate over all mesh edges.
+- For each manifold edge (exactly 2 adjacent faces), both triangles (`vertex_count == 3`):
+    - Check that the two triangles are coplanar: all 4 unique vertices lie within a tight tolerance (e.g., `vertex_tolerance * 0.01`) of the plane defined by either triangle's normal.
+    - Check that the shared edge is the diagonal of a valid convex quad: the 4 vertices form a convex quadrilateral when the shared edge is removed. (Non-convex quads can cause issues with normal computation and surface fitting.)
+    - If both checks pass: merge the two triangles into a single quad face. Set `vertex_count = 4`, populate all 4 `vertex_indices` in right-hand-rule order, update `neighbors` to reflect the quad's 4 edges, recompute the face normal.
+    - Mark the other triangle as deleted (or compact the face array afterward).
+- After all merges: compact the face array (remove deleted faces), update all neighbor indices and face references to reflect the new indexing.
+- Update stats to report the number of quads formed.
+
+**Constraints:**
+- Each triangle participates in at most one merge (greedy: first valid merge wins).
+- Only merge if the result is a convex quad — this ensures Newell's method produces a correct normal.
+- Triangles at surface boundaries (where two curved surfaces meet, or a curved surface meets a plane) will generally NOT be coplanar with their neighbor across that boundary, so they correctly remain as triangles.
+- Sphere poles: triangles near poles may not have a coplanar neighbor (they border 5 or 6 other triangles in a fan pattern, not a quad strip). These correctly remain as triangles and become single-face planar hypotheses — good candidates for spherical hypothesis seeding.
 ---
 
 ### Stage 2: Surface Fitting
@@ -182,7 +200,7 @@ Plane fitting uses **area-weighted normal averaging**: each face's unit normal i
 *Comment on 2.1: ~~The DFS vs BFS question is worth considering: DFS can get "trapped" in a narrow corridor and accumulate drift before exploring the main region. BFS explores more uniformly. However, the re-fitting step partially mitigates this.~~ Resolved: BFS was chosen for the implementation. ~~A bigger issue: once you re-fit the plane, previously accepted faces might no longer fit the new plane! Consider a final validation pass that removes faces whose vertices exceed the tolerance after the final fit.~~ Resolved: the re-fit step checks all vertices (existing + new) before accepting, and a final re-fit with error metrics is computed at the end. ~~Also: the "vertices in right-hand-rule order" for the hypothesis is unclear—planar regions aren't simply connected in general (they can have holes), so you'll need a more complex boundary representation.~~ Resolved: vertices are stored as an unordered set; boundary representation is deferred to stage 3.*
 
 #### 2.2 Deduce cylindrical hypotheses
-Fit cylindrical hypotheses to connected sets of faces that lie on a common cylinder. Only faces with "small" planar hypotheses (from stage 2.1) are candidates — faces belonging to large multi-face planar hypotheses (with many faces) are genuinely flat and get `cylindrical_hypothesis = NO_HYPOTHESIS` (-1). NOTE: The original plan said "single-face" but testing shows that tessellated cylinders with quad-strip patterns produce 2-face coplanar hypotheses (pairs of triangles on each quad facet). The threshold should be a small face count (e.g., ≤ 4) rather than strictly 1. A cylindrical hypothesis consists of:
+Fit cylindrical hypotheses to connected sets of faces that lie on a common cylinder. Only faces with single-face planar hypotheses (from stage 2.1) are candidates — faces belonging to multi-face planar hypotheses are genuinely flat and get `cylindrical_hypothesis = NO_HYPOTHESIS` (-1). (This works cleanly because stage 1.3 merges coplanar triangle pairs into quads, so curved-surface facets become single quad faces with single-face planar hypotheses.) A cylindrical hypothesis consists of:
 - `axis_origin: [f64; 3]` — A point on the cylinder axis.
 - `axis_direction: [f64; 3]` — Unit direction vector along the axis.
 - `radius: f64` — Radius of the cylinder (always positive).
@@ -197,7 +215,7 @@ The algorithm uses BFS region growing, analogous to stage 2.1 but seeded from pa
 **Seeding:**
 - Initialize all `cylindrical_hypothesis` to `UNDEDUCED` (-2).
 - For each face fi where `cylindrical_hypothesis == -2`:
-    - If fi belongs to a large multi-face planar hypothesis (e.g., > 4 faces): set `cylindrical_hypothesis = -1`, skip.
+    - If fi belongs to a multi-face planar hypothesis: set `cylindrical_hypothesis = -1`, skip.
     - Search fi's neighbors for a seed partner ni: an adjacent face that is also unassigned (`cylindrical_hypothesis == -2`), also has a single-face planar hypothesis, and has a sufficiently different normal (their cross product magnitude exceeds a minimum threshold, e.g. 0.01, to avoid near-parallel normals that would produce an unreliable axis estimate).
     - If no valid seed partner found: set `cylindrical_hypothesis = -1`, skip. (This face will be considered for spherical or other hypotheses in later stages.)
     - Estimate initial cylinder parameters from the seed pair (fi, ni) — see Cylinder Fitting below.
@@ -402,6 +420,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 ### Stage 1 Mesh Input
 - [x] Stage 1.1: Read STL file into `ConnectedMesh`, including welded vertices and per-face placeholder fields for neighbors, normals, and hypotheses.
 - [x] Stage 1.2: Mesh validation pass to compute face normals, edge neighbors, manifold stats, connected shells, and orientation consistency checks.
+- [ ] Stage 1.3: Coplanar triangle fusion — merge adjacent coplanar triangle pairs into quads. This simplifies surface fitting by ensuring curved-surface facets (cylinder/sphere quad strips) become single faces rather than 2-face planar hypothesis groups.
 - [x] Implement tests that all stl/step file pairs in tests/ pass consistency checks and pass when fed to brepper with the --compare flag. Also invent a few file pairs in tests/bad that will fail with the --compare_step flag by editing the location of one or more vertices to fail surface closeness tests. Also invent some bad cases that fail the mesh validation tests in various ways. Ensure that these bad cases fail in the correct way.
 
 ### Stage 2: Surface Fitting
