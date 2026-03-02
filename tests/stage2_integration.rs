@@ -25,6 +25,17 @@ fn config_for_compare(stl_path: &str, step_path: &str) -> config::Config {
     config.load_compare_step().unwrap();
     config
 }
+fn config_for_stl_stage22(stl_path: &str) -> config::Config {
+    config::parse_config_from(["brepper", stl_path, "--stage=2.2", "-q"]).unwrap()
+}
+
+fn config_for_compare_stage22(stl_path: &str, step_path: &str) -> config::Config {
+    let mut config =
+        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=2.2", "-q"])
+            .unwrap();
+    config.load_compare_step().unwrap();
+    config
+}
 
 /// Run stages 1 and 2.1, returning the Stage2Output.
 fn run_stage2(config: &config::Config) -> stage2::Stage2Output {
@@ -44,6 +55,19 @@ macro_rules! test_stl_step_stage2_compare {
             let stl = format!("{}/{}", manifest_dir(), $stl_path);
             let step = format!("{}/{}", manifest_dir(), $step_path);
             let config = config_for_compare(&stl, &step);
+            run_stage2(&config);
+        }
+    };
+}
+
+/// Generate a test that runs stage 2.2 with --compare against a STEP file.
+macro_rules! test_stl_step_stage22_compare {
+    ($name:ident, $stl_path:literal, $step_path:literal) => {
+        #[test]
+        fn $name() {
+            let stl = format!("{}/{}", manifest_dir(), $stl_path);
+            let step = format!("{}/{}", manifest_dir(), $step_path);
+            let config = config_for_compare_stage22(&stl, &step);
             run_stage2(&config);
         }
     };
@@ -241,4 +265,169 @@ test_stl_step_stage2_compare!(
     fusion_plate_medium_stage2_compare,
     "tests/fusion/plate_with_hole_100x50_medium.stl",
     "tests/fusion/plate_with_hole_100x50_medium.step"
+);
+
+
+// ===========================================================================
+// Stage 2.2: Cylindrical hypothesis count tests
+// ===========================================================================
+
+#[test]
+fn simple_cylinder_produces_one_cylindrical_hypothesis() {
+    let stl = format!("{}/tests/ccad/generated/simple_cylinder.stl", manifest_dir());
+    let config = config_for_stl_stage22(&stl);
+    let output = run_stage2(&config);
+
+    assert_eq!(
+        output.cylindrical_hypotheses.len(),
+        1,
+        "simple_cylinder should have 1 cylindrical hypothesis"
+    );
+    let h = &output.cylindrical_hypotheses[0];
+    assert!(h.convex, "simple_cylinder should be convex");
+    assert!((h.radius - 10.0).abs() < 0.01, "radius should be ~10.0, got {}", h.radius);
+}
+
+#[test]
+fn block_with_hole_produces_one_concave_cylinder() {
+    let stl = format!("{}/tests/ccad/generated/block_with_hole.stl", manifest_dir());
+    let config = config_for_stl_stage22(&stl);
+    let output = run_stage2(&config);
+
+    assert_eq!(
+        output.cylindrical_hypotheses.len(),
+        1,
+        "block_with_hole should have 1 cylindrical hypothesis"
+    );
+    let h = &output.cylindrical_hypotheses[0];
+    assert!(!h.convex, "block_with_hole cylinder should be concave");
+    assert!((h.radius - 6.0).abs() < 0.01, "radius should be ~6.0, got {}", h.radius);
+}
+
+#[test]
+fn pipe_produces_two_cylindrical_hypotheses() {
+    let stl = format!("{}/tests/ccad/generated/pipe.stl", manifest_dir());
+    let config = config_for_stl_stage22(&stl);
+    let output = run_stage2(&config);
+
+    assert_eq!(
+        output.cylindrical_hypotheses.len(),
+        2,
+        "pipe should have 2 cylindrical hypotheses"
+    );
+    // One convex (outer) and one concave (inner)
+    let convex_count = output.cylindrical_hypotheses.iter().filter(|h| h.convex).count();
+    let concave_count = output.cylindrical_hypotheses.iter().filter(|h| !h.convex).count();
+    assert_eq!(convex_count, 1, "pipe should have 1 convex cylinder");
+    assert_eq!(concave_count, 1, "pipe should have 1 concave cylinder");
+}
+
+#[test]
+fn two_holes_produces_two_concave_cylinders() {
+    let stl = format!("{}/tests/ccad/generated/two_holes.stl", manifest_dir());
+    let config = config_for_stl_stage22(&stl);
+    let output = run_stage2(&config);
+
+    assert_eq!(
+        output.cylindrical_hypotheses.len(),
+        2,
+        "two_holes should have 2 cylindrical hypotheses"
+    );
+    let concave_count = output.cylindrical_hypotheses.iter().filter(|h| !h.convex).count();
+    assert_eq!(concave_count, 2, "both cylinders should be concave");
+    let mut radii: Vec<f64> = output.cylindrical_hypotheses.iter().map(|h| h.radius).collect();
+    radii.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert!((radii[0] - 3.0).abs() < 0.01, "smaller radius should be ~3.0, got {}", radii[0]);
+    assert!((radii[1] - 5.0).abs() < 0.01, "larger radius should be ~5.0, got {}", radii[1]);
+}
+
+#[test]
+fn chamfered_cube_produces_no_cylindrical_hypotheses() {
+    let stl = format!(
+        "{}/tests/onshape/chamfered_cube_10_c1_medium.stl",
+        manifest_dir()
+    );
+    let config = config_for_stl_stage22(&stl);
+    let output = run_stage2(&config);
+
+    assert_eq!(
+        output.cylindrical_hypotheses.len(),
+        0,
+        "chamfered cube should have no cylindrical hypotheses"
+    );
+}
+
+// ===========================================================================
+// Stage 2.2: Compare tests (all models should pass --compare at stage 2.2)
+// ===========================================================================
+
+// --- tests/ccad/generated/ ---
+test_stl_step_stage22_compare!(
+    ccad_cube_stage22_compare,
+    "tests/ccad/generated/cube.stl",
+    "tests/ccad/generated/cube.step"
+);
+test_stl_step_stage22_compare!(
+    ccad_simple_cylinder_stage22_compare,
+    "tests/ccad/generated/simple_cylinder.stl",
+    "tests/ccad/generated/simple_cylinder.step"
+);
+test_stl_step_stage22_compare!(
+    ccad_block_with_hole_stage22_compare,
+    "tests/ccad/generated/block_with_hole.stl",
+    "tests/ccad/generated/block_with_hole.step"
+);
+test_stl_step_stage22_compare!(
+    ccad_pipe_stage22_compare,
+    "tests/ccad/generated/pipe.stl",
+    "tests/ccad/generated/pipe.step"
+);
+test_stl_step_stage22_compare!(
+    ccad_stepped_cylinder_stage22_compare,
+    "tests/ccad/generated/stepped_cylinder.stl",
+    "tests/ccad/generated/stepped_cylinder.step"
+);
+test_stl_step_stage22_compare!(
+    ccad_two_holes_stage22_compare,
+    "tests/ccad/generated/two_holes.stl",
+    "tests/ccad/generated/two_holes.step"
+);
+
+// --- tests/onshape/ ---
+test_stl_step_stage22_compare!(
+    onshape_cylinder_stage22_compare,
+    "tests/onshape/cylinder_10x30_medium.stl",
+    "tests/onshape/cylinder_10x30_medium.step"
+);
+test_stl_step_stage22_compare!(
+    onshape_l_bracket_stage22_compare,
+    "tests/onshape/l_bracket_simple_medium.stl",
+    "tests/onshape/l_bracket_simple_medium.step"
+);
+test_stl_step_stage22_compare!(
+    onshape_plate_with_hole_stage22_compare,
+    "tests/onshape/plate_with_hole_100x50_coarse.stl",
+    "tests/onshape/plate_with_hole_100x50_coarse.step"
+);
+test_stl_step_stage22_compare!(
+    onshape_pipe_elbow_stage22_compare,
+    "tests/onshape/pipe_elbow_10_fine.stl",
+    "tests/onshape/pipe_elbow_10_fine.step"
+);
+
+// --- tests/fusion/ ---
+test_stl_step_stage22_compare!(
+    fusion_plate_low_stage22_compare,
+    "tests/fusion/plate_with_hole_100x50_low.stl",
+    "tests/fusion/plate_with_hole_100x50_low.step"
+);
+test_stl_step_stage22_compare!(
+    fusion_plate_medium_stage22_compare,
+    "tests/fusion/plate_with_hole_100x50_medium.stl",
+    "tests/fusion/plate_with_hole_100x50_medium.step"
+);
+test_stl_step_stage22_compare!(
+    fusion_plate_high_stage22_compare,
+    "tests/fusion/plate_with_hole_100x50_high.stl",
+    "tests/fusion/plate_with_hole_100x50_high.step"
 );

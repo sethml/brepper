@@ -128,3 +128,15 @@ All node/triangle indices are **1-based** (OCCT convention).
 - Solution: stage 1.3 merges coplanar triangle pairs back into quads, so curved-surface facets become single faces with single-face planar hypotheses.
 - This restores the clean "single-face = curved surface candidate" criterion for stages 2.2 and 2.3.
 - Sphere poles are an exception: triangles in the polar fan pattern don't have coplanar neighbors and correctly remain as triangles.
+
+### Stage 2.2 cylindrical hypothesis algorithm
+- Two-step fitting: (1) axis direction from smallest eigenvector of area-weighted normal covariance matrix M = Σ wᵢ nᵢ nᵢᵀ, (2) axis position and radius via 2D algebraic circle fit after projecting vertices perpendicular to axis.
+- 3×3 symmetric eigenvalue computation uses depressed cubic (trigonometric solution with cos(θ/3)), plus null-space eigenvector via cross products of (M - λI) rows.
+- BFS seeds from pairs of adjacent single-face planar hypothesis faces with cross product magnitude > 0.01 (MIN_CROSS_THRESHOLD).
+- Centroid validation after BFS: each face centroid must be within surface_tolerance of the fitted cylinder. This rejects spurious fits from perpendicular planar faces that algebraically fit a cylinder.
+- On non-cylindrical curved surfaces (spheres, cones, tori, fillets), locally adjacent faces will produce many small 2-face cylinder hypotheses. This is expected behavior — they'll be superseded by appropriate surface type detection in later stages.
+
+### ccad box() coordinate system
+- `box(w, h, d)` places the box in the positive octant: (0,0,0) to (w,h,d). It does NOT center at origin.
+- To center a box, use `translate(box(w,h,d), -w/2, -h/2, -d/2)`.
+- `cylinder(diameter, height)` is vertical (Z-axis), centered at the XY origin, also in positive Z direction.

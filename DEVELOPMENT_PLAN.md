@@ -115,7 +115,7 @@ Read the input STL file and generate an in-memory representation of the triangle
         - `neighbors: [i32; 4]` — Index of the mesh face across each edge, or -1 if none. Filled in stage 1.2.
         - `normal: Option<[f64; 3]>` — Mesh face normal, computed from vertices in stage 1.2. `None` for degenerate faces. (Changed from `gp_Dir` in original plan — native Rust arrays avoid OCCT binding complexity and keep the mesh data structure self-contained.)
         - `planar_hypothesis: i32` — Index of active planar hypothesis, or `NO_HYPOTHESIS` (-1) if none, or `UNDEDUCED_PLANAR_HYPOTHESIS` (-2) if not yet deduced.
-        - `cylindrical_hypothesis: i32` — Index of active cylindrical hypothesis, or `NO_HYPOTHESIS` (-1) if none.
+        - `cylindrical_hypothesis: i32` — Index of active cylindrical hypothesis, or `NO_HYPOTHESIS` (-1) if none, or `UNDEDUCED_CYLINDRICAL_HYPOTHESIS` (-2) if not yet deduced.
         - `spherical_hypothesis: i32` — Index of active spherical hypothesis, or `NO_HYPOTHESIS` (-1) if none.
     - `stats: MeshValidationStats` — Statistics described in stage 1.2.
 
@@ -242,6 +242,7 @@ The algorithm uses BFS region growing, analogous to stage 2.1 but seeded from pa
     - **Re-fit attempt**: if any vertex exceeds tolerance but none exceeds 2x, re-fit the cylinder from all current faces plus ni (see Cylinder Fitting below). Check that **all** vertices (existing and new) are within tolerance of the re-fitted cylinder. If so, accept the re-fit; otherwise skip ni.
     - If accepted: assign ni to the hypothesis, add its vertices to the vertex set, push ni onto the BFS queue.
 - After BFS completes: final re-fit from all accumulated faces and vertices. Compute error metrics.
+- **Centroid validation**: After BFS completes and error metrics are computed, validate that **all** face centroids lie within `--surface-tolerance` of the fitted cylinder surface. This catches spurious fits (e.g. two perpendicular planar faces that happen to fit a cylinder algebraically but whose centroids are far from any actual cylindrical surface). If validation fails, undo assignments and discard the hypothesis.
 
 **Cylinder fitting** (used for seeding and re-fitting):
 
@@ -437,7 +438,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Understand stage 2.1 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.1. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
 - [x] Implement stage 2.1. Make sure --compare passes for all test shapes composed only of planar surfaces.
 - [x] Understand stage 2.2 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.2. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
-- [ ] Implement stage 2.2: Deduce cylindrical hypotheses.
+- [x] Implement stage 2.2: Deduce cylindrical hypotheses.
 - [ ] Understand stage 2.3 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.2. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
 - [ ] Implement stage 2.3: Deduce spherical hypotheses.
 
@@ -464,11 +465,11 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 | Stepped Block | Complex planar | Multiple planes | ✓ Stage 2.1 |
 | L Bracket | Complex planar | Multiple planes | ✓ Stage 2.1 |
 | Cylinder | Tessellated cylinder | 1 cylinder + 2 planes | ✓ Stage 1 |
-| Simple Cylinder (ccad) | 124 triangles | 1 cylinder + 2 planes | ✓ Stage 1 |
-| Block with Hole (ccad) | 44 triangles | 6 planes + 1 concave cylinder | ✓ Stage 1 |
-| Pipe (ccad) | 244 triangles | 2 cylinders (in/out) + 2 annular planes | ✓ Stage 1 |
-| Stepped Cylinder (ccad) | 240 triangles | 2 cylinders + 3 planes | ✓ Stage 1 |
-| Two Holes (ccad) | 76 triangles | 6 planes + 2 concave cylinders | ✓ Stage 1 |
+|| Simple Cylinder (ccad) | 124 triangles | 1 cylinder + 2 planes | ✓ Stage 2.2 |
+|| Block with Hole (ccad) | 44 triangles | 6 planes + 1 concave cylinder | ✓ Stage 2.2 |
+|| Pipe (ccad) | 244 triangles | 2 cylinders (in/out) + 2 annular planes | ✓ Stage 2.2 |
+|| Stepped Cylinder (ccad) | 240 triangles | 2 cylinders + 3 planes | ✓ Stage 2.2 |
+|| Two Holes (ccad) | 244 triangles | 6 planes + 2 concave cylinders | ✓ Stage 2.2 |
 | Sphere | Tessellated sphere | 1 sphere | ✓ Stage 1 |
 | Cone | Tessellated cone | 1 cone + 1 plane | ✓ Stage 1 |
 | Fillet | Blended edge | Planes + fillet surface | |

@@ -8,7 +8,7 @@
 //! 2.6: Select surfaces for reconstruction
 
 use crate::config::Config;
-use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_PLANAR_HYPOTHESIS};
+use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_PLANAR_HYPOTHESIS, UNDEDUCED_CYLINDRICAL_HYPOTHESIS, NO_HYPOTHESIS};
 use opencascade_sys::gp;
 use std::collections::{HashSet, VecDeque};
 use std::error::Error;
@@ -139,6 +139,7 @@ impl From<Stage2CompareError> for Stage2Error {
 
 #[derive(Debug)]
 pub struct Stage2CompareError {
+    pub hypothesis_type: &'static str,
     pub hypothesis_index: usize,
     pub max_distance: f64,
     pub tolerance: f64,
@@ -148,8 +149,8 @@ impl Display for Stage2CompareError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "planar hypothesis {} projected centroid is {:.6e} mm from nearest STEP surface (tolerance: {:.6e} mm)",
-            self.hypothesis_index, self.max_distance, self.tolerance
+            "{} hypothesis {} projected centroid is {:.6e} mm from nearest STEP surface (tolerance: {:.6e} mm)",
+            self.hypothesis_type, self.hypothesis_index, self.max_distance, self.tolerance
         )
     }
 }
@@ -438,6 +439,7 @@ fn compare_planar_hypotheses(
 
         if max_dist > config.surface_tolerance_mm {
             return Err(Stage2CompareError {
+                hypothesis_type: "planar",
                 hypothesis_index: hi,
                 max_distance: max_dist,
                 tolerance: config.surface_tolerance_mm,
@@ -447,6 +449,697 @@ fn compare_planar_hypotheses(
 
     Ok(())
 }
+// ---------------------------------------------------------------------------
+// Stage 2.2: Cylindrical hypothesis deduction
+// ---------------------------------------------------------------------------
+
+const MIN_CROSS_THRESHOLD: f64 = 0.01;
+
+/// Compute the face centroid for a mesh face.
+fn face_centroid(face: &MeshFace, vertices: &[MeshVertex]) -> [f64; 3] {
+    let n = face.vertex_count as usize;
+    let mut cx = 0.0_f64;
+    let mut cy = 0.0_f64;
+    let mut cz = 0.0_f64;
+    for vi_idx in 0..n {
+        let v = &vertices[face.vertex_indices[vi_idx]];
+        cx += v.x;
+        cy += v.y;
+        cz += v.z;
+    }
+    let inv_n = 1.0 / n as f64;
+    [cx * inv_n, cy * inv_n, cz * inv_n]
+}
+
+/// Compute the distance from a vertex to a cylinder surface.
+/// Returns the signed distance: positive if outside the cylinder, negative if inside.
+fn vertex_to_cylinder_distance(
+    v: &MeshVertex,
+    axis_origin: &[f64; 3],
+    axis_direction: &[f64; 3],
+    radius: f64,
+) -> f64 {
+    // Vector from axis origin to vertex
+    let dx = v.x - axis_origin[0];
+    let dy = v.y - axis_origin[1];
+    let dz = v.z - axis_origin[2];
+    // Project onto axis
+    let t = dx * axis_direction[0] + dy * axis_direction[1] + dz * axis_direction[2];
+    // Radial vector (perpendicular to axis)
+    let rx = dx - t * axis_direction[0];
+    let ry = dy - t * axis_direction[1];
+    let rz = dz - t * axis_direction[2];
+    let radial_dist = (rx * rx + ry * ry + rz * rz).sqrt();
+    radial_dist - radius
+}
+
+/// Normalize a 3D vector in place, return its length.
+fn normalize3(v: &mut [f64; 3]) -> f64 {
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if len > 0.0 {
+        v[0] /= len;
+        v[1] /= len;
+        v[2] /= len;
+    }
+    len
+}
+
+/// Cross product of two 3D vectors.
+fn cross3(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Dot product of two 3D vectors.
+fn dot3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Compute the smallest eigenvector of a 3x3 symmetric matrix.
+/// The matrix is stored as [m00, m01, m02, m11, m12, m22] (upper triangle).
+/// Returns the eigenvector corresponding to the smallest eigenvalue.
+fn smallest_eigenvector_3x3(m: &[f64; 6]) -> [f64; 3] {
+    // m = [[m[0], m[1], m[2]],
+    //      [m[1], m[3], m[4]],
+    //      [m[2], m[4], m[5]]]
+    // Use the characteristic polynomial approach for 3x3 symmetric matrices.
+    // Characteristic equation: λ³ - c2*λ² + c1*λ - c0 = 0
+    // where c2 = trace, c1 = sum of 2x2 minors, c0 = determinant
+    let a00 = m[0]; let a01 = m[1]; let a02 = m[2];
+    let a11 = m[3]; let a12 = m[4]; let a22 = m[5];
+
+    let c2 = a00 + a11 + a22;
+    let c1 = a00 * a11 - a01 * a01 + a00 * a22 - a02 * a02 + a11 * a22 - a12 * a12;
+    let c0 = a00 * (a11 * a22 - a12 * a12)
+            - a01 * (a01 * a22 - a12 * a02)
+            + a02 * (a01 * a12 - a11 * a02);
+
+    // Depressed cubic: t³ + pt + q = 0 where λ = t + c2/3
+    let p = c1 - c2 * c2 / 3.0;
+    let q = -2.0 * c2 * c2 * c2 / 27.0 + c1 * c2 / 3.0 - c0;
+
+    let eigenvalues = if p.abs() < 1e-30 {
+        // All eigenvalues equal
+        let ev = c2 / 3.0;
+        [ev, ev, ev]
+    } else {
+        // p < 0 for real symmetric matrices with distinct eigenvalues
+        let neg_p_3 = (-p / 3.0).max(0.0);
+        let r = neg_p_3.sqrt();
+        let cos_arg = (-q / (2.0 * neg_p_3 * r)).clamp(-1.0, 1.0);
+        let theta = cos_arg.acos() / 3.0;
+        let shift = c2 / 3.0;
+        let two_pi_3 = 2.0 * std::f64::consts::PI / 3.0;
+        let ev0 = 2.0 * r * theta.cos() + shift;
+        let ev1 = 2.0 * r * (theta - two_pi_3).cos() + shift;
+        let ev2 = 2.0 * r * (theta - 2.0 * two_pi_3).cos() + shift;
+        [ev0, ev1, ev2]
+    };
+
+    // Find the smallest eigenvalue
+    let mut min_idx = 0;
+    let mut min_val = eigenvalues[0];
+    for i in 1..3 {
+        if eigenvalues[i] < min_val {
+            min_val = eigenvalues[i];
+            min_idx = i;
+        }
+    }
+
+    // Compute eigenvector for the smallest eigenvalue using inverse iteration:
+    // (M - λI)v = 0, find null space
+    // Shift slightly to avoid exact singularity issues
+    let lambda = eigenvalues[min_idx];
+    let b00 = a00 - lambda;
+    let b11 = a11 - lambda;
+    let b22 = a22 - lambda;
+
+    // Try cross products of rows to find the null space
+    let row0 = [b00, a01, a02];
+    let row1 = [a01, b11, a12];
+    let row2 = [a02, a12, b22];
+
+    let candidates = [
+        cross3(&row0, &row1),
+        cross3(&row0, &row2),
+        cross3(&row1, &row2),
+    ];
+
+    // Pick the cross product with largest magnitude
+    let mut best_idx = 0;
+    let mut best_len_sq = 0.0;
+    for (i, c) in candidates.iter().enumerate() {
+        let len_sq = c[0] * c[0] + c[1] * c[1] + c[2] * c[2];
+        if len_sq > best_len_sq {
+            best_len_sq = len_sq;
+            best_idx = i;
+        }
+    }
+
+    let mut ev = candidates[best_idx];
+    let len = normalize3(&mut ev);
+    if len < 1e-15 {
+        // Fallback: eigenvalues are degenerate, return arbitrary unit vector
+        return [1.0, 0.0, 0.0];
+    }
+    ev
+}
+
+/// Build the area-weighted normal covariance matrix M = Σ wᵢ nᵢ nᵢᵀ.
+/// Returns the upper triangle [m00, m01, m02, m11, m12, m22].
+fn build_normal_covariance(
+    face_indices: &[usize],
+    faces: &[MeshFace],
+    vertices: &[MeshVertex],
+) -> [f64; 6] {
+    let mut m = [0.0_f64; 6];
+    for &fi in face_indices {
+        let face = &faces[fi];
+        let n = face.normal.unwrap();
+        let w = face_area(face, vertices);
+        m[0] += w * n[0] * n[0];
+        m[1] += w * n[0] * n[1];
+        m[2] += w * n[0] * n[2];
+        m[3] += w * n[1] * n[1];
+        m[4] += w * n[1] * n[2];
+        m[5] += w * n[2] * n[2];
+    }
+    m
+}
+
+/// Fit cylinder parameters (axis direction, axis origin, radius) from a set of faces.
+/// Returns (axis_origin, axis_direction, radius).
+fn fit_cylinder(
+    face_indices: &[usize],
+    vertex_set: &HashSet<usize>,
+    faces: &[MeshFace],
+    vertices: &[MeshVertex],
+) -> Option<([f64; 3], [f64; 3], f64)> {
+    // Step 1: Axis direction from smallest eigenvector of normal covariance.
+    let cov = build_normal_covariance(face_indices, faces, vertices);
+    let mut axis_dir = smallest_eigenvector_3x3(&cov);
+    let len = normalize3(&mut axis_dir);
+    if len < 1e-15 {
+        return None;
+    }
+
+    // Step 2: Compute orthogonal basis perpendicular to axis.
+    let u;
+    let w;
+    let (ax, ay, az) = (axis_dir[0].abs(), axis_dir[1].abs(), axis_dir[2].abs());
+    let perp = if ax <= ay && ax <= az {
+        [1.0, 0.0, 0.0]
+    } else if ay <= az {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    let mut u_vec = cross3(&axis_dir, &perp);
+    normalize3(&mut u_vec);
+    let w_vec = cross3(&axis_dir, &u_vec);
+    u = u_vec;
+    w = w_vec;
+
+    // Step 3: Project vertices onto 2D plane perpendicular to axis and fit circle.
+    let verts: Vec<usize> = vertex_set.iter().copied().collect();
+    let n = verts.len();
+    if n < 3 {
+        return None;
+    }
+
+    // Collect 2D coordinates
+    let mut xs = Vec::with_capacity(n);
+    let mut ys = Vec::with_capacity(n);
+    for &vi in &verts {
+        let v = &vertices[vi];
+        let vx = v.x;
+        let vy = v.y;
+        let vz = v.z;
+        xs.push(vx * u[0] + vy * u[1] + vz * u[2]);
+        ys.push(vx * w[0] + vy * w[1] + vz * w[2]);
+    }
+
+    // Algebraic circle fit: x² + y² + Dx + Ey + F = 0
+    // Least squares: minimize Σ(x² + y² + Dx + Ey + F)²
+    // Normal equations: [Σx²  Σxy  Σx ] [D]   [-Σx(x²+y²)]
+    //                   [Σxy  Σy²  Σy ] [E] = [-Σy(x²+y²)]
+    //                   [Σx   Σy   n  ] [F]   [-Σ(x²+y²) ]
+    let mut sx = 0.0_f64;
+    let mut sy = 0.0_f64;
+    let mut sx2 = 0.0_f64;
+    let mut sy2 = 0.0_f64;
+    let mut sxy = 0.0_f64;
+    let mut sx3 = 0.0_f64;
+    let mut sy3 = 0.0_f64;
+    let mut sx2y = 0.0_f64;
+    let mut sxy2 = 0.0_f64;
+
+    for i in 0..n {
+        let x = xs[i];
+        let y = ys[i];
+        sx += x;
+        sy += y;
+        sx2 += x * x;
+        sy2 += y * y;
+        sxy += x * y;
+        sx3 += x * x * x;
+        sy3 += y * y * y;
+        sx2y += x * x * y;
+        sxy2 += x * y * y;
+    }
+
+    let nf = n as f64;
+    // RHS
+    let rhs0 = -(sx3 + sxy2);
+    let rhs1 = -(sx2y + sy3);
+    let rhs2 = -(sx2 + sy2);
+
+    // 3x3 system: solve using Cramer's rule
+    let a = [[sx2, sxy, sx], [sxy, sy2, sy], [sx, sy, nf]];
+
+    let det_a = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
+              - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+              + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+
+    if det_a.abs() < 1e-30 {
+        return None; // Degenerate — vertices are collinear in projection
+    }
+
+    let inv_det = 1.0 / det_a;
+
+    let d_val = inv_det * (rhs0 * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
+                         - a[0][1] * (rhs1 * a[2][2] - a[1][2] * rhs2)
+                         + a[0][2] * (rhs1 * a[2][1] - a[1][1] * rhs2));
+
+    let e_val = inv_det * (a[0][0] * (rhs1 * a[2][2] - a[1][2] * rhs2)
+                         - rhs0 * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+                         + a[0][2] * (a[1][0] * rhs2 - rhs1 * a[2][0]));
+
+    let f_val = inv_det * (a[0][0] * (a[1][1] * rhs2 - rhs1 * a[2][1])
+                         - a[0][1] * (a[1][0] * rhs2 - rhs1 * a[2][0])
+                         + rhs0 * (a[1][0] * a[2][1] - a[1][1] * a[2][0]));
+
+    let center_x = -d_val / 2.0;
+    let center_y = -e_val / 2.0;
+    let r_sq = center_x * center_x + center_y * center_y - f_val;
+    if r_sq <= 0.0 {
+        return None;
+    }
+    let radius = r_sq.sqrt();
+
+    // Convert 2D center back to 3D
+    let axis_origin = [
+        center_x * u[0] + center_y * w[0],
+        center_x * u[1] + center_y * w[1],
+        center_x * u[2] + center_y * w[2],
+    ];
+
+    Some((axis_origin, axis_dir, radius))
+}
+
+/// Check if all vertices in a set are within tolerance of a cylinder surface.
+fn all_vertices_within_cylinder_tolerance(
+    vertex_set: &HashSet<usize>,
+    axis_origin: &[f64; 3],
+    axis_direction: &[f64; 3],
+    radius: f64,
+    tolerance: f64,
+    vertices: &[MeshVertex],
+) -> bool {
+    for &vi in vertex_set {
+        let d = vertex_to_cylinder_distance(&vertices[vi], axis_origin, axis_direction, radius);
+        if d.abs() > tolerance {
+            return false;
+        }
+    }
+    true
+}
+
+/// Determine convexity: does the face normal point away from the axis (convex) or toward it (concave)?
+fn determine_convexity(
+    face: &MeshFace,
+    vertices: &[MeshVertex],
+    axis_origin: &[f64; 3],
+    axis_direction: &[f64; 3],
+) -> bool {
+    let centroid = face_centroid(face, vertices);
+    // Vector from axis to centroid (radial component)
+    let d = [
+        centroid[0] - axis_origin[0],
+        centroid[1] - axis_origin[1],
+        centroid[2] - axis_origin[2],
+    ];
+    let t = dot3(&d, axis_direction);
+    let radial = [
+        d[0] - t * axis_direction[0],
+        d[1] - t * axis_direction[1],
+        d[2] - t * axis_direction[2],
+    ];
+    let n = face.normal.unwrap();
+    dot3(&n, &radial) > 0.0
+}
+
+/// Deduce cylindrical hypotheses from the mesh using BFS region growing.
+fn deduce_cylindrical_hypotheses(
+    mesh: &mut ConnectedMesh,
+    planar_hypotheses: &[PlanarHypothesis],
+    vertex_tol: f64,
+    surface_tol: f64,
+) -> Vec<CylindricalHypothesis> {
+    let num_faces = mesh.faces.len();
+    let mut hypotheses: Vec<CylindricalHypothesis> = Vec::new();
+
+    // Initialize cylindrical_hypothesis for all faces
+    for fi in 0..num_faces {
+        if mesh.faces[fi].cylindrical_hypothesis != UNDEDUCED_CYLINDRICAL_HYPOTHESIS {
+            continue;
+        }
+        // Faces belonging to multi-face planar hypotheses are genuinely flat
+        let ph = mesh.faces[fi].planar_hypothesis;
+        if ph >= 0 && planar_hypotheses[ph as usize].faces.len() > 1 {
+            mesh.faces[fi].cylindrical_hypothesis = NO_HYPOTHESIS;
+        }
+    }
+
+    for fi in 0..num_faces {
+        if mesh.faces[fi].cylindrical_hypothesis != UNDEDUCED_CYLINDRICAL_HYPOTHESIS {
+            continue;
+        }
+
+        let fi_normal = match mesh.faces[fi].normal {
+            Some(n) => n,
+            None => {
+                mesh.faces[fi].cylindrical_hypothesis = NO_HYPOTHESIS;
+                continue;
+            }
+        };
+
+        // Search for a seed partner: adjacent face with sufficiently different normal
+        let fi_vc = mesh.faces[fi].vertex_count as usize;
+        let fi_neighbors = mesh.faces[fi].neighbors;
+        let mut seed_found = false;
+
+        for edge_idx in 0..fi_vc {
+            let ni = fi_neighbors[edge_idx];
+            if ni < 0 {
+                continue;
+            }
+            let ni = ni as usize;
+
+            if mesh.faces[ni].cylindrical_hypothesis != UNDEDUCED_CYLINDRICAL_HYPOTHESIS {
+                continue;
+            }
+
+            // Must be a single-face planar hypothesis
+            let ni_ph = mesh.faces[ni].planar_hypothesis;
+            if ni_ph >= 0 && planar_hypotheses[ni_ph as usize].faces.len() > 1 {
+                continue;
+            }
+
+            let ni_normal = match mesh.faces[ni].normal {
+                Some(n) => n,
+                None => continue,
+            };
+
+            // Check cross product magnitude for sufficient angular difference
+            let cross = cross3(&fi_normal, &ni_normal);
+            let cross_mag = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+            if cross_mag < MIN_CROSS_THRESHOLD {
+                continue;
+            }
+
+            // Estimate initial cylinder from seed pair
+            let mut axis_dir = cross;
+            normalize3(&mut axis_dir);
+
+            // Collect vertices of both seed faces
+            let mut vertex_set = HashSet::new();
+            for vi_idx in 0..fi_vc {
+                vertex_set.insert(mesh.faces[fi].vertex_indices[vi_idx]);
+            }
+            let ni_vc = mesh.faces[ni].vertex_count as usize;
+            for vi_idx in 0..ni_vc {
+                vertex_set.insert(mesh.faces[ni].vertex_indices[vi_idx]);
+            }
+
+            let face_list = vec![fi, ni];
+
+            // Fit cylinder to seed pair
+            let fit = fit_cylinder(&face_list, &vertex_set, &mesh.faces, &mesh.vertices);
+            let (axis_origin, axis_direction, radius) = match fit {
+                Some(params) => params,
+                None => continue,
+            };
+
+            // Verify seed: all vertices within tolerance
+            if !all_vertices_within_cylinder_tolerance(
+                &vertex_set, &axis_origin, &axis_direction, radius, vertex_tol, &mesh.vertices,
+            ) {
+                continue;
+            }
+
+            // Determine convexity from seed face
+            let convex = determine_convexity(&mesh.faces[fi], &mesh.vertices, &axis_origin, &axis_direction);
+
+            // Seed is valid — create hypothesis and start BFS
+            let hi = hypotheses.len() as i32;
+            mesh.faces[fi].cylindrical_hypothesis = hi;
+            mesh.faces[ni].cylindrical_hypothesis = hi;
+
+            let mut face_list = vec![fi, ni];
+            let mut vertex_set = vertex_set;
+
+            let mut current_axis_origin = axis_origin;
+            let mut current_axis_direction = axis_direction;
+            let mut current_radius = radius;
+
+            let mut queue = VecDeque::new();
+            queue.push_back(fi);
+            queue.push_back(ni);
+
+            // BFS expansion
+            while let Some(current_fi) = queue.pop_front() {
+                let vc = mesh.faces[current_fi].vertex_count as usize;
+                let neighbors = mesh.faces[current_fi].neighbors;
+
+                for edge_idx in 0..vc {
+                    let cni = neighbors[edge_idx];
+                    if cni < 0 {
+                        continue;
+                    }
+                    let cni = cni as usize;
+
+                    if mesh.faces[cni].cylindrical_hypothesis != UNDEDUCED_CYLINDRICAL_HYPOTHESIS {
+                        continue;
+                    }
+
+                    // Must be a single-face planar hypothesis candidate
+                    let cni_ph = mesh.faces[cni].planar_hypothesis;
+                    if cni_ph >= 0 && planar_hypotheses[cni_ph as usize].faces.len() > 1 {
+                        continue;
+                    }
+
+                    // Convexity check
+                    let cni_convex = determine_convexity(
+                        &mesh.faces[cni], &mesh.vertices, &current_axis_origin, &current_axis_direction,
+                    );
+                    if cni_convex != convex {
+                        continue;
+                    }
+
+                    // Vertex distance check
+                    let cni_vc = mesh.faces[cni].vertex_count as usize;
+                    let cni_vi = mesh.faces[cni].vertex_indices;
+                    let mut all_ok = true;
+                    let mut any_far = false;
+                    for vi_idx in 0..cni_vc {
+                        let d = vertex_to_cylinder_distance(
+                            &mesh.vertices[cni_vi[vi_idx]],
+                            &current_axis_origin,
+                            &current_axis_direction,
+                            current_radius,
+                        ).abs();
+                        if d > vertex_tol {
+                            all_ok = false;
+                            if d > 2.0 * vertex_tol {
+                                any_far = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if any_far {
+                        continue;
+                    }
+
+                    if !all_ok {
+                        // Try re-fitting with new face included
+                        let mut trial_vertices = vertex_set.clone();
+                        for vi_idx in 0..cni_vc {
+                            trial_vertices.insert(cni_vi[vi_idx]);
+                        }
+                        let mut trial_faces = face_list.clone();
+                        trial_faces.push(cni);
+
+                        let refit = fit_cylinder(
+                            &trial_faces, &trial_vertices, &mesh.faces, &mesh.vertices,
+                        );
+                        let (new_origin, new_dir, new_radius) = match refit {
+                            Some(params) => params,
+                            None => continue,
+                        };
+
+                        if !all_vertices_within_cylinder_tolerance(
+                            &trial_vertices, &new_origin, &new_dir, new_radius,
+                            vertex_tol, &mesh.vertices,
+                        ) {
+                            continue;
+                        }
+
+                        // Accept re-fit
+                        current_axis_origin = new_origin;
+                        current_axis_direction = new_dir;
+                        current_radius = new_radius;
+                    }
+
+                    // Accept this face
+                    mesh.faces[cni].cylindrical_hypothesis = hi;
+                    face_list.push(cni);
+                    for vi_idx in 0..cni_vc {
+                        vertex_set.insert(cni_vi[vi_idx]);
+                    }
+                    queue.push_back(cni);
+                }
+            }
+
+            // Final re-fit from all accumulated faces
+            if let Some((final_origin, final_dir, final_radius)) =
+                fit_cylinder(&face_list, &vertex_set, &mesh.faces, &mesh.vertices)
+            {
+                current_axis_origin = final_origin;
+                current_axis_direction = final_dir;
+                current_radius = final_radius;
+            }
+
+            // Compute error metrics
+            let mut error_max = 0.0_f64;
+            let mut error_abs_sum = 0.0_f64;
+            for &vi in &vertex_set {
+                let d = vertex_to_cylinder_distance(
+                    &mesh.vertices[vi], &current_axis_origin, &current_axis_direction, current_radius,
+                ).abs();
+                error_max = error_max.max(d);
+                error_abs_sum += d;
+            }
+
+            // Validate: check that face centroids lie within surface_tol
+            // of the cylinder. This catches spurious fits (e.g. two perpendicular
+            // planar faces that happen to fit a cylinder algebraically).
+            let mut centroid_ok = true;
+            for &f in &face_list {
+                let c = face_centroid(&mesh.faces[f], &mesh.vertices);
+                let d = vertex_to_cylinder_distance(
+                    &MeshVertex::from_xyz(c[0], c[1], c[2]),
+                    &current_axis_origin, &current_axis_direction, current_radius,
+                ).abs();
+                if d > surface_tol {
+                    centroid_ok = false;
+                    break;
+                }
+            }
+
+            if !centroid_ok {
+                // Undo assignments
+                for &f in &face_list {
+                    mesh.faces[f].cylindrical_hypothesis = UNDEDUCED_CYLINDRICAL_HYPOTHESIS;
+                }
+                continue;
+            }
+
+            hypotheses.push(CylindricalHypothesis {
+                axis_origin: current_axis_origin,
+                axis_direction: current_axis_direction,
+                radius: current_radius,
+                convex,
+                faces: face_list,
+                vertices: vertex_set.into_iter().collect(),
+                error_max,
+                error_abs_sum,
+            });
+
+            seed_found = true;
+            break;
+        }
+
+        if !seed_found {
+            mesh.faces[fi].cylindrical_hypothesis = NO_HYPOTHESIS;
+        }
+    }
+
+    hypotheses
+}
+
+/// Validate fitted cylindrical hypotheses against a reference STEP shape.
+fn compare_cylindrical_hypotheses(
+    hypotheses: &[CylindricalHypothesis],
+    mesh: &ConnectedMesh,
+    config: &Config,
+) -> Result<(), Stage2CompareError> {
+    let compare_shape = config.compare_shape.as_ref().unwrap();
+
+    for (hi, hyp) in hypotheses.iter().enumerate() {
+        let mut max_dist = 0.0_f64;
+
+        for &fi in &hyp.faces {
+            let centroid = face_centroid(&mesh.faces[fi], &mesh.vertices);
+
+            // Project centroid onto cylinder surface (nearest point)
+            let d = [
+                centroid[0] - hyp.axis_origin[0],
+                centroid[1] - hyp.axis_origin[1],
+                centroid[2] - hyp.axis_origin[2],
+            ];
+            let t = dot3(&d, &hyp.axis_direction);
+            let radial = [
+                d[0] - t * hyp.axis_direction[0],
+                d[1] - t * hyp.axis_direction[1],
+                d[2] - t * hyp.axis_direction[2],
+            ];
+            let radial_dist = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+
+            let projected = if radial_dist > 1e-15 {
+                let scale = hyp.radius / radial_dist;
+                [
+                    hyp.axis_origin[0] + t * hyp.axis_direction[0] + radial[0] * scale,
+                    hyp.axis_origin[1] + t * hyp.axis_direction[1] + radial[1] * scale,
+                    hyp.axis_origin[2] + t * hyp.axis_direction[2] + radial[2] * scale,
+                ]
+            } else {
+                // Centroid is on the axis — unlikely but handle gracefully
+                centroid
+            };
+
+            let pt = gp::Pnt::new_real3(projected[0], projected[1], projected[2]);
+            let dist = stage1::min_distance_to_shape(&pt, compare_shape);
+            max_dist = max_dist.max(dist);
+        }
+
+        if max_dist > config.surface_tolerance_mm {
+            return Err(Stage2CompareError {
+                hypothesis_type: "cylindrical",
+                hypothesis_index: hi,
+                max_distance: max_dist,
+                tolerance: config.surface_tolerance_mm,
+            });
+        }
+    }
+
+    Ok(())
+}
+
 
 // ---------------------------------------------------------------------------
 // Stage 2 entry point
@@ -502,16 +1195,47 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
     }
 
     // Stage 2.2: Deduce cylindrical hypotheses
-    // TODO: implement cylinder fitting
+    let cylindrical_hypotheses = deduce_cylindrical_hypotheses(
+        &mut mesh, &planar_hypotheses, config.vertex_tolerance_mm, config.surface_tolerance_mm,
+    );
+
     if !config.quiet {
-        eprintln!("Stage 2.2: Deduce cylindrical hypotheses (not yet implemented)");
+        let covered_faces: usize = cylindrical_hypotheses.iter().map(|h| h.faces.len()).sum();
+        let convex_count = cylindrical_hypotheses.iter().filter(|h| h.convex).count();
+        let concave_count = cylindrical_hypotheses.len() - convex_count;
+        eprintln!(
+            "Stage 2.2: Deduced {} cylindrical hypotheses ({} convex, {} concave) covering {} faces",
+            cylindrical_hypotheses.len(),
+            convex_count,
+            concave_count,
+            covered_faces,
+        );
+        if config.verbose {
+            for (i, h) in cylindrical_hypotheses.iter().enumerate() {
+                eprintln!(
+                    "  Cylinder {}: {} faces, {} vertices, r={:.4}, {}, axis=[{:.4}, {:.4}, {:.4}], err_max={:.2e}",
+                    i, h.faces.len(), h.vertices.len(), h.radius,
+                    if h.convex { "convex" } else { "concave" },
+                    h.axis_direction[0], h.axis_direction[1], h.axis_direction[2],
+                    h.error_max,
+                );
+            }
+        }
+    }
+
+    // Compare against STEP file if --compare was specified
+    if config.compare_shape.is_some() {
+        compare_cylindrical_hypotheses(&cylindrical_hypotheses, &mesh, config)?;
+        if !config.quiet {
+            eprintln!("  Compare: all cylindrical hypothesis centroids within tolerance");
+        }
     }
 
     if !config.stage.at_least(2, 3) {
         return Ok(Stage2Output {
             mesh,
             planar_hypotheses,
-            cylindrical_hypotheses: Vec::new(),
+            cylindrical_hypotheses,
             spherical_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
@@ -527,7 +1251,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
         return Ok(Stage2Output {
             mesh,
             planar_hypotheses,
-            cylindrical_hypotheses: Vec::new(),
+            cylindrical_hypotheses,
             spherical_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
@@ -543,7 +1267,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
         return Ok(Stage2Output {
             mesh,
             planar_hypotheses,
-            cylindrical_hypotheses: Vec::new(),
+            cylindrical_hypotheses,
             spherical_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
@@ -559,7 +1283,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
         return Ok(Stage2Output {
             mesh,
             planar_hypotheses,
-            cylindrical_hypotheses: Vec::new(),
+            cylindrical_hypotheses,
             spherical_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
@@ -574,7 +1298,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
     Ok(Stage2Output {
         mesh,
         planar_hypotheses,
-        cylindrical_hypotheses: Vec::new(),
+        cylindrical_hypotheses,
         spherical_hypotheses: Vec::new(),
         selected_surfaces: Vec::new(),
     })
@@ -587,7 +1311,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stage1::{self, MeshFace, MeshVertex, VertexWeldOptions, NO_HYPOTHESIS};
+    use crate::stage1::{self, MeshFace, MeshVertex, VertexWeldOptions, NO_HYPOTHESIS, UNDEDUCED_CYLINDRICAL_HYPOTHESIS};
 
     fn make_triangle_face(a: usize, b: usize, c: usize) -> MeshFace {
         MeshFace {
@@ -596,7 +1320,7 @@ mod tests {
             neighbors: [-1, -1, -1, -1],
             normal: None,
             planar_hypothesis: UNDEDUCED_PLANAR_HYPOTHESIS,
-            cylindrical_hypothesis: NO_HYPOTHESIS,
+            cylindrical_hypothesis: UNDEDUCED_CYLINDRICAL_HYPOTHESIS,
             spherical_hypothesis: NO_HYPOTHESIS,
         }
     }
