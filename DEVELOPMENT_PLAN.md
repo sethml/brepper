@@ -116,7 +116,7 @@ Read the input STL file and generate an in-memory representation of the triangle
         - `normal: Option<[f64; 3]>` — Mesh face normal, computed from vertices in stage 1.2. `None` for degenerate faces. (Changed from `gp_Dir` in original plan — native Rust arrays avoid OCCT binding complexity and keep the mesh data structure self-contained.)
         - `planar_hypothesis: i32` — Index of active planar hypothesis, or `NO_HYPOTHESIS` (-1) if none, or `UNDEDUCED_PLANAR_HYPOTHESIS` (-2) if not yet deduced.
         - `cylindrical_hypothesis: i32` — Index of active cylindrical hypothesis, or `NO_HYPOTHESIS` (-1) if none, or `UNDEDUCED_CYLINDRICAL_HYPOTHESIS` (-2) if not yet deduced.
-        - `spherical_hypothesis: i32` — Index of active spherical hypothesis, or `NO_HYPOTHESIS` (-1) if none.
+        - `spherical_hypothesis: i32` — Index of active spherical hypothesis, or `NO_HYPOTHESIS` (-1) if none, or `UNDEDUCED` (-2) if not yet deduced.
     - `stats: MeshValidationStats` — Statistics described in stage 1.2.
 
 Note: hypotheses vectors (planar, cylindrical, spherical) are stored in `Stage2Output`, not in `ConnectedMesh`. The mesh stores only per-face hypothesis indices. (Changed from original plan which listed hypothesis vectors as part of `ConnectedMesh` — separating them into the stage 2 output keeps each stage's output self-contained and avoids coupling the mesh representation to later stages.)
@@ -274,7 +274,7 @@ The normal covariance matrix `M` can be maintained incrementally during BFS (add
 
 #### 2.3 Deduce spherical hypotheses
 
-Fit spherical hypotheses to connected sets of faces that lie on a common sphere. Candidates are faces with single-face planar hypotheses (from stage 2.1) that were NOT assigned to a cylindrical hypothesis in stage 2.2 (i.e., `cylindrical_hypothesis == NO_HYPOTHESIS`). A spherical hypothesis consists of:
+Fit spherical hypotheses to connected sets of faces that lie on a common sphere. All faces are candidates for spherical fitting — faces with cylindrical hypotheses or multi-face planar hypotheses are not excluded, since a face can legitimately belong to multiple surface types (e.g., equator faces of a sphere may also fit a cylinder). Stage 2.6 resolves overlapping hypotheses later. A spherical hypothesis consists of:
 - `center: [f64; 3]` — Center of the sphere.
 - `radius: f64` — Radius of the sphere (always positive).
 - `convex: bool` — Whether face normals point away from the center (convex, like the outside of a ball) or toward it (concave, like a bowl).
@@ -283,13 +283,11 @@ Fit spherical hypotheses to connected sets of faces that lie on a common sphere.
 - `error_max: f64` — Maximum absolute distance from any vertex to the sphere surface.
 - `error_abs_sum: f64` — Sum of absolute vertex-to-surface distances.
 
-The algorithm uses BFS region growing, analogous to stages 2.1 and 2.2 but seeded from groups of 3+ adjacent single-face planar hypothesis faces (since a sphere requires normals pointing in multiple directions to determine curvature):
+The algorithm uses BFS region growing, analogous to stages 2.1 and 2.2 but seeded from groups of 3+ adjacent faces whose normals span 3D (since a sphere requires normals pointing in multiple directions to determine curvature):
 
 **Seeding:**
 - For each face fi where `spherical_hypothesis == UNDEDUCED` (-2):
-    - If fi belongs to a multi-face planar hypothesis or has a cylindrical hypothesis: set `spherical_hypothesis = -1`, skip.
-    - Must have a single-face planar hypothesis and no cylindrical hypothesis.
-    - Search for a seed group: fi and two neighbors ni, mi that are also unassigned spherical candidates with single-face planar hypotheses and no cylindrical hypotheses.
+    - Search for a seed group: fi and two neighbors ni, mi that are also unassigned (`spherical_hypothesis == UNDEDUCED`).
     - The three seed normals must span 3D space (no two parallel, and not all coplanar) — the normal covariance matrix from the three faces must have all eigenvalues above a minimum threshold.
     - Estimate initial sphere parameters from the seed group using least-squares sphere fitting (see Sphere Fitting below).
     - Verify seed validity: check that all vertices of fi, ni, mi are within `--vertex-tolerance` of the estimated sphere surface.
@@ -300,7 +298,6 @@ The algorithm uses BFS region growing, analogous to stages 2.1 and 2.2 but seede
 **BFS expansion:**
 - Pop faces from the queue and examine each neighbor ni:
     - If ni already has a spherical hypothesis, skip.
-    - If ni belongs to a multi-face planar hypothesis or has a cylindrical hypothesis, skip.
     - **Vertex distance check**: for each vertex of ni, compute `| ||v - center|| - radius |`. If all within `--vertex-tolerance`, accept directly. If any exceeds `2 * vertex_tolerance`, skip. If between 1x and 2x, re-fit.
     - **Convexity check**: verify ni's normal agrees with the hypothesis convexity (dot product of normal with radial vector has the expected sign).
     - **Re-fit attempt**: re-fit sphere from all current faces plus ni. Check all vertices within tolerance and radius within `max_sphere_radius`. Accept or reject.
@@ -320,12 +317,10 @@ The algorithm uses BFS region growing, analogous to stages 2.1 and 2.2 but seede
 - Spheres have normals spanning 3D (all 3 eigenvalues of normal covariance matrix are similar).
 - Cylinders have normals spanning a 2D plane (1 eigenvalue is much smaller).
 - The seed requirement of 3 non-coplanar normals prevents cylinder-like seeds.
-- Additionally, faces already assigned to cylindrical hypotheses are excluded from sphere candidates.
+- Faces with cylindrical hypotheses are NOT excluded — they may legitimately belong to both a cylinder and a sphere (e.g., equator band). Stage 2.6 disambiguates.
 
 **Preventing false positives on chamfers/bevels:**
-- On a chamfered or beveled cube, corner and edge chamfer faces have single-face planar hypotheses (they're individually flat but not coplanar with neighbors) and no cylindrical hypothesis. They form connected clusters of sphere candidates (e.g., 20 faces on a chamfered cube: 12 edge + 8 corner chamfers). A corner chamfer plus two adjacent edge chamfers can pass the 3-face eigenvalue check because their normals genuinely span 3D.
-- However, these faces are flat — the sphere fit produces a degenerate radius vastly larger than the model. The `max_sphere_radius` constraint catches this: any sphere whose radius exceeds 10× the bounding box diagonal is rejected as geometrically meaningless (the sagitta $h^2/(8R)$ is far below vertex tolerance, so the sphere is indistinguishable from a set of independent planes).
-- As an optimization, the seeding loop can skip faces with fewer than 2 eligible sphere-candidate neighbors, since they cannot form a 3-face seed. This is already implicit in the algorithm (seed search fails for such faces) but pre-checking avoids unnecessary neighbor traversal.
+- On a chamfered or beveled cube, corner and edge chamfer faces have normals spanning 3D and can pass the 3-face eigenvalue check. However, these faces are flat — the sphere fit produces a degenerate radius vastly larger than the model. The `max_sphere_radius` constraint catches this: any sphere whose radius exceeds 10× the bounding box diagonal is rejected as geometrically meaningless (the sagitta $h^2/(8R)$ is far below vertex tolerance, so the sphere is indistinguishable from a set of independent planes).
 
 **Test models:**
 - Simple sphere (ccad): full convex sphere, radius 10 → 1 convex spherical hypothesis.
@@ -366,7 +361,7 @@ Assign each mesh face to exactly one "selected surface" for reconstruction. Sinc
 - Validate: every face is assigned to exactly one selected surface. Error if any face has no valid hypothesis.
 - Print a summary: count of selected surfaces by type, total faces covered, any uncovered faces.
 
-This simple priority rule works because the BFS fitting stages naturally avoid conflicts: stage 2.2 only considers single-face planar faces, and stage 2.3 only considers faces not already assigned to cylinders.
+This simple priority rule works because a face can have at most one hypothesis of each type. Since stage 2.3 now allows faces to have both cylindrical and spherical hypotheses, a face on the equator of a sphere that also fits a cylinder will be assigned to the sphere (higher priority). Multi-face planar hypotheses still take highest priority since those faces are genuinely coplanar.
 
 *Future work: if the priority rule produces poor results (e.g., a large-radius cylinder incorrectly captured as a multi-face plane), consider fit-error-weighted selection or a greedy area-coverage approach. A more sophisticated metric could balance area × (1 - normalized_error). Backtracking could handle cases where greedy selection fragments remaining regions.*
 
