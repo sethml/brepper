@@ -839,20 +839,16 @@ fn deduce_cylindrical_hypotheses(
     let num_faces = mesh.faces.len();
     let mut hypotheses: Vec<CylindricalHypothesis> = Vec::new();
 
-    // Initialize cylindrical_hypothesis for all faces
+
     for fi in 0..num_faces {
         if mesh.faces[fi].cylindrical_hypothesis != UNDEDUCED_CYLINDRICAL_HYPOTHESIS {
             continue;
         }
-        // Faces belonging to multi-face planar hypotheses are genuinely flat
+
+        // Skip multi-face planar faces as seeds — they are likely genuinely flat.
+        // Leave them UNDEDUCED so BFS can absorb them into nearby cylinder hypotheses.
         let ph = mesh.faces[fi].planar_hypothesis;
         if ph >= 0 && planar_hypotheses[ph as usize].faces.len() > 1 {
-            mesh.faces[fi].cylindrical_hypothesis = NO_HYPOTHESIS;
-        }
-    }
-
-    for fi in 0..num_faces {
-        if mesh.faces[fi].cylindrical_hypothesis != UNDEDUCED_CYLINDRICAL_HYPOTHESIS {
             continue;
         }
 
@@ -879,7 +875,7 @@ fn deduce_cylindrical_hypotheses(
                 continue;
             }
 
-            // Must be a single-face planar hypothesis
+            // Skip multi-face planar neighbors as seed partners
             let ni_ph = mesh.faces[ni].planar_hypothesis;
             if ni_ph >= 0 && planar_hypotheses[ni_ph as usize].faces.len() > 1 {
                 continue;
@@ -964,11 +960,6 @@ fn deduce_cylindrical_hypotheses(
                         continue;
                     }
 
-                    // Must be a single-face planar hypothesis candidate
-                    let cni_ph = mesh.faces[cni].planar_hypothesis;
-                    if cni_ph >= 0 && planar_hypotheses[cni_ph as usize].faces.len() > 1 {
-                        continue;
-                    }
 
                     // Convexity check
                     let cni_convex = determine_convexity(
@@ -1361,20 +1352,16 @@ fn deduce_spherical_hypotheses(
     let num_faces = mesh.faces.len();
     let mut hypotheses: Vec<SphericalHypothesis> = Vec::new();
 
-    // Initialize spherical_hypothesis for all faces
+
     for fi in 0..num_faces {
         if mesh.faces[fi].spherical_hypothesis != UNDEDUCED_SPHERICAL_HYPOTHESIS {
             continue;
         }
-        // Faces belonging to multi-face planar hypotheses are genuinely flat
+
+        // Skip multi-face planar faces as seeds — they are likely genuinely flat.
+        // Leave them UNDEDUCED so BFS can absorb them into nearby sphere hypotheses.
         let ph = mesh.faces[fi].planar_hypothesis;
         if ph >= 0 && planar_hypotheses[ph as usize].faces.len() > 1 {
-            mesh.faces[fi].spherical_hypothesis = NO_HYPOTHESIS;
-        }
-    }
-
-    for fi in 0..num_faces {
-        if mesh.faces[fi].spherical_hypothesis != UNDEDUCED_SPHERICAL_HYPOTHESIS {
             continue;
         }
 
@@ -1400,7 +1387,7 @@ fn deduce_spherical_hypotheses(
                 continue;
             }
 
-            // Must be a single-face planar hypothesis
+            // Skip multi-face planar neighbors as seed partners
             let ni_ph = mesh.faces[ni].planar_hypothesis;
             if ni_ph >= 0 && planar_hypotheses[ni_ph as usize].faces.len() > 1 {
                 continue;
@@ -1481,11 +1468,6 @@ fn deduce_spherical_hypotheses(
                             continue;
                         }
 
-                        // Skip multi-face planar hypothesis faces
-                        let cni_ph = mesh.faces[cni].planar_hypothesis;
-                        if cni_ph >= 0 && planar_hypotheses[cni_ph as usize].faces.len() > 1 {
-                            continue;
-                        }
 
                         // Convexity check
                         let cni_convex = determine_sphere_convexity(
@@ -1706,9 +1688,9 @@ fn compare_spherical_hypotheses(
 /// Returns a vector of unique SelectedSurface entries covering all mesh faces.
 ///
 /// Priority (highest first):
-/// 1. Multi-face planar hypothesis (face count > 1)
-/// 2. Spherical hypothesis
-/// 3. Cylindrical hypothesis
+/// 1. Spherical hypothesis (most constrained: 4 DOF)
+/// 2. Cylindrical hypothesis (6 DOF)
+/// 3. Multi-face planar hypothesis (face count > 1)
 /// 4. Single-face planar hypothesis (fallback)
 fn select_surfaces(
     mesh: &ConnectedMesh,
@@ -1722,25 +1704,25 @@ fn select_surfaces(
         let ci = face.cylindrical_hypothesis;
         let si = face.spherical_hypothesis;
 
-        // Priority 1: multi-face planar hypothesis
+        // Priority 1: spherical hypothesis (most constrained: 4 DOF)
+        if si >= 0 {
+            face_selection[fi] = Some(SelectedSurface::Spherical(si as usize));
+            continue;
+        }
+
+        // Priority 2: cylindrical hypothesis (6 DOF)
+        if ci >= 0 {
+            face_selection[fi] = Some(SelectedSurface::Cylindrical(ci as usize));
+            continue;
+        }
+
+        // Priority 3: multi-face planar hypothesis
         if pi >= 0 {
             let ph = &planar_hypotheses[pi as usize];
             if ph.faces.len() > 1 {
                 face_selection[fi] = Some(SelectedSurface::Planar(pi as usize));
                 continue;
             }
-        }
-
-        // Priority 2: spherical hypothesis
-        if si >= 0 {
-            face_selection[fi] = Some(SelectedSurface::Spherical(si as usize));
-            continue;
-        }
-
-        // Priority 3: cylindrical hypothesis
-        if ci >= 0 {
-            face_selection[fi] = Some(SelectedSurface::Cylindrical(ci as usize));
-            continue;
         }
 
         // Priority 4: single-face planar hypothesis (fallback)
@@ -1863,12 +1845,20 @@ fn compare_selected_surfaces(
             max_dist = max_dist.max(dist);
         }
 
-        if max_dist > config.surface_tolerance_mm {
+        // Use vertex_tolerance for properly fitted surfaces (cylindrical,
+        // spherical). Use surface_tolerance for all planar hypotheses — multi-face
+        // planar on curved surfaces (e.g. cylinder fillets) can have large error.
+        let tolerance = match surface {
+            SelectedSurface::Planar(_) => config.surface_tolerance_mm,
+            _ => config.vertex_tolerance_mm,
+        };
+
+        if max_dist > tolerance {
             return Err(Stage2CompareError {
                 hypothesis_type: hyp_type,
                 hypothesis_index: si,
                 max_distance: max_dist,
-                tolerance: config.surface_tolerance_mm,
+                tolerance,
             });
         }
     }

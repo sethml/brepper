@@ -132,7 +132,7 @@ All node/triangle indices are **1-based** (OCCT convention).
 ### Stage 2.2 cylindrical hypothesis algorithm
 - Two-step fitting: (1) axis direction from smallest eigenvector of area-weighted normal covariance matrix M = Σ wᵢ nᵢ nᵢᵀ, (2) axis position and radius via 2D algebraic circle fit after projecting vertices perpendicular to axis.
 - 3×3 symmetric eigenvalue computation uses depressed cubic (trigonometric solution with cos(θ/3)), plus null-space eigenvector via cross products of (M - λI) rows.
-- BFS seeds from pairs of adjacent single-face planar hypothesis faces with cross product magnitude > 0.01 (MIN_CROSS_THRESHOLD).
+- BFS seeds from pairs of adjacent faces with non-parallel normals (cross product > MIN_CROSS_THRESHOLD=0.01). Multi-face planar faces are excluded from seeding (both as seed face and seed partner) to prevent bogus large-radius cylinders from nearly-coplanar face pairs on curved surfaces. However, multi-face planar faces remain UNDEDUCED and CAN be absorbed by BFS expansion from nearby legitimate seeds.
 - Centroid validation after BFS: each face centroid must be within surface_tolerance of the fitted cylinder. This rejects spurious fits from perpendicular planar faces that algebraically fit a cylinder.
 - Minimum 3-face requirement: cylinder hypotheses must contain at least 3 faces. Any real cylindrical surface from a CAD tessellation will have at least 3 facets around its circumference. This eliminates spurious 2-face cylinder fits from locally adjacent faces on tori, cones, and spheres (e.g., cone went from 29 to 0 spurious fits, pipe_elbow from 252 to 51).
 - Angular tolerance check: both seed pairs and BFS expansion candidates must have dihedral angle ≤ `--angular-tolerance` (default 17.5°). This prevents fitting cylinders to faces that meet at sharp angles (e.g., cube faces at 90°). CAD tessellators enforce a maximum angular tolerance between adjacent triangles on the same surface.
@@ -145,20 +145,21 @@ All node/triangle indices are **1-based** (OCCT convention).
 
 ### Stage 2.3 spherical hypothesis algorithm
 - Algebraic least-squares sphere fitting: expand |v-c|²=r² linearly into 4 unknowns (cx, cy, cz, k=r²-|c|²). Normal equations AᵀAx = Aᵀb solved via 4×4 Gaussian elimination with partial pivoting.
-- BFS seeds from pairs of adjacent faces with non-parallel normals (cross product > MIN_CROSS_THRESHOLD=0.01), analogous to cylindrical seeding.
+- BFS seeds from pairs of adjacent faces with non-parallel normals (cross product > MIN_CROSS_THRESHOLD=0.01), analogous to cylindrical seeding. Multi-face planar faces excluded from seeding but absorb-able by BFS, same as cylindrical.
 - Original plan called for 3-face seeds with normals-span-3D eigenvalue check, but this failed on finely tessellated spheres where 3 adjacent faces span only ~6° and fall below the eigenvalue ratio threshold. Pair-based seeding works because the 4-DOF sphere fit from 6+ vertices validates the geometry.
 - max_sphere_radius = bounding_box_diagonal * 10 prevents degenerate large-radius fits on chamfer/bevel faces.
 - Centroid validation after BFS: each face centroid must be within surface_tolerance of the fitted sphere.
 - Minimum 4-face requirement: a sphere needs at least 4 non-coplanar points for a unique fit.
-- All faces are candidates (including those with cylindrical hypotheses). This allows equator faces to have both cylinder and sphere hypotheses. Stage 2.6 resolves using per-face priority.
+- All faces are candidates for BFS expansion (including those with cylindrical hypotheses and multi-face planar hypotheses). Only seeding excludes multi-face planar. Stage 2.6 resolves overlapping hypotheses using per-face priority.
 - Torus faces locally fit spheres (e.g., pipe_elbow produces 36 sphere hypotheses). This is expected — stage 2.6 with torus hypothesis support will resolve it.
 - Concave spheres (bowls/pockets) have normals pointing toward center — same convexity logic as cylinders.
 - Angular tolerance check: same as cylindrical — seed pairs and BFS neighbors must have dihedral angle ≤ `--angular-tolerance`. This fixed the spurious sphere detection on the 1mm manual cube.
 
 ### Stage 2.6 surface selection
-- Simple per-face priority rule: multi-face planar > spherical > cylindrical > single-face planar.
+- Simple per-face priority rule: spherical > cylindrical > multi-face planar > single-face planar.
+- Previously: multi-face planar had highest priority (assumed genuinely flat). Changed because on finely tessellated curved surfaces, adjacent nearly-coplanar faces form multi-face planar groups that should be overridden by cylindrical/spherical hypotheses.
 - Previously known issue (now fixed): small cubes (e.g., manual/cube.stl at 1mm) got spurious sphere/cylinder hypotheses because all 8 vertices lie exactly on a circumscribed sphere. Fixed by the `--angular-tolerance` flag (default 17.5°): adjacent cube faces meet at 90°, far exceeding the angular tolerance, so the seed pair is rejected.
-- The `select_surfaces` function only needs the mesh and planar hypotheses (to check face count > 1); it reads cylindrical/spherical hypothesis indices from the per-face fields.
+- The `select_surfaces` function reads cylindrical/spherical hypothesis indices from the per-face fields and planar hypothesis index to check face count.
 
 
 ### Stage 3.1 adjacency graph construction
