@@ -147,6 +147,10 @@ struct CliArgs {
     #[arg(long, default_value = "0.4")]
     pub surface_tolerance: f64,
 
+    /// Max dihedral angle between adjacent triangles on same surface, in degrees.
+    #[arg(long, default_value = "17.5")]
+    pub angular_tolerance: f64,
+
     /// Enable verbose output.
     #[arg(short = 'v', long)]
     pub verbose: bool,
@@ -188,6 +192,8 @@ pub struct Config {
     pub vertex_tolerance_mm: f64,
     /// Tolerance for surface-to-triangle-face offset, in mm.
     pub surface_tolerance_mm: f64,
+    /// Max dihedral angle (radians) between adjacent triangles on the same surface.
+    pub angular_tolerance_rad: f64,
     /// Enable verbose output.
     pub verbose: bool,
     /// Suppress non-error output.
@@ -209,6 +215,7 @@ impl std::fmt::Debug for Config {
             .field("compare_shape", &if self.compare_shape.is_some() { format!("[{} faces]", self.compare_face_count) } else { "None".to_string() })
             .field("vertex_tolerance_mm", &self.vertex_tolerance_mm)
             .field("surface_tolerance_mm", &self.surface_tolerance_mm)
+            .field("angular_tolerance_rad", &self.angular_tolerance_rad)
             .field("verbose", &self.verbose)
             .field("quiet", &self.quiet)
             .field("debug", &self.debug)
@@ -230,6 +237,7 @@ impl Config {
             compare_face_count: 0,
             vertex_tolerance_mm: args.vertex_tolerance * scale,
             surface_tolerance_mm: args.surface_tolerance * scale,
+            angular_tolerance_rad: args.angular_tolerance.to_radians(),
             verbose: args.verbose,
             quiet: args.quiet,
             debug: args.debug,

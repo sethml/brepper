@@ -226,7 +226,7 @@ The algorithm uses BFS region growing, analogous to stage 2.1 but seeded from pa
 - Initialize all `cylindrical_hypothesis` to `UNDEDUCED` (-2).
 - For each face fi where `cylindrical_hypothesis == -2`:
     - If fi belongs to a multi-face planar hypothesis: set `cylindrical_hypothesis = -1`, skip.
-    - Search fi's neighbors for a seed partner ni: an adjacent face that is also unassigned (`cylindrical_hypothesis == -2`), also has a single-face planar hypothesis, and has a sufficiently different normal (their cross product magnitude exceeds a minimum threshold, e.g. 0.01, to avoid near-parallel normals that would produce an unreliable axis estimate).
+    - Search fi's neighbors for a seed partner ni: an adjacent face that is also unassigned (`cylindrical_hypothesis == -2`), also has a single-face planar hypothesis, and has a sufficiently different normal (their cross product magnitude exceeds a minimum threshold, e.g. 0.01, to avoid near-parallel normals that would produce an unreliable axis estimate). Additionally, the dihedral angle between fi and ni must not exceed `--angular-tolerance` (default 17.5°) — this prevents seeding from pairs of faces that meet at too sharp an angle (e.g., adjacent faces of a cube at 90°).
     - If no valid seed partner found: set `cylindrical_hypothesis = -1`, skip. (This face will be considered for spherical or other hypotheses in later stages.)
     - Estimate initial cylinder parameters from the seed pair (fi, ni) — see Cylinder Fitting below.
     - Verify seed validity: check that all vertices of fi and ni are within `--vertex-tolerance` of the estimated cylinder surface. If not, try the next neighbor. If no neighbor produces a valid seed, set `cylindrical_hypothesis = -1` and skip.
@@ -239,6 +239,7 @@ The algorithm uses BFS region growing, analogous to stage 2.1 but seeded from pa
     - If ni belongs to a multi-face planar hypothesis, skip.
     - **Vertex distance check**: for each vertex of ni, compute `| ||v - axis_closest|| - radius |`. If all are within `--vertex-tolerance`, accept directly. If any exceeds `2 * vertex_tolerance`, skip immediately (re-fitting cannot help, same reasoning as for planar hypotheses). If between 1x and 2x, proceed to re-fit attempt.
     - **Convexity check**: compute the vector from the axis to ni's centroid. Check that ni's face normal agrees with the hypothesis convexity (dot product with radial vector has the expected sign). Reject if inconsistent — this prevents merging the inner and outer surfaces of a thin-walled cylinder.
+    - **Angular tolerance check**: compute the dihedral angle between ni and the current BFS-parent face. If it exceeds `--angular-tolerance`, reject. This limits how fast the surface can curve between adjacent faces.
     - **Re-fit attempt**: if any vertex exceeds tolerance but none exceeds 2x, re-fit the cylinder from all current faces plus ni (see Cylinder Fitting below). Check that **all** vertices (existing and new) are within tolerance of the re-fitted cylinder. If so, accept the re-fit; otherwise skip ni.
     - If accepted: assign ni to the hypothesis, add its vertices to the vertex set, push ni onto the BFS queue.
 - After BFS completes: final re-fit from all accumulated faces and vertices. Compute error metrics.
@@ -287,7 +288,7 @@ The algorithm uses BFS region growing, analogous to stages 2.1 and 2.2 but seede
 
 **Seeding:**
 - For each face fi where `spherical_hypothesis == UNDEDUCED` (-2):
-    - Search fi's neighbors for a seed partner ni: an adjacent face that is also unassigned (`spherical_hypothesis == UNDEDUCED`), and has a sufficiently different normal (cross product magnitude exceeds `MIN_CROSS_THRESHOLD` = 0.01).
+    - Search fi's neighbors for a seed partner ni: an adjacent face that is also unassigned (`spherical_hypothesis == UNDEDUCED`), and has a sufficiently different normal (cross product magnitude exceeds `MIN_CROSS_THRESHOLD` = 0.01). The dihedral angle between fi and ni must also not exceed `--angular-tolerance` (default 17.5°).
     - If no valid seed partner found: set `spherical_hypothesis = NO_HYPOTHESIS`, skip.
     - Estimate initial sphere parameters from the seed pair (fi, ni) using least-squares sphere fitting (see Sphere Fitting below). The combined vertices of two non-coplanar faces (at least 6 for two triangles, 8 for two quads) provide enough constraints for the 4-DOF sphere fit.
     - Verify seed validity: check that all vertices of fi and ni are within `--vertex-tolerance` of the estimated sphere surface.
@@ -302,6 +303,7 @@ The algorithm uses BFS region growing, analogous to stages 2.1 and 2.2 but seede
     - If ni already has a spherical hypothesis, skip.
     - **Vertex distance check**: for each vertex of ni, compute `| ||v - center|| - radius |`. If all within `--vertex-tolerance`, accept directly. If any exceeds `2 * vertex_tolerance`, skip. If between 1x and 2x, re-fit.
     - **Convexity check**: verify ni's normal agrees with the hypothesis convexity (dot product of normal with radial vector has the expected sign).
+    - **Angular tolerance check**: compute the dihedral angle between ni and the current BFS-parent face. If it exceeds `--angular-tolerance`, reject.
     - **Re-fit attempt**: re-fit sphere from all current faces plus ni. Check all vertices within tolerance and radius within `max_sphere_radius`. Accept or reject.
     - If accepted: assign ni, add vertices, push onto BFS queue.
 - After BFS completes: final re-fit, compute error metrics.
@@ -562,6 +564,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Understand stage 2.3 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.3. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
 - [x] Implement stage 2.3: Deduce spherical hypotheses.
 - [x] Implement stage 2.6: Select surfaces for reconstruction using per-face priority rule.
+- [x] Implement the --angular-tolerance flag for cylindrical and spherical surface hypothesis generation.
 
 ### Stage 3: Surface Reconstruction
 - [ ] Implement stage 3.1: Create OCCT surface objects and build adjacency graph from mesh connectivity.

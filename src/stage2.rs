@@ -798,6 +798,7 @@ fn deduce_cylindrical_hypotheses(
     planar_hypotheses: &[PlanarHypothesis],
     vertex_tol: f64,
     surface_tol: f64,
+    angular_tol: f64,
 ) -> Vec<CylindricalHypothesis> {
     let num_faces = mesh.faces.len();
     let mut hypotheses: Vec<CylindricalHypothesis> = Vec::new();
@@ -857,6 +858,12 @@ fn deduce_cylindrical_hypotheses(
             let cross = cross3(&fi_normal, &ni_normal);
             let cross_mag = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
             if cross_mag < MIN_CROSS_THRESHOLD {
+                continue;
+            }
+
+            // Angular tolerance: reject seed pairs with dihedral angle > limit
+            let cos_angle = dot3(&fi_normal, &ni_normal).clamp(-1.0, 1.0);
+            if cos_angle.acos() > angular_tol {
                 continue;
             }
 
@@ -933,6 +940,14 @@ fn deduce_cylindrical_hypotheses(
                     );
                     if cni_convex != convex {
                         continue;
+                    }
+
+                    // Angular tolerance: reject if dihedral angle exceeds limit
+                    if let (Some(n1), Some(n2)) = (mesh.faces[current_fi].normal, mesh.faces[cni].normal) {
+                        let cos_a = dot3(&n1, &n2).clamp(-1.0, 1.0);
+                        if cos_a.acos() > angular_tol {
+                            continue;
+                        }
                     }
 
                     // Vertex distance check
@@ -1294,6 +1309,7 @@ fn deduce_spherical_hypotheses(
     planar_hypotheses: &[PlanarHypothesis],
     vertex_tol: f64,
     surface_tol: f64,
+    angular_tol: f64,
     max_sphere_radius: f64,
 ) -> Vec<SphericalHypothesis> {
     let num_faces = mesh.faces.len();
@@ -1353,6 +1369,12 @@ fn deduce_spherical_hypotheses(
             let cross = cross3(&fi_normal, &ni_normal);
             let cross_mag = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
             if cross_mag < MIN_CROSS_THRESHOLD {
+                continue;
+            }
+
+            // Angular tolerance: reject seed pairs with dihedral angle > limit
+            let cos_angle = dot3(&fi_normal, &ni_normal).clamp(-1.0, 1.0);
+            if cos_angle.acos() > angular_tol {
                 continue;
             }
 
@@ -1425,6 +1447,14 @@ fn deduce_spherical_hypotheses(
                         );
                         if cni_convex != convex {
                             continue;
+                        }
+
+                        // Angular tolerance: reject if dihedral angle exceeds limit
+                        if let (Some(n1), Some(n2)) = (mesh.faces[current_fi].normal, mesh.faces[cni].normal) {
+                            let cos_a = dot3(&n1, &n2).clamp(-1.0, 1.0);
+                            if cos_a.acos() > angular_tol {
+                                continue;
+                            }
                         }
 
                         // Vertex distance check
@@ -1842,7 +1872,8 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
 
     // Stage 2.2: Deduce cylindrical hypotheses
     let cylindrical_hypotheses = deduce_cylindrical_hypotheses(
-        &mut mesh, &planar_hypotheses, config.vertex_tolerance_mm, config.surface_tolerance_mm,
+        &mut mesh, &planar_hypotheses, config.vertex_tolerance_mm,
+        config.surface_tolerance_mm, config.angular_tolerance_rad,
     );
 
     if !config.quiet {
@@ -1892,7 +1923,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
     let max_sphere_radius = bb_diag * 10.0;
     let spherical_hypotheses = deduce_spherical_hypotheses(
         &mut mesh, &planar_hypotheses, config.vertex_tolerance_mm,
-        config.surface_tolerance_mm, max_sphere_radius,
+        config.surface_tolerance_mm, config.angular_tolerance_rad, max_sphere_radius,
     );
 
     if !config.quiet {
@@ -2140,5 +2171,83 @@ mod tests {
         );
         assert_eq!(hypotheses[0].faces.len(), 2);
         assert_eq!(hypotheses[0].vertices.len(), 4);
+    }
+
+    /// Helper to run stage 1 (read + validate + fuse) on an STL file.
+    fn load_stage1(stl_name: &str) -> ConnectedMesh {
+        let stl_path = format!("{}/tests/{}", env!("CARGO_MANIFEST_DIR"), stl_name);
+        let mut mesh = stage1::read_connected_mesh_from_stl(
+            &stl_path,
+            VertexWeldOptions { tolerance: 1e-9 },
+        ).expect("should load");
+        mesh.validate_and_populate_topology().expect("should validate");
+        stage1::fuse_coplanar_triangles(&mut mesh, 1e-5);
+        mesh
+    }
+
+    #[test]
+    fn cube_angular_tolerance_rejects_cylinder() {
+        let mut mesh = load_stage1("manual/cube.stl");
+        let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
+        // 17.5° angular tolerance: cube faces meet at 90°, so no cylinders
+        let cyls = deduce_cylindrical_hypotheses(
+            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(),
+        );
+        assert_eq!(cyls.len(), 0, "cube should produce 0 cylinders at 17.5° angular tolerance");
+    }
+
+    #[test]
+    fn cube_angular_tolerance_rejects_sphere() {
+        let mut mesh = load_stage1("manual/cube.stl");
+        let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
+        let _ = deduce_cylindrical_hypotheses(
+            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(),
+        );
+        // 17.5° angular tolerance: cube faces meet at 90°, so no spheres
+        let sphs = deduce_spherical_hypotheses(
+            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 100.0,
+        );
+        assert_eq!(sphs.len(), 0, "cube should produce 0 spheres at 17.5° angular tolerance");
+    }
+
+    #[test]
+    fn cube_high_angular_tolerance_allows_sphere() {
+        let mut mesh = load_stage1("manual/cube.stl");
+        let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
+        let _ = deduce_cylindrical_hypotheses(
+            &mut mesh, &planar, 1e-5, 0.4, 91.0_f64.to_radians(),
+        );
+        // 91° angular tolerance: exceeds 90° dihedral angle of cube
+        let sphs = deduce_spherical_hypotheses(
+            &mut mesh, &planar, 1e-5, 0.4, 91.0_f64.to_radians(), 100.0,
+        );
+        assert!(!sphs.is_empty(), "cube should produce spheres at 91° angular tolerance");
+    }
+
+    #[test]
+    fn cylinder_detected_at_default_angular_tolerance() {
+        let mut mesh = load_stage1("ccad/generated/simple_cylinder.stl");
+        let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
+        let cyls = deduce_cylindrical_hypotheses(
+            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(),
+        );
+        assert_eq!(cyls.len(), 1, "simple cylinder should produce 1 cylinder hypothesis");
+        assert!(cyls[0].convex);
+        assert!((cyls[0].radius - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn sphere_detected_at_default_angular_tolerance() {
+        let mut mesh = load_stage1("ccad/generated/simple_sphere.stl");
+        let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
+        let _ = deduce_cylindrical_hypotheses(
+            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(),
+        );
+        let sphs = deduce_spherical_hypotheses(
+            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 1000.0,
+        );
+        assert_eq!(sphs.len(), 1, "simple sphere should produce 1 sphere hypothesis");
+        assert!(sphs[0].convex);
+        assert!((sphs[0].radius - 10.0).abs() < 0.01);
     }
 }
