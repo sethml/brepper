@@ -72,6 +72,10 @@ test_stl_stage1!(ccad_block_with_hole_stage1, "tests/ccad/generated/block_with_h
 test_stl_stage1!(ccad_pipe_stage1, "tests/ccad/generated/pipe.stl");
 test_stl_stage1!(ccad_stepped_cylinder_stage1, "tests/ccad/generated/stepped_cylinder.stl");
 test_stl_stage1!(ccad_two_holes_stage1, "tests/ccad/generated/two_holes.stl");
+test_stl_stage1!(ccad_simple_sphere_stage1, "tests/ccad/generated/simple_sphere.stl");
+test_stl_stage1!(ccad_hemisphere_stage1, "tests/ccad/generated/hemisphere.stl");
+test_stl_stage1!(ccad_spherical_pocket_stage1, "tests/ccad/generated/spherical_pocket.stl");
+test_stl_stage1!(ccad_ball_on_cylinder_stage1, "tests/ccad/generated/ball_on_cylinder.stl");
 
 // --- tests/onshape/ ---
 test_stl_stage1!(
@@ -182,6 +186,26 @@ test_stl_step_compare!(
     ccad_two_holes_compare,
     "tests/ccad/generated/two_holes.stl",
     "tests/ccad/generated/two_holes.step"
+);
+test_stl_step_compare!(
+    ccad_simple_sphere_compare,
+    "tests/ccad/generated/simple_sphere.stl",
+    "tests/ccad/generated/simple_sphere.step"
+);
+test_stl_step_compare!(
+    ccad_hemisphere_compare,
+    "tests/ccad/generated/hemisphere.stl",
+    "tests/ccad/generated/hemisphere.step"
+);
+test_stl_step_compare!(
+    ccad_spherical_pocket_compare,
+    "tests/ccad/generated/spherical_pocket.stl",
+    "tests/ccad/generated/spherical_pocket.step"
+);
+test_stl_step_compare!(
+    ccad_ball_on_cylinder_compare,
+    "tests/ccad/generated/ball_on_cylinder.stl",
+    "tests/ccad/generated/ball_on_cylinder.step"
 );
 
 // --- tests/onshape/ ---

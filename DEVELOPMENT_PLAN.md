@@ -131,7 +131,7 @@ Traverse the faces of the mesh, collecting statistics, validating the geometry, 
 - Compute and populate mesh face normals using Newell's method (handles both triangles and quads with consistent winding).
 - Compute mesh face neighbors based on shared mesh edges. For each edge (vertex pair), collect all face uses. For manifold edges (exactly 2 uses), set both faces as neighbors. Also check orientation consistency: properly oriented adjacent faces should traverse the shared edge in opposite directions.
 - Count connected shells via BFS over a face adjacency graph. A shell is counted as a "solid" if all its edges are manifold (exactly 2 faces per edge). (Simplified from the original plan which suggested ray casting or signed volume analysis — the current heuristic is sufficient for well-formed meshes. Voids within solids are tracked in the stats struct but not yet computed.)
-- With the `--compare` flag: check that all vertices are within `--vertex-tolerance` of the STEP shape, and that all face centroids are within `--surface-tolerance`. Uses `BRepExtrema_DistShapeShape` for bounded distance (respects face trimming). Reports the worst vertex and worst centroid with their distances.
+- With the `--compare_step` flag: check that all vertices are within `--vertex-tolerance` of the STEP shape, and that all face centroids are within `--surface-tolerance`. Uses `BRepExtrema_DistShapeShape` for bounded distance (respects face trimming). Reports the worst vertex and worst centroid with their distances.
 
 Validation checks, in priority order (first failure is reported):
 1. **Degenerate faces**: faces with <3 vertices or zero-area normals.
@@ -200,7 +200,7 @@ The algorithm uses BFS region growing (not DFS as originally proposed — BFS ex
 
 Plane fitting uses **area-weighted normal averaging**: each face's unit normal is weighted by the face's triangle area, then the weighted sum is normalized. The plane distance is the mean of `normal · vertex` over all vertices in the hypothesis. This gives larger faces more influence on the plane orientation, which is more robust than unweighted averaging.
 
-- With the `--compare` flag:
+- With the `--compare_step` flag:
   - For each hypothesis, compute the centroid of each member face.
   - Project each centroid onto the fitted plane (perpendicular projection).
   - Measure the distance from the projected point to the nearest surface in the reference STEP file using `BRepExtrema_DistShapeShape`.
@@ -263,7 +263,7 @@ The normal covariance matrix `M` can be maintained incrementally during BFS (add
 - **Multiple cylinders sharing an axis**: E.g. stepped bore holes with different radii. These will form separate hypotheses because vertices at different radii will exceed the vertex tolerance.
 - **Seam between cylinder and plane**: Faces at the junction have some vertices on the plane and some on the cylinder. Since the plane vertices aren't on the cylinder surface, the vertex distance check rejects them. This correctly excludes boundary faces.
 
-- With the `--compare` flag:
+- With the `--compare_step` flag:
   - For each hypothesis, compute the centroid of each member face.
   - Project each centroid onto the cylinder surface (nearest point: project onto axis, then move radially to radius distance).
   - Measure the distance from the projected point to the nearest surface in the reference STEP file using `BRepExtrema_DistShapeShape`.
@@ -273,7 +273,59 @@ The normal covariance matrix `M` can be maintained incrementally during BFS (add
 *Comment: ~~Cylinders are parameterized by axis (point + direction) and radius—6 DOF total. Minimum 5 points needed for a unique fit, but robust fitting requires more.~~ Addressed: the two-step fitting (normal eigenvector + 2D circle) handles this robustly from 2+ non-parallel faces. ~~Key considerations: (1) A cylindrical patch has principal curvature in one direction only—use this to distinguish from spheres/cones.~~ Addressed: the axis direction estimate will be well-defined for cylinders (normals span a plane perpendicular to axis) but degenerate for spheres (normals span all directions, smallest eigenvalue is not well-separated). ~~(2) "Negative radius" isn't the right framing; instead, track whether the surface normal points toward or away from the axis (convex vs concave).~~ Addressed: `convex` field + convexity check during BFS. ~~(3) For cones: 7 DOF. Cones degenerate to cylinders when half-angle→0, so you might fit cones first and detect near-zero angles.~~ Deferred: cone fitting will be considered as a future enhancement. For now, conical faces will fail the cylinder vertex distance check and remain as single-face planar hypotheses. ~~(4) Watch out for nearly-planar cylindrical patches (large radius)—they may fit planes better.~~ Addressed: large-radius cylinders are captured by multi-face planar hypotheses in stage 2.1 and excluded from cylinder candidates.*
 
 #### 2.3 Deduce spherical hypotheses
-TODO. Be sure to handle surfaces with negative curavature correctly - negative radius?
+Fit spherical hypotheses to connected sets of faces that lie on a common sphere. Candidates are faces with single-face planar hypotheses (from stage 2.1) that were NOT assigned to a cylindrical hypothesis in stage 2.2. A spherical hypothesis consists of:
+- `center: [f64; 3]` — Center of the sphere.
+- `radius: f64` — Radius of the sphere (always positive).
+- `convex: bool` — Whether face normals point away from the center (convex, like the outside of a ball) or toward it (concave, like a bowl).
+- `faces: Vec<usize>` — Mesh face indices that fit this hypothesis.
+- `vertices: Vec<usize>` — Mesh vertex indices on this sphere.
+- `error_max: f64` — Maximum absolute distance from any vertex to the sphere surface.
+- `error_abs_sum: f64` — Sum of absolute vertex-to-surface distances.
+
+The algorithm uses BFS region growing, analogous to stages 2.1 and 2.2 but seeded from groups of 3+ adjacent single-face planar hypothesis faces (since a sphere requires normals pointing in multiple directions to determine curvature):
+
+**Seeding:**
+- For each face fi where `spherical_hypothesis == UNDEDUCED` (-2):
+    - If fi belongs to a multi-face planar hypothesis or has a cylindrical hypothesis: set `spherical_hypothesis = -1`, skip.
+    - Must have a single-face planar hypothesis and no cylindrical hypothesis.
+    - Search for a seed group: fi and two neighbors ni, mi that are also unassigned spherical candidates with single-face planar hypotheses and no cylindrical hypotheses.
+    - The three seed normals must span 3D space (no two parallel, and not all coplanar) — the normal covariance matrix from the three faces must have all eigenvalues above a minimum threshold.
+    - Estimate initial sphere parameters from the seed group using least-squares sphere fitting (see Sphere Fitting below).
+    - Verify seed validity: check that all vertices of fi, ni, mi are within `--vertex-tolerance` of the estimated sphere surface.
+    - Determine convexity: the vector from sphere center to fi's centroid should align with fi's normal (positive dot product → convex, negative → concave).
+    - Create a new spherical hypothesis, assign all seed faces, add to BFS queue.
+
+**BFS expansion:**
+- Pop faces from the queue and examine each neighbor ni:
+    - If ni already has a spherical hypothesis, skip.
+    - If ni belongs to a multi-face planar hypothesis or has a cylindrical hypothesis, skip.
+    - **Vertex distance check**: for each vertex of ni, compute `| ||v - center|| - radius |`. If all within `--vertex-tolerance`, accept directly. If any exceeds `2 * vertex_tolerance`, skip. If between 1x and 2x, re-fit.
+    - **Convexity check**: verify ni's normal agrees with the hypothesis convexity (dot product of normal with radial vector has the expected sign).
+    - **Re-fit attempt**: re-fit sphere from all current faces plus ni. Check all vertices within tolerance. Accept or reject.
+    - If accepted: assign ni, add vertices, push onto BFS queue.
+- After BFS completes: final re-fit, compute error metrics.
+- **Centroid validation**: all face centroids must be within `--surface-tolerance` of the fitted sphere. Discard hypothesis if validation fails.
+- **Minimum face count**: require at least 4 faces (a sphere needs at least 4 non-coplanar points for a unique fit).
+
+**Sphere fitting** (used for seeding and re-fitting):
+- Given vertices on a sphere: $|v - c|^2 = r^2$, expand to $v \cdot v - 2 v \cdot c + |c|^2 = r^2$.
+- Rearrange: $v \cdot v = 2 v \cdot c - |c|^2 + r^2 = 2 v \cdot c + k$ where $k = r^2 - |c|^2$.
+- This is linear in unknowns $(c_x, c_y, c_z, k)$. Solve via least squares: $A x = b$ where $A_{i} = [2v_{ix}, 2v_{iy}, 2v_{iz}, 1]$ and $b_i = v_i \cdot v_i$.
+- After solving: center $= (c_x, c_y, c_z)$, radius $= \sqrt{k + |c|^2}$.
+
+**Distinguishing spheres from cylinders:**
+- Spheres have normals spanning 3D (all 3 eigenvalues of normal covariance matrix are similar).
+- Cylinders have normals spanning a 2D plane (1 eigenvalue is much smaller).
+- The seed requirement of 3 non-coplanar normals prevents cylinder-like seeds.
+- Additionally, faces already assigned to cylindrical hypotheses are excluded from sphere candidates.
+
+**Test models:**
+- Simple sphere (ccad): full convex sphere, radius 10 → 1 convex spherical hypothesis.
+- Hemisphere (ccad): top half of sphere + flat base → 1 convex spherical hypothesis + 1 multi-face planar.
+- Spherical pocket (ccad): block with concave hemispherical cavity → 6 planar + 1 concave spherical.
+- Ball on cylinder (ccad): sphere atop cylinder stalk → 1 convex spherical + 1 convex cylindrical + 1 planar.
+- Sphere (onshape): full sphere, fine tessellation.
+- Dome/hemisphere (onshape): hemisphere with flat base.
 
 *Comment: Spheres are 4 DOF (center + radius). Minimum 4 non-coplanar points for a unique fit. For "negative curvature" (concave spherical patch), track normal orientation relative to center rather than using negative radius. Key challenge: partial spherical patches are hard to distinguish from cylinders or even planes if the patch is small relative to the radius. Consider requiring a minimum angular extent or using curvature analysis to disambiguate. Also consider toroidal surfaces (donuts, fillets)—they're common in CAD and combine characteristics of cylinders and spheres.*
 
@@ -310,7 +362,7 @@ This simple priority rule works because the BFS fitting stages naturally avoid c
 
 *Future work: if the priority rule produces poor results (e.g., a large-radius cylinder incorrectly captured as a multi-face plane), consider fit-error-weighted selection or a greedy area-coverage approach. A more sophisticated metric could balance area × (1 - normalized_error). Backtracking could handle cases where greedy selection fragments remaining regions.*
 
-- With the `--compare` flag, for each selected surface:
+- With the `--compare_step` flag, for each selected surface:
     - Compute face centroids and project them onto the selected surface.
     - Measure distance from each projected centroid to the nearest surface in the reference STEP file.
     - Report an error if any projected centroid exceeds `--surface-tolerance`.
@@ -456,7 +508,7 @@ Write constructed solid(s) to a STEP file.
 - Add each solid (or compound of solids) using `Transfer` with `STEPControl_AsIs` mode to preserve exact geometry.
 - Write the output file.
 - Optionally write BREP format (OCCT native) for debugging with `BRepTools::Write`.
-- With the `--compare` flag:
+- With the `--compare_step` flag:
     - Load the reference STEP file.
     - Compare volumes of the output solid vs reference solid using `BRepGProp`.
     - Compute maximum distance between output and reference surfaces using `BRepExtrema_DistShapeShape`.
@@ -469,7 +521,7 @@ Write constructed solid(s) to a STEP file.
 Each stage will be represented by a function which takes a ref to a configuration data structure and consumes an input data structure, and returns an output data structure (or error). That data structure is passed to the next stage:
 
 - main:
-  - let config = parse flags, load --compare STEP file
+  - let config = parse flags, load --compare_step STEP file
   - out1 = stage1(config).unwrap()
   - if config.stage < 2: exit
   - out2 = stage2(congig, out1).unwrap()
@@ -495,14 +547,14 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Stage 1.1: Read STL file into `ConnectedMesh`, including welded vertices and per-face placeholder fields for neighbors, normals, and hypotheses.
 - [x] Stage 1.2: Mesh validation pass to compute face normals, edge neighbors, manifold stats, connected shells, and orientation consistency checks.
 - [x] Stage 1.3: Coplanar triangle fusion — merge adjacent coplanar triangle pairs into quads. This simplifies surface fitting by ensuring curved-surface facets (cylinder/sphere quad strips) become single faces rather than 2-face planar hypothesis groups.
-- [x] Implement tests that all stl/step file pairs in tests/ pass consistency checks and pass when fed to brepper with the --compare flag. Also invent a few file pairs in tests/bad that will fail with the --compare_step flag by editing the location of one or more vertices to fail surface closeness tests. Also invent some bad cases that fail the mesh validation tests in various ways. Ensure that these bad cases fail in the correct way.
+- [x] Implement tests that all stl/step file pairs in tests/ pass consistency checks and pass when fed to brepper with the --compare_step flag. Also invent a few file pairs in tests/bad that will fail with the --compare_step flag by editing the location of one or more vertices to fail surface closeness tests. Also invent some bad cases that fail the mesh validation tests in various ways. Ensure that these bad cases fail in the correct way.
 
 ### Stage 2: Surface Fitting - planes, cylinders, and spheres, oh my!
 - [x] Understand stage 2.1 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.1. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
-- [x] Implement stage 2.1. Make sure --compare passes for all test shapes composed only of planar surfaces.
+- [x] Implement stage 2.1. Make sure --compare_step passes for all test shapes composed only of planar surfaces.
 - [x] Understand stage 2.2 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.2. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
 - [x] Implement stage 2.2: Deduce cylindrical hypotheses.
-- [ ] Understand stage 2.3 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.3. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
+- [x] Understand stage 2.3 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.3. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
 - [ ] Implement stage 2.3: Deduce spherical hypotheses.
 - [ ] Implement stage 2.6: Select surfaces for reconstruction using per-face priority rule.
 
@@ -513,9 +565,11 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [ ] Implement stage 3.4: Create OCCT faces from surfaces bounded by edge wires.
 - [ ] Implement stage 3.5: Stitch faces into shells using BRepBuilderAPI_Sewing.
 - [ ] Implement stage 3.6: Construct solids from shells, determine outer/inner shell roles.
+- [ ] Revisit stage 3.2: Detect tangency relationships between adjacent surfaces. If there are any problems with models that involve tangent curves, such as tests/onshape/chamfered_cube, then imagine more tests for difficult tangency relationships including cylinder-plane and sphere-cylinder, create those tests, and ensure that tangency detection works correctly.
+- [ ] Revisit stage 3.3 if tangency detection was added.
 
 ### Stage 4: Output
-- [ ] Implement stage 4.1: Write solids to STEP file, validate against reference with --compare.
+- [ ] Implement stage 4.1: Write solids to STEP file, validate against reference with --compare_step.
 
 ### Stage 2 Extensions: Additional Surface Types
 - [ ] Understand stage 2.4 (ruled surfaces) and imagine challenging test shapes. Create test models in tests/ccad/.
@@ -529,7 +583,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 
 ## Testing Strategy
 
-The main testing strategy is to process a set of example stl/step pairs, and use the --compare flag to ensure that the pipeline is working correctly for each. 
+The main testing strategy is to process a set of example stl/step pairs, and use the --compare_step flag to ensure that the pipeline is working correctly for each. 
 
 1. **Unit Tests**: Individual components (readers, fitters, converters)
 2. **Integration Tests**: Full pipeline on known geometries
@@ -553,6 +607,10 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 || Pipe (ccad) | 244 triangles | 2 cylinders (in/out) + 2 annular planes | ✓ Stage 2.2 |
 || Stepped Cylinder (ccad) | 240 triangles | 2 cylinders + 3 planes | ✓ Stage 2.2 |
 || Two Holes (ccad) | 244 triangles | 6 planes + 2 concave cylinders | ✓ Stage 2.2 |
+|| Simple Sphere (ccad) | 974 triangles | 1 sphere | ✓ Stage 1 |
+|| Hemisphere (ccad) | 518 triangles | 1 sphere + 1 plane | ✓ Stage 1 |
+|| Spherical Pocket (ccad) | 486 triangles | 6 planes + 1 concave sphere | ✓ Stage 1 |
+|| Ball on Cylinder (ccad) | 764 triangles | 1 sphere + 1 cylinder + 1 plane | ✓ Stage 1 |
 | Sphere | Tessellated sphere | 1 sphere | ✓ Stage 1 |
 | Cone | Tessellated cone | 1 cone + 1 plane | ✓ Stage 1 |
 | Fillet | Blended edge | Planes + fillet surface | |

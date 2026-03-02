@@ -140,3 +140,11 @@ All node/triangle indices are **1-based** (OCCT convention).
 - `box(w, h, d)` places the box in the positive octant: (0,0,0) to (w,h,d). It does NOT center at origin.
 - To center a box, use `translate(box(w,h,d), -w/2, -h/2, -d/2)`.
 - `cylinder(diameter, height)` is vertical (Z-axis), centered at the XY origin, extends from z=0 to z=height (NOT centered vertically). To make through-holes, translate cylinders vertically so they extend past both sides of the target body.
+- `sphere(diameter)` is centered at the origin. To make hemispherical pockets or domes, use `intersection()` or `difference()` with a box.
+
+### Stage 2.3 spherical hypothesis considerations
+- Spheres have normals spanning all 3 directions, unlike cylinders (perpendicular to axis). All 3 eigenvalues of the normal covariance matrix should be similar for a sphere.
+- Sphere fitting is algebraic least-squares: expand |v-c|²=r² into a linear system in (cx, cy, cz, k) where k=r²-|c|².
+- Seed requires 3+ faces with non-coplanar normals to distinguish from cylinders.
+- Faces already assigned to cylindrical hypotheses are excluded from sphere candidates.
+- Concave spheres (bowls/pockets) have normals pointing toward center — same convexity logic as cylinders.

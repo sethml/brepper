@@ -113,6 +113,50 @@
         "translate": [0.0, 0.0, 0.0]
       },
       "visible": true
+    },
+    {
+      "id": "simple_sphere",
+      "name": "simple_sphere",
+      "source": "parts/simple_sphere.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
+    },
+    {
+      "id": "hemisphere",
+      "name": "hemisphere",
+      "source": "parts/hemisphere.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
+    },
+    {
+      "id": "spherical_pocket",
+      "name": "spherical_pocket",
+      "source": "parts/spherical_pocket.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
+    },
+    {
+      "id": "ball_on_cylinder",
+      "name": "ball_on_cylinder",
+      "source": "parts/ball_on_cylinder.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
     }
   ],
   "version": 1
