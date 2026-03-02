@@ -283,17 +283,19 @@ Fit spherical hypotheses to connected sets of faces that lie on a common sphere.
 - `error_max: f64` — Maximum absolute distance from any vertex to the sphere surface.
 - `error_abs_sum: f64` — Sum of absolute vertex-to-surface distances.
 
-The algorithm uses BFS region growing, analogous to stages 2.1 and 2.2 but seeded from groups of 3+ adjacent faces whose normals span 3D (since a sphere requires normals pointing in multiple directions to determine curvature):
+The algorithm uses BFS region growing, analogous to stages 2.1 and 2.2 but seeded from pairs of adjacent faces with non-parallel normals (analogous to cylindrical seeding). The algebraic sphere fit from 4+ non-coplanar vertices (from 2 adjacent triangles/quads) determines a unique sphere, and validation catches bad fits:
 
 **Seeding:**
 - For each face fi where `spherical_hypothesis == UNDEDUCED` (-2):
-    - Search for a seed group: fi and two neighbors ni, mi that are also unassigned (`spherical_hypothesis == UNDEDUCED`).
-    - The three seed normals must span 3D space (no two parallel, and not all coplanar) — the normal covariance matrix from the three faces must have all eigenvalues above a minimum threshold.
-    - Estimate initial sphere parameters from the seed group using least-squares sphere fitting (see Sphere Fitting below).
-    - Verify seed validity: check that all vertices of fi, ni, mi are within `--vertex-tolerance` of the estimated sphere surface.
+    - Search fi's neighbors for a seed partner ni: an adjacent face that is also unassigned (`spherical_hypothesis == UNDEDUCED`), and has a sufficiently different normal (cross product magnitude exceeds `MIN_CROSS_THRESHOLD` = 0.01).
+    - If no valid seed partner found: set `spherical_hypothesis = NO_HYPOTHESIS`, skip.
+    - Estimate initial sphere parameters from the seed pair (fi, ni) using least-squares sphere fitting (see Sphere Fitting below). The combined vertices of two non-coplanar faces (at least 6 for two triangles, 8 for two quads) provide enough constraints for the 4-DOF sphere fit.
+    - Verify seed validity: check that all vertices of fi and ni are within `--vertex-tolerance` of the estimated sphere surface.
     - **Radius sanity check**: reject the seed if the fitted radius exceeds `max_sphere_radius` (see below). This prevents degenerate fits where a very large sphere approximates locally flat chamfer/bevel faces.
     - Determine convexity: the vector from sphere center to fi's centroid should align with fi's normal (positive dot product → convex, negative → concave).
-    - Create a new spherical hypothesis, assign all seed faces, add to BFS queue.
+    - Create a new spherical hypothesis, assign both seed faces, add to BFS queue.
+
+*Design note: The original plan called for 3-face seeds with a normals-span-3D eigenvalue check, but this failed on finely tessellated spheres where 3 adjacent faces have nearly identical normals (spanning only ~6°, below the eigenvalue ratio threshold). Pair-based seeding works because the sphere fit itself validates geometry — if the vertices don't lie on a sphere, the fit produces a large radius or high error, which is caught by max_sphere_radius and vertex distance checks.*
 
 **BFS expansion:**
 - Pop faces from the queue and examine each neighbor ni:
@@ -314,13 +316,13 @@ The algorithm uses BFS region growing, analogous to stages 2.1 and 2.2 but seede
 - After solving: center $= (c_x, c_y, c_z)$, radius $= \sqrt{k + |c|^2}$.
 
 **Distinguishing spheres from cylinders:**
-- Spheres have normals spanning 3D (all 3 eigenvalues of normal covariance matrix are similar).
-- Cylinders have normals spanning a 2D plane (1 eigenvalue is much smaller).
-- The seed requirement of 3 non-coplanar normals prevents cylinder-like seeds.
 - Faces with cylindrical hypotheses are NOT excluded — they may legitimately belong to both a cylinder and a sphere (e.g., equator band). Stage 2.6 disambiguates.
+- On cylindrical surfaces, sphere fits from pairs of nearly-parallel-normal faces tend to produce unreliable results (very large or negative r²), which are caught by `max_sphere_radius` and the `r² > 0` check in sphere fitting.
+- The pair-based seeding requires non-parallel normals (cross product > 0.01), which naturally excludes seeds from planar regions but allows seeds from curved regions of any type.
 
 **Preventing false positives on chamfers/bevels:**
-- On a chamfered or beveled cube, corner and edge chamfer faces have normals spanning 3D and can pass the 3-face eigenvalue check. However, these faces are flat — the sphere fit produces a degenerate radius vastly larger than the model. The `max_sphere_radius` constraint catches this: any sphere whose radius exceeds 10× the bounding box diagonal is rejected as geometrically meaningless (the sagitta $h^2/(8R)$ is far below vertex tolerance, so the sphere is indistinguishable from a set of independent planes).
+- On a chamfered or beveled cube, corner and edge chamfer faces can seed sphere fits. However, these faces are flat — the sphere fit produces a degenerate radius vastly larger than the model. The `max_sphere_radius` constraint (10× bounding box diagonal) catches this. For a 14mm model with vertex_tolerance=1e-5, a degenerate sphere fit would have R ≈ 112 km, far exceeding `14mm × 10 = 140mm`.
+- The centroid validation check also catches spurious fits where the algebraic fit succeeds but the sphere doesn't actually pass through the face centroids.
 
 **Test models:**
 - Simple sphere (ccad): full convex sphere, radius 10 → 1 convex spherical hypothesis.
@@ -330,7 +332,7 @@ The algorithm uses BFS region growing, analogous to stages 2.1 and 2.2 but seede
 - Sphere (onshape): full sphere, fine tessellation.
 - Dome/hemisphere (onshape): hemisphere with flat base.
 
-*Comment: Spheres are 4 DOF (center + radius). Minimum 4 non-coplanar points for a unique fit. For "negative curvature" (concave spherical patch), track normal orientation relative to center rather than using negative radius. ~~Key challenge: partial spherical patches are hard to distinguish from cylinders or even planes if the patch is small relative to the radius. Consider requiring a minimum angular extent or using curvature analysis to disambiguate.~~ Addressed: the max_sphere_radius constraint prevents degenerate large-radius fits from being accepted, and the seed eigenvalue check prevents cylinder-like seeds. Also consider toroidal surfaces (donuts, fillets)—they're common in CAD and combine characteristics of cylinders and spheres.*
+*Comment: Spheres are 4 DOF (center + radius). Minimum 4 non-coplanar points for a unique fit. For "negative curvature" (concave spherical patch), track normal orientation relative to center rather than using negative radius. ~~Key challenge: partial spherical patches are hard to distinguish from cylinders or even planes if the patch is small relative to the radius. Consider requiring a minimum angular extent or using curvature analysis to disambiguate.~~ Addressed: the max_sphere_radius constraint prevents degenerate large-radius fits, and pair-based seeding with vertex distance + centroid validation prevents false positives. Also consider toroidal surfaces (donuts, fillets)—they’re common in CAD and combine characteristics of cylinders and spheres. Note: torus faces locally fit spheres, producing sphere hypotheses on torus surfaces (e.g., pipe_elbow). Stage 2.6 will need torus hypothesis support to resolve this.*
 
 #### 2.4 Deduce ruled surface hypotheses
 TODO Optional. Find mesh which is coplanar on one axis, and model as an extruded curve surface/ruled surface.
@@ -558,7 +560,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Understand stage 2.2 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.2. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
 - [x] Implement stage 2.2: Deduce cylindrical hypotheses.
 - [x] Understand stage 2.3 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.3. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
-- [ ] Implement stage 2.3: Deduce spherical hypotheses.
+- [x] Implement stage 2.3: Deduce spherical hypotheses.
 - [ ] Implement stage 2.6: Select surfaces for reconstruction using per-face priority rule.
 
 ### Stage 3: Surface Reconstruction
@@ -610,11 +612,11 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 || Pipe (ccad) | 244 triangles | 2 cylinders (in/out) + 2 annular planes | ✓ Stage 2.2 |
 || Stepped Cylinder (ccad) | 240 triangles | 2 cylinders + 3 planes | ✓ Stage 2.2 |
 || Two Holes (ccad) | 244 triangles | 6 planes + 2 concave cylinders | ✓ Stage 2.2 |
-|| Simple Sphere (ccad) | 974 triangles | 1 sphere | ✓ Stage 1 |
-|| Hemisphere (ccad) | 518 triangles | 1 sphere + 1 plane | ✓ Stage 1 |
-|| Spherical Pocket (ccad) | 486 triangles | 6 planes + 1 concave sphere | ✓ Stage 1 |
-|| Ball on Cylinder (ccad) | 764 triangles | 1 sphere + 1 cylinder + 1 plane | ✓ Stage 1 |
-| Sphere | Tessellated sphere | 1 sphere | ✓ Stage 1 |
+|| Simple Sphere (ccad) | 974 triangles | 1 sphere | ✓ Stage 2.3 |
+|| Hemisphere (ccad) | 518 triangles | 1 sphere + 1 plane | ✓ Stage 2.3 |
+|| Spherical Pocket (ccad) | 486 triangles | 6 planes + 1 concave sphere | ✓ Stage 2.3 |
+|| Ball on Cylinder (ccad) | 764 triangles | 1 sphere + 1 cylinder + 1 plane | ✓ Stage 2.3 |
+|| Sphere | Tessellated sphere | 1 sphere | ✓ Stage 2.3 |
 | Cone | Tessellated cone | 1 cone + 1 plane | ✓ Stage 1 |
 | Fillet | Blended edge | Planes + fillet surface | |
 | Complex part | Real CAD export | Matching topology | |

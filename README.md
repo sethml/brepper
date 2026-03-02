@@ -81,7 +81,8 @@ Integration tests in `tests/stage1_integration.rs` verify that:
 Integration tests in `tests/stage2_integration.rs` verify that:
 - Planar hypothesis deduction produces correct counts for known planar models (cube=6, wedge=6, chamfered cube=26)
 - Cylindrical hypothesis deduction produces correct counts and properties (simple_cylinder=1 convex, block_with_hole=1 concave, pipe=2, two_holes=2 concave)
-- All STL/STEP pairs pass `--compare` validation at stages 2.1 and 2.2
+- Spherical hypothesis deduction produces correct counts and properties (simple_sphere=1 convex r=10, hemisphere=1 convex r=10, spherical_pocket=1 concave r=8, ball_on_cylinder=1 sphere+1 cylinder)
+- All STL/STEP pairs pass `--compare` validation at stages 2.1, 2.2, and 2.3
 
 Bad test STL files can be regenerated with `python3 scripts/generate_bad_tests.py`.
 

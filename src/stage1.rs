@@ -16,6 +16,7 @@ use std::fmt::{Display, Formatter};
 pub const UNDEDUCED_PLANAR_HYPOTHESIS: i32 = -2;
 pub const NO_HYPOTHESIS: i32 = -1;
 pub const UNDEDUCED_CYLINDRICAL_HYPOTHESIS: i32 = -2;
+pub const UNDEDUCED_SPHERICAL_HYPOTHESIS: i32 = -2;
 
 // ---------------------------------------------------------------------------
 // Data structures — Stage 1 output
@@ -288,7 +289,7 @@ pub fn read_connected_mesh_from_stl(
             normal: None,
             planar_hypothesis: UNDEDUCED_PLANAR_HYPOTHESIS,
             cylindrical_hypothesis: UNDEDUCED_CYLINDRICAL_HYPOTHESIS,
-            spherical_hypothesis: NO_HYPOTHESIS,
+            spherical_hypothesis: UNDEDUCED_SPHERICAL_HYPOTHESIS,
         });
     }
 
@@ -890,7 +891,7 @@ mod tests {
             normal: None,
             planar_hypothesis: UNDEDUCED_PLANAR_HYPOTHESIS,
             cylindrical_hypothesis: UNDEDUCED_CYLINDRICAL_HYPOTHESIS,
-            spherical_hypothesis: NO_HYPOTHESIS,
+            spherical_hypothesis: UNDEDUCED_SPHERICAL_HYPOTHESIS,
         }
     }
 
@@ -909,7 +910,7 @@ mod tests {
             assert!(face.normal.is_none());
             assert_eq!(face.planar_hypothesis, UNDEDUCED_PLANAR_HYPOTHESIS);
             assert_eq!(face.cylindrical_hypothesis, UNDEDUCED_CYLINDRICAL_HYPOTHESIS);
-            assert_eq!(face.spherical_hypothesis, NO_HYPOTHESIS);
+            assert_eq!(face.spherical_hypothesis, UNDEDUCED_SPHERICAL_HYPOTHESIS);
         }
     }
 

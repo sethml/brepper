@@ -142,9 +142,13 @@ All node/triangle indices are **1-based** (OCCT convention).
 - `cylinder(diameter, height)` is vertical (Z-axis), centered at the XY origin, extends from z=0 to z=height (NOT centered vertically). To make through-holes, translate cylinders vertically so they extend past both sides of the target body.
 - `sphere(diameter)` is centered at the origin. To make hemispherical pockets or domes, use `intersection()` or `difference()` with a box.
 
-### Stage 2.3 spherical hypothesis considerations
-- Spheres have normals spanning all 3 directions, unlike cylinders (perpendicular to axis). All 3 eigenvalues of the normal covariance matrix should be similar for a sphere.
-- Sphere fitting is algebraic least-squares: expand |v-c|²=r² into a linear system in (cx, cy, cz, k) where k=r²-|c|².
-- Seed requires 3+ faces with non-coplanar normals to distinguish from cylinders.
-- Faces already assigned to cylindrical hypotheses are excluded from sphere candidates.
+### Stage 2.3 spherical hypothesis algorithm
+- Algebraic least-squares sphere fitting: expand |v-c|²=r² linearly into 4 unknowns (cx, cy, cz, k=r²-|c|²). Normal equations AᵀAx = Aᵀb solved via 4×4 Gaussian elimination with partial pivoting.
+- BFS seeds from pairs of adjacent faces with non-parallel normals (cross product > MIN_CROSS_THRESHOLD=0.01), analogous to cylindrical seeding.
+- Original plan called for 3-face seeds with normals-span-3D eigenvalue check, but this failed on finely tessellated spheres where 3 adjacent faces span only ~6° and fall below the eigenvalue ratio threshold. Pair-based seeding works because the 4-DOF sphere fit from 6+ vertices validates the geometry.
+- max_sphere_radius = bounding_box_diagonal * 10 prevents degenerate large-radius fits on chamfer/bevel faces.
+- Centroid validation after BFS: each face centroid must be within surface_tolerance of the fitted sphere.
+- Minimum 4-face requirement: a sphere needs at least 4 non-coplanar points for a unique fit.
+- All faces are candidates (including those with cylindrical hypotheses). This allows equator faces to have both cylinder and sphere hypotheses. Stage 2.6 resolves using per-face priority.
+- Torus faces locally fit spheres (e.g., pipe_elbow produces 36 sphere hypotheses). This is expected — stage 2.6 with torus hypothesis support will resolve it.
 - Concave spheres (bowls/pockets) have normals pointing toward center — same convexity logic as cylinders.

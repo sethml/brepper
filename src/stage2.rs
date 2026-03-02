@@ -8,7 +8,7 @@
 //! 2.6: Select surfaces for reconstruction
 
 use crate::config::Config;
-use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_PLANAR_HYPOTHESIS, UNDEDUCED_CYLINDRICAL_HYPOTHESIS, NO_HYPOTHESIS};
+use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_PLANAR_HYPOTHESIS, UNDEDUCED_CYLINDRICAL_HYPOTHESIS, UNDEDUCED_SPHERICAL_HYPOTHESIS, NO_HYPOTHESIS};
 use opencascade_sys::gp;
 use std::collections::{HashSet, VecDeque};
 use std::error::Error;
@@ -1133,6 +1133,482 @@ fn compare_cylindrical_hypotheses(
 
 
 // ---------------------------------------------------------------------------
+// Stage 2.3: Spherical hypothesis deduction
+// ---------------------------------------------------------------------------
+
+/// Compute the bounding box diagonal of a mesh.
+fn bounding_box_diagonal(vertices: &[MeshVertex]) -> f64 {
+    if vertices.is_empty() {
+        return 0.0;
+    }
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    for v in vertices {
+        min[0] = min[0].min(v.x);
+        min[1] = min[1].min(v.y);
+        min[2] = min[2].min(v.z);
+        max[0] = max[0].max(v.x);
+        max[1] = max[1].max(v.y);
+        max[2] = max[2].max(v.z);
+    }
+    let dx = max[0] - min[0];
+    let dy = max[1] - min[1];
+    let dz = max[2] - min[2];
+    (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+/// Compute the distance from a vertex to a sphere surface.
+/// Returns signed distance: positive if outside the sphere, negative if inside.
+fn vertex_to_sphere_distance(
+    v: &MeshVertex,
+    center: &[f64; 3],
+    radius: f64,
+) -> f64 {
+    let dx = v.x - center[0];
+    let dy = v.y - center[1];
+    let dz = v.z - center[2];
+    (dx * dx + dy * dy + dz * dz).sqrt() - radius
+}
+
+/// Fit sphere parameters (center, radius) from a set of vertices.
+/// Uses algebraic least-squares: |v - c|² = r², expanded linearly.
+/// Returns (center, radius) or None if degenerate.
+#[allow(clippy::needless_range_loop)]
+fn fit_sphere(
+    vertex_set: &HashSet<usize>,
+    vertices: &[MeshVertex],
+) -> Option<([f64; 3], f64)> {
+    let n = vertex_set.len();
+    if n < 4 {
+        return None;
+    }
+
+    // Solve: 2*vx*cx + 2*vy*cy + 2*vz*cz + k = vx² + vy² + vz²
+    // where k = r² - |c|²
+    // Normal equations: A^T A x = A^T b
+    // A = [[2*vx, 2*vy, 2*vz, 1], ...], b = [vx²+vy²+vz², ...]
+    let mut ata = [[0.0_f64; 4]; 4];
+    let mut atb = [0.0_f64; 4];
+
+    for &vi in vertex_set {
+        let v = &vertices[vi];
+        let row = [2.0 * v.x, 2.0 * v.y, 2.0 * v.z, 1.0];
+        let b_i = v.x * v.x + v.y * v.y + v.z * v.z;
+
+        for i in 0..4 {
+            for j in 0..4 {
+                ata[i][j] += row[i] * row[j];
+            }
+            atb[i] += row[i] * b_i;
+        }
+    }
+
+    // Solve 4x4 system using Gaussian elimination with partial pivoting
+    let mut aug = [[0.0_f64; 5]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            aug[i][j] = ata[i][j];
+        }
+        aug[i][4] = atb[i];
+    }
+
+    for col in 0..4 {
+        // Find pivot
+        let mut max_row = col;
+        let mut max_val = aug[col][col].abs();
+        for row in (col + 1)..4 {
+            if aug[row][col].abs() > max_val {
+                max_val = aug[row][col].abs();
+                max_row = row;
+            }
+        }
+        if max_val < 1e-30 {
+            return None; // Singular
+        }
+        if max_row != col {
+            aug.swap(col, max_row);
+        }
+        let pivot = aug[col][col];
+        for j in col..5 {
+            aug[col][j] /= pivot;
+        }
+        for row in 0..4 {
+            if row == col {
+                continue;
+            }
+            let factor = aug[row][col];
+            for j in col..5 {
+                aug[row][j] -= factor * aug[col][j];
+            }
+        }
+    }
+
+    let cx = aug[0][4];
+    let cy = aug[1][4];
+    let cz = aug[2][4];
+    let k = aug[3][4];
+
+    let r_sq = k + cx * cx + cy * cy + cz * cz;
+    if r_sq <= 0.0 {
+        return None;
+    }
+
+    Some(([cx, cy, cz], r_sq.sqrt()))
+}
+
+/// Check if all vertices are within tolerance of a sphere surface.
+fn all_vertices_within_sphere_tolerance(
+    vertex_set: &HashSet<usize>,
+    center: &[f64; 3],
+    radius: f64,
+    tolerance: f64,
+    vertices: &[MeshVertex],
+) -> bool {
+    for &vi in vertex_set {
+        if vertex_to_sphere_distance(&vertices[vi], center, radius).abs() > tolerance {
+            return false;
+        }
+    }
+    true
+}
+
+/// Determine convexity for a sphere: does the face normal point away from the center?
+fn determine_sphere_convexity(
+    face: &MeshFace,
+    vertices: &[MeshVertex],
+    center: &[f64; 3],
+) -> bool {
+    let centroid = face_centroid(face, vertices);
+    let radial = [
+        centroid[0] - center[0],
+        centroid[1] - center[1],
+        centroid[2] - center[2],
+    ];
+    let n = face.normal.unwrap();
+    dot3(&n, &radial) > 0.0
+}
+
+/// Deduce spherical hypotheses from the mesh using BFS region growing.
+fn deduce_spherical_hypotheses(
+    mesh: &mut ConnectedMesh,
+    planar_hypotheses: &[PlanarHypothesis],
+    vertex_tol: f64,
+    surface_tol: f64,
+    max_sphere_radius: f64,
+) -> Vec<SphericalHypothesis> {
+    let num_faces = mesh.faces.len();
+    let mut hypotheses: Vec<SphericalHypothesis> = Vec::new();
+
+    // Initialize spherical_hypothesis for all faces
+    for fi in 0..num_faces {
+        if mesh.faces[fi].spherical_hypothesis != UNDEDUCED_SPHERICAL_HYPOTHESIS {
+            continue;
+        }
+        // Faces belonging to multi-face planar hypotheses are genuinely flat
+        let ph = mesh.faces[fi].planar_hypothesis;
+        if ph >= 0 && planar_hypotheses[ph as usize].faces.len() > 1 {
+            mesh.faces[fi].spherical_hypothesis = NO_HYPOTHESIS;
+        }
+    }
+
+    for fi in 0..num_faces {
+        if mesh.faces[fi].spherical_hypothesis != UNDEDUCED_SPHERICAL_HYPOTHESIS {
+            continue;
+        }
+
+        let fi_normal = match mesh.faces[fi].normal {
+            Some(n) => n,
+            None => {
+                mesh.faces[fi].spherical_hypothesis = NO_HYPOTHESIS;
+                continue;
+            }
+        };
+
+        // Search for a seed partner: adjacent face with sufficiently different normal
+        // (like cylindrical seeding, but fitting a sphere instead)
+        let fi_vc = mesh.faces[fi].vertex_count as usize;
+        let fi_neighbors = mesh.faces[fi].neighbors;
+        let mut seed_found = false;
+
+        for &ni in &fi_neighbors[..fi_vc] {
+            if ni < 0 { continue; }
+            let ni = ni as usize;
+
+            if mesh.faces[ni].spherical_hypothesis != UNDEDUCED_SPHERICAL_HYPOTHESIS {
+                continue;
+            }
+
+            // Must be a single-face planar hypothesis
+            let ni_ph = mesh.faces[ni].planar_hypothesis;
+            if ni_ph >= 0 && planar_hypotheses[ni_ph as usize].faces.len() > 1 {
+                continue;
+            }
+
+            let ni_normal = match mesh.faces[ni].normal {
+                Some(n) => n,
+                None => continue,
+            };
+
+            // Check cross product magnitude for sufficient angular difference
+            let cross = cross3(&fi_normal, &ni_normal);
+            let cross_mag = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+            if cross_mag < MIN_CROSS_THRESHOLD {
+                continue;
+            }
+
+            // Collect vertices of both seed faces
+            let mut vertex_set: HashSet<usize> = mesh.faces[fi].vertex_indices[..fi_vc]
+                .iter().copied().collect();
+            let ni_vc = mesh.faces[ni].vertex_count as usize;
+            for &vi in &mesh.faces[ni].vertex_indices[..ni_vc] {
+                vertex_set.insert(vi);
+            }
+
+            // Fit sphere to seed pair vertices
+            let (center, radius) = match fit_sphere(&vertex_set, &mesh.vertices) {
+                Some(params) => params,
+                None => continue,
+            };
+
+            // Radius sanity check
+            if radius > max_sphere_radius {
+                continue;
+            }
+
+            // Verify seed: all vertices within tolerance
+            if !all_vertices_within_sphere_tolerance(
+                &vertex_set, &center, radius, vertex_tol, &mesh.vertices,
+            ) {
+                continue;
+            }
+
+            // Determine convexity
+            let convex = determine_sphere_convexity(
+                &mesh.faces[fi], &mesh.vertices, &center,
+            );
+
+            // Seed is valid — create hypothesis and start BFS
+            let hi = hypotheses.len() as i32;
+            mesh.faces[fi].spherical_hypothesis = hi;
+            mesh.faces[ni].spherical_hypothesis = hi;
+
+            let mut face_list = vec![fi, ni];
+            let mut current_center = center;
+            let mut current_radius = radius;
+
+            let mut queue = VecDeque::new();
+            queue.push_back(fi);
+            queue.push_back(ni);
+
+                // BFS expansion
+                while let Some(current_fi) = queue.pop_front() {
+                    let vc = mesh.faces[current_fi].vertex_count as usize;
+                    let neighbors = mesh.faces[current_fi].neighbors;
+
+                    for &cni in &neighbors[..vc] {
+                        if cni < 0 { continue; }
+                        let cni = cni as usize;
+
+                        if mesh.faces[cni].spherical_hypothesis != UNDEDUCED_SPHERICAL_HYPOTHESIS {
+                            continue;
+                        }
+
+                        // Skip multi-face planar hypothesis faces
+                        let cni_ph = mesh.faces[cni].planar_hypothesis;
+                        if cni_ph >= 0 && planar_hypotheses[cni_ph as usize].faces.len() > 1 {
+                            continue;
+                        }
+
+                        // Convexity check
+                        let cni_convex = determine_sphere_convexity(
+                            &mesh.faces[cni], &mesh.vertices, &current_center,
+                        );
+                        if cni_convex != convex {
+                            continue;
+                        }
+
+                        // Vertex distance check
+                        let cni_vc = mesh.faces[cni].vertex_count as usize;
+                        let cni_vi = mesh.faces[cni].vertex_indices;
+                        let mut all_ok = true;
+                        let mut any_far = false;
+                        for &vi in &cni_vi[..cni_vc] {
+                            let d = vertex_to_sphere_distance(
+                                &mesh.vertices[vi],
+                                &current_center,
+                                current_radius,
+                            ).abs();
+                            if d > vertex_tol {
+                                all_ok = false;
+                                if d > 2.0 * vertex_tol {
+                                    any_far = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if any_far { continue; }
+
+                        if !all_ok {
+                            // Try re-fitting with new face included
+                            let mut trial_vertices = vertex_set.clone();
+                            for &vi in &cni_vi[..cni_vc] {
+                                trial_vertices.insert(vi);
+                            }
+
+                            let (new_center, new_radius) = match fit_sphere(
+                                &trial_vertices, &mesh.vertices,
+                            ) {
+                                Some(params) => params,
+                                None => continue,
+                            };
+
+                            if new_radius > max_sphere_radius {
+                                continue;
+                            }
+
+                            if !all_vertices_within_sphere_tolerance(
+                                &trial_vertices, &new_center, new_radius,
+                                vertex_tol, &mesh.vertices,
+                            ) {
+                                continue;
+                            }
+
+                            // Accept re-fit
+                            current_center = new_center;
+                            current_radius = new_radius;
+                        }
+
+                        // Accept this face
+                        mesh.faces[cni].spherical_hypothesis = hi;
+                        face_list.push(cni);
+                        for &vi in &cni_vi[..cni_vc] {
+                            vertex_set.insert(vi);
+                        }
+                        queue.push_back(cni);
+                    }
+                }
+
+                // Final re-fit from all accumulated faces
+                if let Some((final_center, final_radius)) =
+                    fit_sphere(&vertex_set, &mesh.vertices)
+                {
+                    current_center = final_center;
+                    current_radius = final_radius;
+                }
+
+                // Compute error metrics
+                let mut error_max = 0.0_f64;
+                let mut error_abs_sum = 0.0_f64;
+                for &vi in &vertex_set {
+                    let d = vertex_to_sphere_distance(
+                        &mesh.vertices[vi], &current_center, current_radius,
+                    ).abs();
+                    error_max = error_max.max(d);
+                    error_abs_sum += d;
+                }
+
+                // Validate: require at least 4 faces
+                let min_faces_ok = face_list.len() >= 4;
+                let mut centroid_ok = true;
+                if min_faces_ok {
+                    for &f in &face_list {
+                        let c = face_centroid(&mesh.faces[f], &mesh.vertices);
+                        let d = vertex_to_sphere_distance(
+                            &MeshVertex::from_xyz(c[0], c[1], c[2]),
+                            &current_center, current_radius,
+                        ).abs();
+                        if d > surface_tol {
+                            centroid_ok = false;
+                            break;
+                        }
+                    }
+                }
+                let radius_ok = current_radius <= max_sphere_radius;
+
+                if !min_faces_ok || !centroid_ok || !radius_ok {
+                    // Undo assignments
+                    for &f in &face_list {
+                        mesh.faces[f].spherical_hypothesis = UNDEDUCED_SPHERICAL_HYPOTHESIS;
+                    }
+                    continue;
+                }
+
+                hypotheses.push(SphericalHypothesis {
+                    center: current_center,
+                    radius: current_radius,
+                    convex,
+                    faces: face_list,
+                    vertices: vertex_set.into_iter().collect(),
+                    error_max,
+                    error_abs_sum,
+                });
+
+                seed_found = true;
+                break;
+        }
+
+        if !seed_found {
+            mesh.faces[fi].spherical_hypothesis = NO_HYPOTHESIS;
+        }
+    }
+
+    hypotheses
+}
+
+/// Validate fitted spherical hypotheses against a reference STEP shape.
+fn compare_spherical_hypotheses(
+    hypotheses: &[SphericalHypothesis],
+    mesh: &ConnectedMesh,
+    config: &Config,
+) -> Result<(), Stage2CompareError> {
+    let compare_shape = config.compare_shape.as_ref().unwrap();
+
+    for (hi, hyp) in hypotheses.iter().enumerate() {
+        let mut max_dist = 0.0_f64;
+
+        for &fi in &hyp.faces {
+            let centroid = face_centroid(&mesh.faces[fi], &mesh.vertices);
+
+            // Project centroid onto sphere surface (nearest point)
+            let d = [
+                centroid[0] - hyp.center[0],
+                centroid[1] - hyp.center[1],
+                centroid[2] - hyp.center[2],
+            ];
+            let dist_to_center = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+
+            let projected = if dist_to_center > 1e-15 {
+                let scale = hyp.radius / dist_to_center;
+                [
+                    hyp.center[0] + d[0] * scale,
+                    hyp.center[1] + d[1] * scale,
+                    hyp.center[2] + d[2] * scale,
+                ]
+            } else {
+                // Centroid is at the center — unlikely but handle gracefully
+                centroid
+            };
+
+            let pt = gp::Pnt::new_real3(projected[0], projected[1], projected[2]);
+            let dist = stage1::min_distance_to_shape(&pt, compare_shape);
+            max_dist = max_dist.max(dist);
+        }
+
+        if max_dist > config.surface_tolerance_mm {
+            return Err(Stage2CompareError {
+                hypothesis_type: "spherical",
+                hypothesis_index: hi,
+                max_distance: max_dist,
+                tolerance: config.surface_tolerance_mm,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Stage 2 entry point
 // ---------------------------------------------------------------------------
 
@@ -1233,9 +1709,43 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
     }
 
     // Stage 2.3: Deduce spherical hypotheses
-    // TODO: implement sphere fitting
+    let bb_diag = bounding_box_diagonal(&mesh.vertices);
+    let max_sphere_radius = bb_diag * 10.0;
+    let spherical_hypotheses = deduce_spherical_hypotheses(
+        &mut mesh, &planar_hypotheses, config.vertex_tolerance_mm,
+        config.surface_tolerance_mm, max_sphere_radius,
+    );
+
     if !config.quiet {
-        eprintln!("Stage 2.3: Deduce spherical hypotheses (not yet implemented)");
+        let covered_faces: usize = spherical_hypotheses.iter().map(|h| h.faces.len()).sum();
+        let convex_count = spherical_hypotheses.iter().filter(|h| h.convex).count();
+        let concave_count = spherical_hypotheses.len() - convex_count;
+        eprintln!(
+            "Stage 2.3: Deduced {} spherical hypotheses ({} convex, {} concave) covering {} faces",
+            spherical_hypotheses.len(),
+            convex_count,
+            concave_count,
+            covered_faces,
+        );
+        if config.verbose {
+            for (i, h) in spherical_hypotheses.iter().enumerate() {
+                eprintln!(
+                    "  Sphere {}: {} faces, {} vertices, r={:.4}, {}, center=[{:.4}, {:.4}, {:.4}], err_max={:.2e}",
+                    i, h.faces.len(), h.vertices.len(), h.radius,
+                    if h.convex { "convex" } else { "concave" },
+                    h.center[0], h.center[1], h.center[2],
+                    h.error_max,
+                );
+            }
+        }
+    }
+
+    // Compare against STEP file if --compare was specified
+    if config.compare_shape.is_some() {
+        compare_spherical_hypotheses(&spherical_hypotheses, &mesh, config)?;
+        if !config.quiet {
+            eprintln!("  Compare: all spherical hypothesis centroids within tolerance");
+        }
     }
 
     if !config.stage.at_least(2, 4) {
@@ -1243,7 +1753,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
             mesh,
             planar_hypotheses,
             cylindrical_hypotheses,
-            spherical_hypotheses: Vec::new(),
+            spherical_hypotheses,
             selected_surfaces: Vec::new(),
         });
     }
@@ -1259,7 +1769,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
             mesh,
             planar_hypotheses,
             cylindrical_hypotheses,
-            spherical_hypotheses: Vec::new(),
+            spherical_hypotheses,
             selected_surfaces: Vec::new(),
         });
     }
@@ -1275,7 +1785,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
             mesh,
             planar_hypotheses,
             cylindrical_hypotheses,
-            spherical_hypotheses: Vec::new(),
+            spherical_hypotheses,
             selected_surfaces: Vec::new(),
         });
     }
@@ -1290,7 +1800,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
         mesh,
         planar_hypotheses,
         cylindrical_hypotheses,
-        spherical_hypotheses: Vec::new(),
+        spherical_hypotheses,
         selected_surfaces: Vec::new(),
     })
 }
@@ -1302,7 +1812,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stage1::{self, MeshFace, MeshVertex, VertexWeldOptions, NO_HYPOTHESIS, UNDEDUCED_CYLINDRICAL_HYPOTHESIS};
+    use crate::stage1::{self, MeshFace, MeshVertex, VertexWeldOptions, UNDEDUCED_CYLINDRICAL_HYPOTHESIS, UNDEDUCED_SPHERICAL_HYPOTHESIS};
 
     fn make_triangle_face(a: usize, b: usize, c: usize) -> MeshFace {
         MeshFace {
@@ -1312,7 +1822,7 @@ mod tests {
             normal: None,
             planar_hypothesis: UNDEDUCED_PLANAR_HYPOTHESIS,
             cylindrical_hypothesis: UNDEDUCED_CYLINDRICAL_HYPOTHESIS,
-            spherical_hypothesis: NO_HYPOTHESIS,
+            spherical_hypothesis: UNDEDUCED_SPHERICAL_HYPOTHESIS,
         }
     }
 
