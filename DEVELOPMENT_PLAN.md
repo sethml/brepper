@@ -288,117 +288,179 @@ TODO: for groups of adjacent faces which are covered by one- or two-face planar 
 *Comment: NURBS fitting is complex and requires careful consideration: (1) Parameterization: you need to assign (u,v) parameters to each mesh vertex before fitting. Common approaches: conformal mapping, Floater's mean value coordinates, or discrete harmonic mapping. (2) Degree and knot selection: start with bicubic (degree 3×3); knot placement can use chord-length parameterization or be optimized. (3) Regularization: without it, the surface may oscillate. Consider smoothness penalties. (4) An alternative worth considering: use OCCT's `GeomAPI_PointsToBSplineSurface` which handles much of this automatically. (5) For "freeform" regions that are nearly planar, a plane with small tolerance may be preferable to a NURBS that overfits noise.*
 
 #### 2.6 Select surfaces to use for reconstruction
-- Iterate until out of valid hypotheses:
-    - Select the hypothesis that fits some metric TODO of fitting the most area precisely. Add it to a list of selected surfaces.
-    - Mark all faces using that hypothesis used.
-    - Delete those faces from all other hypotheses that use them. Delete or mark invalid any hypothesis that ends up with insufficient faces left.
-- Every face should be covered by one selected hypothesis.
-- With the --compare flag, for each selected surface:
-  - Project the bounding edges of the faces that handled by the surface onto the surface.
-  - Check that within the projected bounding edge, the surface is within --vertex-tolerance of the surface of a solid from the STEP file.
+Assign each mesh face to exactly one "selected surface" for reconstruction. Since stages 2.1–2.3 (and optionally 2.4–2.5) already assign faces to typed hypotheses with minimal overlap, surface selection is a simple per-face priority resolution.
 
-*Comment: This greedy selection has a potential failure mode: selecting a large-but-poor-fit surface early can fragment remaining regions into pieces too small to fit well. Consider: (1) A quality metric that balances area coverage AND fit quality (e.g., area × (1 - normalized_error)). (2) Penalizing hypotheses that would leave "orphan" faces (faces with no valid remaining hypothesis). (3) Preferring analytic surfaces (plane, cylinder, sphere) over NURBS when fits are comparable, since analytic surfaces are more robust for downstream operations. (4) A backtracking mechanism if selection leads to uncoverable faces. Also: what if a face has no hypothesis at all after this process? This needs explicit handling—possibly flag as error or create a single-face planar patch.*
+**Per-face priority rule** (highest priority first):
+1. **Multi-face planar hypothesis** (face count > 1): the faces are genuinely coplanar. Select the planar hypothesis.
+2. **Spherical hypothesis**: if present, select it. (Sphere is more constrained than cylinder — 4 DOF vs 6 — so a valid sphere fit is more specific.)
+3. **Cylindrical hypothesis**: if present, select it.
+4. **Single-face planar hypothesis**: fallback for faces on surfaces not yet fitted (conical, toroidal, freeform). Stages 2.4–2.5 will replace some of these with ruled or NURBS surfaces.
+
+**Algorithm:**
+- For each mesh face, apply the priority rule to determine its selected hypothesis type and index.
+- Build a `Vec<SelectedSurface>`, one per unique selected hypothesis, containing:
+    - `surface_type: SurfaceType` — enum: Planar, Cylindrical, Spherical (later: Ruled, BSpline).
+    - `hypothesis_index: usize` — index into the appropriate hypothesis vector in Stage2Output.
+    - `faces: Vec<usize>` — mesh face indices assigned to this surface.
+    - `vertices: Vec<usize>` — mesh vertex indices on this surface (union of face vertices).
+- Validate: every face is assigned to exactly one selected surface. Error if any face has no valid hypothesis.
+- Print a summary: count of selected surfaces by type, total faces covered, any uncovered faces.
+
+This simple priority rule works because the BFS fitting stages naturally avoid conflicts: stage 2.2 only considers single-face planar faces, and stage 2.3 only considers faces not already assigned to cylinders.
+
+*Future work: if the priority rule produces poor results (e.g., a large-radius cylinder incorrectly captured as a multi-face plane), consider fit-error-weighted selection or a greedy area-coverage approach. A more sophisticated metric could balance area × (1 - normalized_error). Backtracking could handle cases where greedy selection fragments remaining regions.*
+
+- With the `--compare` flag, for each selected surface:
+    - Compute face centroids and project them onto the selected surface.
+    - Measure distance from each projected centroid to the nearest surface in the reference STEP file.
+    - Report an error if any projected centroid exceeds `--surface-tolerance`.
 
 ---
 
 ### Stage 3: Surface Reconstruction
 
-*Comment: This stage has the most complexity and is where most CAD reconstruction projects run into trouble. The core challenge is that surface intersections in 3D are numerically delicate—small perturbations in surfaces can cause large changes in intersection curves, or cause intersections to disappear entirely. Consider adding explicit tolerance parameters throughout, and building in diagnostic output for debugging.*
+Build OCCT B-Rep topology (faces, edges, vertices) from the selected surfaces. This is the most complex stage — surface intersections in 3D are numerically delicate, and small perturbations can cause large changes in intersection curves or cause them to disappear.
 
-Create a vector of face descriptors, one for each selected surface hypothesis, containing:
-    - Reference to the hypothesis.
-    - OCCT surface object. (Infinite or bounded?) (Created in 3.1.)
-    - OCCT face object. (Created in 3.4.)
-    - Vector of indices of adjacent surface face descriptors, ordered topologically (consecutive faces are adjacent to each other). NOTE: if a face connects to this one twice (with some other face(s) in between), it will occur more than once in the vector.
-    - Vector of edge wire indices, one for each adjacent surface face. Edge wire i connects this face to adjacent face i.
-    - Vector of vertex point indices, once for each pair of adjacent faces. Vertex index i represents the intersection between this face, adjacent face i, and adjacent face i+1%N. If there is only one adjacent face, then this vector is empty; otherwise it contains N points. (This assumes we have a solid - we'll need to adjust this assumption if we ever handle non-solid bodies.)
+**Core data structures:**
 
-*Comment: The "one adjacent face" case is actually impossible for a closed solid—every edge has exactly two adjacent faces, and every face has at least 3 edges, so at least 3 neighbors (possibly with repeats). The edge case you probably mean is a face that's topologically a disk vs a face with holes. Also, faces can be adjacent to themselves (e.g., a cylindrical face wrapping around has one edge connecting it to itself). The data structure should handle this explicitly.*
+A vector of `ReconFace` descriptors, one per selected surface:
+- `selected_surface_index: usize` — Index into the selected surfaces from stage 2.6.
+- `surface: Handle<Geom_Surface>` — Infinite OCCT surface (created in 3.1).
+- `adj_faces: Vec<usize>` — Indices of adjacent ReconFaces, ordered topologically around this face's boundary. A face may appear multiple times if it shares multiple edges with this face (e.g., a cylindrical face adjacent to itself via a seam edge).
+- `adj_edges: Vec<usize>` — ReconEdge indices. `adj_edges[i]` is the edge between this face and `adj_faces[i]`.
+- `adj_vertices: Vec<usize>` — ReconVertex indices at corners. `adj_vertices[i]` is the vertex between `adj_edges[i]` and `adj_edges[(i+1) % N]`.
+- `occt_face: Option<TopoDS_Face>` — Populated in 3.4.
 
-Also create a vector of edge wires, each containing:
-    - Indices of two adjacent faces.
-    - Indices of two adjacent vertices.
-    - Vector<Geom_Curve> for intersections of adjacent faces. TODO: vector or just one curve?
-    - For each adjacent face, a Vector<Geom2d_Curve> for intersections in the UV-space of that face's surface. TODO: vector or just one curve?
-    - Whether there's a tangency relationship. (More details?)
+A vector of `ReconEdge` descriptors:
+- `face_indices: [usize; 2]` — Indices of the two adjacent ReconFaces.
+- `vertex_indices: [usize; 2]` — Indices of the ReconVertices at each end. For closed-loop edges (no vertices), both are `usize::MAX`.
+- `curve_3d: Handle<Geom_Curve>` — 3D intersection curve, trimmed to vertex endpoints. One curve per edge suffices — each edge corresponds to one connected component of the surface-surface intersection (the mesh connectivity guarantees this).
+- `pcurves: [Handle<Geom2d_Curve>; 2]` — 2D parametric curve on each adjacent face's surface.
+- `tangent: bool` — Whether the adjacent surfaces are tangent along this edge (detected in 3.2).
+- `mesh_boundary_vertices: Vec<usize>` — Mesh vertex indices along this boundary, used to guide curve selection and validate the intersection curve.
 
-*Comment: For the "vector or one curve" question: mathematically, two surfaces can intersect in multiple disjoint curves (e.g., a plane cutting through a torus). However, if your mesh connectivity is correct, each edge wire should correspond to exactly one connected component of the intersection, so one curve (which may be a composite/piecewise curve) should suffice. The 2D pcurves are essential for OCCT face construction—make sure they're computed consistently (same parameterization direction, matching endpoints). Consider storing orientation flags to track which direction along the curve corresponds to which adjacent vertex.*
-And a vector of vertices, each containing:
-    - Indices of N adjacent faces, in topological order. (The faces connected to this vertex.) NOTE: There may be duplicates if a face connects to a vertex in multiple ways.
-    - Indices of N adjacent wires, in topological order.
-    - 3D point of vertex location.
-    - Vector of N 2D points of vertex location in U-V space of the corresponding face.
+A vector of `ReconVertex` descriptors:
+- `point: gp_Pnt` — 3D position, computed by projecting the mesh vertex onto all adjacent surfaces and averaging (rather than raw mesh vertex position, for B-Rep consistency).
+- `adj_faces: Vec<usize>` — Indices of ReconFaces meeting at this vertex, in topological order.
+- `adj_edges: Vec<usize>` — Indices of ReconEdges meeting at this vertex, in topological order.
+- `uv_coords: Vec<(f64, f64)>` — UV coordinates of this vertex on each adjacent face's surface.
+- `tolerance: f64` — Maximum deviation from any adjacent surface (used for OCCT's `TopoDS_Vertex` tolerance).
 
-*Comment: The vertex data structure looks correct. One refinement: the "3D point" should ideally be computed as the intersection of all adjacent surfaces (when possible), not just averaged from mesh vertices, to ensure the B-Rep is geometrically consistent. When three or more surfaces meet at a vertex, over-determination can cause the intersection to fail numerically—you may need least-squares fitting or to accept a small positional tolerance.*
+#### 3.1 Create OCCT surface objects and build adjacency graph
 
-#### 3.1 Create OCCT surface objects
-- For each face descriptor:
-    - Populate the OCCT surface object with a surface constructed from the hypothesis. Keep track of the mapping from hypothesis to surface index.
+**Surface creation:**
+- For each selected surface, create the corresponding infinite OCCT surface:
+    - Planar → `Geom_Plane` from `gp_Pln` (gp_Ax3 with Z as face normal).
+    - Cylindrical → `Geom_CylindricalSurface` from `gp_Cylinder` (axis direction along Z, origin on axis, radius).
+    - Spherical → `Geom_SphericalSurface` from `gp_Sphere` (center, radius).
+    - (Future: BSpline → `Geom_BSplineSurface` via `GeomAPI_PointsToBSplineSurface`, etc.)
+- For consistency with OCCT conventions: planes use gp_Ax3 with Z as normal; cylinders have Z along axis; spheres have poles at Z extremes. This affects pcurve computation in 3.3.
 
-*Comment: OCCT surfaces (Geom_Plane, Geom_CylindricalSurface, etc.) are infinite. This is fine, but be aware that some surfaces have natural parameterization bounds (e.g., cylinder's U ∈ [0, 2π]). For consistency with OCCT conventions, ensure: planes use gp_Ax3 with Z as normal; cylinders/cones have Z along axis; spheres have poles at Z extremes. This affects pcurve computation later.*
+**Adjacency graph construction:**
+- Two selected surfaces are adjacent if they share mesh edges (neighboring mesh faces that belong to different selected surfaces).
+- For each mesh edge between faces assigned to different selected surfaces:
+    - Record the pair of selected surfaces.
+    - Collect the mesh vertices along the shared boundary.
+- Group shared mesh edges into contiguous boundary segments (connected sequences between the same pair of surfaces). Each segment becomes a ReconEdge.
+- Identify B-Rep vertices: mesh vertices where 3+ selected surfaces meet. For each, create a ReconVertex.
+    - Compute its 3D position by projecting the mesh vertex position onto all adjacent surfaces and averaging.
+    - Record adjacent faces and edges in topological order (walking around the vertex).
+- Populate the `adj_faces`, `adj_edges`, and `adj_vertices` vectors of each ReconFace from the constructed graph.
 
-- Second pass over face descriptors:
-    - Populate the adjacent face indices with the indices of adjacent faces as determined from hypotheses sharing a hypothesis mesh vertex index.
-    - For each adjacent face:   
-        - Look up the adjacent edge wire descriptor, or create one if it doesn't exist yet. Populate it with:
-            - Adjacent face indices.
-            - Look up or create adjacent vertex descriptor indices. Populate them. For each adjacent vertex descriptor, populate:
-                - Adjacent face indices.
-                - Adjacent wire indices.
+#### 3.2 Detect tangency relationships
+For each ReconEdge, determine whether the two adjacent surfaces are tangent along the shared boundary. This matters because `GeomAPI_IntSS` can fail or produce degenerate results for tangent/near-tangent surfaces, requiring special handling in edge curve computation (3.3).
 
-#### 3.2 Detect and create tangency relationships
-- Detect edges between faces where there is numerically a very close to tangent relationship. Mark those edges as tangent.
-- TODO: should we modify the surfaces to be numerically tangent? This may be challenging - if a surface is numerically close to tangent to two or more adjacent faces, we may need to do some sort of global optimization or iterate to a fixpoint. I suppose we can try to achieve numerical tangency, and if that's not possible, at least ensure that there's intersection along the extend of the shared edge.
+**Detection algorithm:**
+- Sample several mesh vertices along the shared boundary (e.g., every 5th boundary vertex, minimum 3 samples).
+- At each sample point, compute the surface normal of both adjacent surfaces.
+- If all sampled normal pairs agree within a small angle threshold (e.g., 2°), mark the edge as tangent.
 
-*Comment: Tangent detection is critical for fillets and blends. Suggested approach: compute surface normals at several sample points along the shared mesh boundary; if normals agree within tolerance (e.g., < 0.1°), mark as tangent. For enforcing tangency: modifying analytic surfaces is usually wrong (it changes the geometry), but for NURBS you can add tangency constraints to the fit. A more robust approach: accept near-tangency and use a larger intersection tolerance when computing the shared edge. Also consider G2 (curvature) continuity for high-quality fillets—this matters for rendering/machining but may be overkill for your use case.*
+**Decision: do not modify surfaces to enforce tangency.** Modifying analytic surfaces would change the geometry. Instead, tangent edges get special handling in edge curve computation (3.3): construct the edge curve directly rather than relying on surface-surface intersection.
 
-#### 3.3 Create OCCT edge wires
-- For each edge wire:
-    - Compute the intersection between the adjacent faces to create candidate wires - there may be more than one, except for faces with a tangent relationship, special handling may be necessary:
-        - For plane tangent to cylinder, create a linear wire where the cylinder's normal matches the plane's normal.
-        - For cylinder tangent to cylinder, create a linear wire where the two cylinders' normals match.
-        - For cylinder tangent to sphere, create a circular wire where the normals match.
-        - ...?
+For the initial implementation, tangency detection can be deferred (mark all edges as non-tangent) since the early test models (planar + cylindrical + spherical intersections) typically don't have tangent edges. Tangent edges arise from fillets and blends, which will be addressed when those test models are added.
 
-*Comment: The tangent cases are well-identified. Additional cases: sphere tangent to sphere (point contact—degenerate), torus tangent to plane (circle), cone tangent to plane (line through apex or ellipse). For general surface-surface intersection, use OCCT's `GeomAPI_IntSS`. However, IntSS can fail or produce spurious curves for near-tangent surfaces. Consider: (1) Using the mesh boundary as a guide—project mesh boundary vertices onto both surfaces and fit a curve. (2) For analytic surfaces, compute intersections analytically when possible (they have closed-form solutions). (3) Always validate that the computed curve lies on both surfaces within tolerance.*
-    - If there are vertices adjacent to this edge, then cut the wire at each vertex. I'm not sure how best to do this, perhaps either cut the wire with one or more adjacent surfaces (what if they're tangent?), or in a separate pass find the intersection of all of the wires at a vertex and cut them there.
+#### 3.3 Create edge curves
+For each ReconEdge, compute the 3D intersection curve between the two adjacent surfaces, trim it to the vertex endpoints, and derive pcurves.
 
-*Comment: Cutting at vertices is the right idea but tricky in practice. Recommended approach: (1) Compute all edge curves first (full intersection curves, not yet trimmed). (2) For each B-Rep vertex, compute its 3D position as intersection of three surfaces, or use mesh vertex position as initial guess and project onto each surface. (3) For each edge curve, find the parameter values corresponding to the vertex positions and trim. Use `GeomAPI_ProjectPointOnCurve` for this. The vertex position should be consistent across all edges meeting there—if not, you have a gap that needs tolerance handling.*
-    - Take all of the cut wires, and pick a set which is closest to the mesh vertices which lie along the edge, and which chain together to connect the adjacent vertices (or which form a loop, if there are no adjacent vertices).
-    - Assemble that set into an OCCT curve to store into the edge wire descriptor.
+**Intersection computation:**
+- For non-tangent edges: use `GeomAPI_IntSS` to compute intersection curves. IntSS may return multiple curves (e.g., a plane cutting through a torus); select the one closest to the mesh boundary vertices. For each candidate curve, project the centroids of mesh boundary edges onto the curve and pick the one with smallest total distance.
+- For tangent edges: construct curves directly based on surface pair types:
+    - Plane tangent to cylinder: line along the cylinder ruling where the cylinder normal matches the plane normal.
+    - Cylinder tangent to cylinder: line along the shared ruling direction.
+    - Cylinder tangent to sphere: circular arc where the normals match.
+    - General tangent case: project mesh boundary vertices onto both surfaces and fit a `Geom_BSplineCurve` through the projected midpoints.
 
-*Comment: Using mesh vertices as a guide for selecting among multiple intersection curves is a good idea. Be aware that mesh vertices along an edge may not lie exactly on the fitted surfaces (due to fitting error), so use projection rather than direct distance. For seams (edges where a face is adjacent to itself, like a cylinder's wraparound), you won't have two distinct intersection curves—instead, you need to create an iso-parametric curve at a U or V seam of the surface.*
-    - Store the vertices at the end of the wire into the adjacent vertex descriptors. Give some kind of error if the vertex is too far from any existing vertex. (TODO: what should we do here? Average them? Store a different vertex coordinate per edge?)
-    - TODO: should we represent each wire in 3D space and UV space of each face during the operation? Or compute in one coordinate system and convert to the others after?
+**Trimming to vertex endpoints:**
+- For each ReconVertex at an edge endpoint, project the vertex's 3D position onto the intersection curve using `GeomAPI_ProjectPointOnCurve` to get the curve parameter value.
+- Trim the curve to the parameter range `[t_start, t_end]`.
+- For closed-loop edges (no vertices at endpoints), use the full intersection curve.
 
-*Comment: For the vertex position question: OCCT's B-Rep model requires that all edges meeting at a vertex share the same TopoDS_Vertex (same 3D point). If edges disagree about vertex position, you have a few options: (1) Average and accept the tolerance. (2) Use the vertex with smallest fitting error. (3) Re-fit surfaces with constrained vertex positions. Option 1 is most practical. OCCT TopoDS_Vertex has a tolerance field specifically for this—set it to the maximum deviation. For 3D vs UV: compute in 3D, then derive pcurves using `ShapeAnalysis_Curve::ProjectPointOnCurve` or by evaluating surface inverse. OCCT's BRepBuilderAPI_MakeEdge can create edges with 3D curve + pcurves on both faces simultaneously.*
+**Pcurve computation:**
+- Compute all intersections in 3D, then derive pcurves from the 3D curve.
+- For analytic curve-on-analytic-surface cases, compute pcurves analytically:
+    - Line on plane → `Geom2d_Line`
+    - Circle on plane, cylinder, or sphere → `Geom2d_Circle` or `Geom2d_Line` (for iso-parametric curves)
+- For other cases: sample points along the 3D curve, project each onto the surface to get UV coordinates, and fit a `Geom2d_BSplineCurve`.
+- Alternatively, use `ShapeFix_Wire::FixEdgeCurves` after edge creation to compute missing pcurves automatically.
+
+**Seam edges:**
+- A face adjacent to itself (e.g., a full cylinder wrapping around) requires a seam edge at a fixed U or V parameter. Create the seam as an iso-parametric curve on the surface (e.g., U=0 and U=2π for a cylinder). The 3D curve is the same for both parameterizations; the two pcurves differ by the period.
+
+**Vertex position consistency:**
+- OCCT requires all edges at a vertex to share the same `TopoDS_Vertex` (same 3D point). When edges computed independently disagree slightly about vertex position, use the averaged position from the ReconVertex and set the vertex tolerance to the maximum deviation.
 
 #### 3.4 Create OCCT faces
-- For each face descriptor:
-    - Populate OCCT face object via surface bounded by wires extracted from adjacent edge wire descriptors.
+For each ReconFace, construct a `TopoDS_Face` from the surface and bounding wires.
 
-*Comment: This step uses `BRepBuilderAPI_MakeFace`. Key considerations: (1) The outer wire must be oriented counter-clockwise when viewed from outside the solid (along the face normal). (2) Inner wires (holes) must be clockwise. (3) Wires must be closed and edges must connect end-to-end within tolerance. (4) If face construction fails, ShapeFix_Face can often repair minor issues. (5) For periodic surfaces (cylinders, spheres), ensure pcurves handle the seam correctly—you may need to add a seam edge explicitly. This is often the most debugging-intensive step.*
+**Algorithm:**
+- Collect all ReconEdges that border this face. For each, create a `TopoDS_Edge` using `BRepBuilderAPI_MakeEdge`, providing the 3D curve, pcurve on this face's surface, and the two `TopoDS_Vertex` endpoints.
+- Order edges into closed wires. Each face has one outer wire and zero or more inner wires (holes). Determine wire connectivity by matching shared vertices.
+- Orient wires: outer wire counter-clockwise when viewed from outside the solid (along the face normal), inner wires clockwise. Use the face normal and mesh vertex positions to determine orientation.
+- Construct the face: `BRepBuilderAPI_MakeFace` with the surface and outer wire, then add inner wires.
+- If face construction fails, attempt repair with `ShapeFix_Face`. Investigate and fix the root cause if repair is needed frequently.
+- For periodic surfaces (cylinders, spheres), include the seam edge in the wire and ensure pcurves respect the parameter periodicity.
 
-#### 3.5 Construct Shells
-- Find sets of connected face descriptors via DFS over the face graph (expore from each face to adjacent faces). For each set:
-    - Stitch together an OCCT shell.
+#### 3.5 Construct shells
+Group connected ReconFaces into shells and assemble each group into a `TopoDS_Shell`.
 
-*Comment: Use `BRepBuilderAPI_Sewing` for this. Key settings: (1) Set sewing tolerance based on your vertex tolerance from earlier. (2) Enable "SameParameterMode" to ensure edge geometry is consistent. (3) After sewing, check `SewedShape()` for the result. Sewing can merge edges that are geometrically close—this is usually desired but verify the topology matches your intent. If sewing produces a compound instead of a shell, faces weren't connected properly. Also verify shell orientability—`ShapeAnalysis_Shell::CheckOrientedShells` can detect Möbius-strip-like errors.*
+**Algorithm:**
+- Find connected components of the ReconFace adjacency graph via BFS/DFS.
+- For each connected component, use `BRepBuilderAPI_Sewing` to stitch the `TopoDS_Face` objects into a shell:
+    - Set sewing tolerance to `vertex_tolerance`.
+    - The sewing operation merges shared edges and ensures consistent edge geometry.
+- After sewing, verify the result is a `TopoDS_Shell` (not a `TopoDS_Compound`, which would indicate disconnected faces).
+- Validate with `ShapeAnalysis_Shell::CheckOrientedShells` to detect orientation inconsistencies.
+- If sewing produces errors, fall back to manual shell construction with `BRep_Builder`.
 
-#### 3.6 Construct Solids
-- Convert shells to solid bodies. 
-    - TODO: figure out which shells are voids? Does face orientation help here?
+#### 3.6 Construct solids
+Convert closed shells into `TopoDS_Solid` objects.
 
-*Comment: Yes, face orientation is the key. OCCT convention: face normals point outward from material. For a solid: outer shell normals point out, void shell normals point in (toward the void interior, away from material). To classify: compute signed volume of each shell—positive = outer, negative = inner. Alternatively, pick a point inside the shell and ray-cast to determine if it's inside any other shells. Use `BRepBuilderAPI_MakeSolid` to combine an outer shell with void shells. `ShapeFix_Solid::SolidFromShell` can also create a solid from a single closed shell and orient it correctly. Final validation: `BRepCheck_Analyzer` will verify the solid is valid.*
+**Algorithm:**
+- For each shell, check if it is closed (all edges shared by exactly 2 faces).
+- Determine shell role using signed volume:
+    - Compute signed volume via `BRepGProp::VolumeProperties`. Positive volume → outer shell, negative → inner shell (cavity/void).
+    - For single-shell solids, use `ShapeFix_Solid::SolidFromShell` which handles orientation automatically.
+- For multi-shell solids (outer shell containing voids): combine the outer shell with inner/void shells using `BRepBuilderAPI_MakeSolid`.
+- Validate with `BRepCheck_Analyzer`. If validation fails, attempt repair with `ShapeFix_Shape`, but investigate root causes.
+- Compute and report final volume using `BRepGProp` for comparison with expected values.
 
 ---
 
 ### Stage 4: Output
 
 #### 4.1 Output objects
-- Write constructed objects to a STEP file (or potentially other formats).
+Write constructed solid(s) to a STEP file.
 
-*Comment: Use `STEPControl_Writer` with `STEPControl_AsIs` mode to preserve your exact geometry. Consider also offering `STEPControl_ManifoldSolidBrep` mode which enforces stricter solid validity. Before export, run `ShapeFix_Shape` as a final cleanup pass (but heed your AGENTS.md warning about investigating root causes of any fixes). Set appropriate STEP header metadata (author, organization, etc.) for traceability. For debugging, also consider outputting intermediate formats: BREP (OCCT native), or individual surfaces/curves to help diagnose reconstruction issues.*
+**Algorithm:**
+- Create a `STEPControl_Writer`.
+- Add each solid (or compound of solids) using `Transfer` with `STEPControl_AsIs` mode to preserve exact geometry.
+- Write the output file.
+- Optionally write BREP format (OCCT native) for debugging with `BRepTools::Write`.
+- With the `--compare` flag:
+    - Load the reference STEP file.
+    - Compare volumes of the output solid vs reference solid using `BRepGProp`.
+    - Compute maximum distance between output and reference surfaces using `BRepExtrema_DistShapeShape`.
+    - Report pass/fail against `--surface-tolerance`.
 
 ---
 
@@ -435,13 +497,33 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Stage 1.3: Coplanar triangle fusion — merge adjacent coplanar triangle pairs into quads. This simplifies surface fitting by ensuring curved-surface facets (cylinder/sphere quad strips) become single faces rather than 2-face planar hypothesis groups.
 - [x] Implement tests that all stl/step file pairs in tests/ pass consistency checks and pass when fed to brepper with the --compare flag. Also invent a few file pairs in tests/bad that will fail with the --compare_step flag by editing the location of one or more vertices to fail surface closeness tests. Also invent some bad cases that fail the mesh validation tests in various ways. Ensure that these bad cases fail in the correct way.
 
-### Stage 2: Surface Fitting
+### Stage 2: Surface Fitting - planes, cylinders, and spheres, oh my!
 - [x] Understand stage 2.1 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.1. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
 - [x] Implement stage 2.1. Make sure --compare passes for all test shapes composed only of planar surfaces.
 - [x] Understand stage 2.2 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.2. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
 - [x] Implement stage 2.2: Deduce cylindrical hypotheses.
-- [ ] Understand stage 2.3 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.2. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
+- [ ] Understand stage 2.3 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.3. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
 - [ ] Implement stage 2.3: Deduce spherical hypotheses.
+- [ ] Implement stage 2.6: Select surfaces for reconstruction using per-face priority rule.
+
+### Stage 3: Surface Reconstruction
+- [ ] Implement stage 3.1: Create OCCT surface objects and build adjacency graph from mesh connectivity.
+- [ ] Implement stage 3.2: Detect tangency relationships between adjacent surfaces (initially mark all as non-tangent).
+- [ ] Implement stage 3.3: Compute edge curves via surface-surface intersection, trim to vertices, derive pcurves.
+- [ ] Implement stage 3.4: Create OCCT faces from surfaces bounded by edge wires.
+- [ ] Implement stage 3.5: Stitch faces into shells using BRepBuilderAPI_Sewing.
+- [ ] Implement stage 3.6: Construct solids from shells, determine outer/inner shell roles.
+
+### Stage 4: Output
+- [ ] Implement stage 4.1: Write solids to STEP file, validate against reference with --compare.
+
+### Stage 2 Extensions: Additional Surface Types
+- [ ] Understand stage 2.4 (ruled surfaces) and imagine challenging test shapes. Create test models in tests/ccad/.
+- [ ] Implement stage 2.4: Deduce ruled surface hypotheses.
+- [ ] Understand stage 2.5 (NURBS/B-spline surfaces) and imagine challenging test shapes. Create test models in tests/ccad/.
+- [ ] Implement stage 2.5: Deduce NURBS hypotheses.
+- [ ] Imagine test shapes requiring extended surface selection (mixed analytic + freeform). Create test models in tests/ccad/.
+- [ ] Revisit stage 2.6: Extend surface selection to handle ruled and NURBS surfaces alongside analytic surfaces.
 
 ---
 
