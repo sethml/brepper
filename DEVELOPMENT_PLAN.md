@@ -101,9 +101,9 @@ This section enumerates the OCCT classes and functions needed, for evaluating Ru
 
 ## Architecture
 
-## Stage 1: Mesh Input & Preprocessing
+### Stage 1: Mesh Input & Preprocessing
 
-### 1.1 Read STL File
+#### 1.1 Read STL File
 Read the input STL file and generate an in-memory representation of the triangle mesh, with fields for future stages to traverse the mesh and fit shapes to sets of mesh faces. Weld vertices by position (with tolerance) to build connectivity.
 - **Library**: OCCT `TKSTL::RWStl_Reader` from `RWSTL.hxx`
 - **Input**: Binary or ASCII STL file
@@ -122,11 +122,12 @@ Read the input STL file and generate an in-memory representation of the triangle
 
 For now, each face can belong to a single hypothesis of each type. Hopefully that's sufficient since hypotheses should nearly exactly match the vertices, but it's possible that in the future we may need to keep set of candidate hypothesis indices per type, then select the best one in stage 2.6.
 
-### 1.2 Mesh Validation
+#### 1.2 Mesh Validation
 Traverse the faces of the mesh, collecting some basic statistics, validating the geometry, and populating normals and neighbors.
 - Collect stats and optionally print: number of mesh faces, number of mesh vertices, number of mesh edges with 0 neighbors, number of mesh edges with >1 neighbors, number of connected shells, number of solids, number of voids within solids.
 - Compute and populate mesh face normals.
 - Compute mesh face neighbors based on shared mesh edges.
+- With the --compare flag: check that all vertices are within --vertex-tolerance of the surface of a solid from the STEP file.
 
 At this stage, validate the mesh: Edges with >1 neighbor indicate non-manifold geometry; degenerate triangles (zero area), flipped normals (inconsistent orientation within a shell), and self-intersections.
 
@@ -134,13 +135,13 @@ The "number of solids" and "voids" computation is non-trivial and may require ra
 
 ---
 
-## Stage 2: Surface Fitting
+### Stage 2: Surface Fitting
 
 *Comment: The approach described here is "region growing" from seed faces—this works but may produce suboptimal results because the first seed determines the region boundaries. An alternative is RANSAC-style fitting: randomly sample minimal point sets, fit surfaces, count inliers, and keep the best. RANSAC is more robust to the mesh traversal order. The region-growing approach described here also doesn't naturally handle the case where the same surface type appears in disconnected regions (e.g., two separate planar faces with the same orientation). Consider a hybrid: use RANSAC or global clustering first, then refine with region growing.*
 
 **Response: Given vertices that lie within epsilon of precisely on the surfaces involved, hopefully the first seed will grow to the entire region. I think the depth-first search or breadth-first search should effectively find planar surfaces that are partially disconnected. If they're fully disconnected, we'll consider them independent planar surfaces, which is fine.**
 
-### 2.1 Deduce planar hypotheses
+#### 2.1 Deduce planar hypotheses
 Fit planar hypotheses to all sets of more than one face which are coplanar. A planar hypothesis consists of:
 - gp_Dir normal;  // Vector normal to plane. Points toward the outside of the shell/solid.
 - double distance;  // Distance from origin to plane in direction of normal.
@@ -168,41 +169,47 @@ The algorithm:
             - If after re-fitting there is still a vertex with greater error than the acceptable vertex distance, continue.
             - Otherwise, assign the re-fit plane to planar_hypothesis[hi].
         - Call explore_neighbors(ni, hi).
+- With the --compare flag:
+  - Project the edges of the triangular face onto the hypothesis.
+  - Check that within the projected face, the surface is within --surface-tolerance of the surface of a solid from the STEP file. If the nearest surface in the STEP file is a plane, verify that it's within --vertex-tolerance.
 
 *Comment on 2.1: The DFS vs BFS question is worth considering: DFS can get "trapped" in a narrow corridor and accumulate drift before exploring the main region. BFS explores more uniformly. However, the re-fitting step partially mitigates this. A bigger issue: once you re-fit the plane, previously accepted faces might no longer fit the new plane! Consider a final validation pass that removes faces whose vertices exceed the tolerance after the final fit. Also: the "vertices in right-hand-rule order" for the hypothesis is unclear—planar regions aren't simply connected in general (they can have holes), so you'll need a more complex boundary representation.*
 
-### 2.2 Deduce cylindrical hypotheses
+#### 2.2 Deduce cylindrical hypotheses
 TODO. Optional: Worthwhile to generalize to conic/cylindrical? Be sure to handle surfaces with negative curavature correctly - negative radius?
 
 *Comment: Cylinders are parameterized by axis (point + direction) and radius—6 DOF total. Minimum 5 points needed for a unique fit, but robust fitting requires more. Key considerations: (1) A cylindrical patch has principal curvature in one direction only—use this to distinguish from spheres/cones. (2) "Negative radius" isn't the right framing; instead, track whether the surface normal points toward or away from the axis (convex vs concave). (3) For cones: 7 DOF (axis point, direction, half-angle). Cones degenerate to cylinders when half-angle→0, so you might fit cones first and detect near-zero angles. (4) Watch out for nearly-planar cylindrical patches (large radius)—they may fit planes better.*
 
-### 2.3 Deduce spherical hypotheses
+#### 2.3 Deduce spherical hypotheses
 TODO. Be sure to handle surfaces with negative curavature correctly - negative radius?
 
 *Comment: Spheres are 4 DOF (center + radius). Minimum 4 non-coplanar points for a unique fit. For "negative curvature" (concave spherical patch), track normal orientation relative to center rather than using negative radius. Key challenge: partial spherical patches are hard to distinguish from cylinders or even planes if the patch is small relative to the radius. Consider requiring a minimum angular extent or using curvature analysis to disambiguate. Also consider toroidal surfaces (donuts, fillets)—they're common in CAD and combine characteristics of cylinders and spheres.*
 
-### 2.4 Deduce ruled surface hypotheses
+#### 2.4 Deduce ruled surface hypotheses
 TODO Optional. Find mesh which is coplanar on one axis, and model as an extruded curve surface/ruled surface.
 
 *Comment: This is a good idea for capturing linear extrusions and sweeps. A ruled surface is defined by two boundary curves with linear interpolation between them. For extrusions, one "curve" is a point (the surface degenerates to a generalized cylinder). Detection: look for parallel mesh edges that share the same direction. Fitting: project to a plane perpendicular to the ruling direction and fit a 2D curve. Watch out for twisted ruled surfaces (rulings aren't parallel)—these are harder to detect and fit.*
 
-### 2.5 Deduce NURBS hypotheses
+#### 2.5 Deduce NURBS hypotheses
 TODO: for groups of adjacent faces which are covered by one- or two-face planar hypotheses and not cylindrical or spherical hypotheses, try to fit a NURBS or b-spline surface to the vertices.
 
 *Comment: NURBS fitting is complex and requires careful consideration: (1) Parameterization: you need to assign (u,v) parameters to each mesh vertex before fitting. Common approaches: conformal mapping, Floater's mean value coordinates, or discrete harmonic mapping. (2) Degree and knot selection: start with bicubic (degree 3×3); knot placement can use chord-length parameterization or be optimized. (3) Regularization: without it, the surface may oscillate. Consider smoothness penalties. (4) An alternative worth considering: use OCCT's `GeomAPI_PointsToBSplineSurface` which handles much of this automatically. (5) For "freeform" regions that are nearly planar, a plane with small tolerance may be preferable to a NURBS that overfits noise.*
 
-### 2.6 Select surfaces to use for reconstruction
+#### 2.6 Select surfaces to use for reconstruction
 - Iterate until out of valid hypotheses:
     - Select the hypothesis that fits some metric TODO of fitting the most area precisely. Add it to a list of selected surfaces.
     - Mark all faces using that hypothesis used.
     - Delete those faces from all other hypotheses that use them. Delete or mark invalid any hypothesis that ends up with insufficient faces left.
 - Every face should be covered by one selected hypothesis.
+- With the --compare flag, for each selected surface:
+  - Project the bounding edges of the faces that handled by the surface onto the surface.
+  - Check that within the projected bounding edge, the surface is within --vertex-tolerance of the surface of a solid from the STEP file.
 
 *Comment: This greedy selection has a potential failure mode: selecting a large-but-poor-fit surface early can fragment remaining regions into pieces too small to fit well. Consider: (1) A quality metric that balances area coverage AND fit quality (e.g., area × (1 - normalized_error)). (2) Penalizing hypotheses that would leave "orphan" faces (faces with no valid remaining hypothesis). (3) Preferring analytic surfaces (plane, cylinder, sphere) over NURBS when fits are comparable, since analytic surfaces are more robust for downstream operations. (4) A backtracking mechanism if selection leads to uncoverable faces. Also: what if a face has no hypothesis at all after this process? This needs explicit handling—possibly flag as error or create a single-face planar patch.*
 
 ---
 
-## Stage 3: Surface Reconstruction
+### Stage 3: Surface Reconstruction
 
 *Comment: This stage has the most complexity and is where most CAD reconstruction projects run into trouble. The core challenge is that surface intersections in 3D are numerically delicate—small perturbations in surfaces can cause large changes in intersection curves, or cause intersections to disappear entirely. Consider adding explicit tolerance parameters throughout, and building in diagnostic output for debugging.*
 
@@ -232,7 +239,7 @@ And a vector of vertices, each containing:
 
 *Comment: The vertex data structure looks correct. One refinement: the "3D point" should ideally be computed as the intersection of all adjacent surfaces (when possible), not just averaged from mesh vertices, to ensure the B-Rep is geometrically consistent. When three or more surfaces meet at a vertex, over-determination can cause the intersection to fail numerically—you may need least-squares fitting or to accept a small positional tolerance.*
 
-### 3.1 Create OCCT surface objects
+#### 3.1 Create OCCT surface objects
 - For each face descriptor:
     - Populate the OCCT surface object with a surface constructed from the hypothesis. Keep track of the mapping from hypothesis to surface index.
 
@@ -247,13 +254,13 @@ And a vector of vertices, each containing:
                 - Adjacent face indices.
                 - Adjacent wire indices.
 
-### 3.2 Detect and create tangency relationships
+#### 3.2 Detect and create tangency relationships
 - Detect edges between faces where there is numerically a very close to tangent relationship. Mark those edges as tangent.
 - TODO: should we modify the surfaces to be numerically tangent? This may be challenging - if a surface is numerically close to tangent to two or more adjacent faces, we may need to do some sort of global optimization or iterate to a fixpoint. I suppose we can try to achieve numerical tangency, and if that's not possible, at least ensure that there's intersection along the extend of the shared edge.
 
 *Comment: Tangent detection is critical for fillets and blends. Suggested approach: compute surface normals at several sample points along the shared mesh boundary; if normals agree within tolerance (e.g., < 0.1°), mark as tangent. For enforcing tangency: modifying analytic surfaces is usually wrong (it changes the geometry), but for NURBS you can add tangency constraints to the fit. A more robust approach: accept near-tangency and use a larger intersection tolerance when computing the shared edge. Also consider G2 (curvature) continuity for high-quality fillets—this matters for rendering/machining but may be overkill for your use case.*
 
-### 3.3 Create OCCT edge wires
+#### 3.3 Create OCCT edge wires
 - For each edge wire:
     - Compute the intersection between the adjacent faces to create candidate wires - there may be more than one, except for faces with a tangent relationship, special handling may be necessary:
         - For plane tangent to cylinder, create a linear wire where the cylinder's normal matches the plane's normal.
@@ -274,31 +281,52 @@ And a vector of vertices, each containing:
 
 *Comment: For the vertex position question: OCCT's B-Rep model requires that all edges meeting at a vertex share the same TopoDS_Vertex (same 3D point). If edges disagree about vertex position, you have a few options: (1) Average and accept the tolerance. (2) Use the vertex with smallest fitting error. (3) Re-fit surfaces with constrained vertex positions. Option 1 is most practical. OCCT TopoDS_Vertex has a tolerance field specifically for this—set it to the maximum deviation. For 3D vs UV: compute in 3D, then derive pcurves using `ShapeAnalysis_Curve::ProjectPointOnCurve` or by evaluating surface inverse. OCCT's BRepBuilderAPI_MakeEdge can create edges with 3D curve + pcurves on both faces simultaneously.*
 
-### 3.4 Create OCCT faces
+#### 3.4 Create OCCT faces
 - For each face descriptor:
     - Populate OCCT face object via surface bounded by wires extracted from adjacent edge wire descriptors.
 
 *Comment: This step uses `BRepBuilderAPI_MakeFace`. Key considerations: (1) The outer wire must be oriented counter-clockwise when viewed from outside the solid (along the face normal). (2) Inner wires (holes) must be clockwise. (3) Wires must be closed and edges must connect end-to-end within tolerance. (4) If face construction fails, ShapeFix_Face can often repair minor issues. (5) For periodic surfaces (cylinders, spheres), ensure pcurves handle the seam correctly—you may need to add a seam edge explicitly. This is often the most debugging-intensive step.*
 
-### 3.5 Construct Shells
+#### 3.5 Construct Shells
 - Find sets of connected face descriptors via DFS over the face graph (expore from each face to adjacent faces). For each set:
     - Stitch together an OCCT shell.
 
 *Comment: Use `BRepBuilderAPI_Sewing` for this. Key settings: (1) Set sewing tolerance based on your vertex tolerance from earlier. (2) Enable "SameParameterMode" to ensure edge geometry is consistent. (3) After sewing, check `SewedShape()` for the result. Sewing can merge edges that are geometrically close—this is usually desired but verify the topology matches your intent. If sewing produces a compound instead of a shell, faces weren't connected properly. Also verify shell orientability—`ShapeAnalysis_Shell::CheckOrientedShells` can detect Möbius-strip-like errors.*
 
-### 3.6 Construct Solids
+#### 3.6 Construct Solids
 - Convert shells to solid bodies. 
     - TODO: figure out which shells are voids? Does face orientation help here?
 
 *Comment: Yes, face orientation is the key. OCCT convention: face normals point outward from material. For a solid: outer shell normals point out, void shell normals point in (toward the void interior, away from material). To classify: compute signed volume of each shell—positive = outer, negative = inner. Alternatively, pick a point inside the shell and ray-cast to determine if it's inside any other shells. Use `BRepBuilderAPI_MakeSolid` to combine an outer shell with void shells. `ShapeFix_Solid::SolidFromShell` can also create a solid from a single closed shell and orient it correctly. Final validation: `BRepCheck_Analyzer` will verify the solid is valid.*
 
 ---
-## Stage 4: Output
 
-### 4.1 Output objects
+### Stage 4: Output
+
+#### 4.1 Output objects
 - Write constructed objects to a STEP file (or potentially other formats).
 
 *Comment: Use `STEPControl_Writer` with `STEPControl_AsIs` mode to preserve your exact geometry. Consider also offering `STEPControl_ManifoldSolidBrep` mode which enforces stricter solid validity. Before export, run `ShapeFix_Shape` as a final cleanup pass (but heed your AGENTS.md warning about investigating root causes of any fixes). Set appropriate STEP header metadata (author, organization, etc.) for traceability. For debugging, also consider outputting intermediate formats: BREP (OCCT native), or individual surfaces/curves to help diagnose reconstruction issues.*
+
+---
+
+## Source Code Organization
+
+Each stage will be represented by a function which takes a ref to a configuration data structure and consumes an input data structure, and returns an output data structure (or error). That data structure is passed to the next stage:
+
+- main:
+  - let config = parse flags, load --compare STEP file
+  - out1 = stage1(config).unwrap()
+  - if config.stage < 2: exit
+  - out2 = stage2(congig, out1).unwrap()
+  - if config.stage < 3: exit
+  - out3 = stage3(config, out2).unwrap()
+  - if config.stage < 4: exit
+  - stage4(config, out3).unwrap()  # writes output file
+- stageN:
+  - execute whatever portions of stage1 are allowed by config.stage
+
+Each stage should have a source file stageN.rs, with a definition of that stage's output data structure at the top, the stageN() function, and then whatever other functions are required to implement the stage's functionality.
 
 ---
 
@@ -307,14 +335,18 @@ And a vector of vertices, each containing:
 ### Phase 1: Foundation
 - [x] Project setup (crates, cargo.toml, dependencies)
 - [x] Test utility: read an STL and a STEP, compute maximum distance between STL vertices and STEP surfaces, and print it out. Create a script in scripts/ to apply it to all of the stl/step file pairs under tests/ and print out a table of maximum distances.
+- [ ] Program skeleton: implement main program, flag parsing, and create stub source files for each stage. Create stage output data structures. For portions of the data structures which are unclear at this point, stub them out with comments. Take existing stage 1.1 and stage 1.2 implementations in mesh.rs and reformulate them into stage1.rs and appropriate output data structures.
 
 ### Phase 2: Stage 1 Mesh Input
 - [x] Stage 1.1: Read STL file into `ConnectedMesh`, including welded vertices and per-face placeholder fields for neighbors, normals, and hypotheses.
 - [x] Stage 1.2: Mesh validation pass to compute face normals, edge neighbors, manifold stats, connected shells, and orientation consistency checks.
+- [ ] Implement tests that all stl/step file pairs in tests/ pass consistency checks and pass when fed to brepper with the --compare flag. Also invent a few file pairs in tests/bad that will fail with the --compare flag by editing the location of one or more vertices to fail surface closeness tests. Also invent some bad cases that fail the mesh validation tests in various ways. Ensure that these bad cases fail in the correct way.
 
 ---
 
 ## Testing Strategy
+
+The main testing strategy is to process a set of example stl/step pairs, and use the --compare flag to ensure that the pipeline is working correctly for each. 
 
 1. **Unit Tests**: Individual components (readers, fitters, converters)
 2. **Integration Tests**: Full pipeline on known geometries

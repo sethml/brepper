@@ -6,6 +6,8 @@ This file contains guidelines for AI/LLM coding assistants working on this proje
 
 This is a **Rust** project. Key locations:
 
+- `README.md` - Program usage. Read it.
+- `DEVELOPMENT_PLAN.md` - Development plan. Read it.
 - `src/bin/step_distance.rs` — the main utility binary (Phase 1)
 - `src/lib.rs` — library crate (placeholder for future stages)
 - `scripts/` — shell scripts for batch operations over test data
@@ -234,11 +236,9 @@ When writing temporary code for debugging or testing:
 
 ## Chat Log Export
 
-After committing, export the current chat session to `agent-logs/`. Use this
-command exactly:
-`../vscode-export-chat-log/export-chat-log.py </dev/null && git add agent-logs/ && git commit --amend --no-edit`
-
-Do not add any commentary after running this command - if you want to output a summary, do it before the command. After the command: No "Done.", no summary, nothing. Run the command and stop.
+After committing, give a written summary of what you accomplished in this session, then
+export the current chat session to `agent-logs/`. Use this command exactly:
+`( ../vscode-export-chat-log/export-chat-log.py --wait && git add agent-logs/ && git commit --amend --no-edit ) &`
 
 ## Generating CodeCAD Test Models
 
