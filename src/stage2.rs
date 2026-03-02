@@ -295,16 +295,26 @@ fn deduce_planar_hypotheses(
                 let nvc = mesh.faces[ni].vertex_count as usize;
                 let nvi = mesh.faces[ni].vertex_indices;
                 let mut all_ok = true;
+                let mut any_far = false;
                 for vi_idx in 0..nvc {
                     let d = vertex_to_plane_distance(
                         &mesh.vertices[nvi[vi_idx]],
                         &current_normal,
                         current_distance,
                     );
-                    if d.abs() > vertex_tol {
+                    let abs_d = d.abs();
+                    if abs_d > vertex_tol {
                         all_ok = false;
-                        break;
+                        if abs_d > 2.0 * vertex_tol {
+                            any_far = true;
+                            break;
+                        }
                     }
+                }
+
+                // Skip if any vertex is too far for re-fitting to help
+                if any_far {
+                    continue;
                 }
 
                 if !all_ok {
