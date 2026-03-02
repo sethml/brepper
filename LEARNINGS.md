@@ -99,3 +99,7 @@ if projector.is_done() && projector.nb_points() > 0 {
 
 ### Poly_Triangulation index convention
 All node/triangle indices are **1-based** (OCCT convention).
+
+
+### GeomAPI_ProjectPointOnSurf projects onto unbounded surfaces
+`GeomAPI_ProjectPointOnSurf` projects onto the *infinite* underlying surface, not the bounded face. When testing distance from a point to a STEP model, a point that is far from a face's bounded area but coincidentally lies on the infinite plane of another face will report distance 0. This means `--compare` vertex-distance checks can silently pass for points that are geometrically far from the actual solid. When creating test files for surface comparison failures, shift vertices away from ALL infinite surface planes, not just in one axis-aligned direction.

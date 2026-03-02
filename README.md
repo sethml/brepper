@@ -62,6 +62,24 @@ To add or modify these models:
 2. Edit files in `tests/ccad/parts/`
 3. Run `./tests/ccad/generate_models.sh`
 
+
+### Running Tests
+
+```bash
+# Run all tests (unit + integration)
+cargo test
+
+# Run only integration tests
+cargo test --test stage1_integration
+```
+
+Integration tests in `tests/stage1_integration.rs` verify that:
+- All STL files in `tests/manual/`, `tests/onshape/`, `tests/ccad/generated/`, and `tests/fusion/` pass stage 1 mesh validation
+- All STL/STEP pairs pass `--compare` surface distance checks
+- Bad files in `tests/bad/` fail with expected error types (degenerate faces, non-manifold edges, inconsistent winding, compare failures)
+
+Bad test STL files can be regenerated with `python3 scripts/generate_bad_tests.py`.
+
 ## License
 
 MIT License
