@@ -539,7 +539,7 @@ fn is_convex_quad(vertices: &[MeshVertex], quad_verts: &[usize; 4], normal: &[f6
 /// forms a convex quad, merge them into a single quad face. Each triangle can
 /// participate in at most one merge (greedy, first valid merge wins).
 pub fn fuse_coplanar_triangles(mesh: &mut ConnectedMesh, vertex_tolerance: f64) {
-    let coplanar_tol = vertex_tolerance * 0.01;
+    let coplanar_tol = vertex_tolerance;
     let num_faces = mesh.faces.len();
     let mut merged = vec![false; num_faces];
 

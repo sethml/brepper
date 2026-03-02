@@ -142,20 +142,30 @@ Validation checks, in priority order (first failure is reported):
 #### 1.3 Coplanar Triangle Fusion (Triangle → Quad Merging)
 Merge adjacent coplanar triangle pairs that share a diagonal edge into quads. This is important because CAD tessellators (including CodeCAD/OCCT and Onshape) typically produce quad-strip patterns on curved surfaces (cylinders, spheres, cones). Each quad is split into two coplanar triangles sharing a diagonal. Without fusion, stage 2.1 groups these into 2-face planar hypotheses, which complicates the "single-face = curved surface candidate" criterion in stages 2.2 and 2.3.
 
-**Algorithm:**
-- After stage 1.2 (normals and neighbors are populated), iterate over all mesh edges.
-- For each manifold edge (exactly 2 adjacent faces), both triangles (`vertex_count == 3`):
-    - Check that the two triangles are coplanar: all 4 unique vertices lie within a tight tolerance (e.g., `vertex_tolerance * 0.01`) of the plane defined by either triangle's normal.
-    - Check that the shared edge is the diagonal of a valid convex quad: the 4 vertices form a convex quadrilateral when the shared edge is removed. (Non-convex quads can cause issues with normal computation and surface fitting.)
-    - If both checks pass: merge the two triangles into a single quad face. Set `vertex_count = 4`, populate all 4 `vertex_indices` in right-hand-rule order, update `neighbors` to reflect the quad's 4 edges, recompute the face normal.
-    - Mark the other triangle as deleted (or compact the face array afterward).
-- After all merges: compact the face array (remove deleted faces), update all neighbor indices and face references to reflect the new indexing.
-- Update stats to report the number of quads formed.
+**Algorithm (implemented):**
+
+The algorithm operates in three phases: identify merge pairs, apply merges, then compact the face array.
+
+*Phase 1 — Identify merge pairs:*
+- Iterate faces in index order. For each unmerged triangle face `fi`, examine each edge.
+- For each manifold edge shared with a neighbor `ni` (where `ni > fi` to avoid processing edges twice), both must be unmerged triangles with valid normals.
+- Find the 4th vertex `b` from `ni` (the vertex not on the shared edge). Three vertices (`s0`, `s1`, `a`) define face `fi`'s plane.
+- **Coplanarity check**: compute the signed distance from `b` to `fi`'s plane (using `fi`'s unit normal and one of its vertices). If `|distance| <= vertex_tolerance`, the vertex is coplanar within the data's numerical accuracy. (Using `vertex_tolerance` directly is correct since it represents the approximate precision of STL vertex positions — values within this tolerance are indistinguishable from coplanar.)
+- **Convexity check**: verify the quad `[s1, a, s0, b]` is strictly convex by checking that the cross product at each of the 4 consecutive vertex triples agrees in direction with the face normal (positive dot product). Non-convex quads would break Newell's method for normal computation.
+- If both checks pass, mark both `fi` and `ni` as merged and record the pair. Each triangle participates in at most one merge (greedy: first valid edge wins for each face).
+
+*Phase 2 — Apply merges:*
+- For each merge pair `(fi, ni)`: transform `fi` into a quad with `vertex_count = 4`, vertex order `[s1, a, s0, b]` (right-hand rule consistent with `fi`'s winding), and neighbors assembled from both triangles' non-shared edges. Recompute the normal via Newell's method. Update `ni`'s former neighbors to point to `fi`. Mark `ni` as deleted (`vertex_count = 0`).
+
+*Phase 3 — Compact:*
+- Remove deleted faces, build an old→new index mapping, remap all neighbor references.
+- Update `mesh_faces` stat and record `mesh_quads` count.
 
 **Constraints:**
 - Each triangle participates in at most one merge (greedy: first valid merge wins).
 - Only merge if the result is a convex quad — this ensures Newell's method produces a correct normal.
 - Triangles at surface boundaries (where two curved surfaces meet, or a curved surface meets a plane) will generally NOT be coplanar with their neighbor across that boundary, so they correctly remain as triangles.
+- On finely-tessellated curved surfaces (spheres, tori), adjacent quads may be nearly coplanar within `vertex_tolerance`. These additional merges are valid — they reduce face count and create more single-face candidates for curved surface hypothesis seeding.
 - Sphere poles: triangles near poles may not have a coplanar neighbor (they border 5 or 6 other triangles in a fan pattern, not a quad strip). These correctly remain as triangles and become single-face planar hypotheses — good candidates for spherical hypothesis seeding.
 ---
 
