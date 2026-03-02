@@ -15,7 +15,7 @@ impl Stage {
     /// The final sub-stage for each major stage.
     fn last_minor(major: u8) -> u8 {
         match major {
-            1 => 2,
+            1 => 3,
             2 => 6,
             3 => 6,
             4 => 1,

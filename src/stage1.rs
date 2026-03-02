@@ -55,6 +55,7 @@ pub struct MeshValidationStats {
     pub connected_shells: usize,
     pub solids: usize,
     pub voids_within_solids: usize,
+    pub mesh_quads: usize,
 }
 
 /// The output of Stage 1: a connected mesh with welded vertices, computed normals,
@@ -503,6 +504,195 @@ fn compute_face_normal(face: &MeshFace, vertices: &[MeshVertex]) -> Option<[f64;
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Coplanar triangle fusion (Stage 1.3)
+// ---------------------------------------------------------------------------
+
+/// Check whether the quad `[v0, v1, v2, v3]` is strictly convex, given the face normal.
+fn is_convex_quad(vertices: &[MeshVertex], quad_verts: &[usize; 4], normal: &[f64; 3]) -> bool {
+    for i in 0..4 {
+        let v0 = &vertices[quad_verts[i]];
+        let v1 = &vertices[quad_verts[(i + 1) % 4]];
+        let v2 = &vertices[quad_verts[(i + 2) % 4]];
+
+        let e1 = [v1.x - v0.x, v1.y - v0.y, v1.z - v0.z];
+        let e2 = [v2.x - v1.x, v2.y - v1.y, v2.z - v1.z];
+
+        // Cross product e1 × e2
+        let cx = e1[1] * e2[2] - e1[2] * e2[1];
+        let cy = e1[2] * e2[0] - e1[0] * e2[2];
+        let cz = e1[0] * e2[1] - e1[1] * e2[0];
+
+        // For convex quad, all cross products should agree with the normal direction
+        let dot = cx * normal[0] + cy * normal[1] + cz * normal[2];
+        if dot <= 0.0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Stage 1.3: Fuse adjacent coplanar triangle pairs into quads.
+///
+/// For each manifold edge shared by two triangles, if both triangles are coplanar
+/// (all 4 vertices within `coplanar_tol` of the shared plane) and their merged shape
+/// forms a convex quad, merge them into a single quad face. Each triangle can
+/// participate in at most one merge (greedy, first valid merge wins).
+pub fn fuse_coplanar_triangles(mesh: &mut ConnectedMesh, vertex_tolerance: f64) {
+    let coplanar_tol = vertex_tolerance * 0.01;
+    let num_faces = mesh.faces.len();
+    let mut merged = vec![false; num_faces];
+
+    // Phase 1: Identify merge pairs.
+    // Each entry: (face1_idx, edge1_idx, face2_idx, edge2_idx)
+    let mut merge_pairs: Vec<(usize, usize, usize, usize)> = Vec::new();
+
+    for fi in 0..num_faces {
+        if merged[fi] {
+            continue;
+        }
+        if mesh.faces[fi].vertex_count != 3 {
+            continue;
+        }
+        let norm = match mesh.faces[fi].normal {
+            Some(n) => n,
+            None => continue,
+        };
+
+        for ei in 0..3_usize {
+            let ni = mesh.faces[fi].neighbors[ei];
+            if ni < 0 {
+                continue;
+            }
+            let ni = ni as usize;
+            // Process each edge only once and skip already-merged faces
+            if ni <= fi || merged[ni] {
+                continue;
+            }
+            if mesh.faces[ni].vertex_count != 3 {
+                continue;
+            }
+
+            // Find which edge in ni points back to fi
+            let mut eni = usize::MAX;
+            for k in 0..3 {
+                if mesh.faces[ni].neighbors[k] == fi as i32 {
+                    eni = k;
+                    break;
+                }
+            }
+            if eni == usize::MAX {
+                continue;
+            }
+
+            // Identify the 4 unique vertices
+            let s0 = mesh.faces[fi].vertex_indices[ei];
+            let s1 = mesh.faces[fi].vertex_indices[(ei + 1) % 3];
+            let a = mesh.faces[fi].vertex_indices[(ei + 2) % 3];
+            let b = mesh.faces[ni].vertex_indices[(eni + 2) % 3];
+
+            // Coplanarity check: vertex b must be within tolerance of face fi's plane.
+            // (Vertices s0, s1, a are on the plane by construction.)
+            let v_s0 = &mesh.vertices[s0];
+            let plane_d = norm[0] * v_s0.x + norm[1] * v_s0.y + norm[2] * v_s0.z;
+            let v_b = &mesh.vertices[b];
+            let dist_b = norm[0] * v_b.x + norm[1] * v_b.y + norm[2] * v_b.z - plane_d;
+            if dist_b.abs() > coplanar_tol {
+                continue;
+            }
+
+            // Convexity check: quad [s1, a, s0, b] must be strictly convex.
+            let quad_verts = [s1, a, s0, b];
+            if !is_convex_quad(&mesh.vertices, &quad_verts, &norm) {
+                continue;
+            }
+
+            // Valid merge — mark both faces
+            merged[fi] = true;
+            merged[ni] = true;
+            merge_pairs.push((fi, ei, ni, eni));
+            break; // fi can only merge once
+        }
+    }
+
+    if merge_pairs.is_empty() {
+        return;
+    }
+
+    // Phase 2: Apply merges — transform face1 into a quad, mark face2 as deleted.
+    for &(fi, ei, ni, eni) in &merge_pairs {
+        let s0 = mesh.faces[fi].vertex_indices[ei];
+        let s1 = mesh.faces[fi].vertex_indices[(ei + 1) % 3];
+        let a = mesh.faces[fi].vertex_indices[(ei + 2) % 3];
+        let b = mesh.faces[ni].vertex_indices[(eni + 2) % 3];
+
+        // Quad vertex order [s1, a, s0, b] follows the right-hand rule,
+        // consistent with face1's winding.
+        let quad_indices = [s1, a, s0, b];
+
+        // Quad neighbors:
+        //   Edge 0 (s1→a): was face1's edge (e1+1)%3
+        //   Edge 1 (a→s0): was face1's edge (e1+2)%3
+        //   Edge 2 (s0→b): was face2's edge (e2+1)%3
+        //   Edge 3 (b→s1): was face2's edge (e2+2)%3
+        let n0 = mesh.faces[fi].neighbors[(ei + 1) % 3];
+        let n1 = mesh.faces[fi].neighbors[(ei + 2) % 3];
+        let n2 = mesh.faces[ni].neighbors[(eni + 1) % 3];
+        let n3 = mesh.faces[ni].neighbors[(eni + 2) % 3];
+
+        // Transform fi into the quad
+        mesh.faces[fi].vertex_count = 4;
+        mesh.faces[fi].vertex_indices = quad_indices;
+        mesh.faces[fi].neighbors = [n0, n1, n2, n3];
+        mesh.faces[fi].normal = compute_face_normal(&mesh.faces[fi], &mesh.vertices);
+
+        // Update ni's former neighbors to point to fi instead of ni
+        for n_ref in [n2, n3] {
+            if n_ref >= 0 {
+                let n_idx = n_ref as usize;
+                for k in 0..mesh.faces[n_idx].vertex_count as usize {
+                    if mesh.faces[n_idx].neighbors[k] == ni as i32 {
+                        mesh.faces[n_idx].neighbors[k] = fi as i32;
+                    }
+                }
+            }
+        }
+
+        // Mark ni as deleted
+        mesh.faces[ni].vertex_count = 0;
+    }
+
+    // Phase 3: Compact — remove deleted faces and remap neighbor indices.
+    let old_len = mesh.faces.len();
+    let mut new_index: Vec<i32> = vec![-1; old_len];
+    let mut new_faces: Vec<MeshFace> = Vec::with_capacity(old_len - merge_pairs.len());
+
+    for (old_i, face) in mesh.faces.iter().enumerate() {
+        if face.vertex_count == 0 {
+            continue;
+        }
+        new_index[old_i] = new_faces.len() as i32;
+        new_faces.push(face.clone());
+    }
+
+    // Remap neighbor references
+    for face in &mut new_faces {
+        for k in 0..face.vertex_count as usize {
+            if face.neighbors[k] >= 0 {
+                let old_ni = face.neighbors[k] as usize;
+                let mapped = new_index[old_ni];
+                debug_assert!(mapped >= 0, "neighbor points to deleted face");
+                face.neighbors[k] = mapped;
+            }
+        }
+    }
+
+    let quads_formed = merge_pairs.len();
+    mesh.faces = new_faces;
+    mesh.stats.mesh_faces = mesh.faces.len();
+    mesh.stats.mesh_quads = quads_formed;
+}
+
 // Compare mesh against STEP surfaces
 // ---------------------------------------------------------------------------
 
@@ -626,7 +816,7 @@ fn compare_mesh_to_step(mesh: &ConnectedMesh, config: &Config) -> Result<(), Com
 // ---------------------------------------------------------------------------
 // Stage 1 entry point
 // ---------------------------------------------------------------------------
-/// Run stage 1: read STL (1.1) and validate mesh (1.2).
+/// Run stage 1: read STL (1.1), validate mesh (1.2), and fuse coplanar triangles (1.3).
 pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
     // Stage 1.1: Read STL
     let mut mesh = read_connected_mesh_from_stl(
@@ -660,6 +850,18 @@ pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
         );
         if s.mesh_edges_open > 0 {
             eprintln!("  {} open edges", s.mesh_edges_open);
+        }
+    }
+
+    if config.stage.at_least(1, 3) {
+        // Stage 1.3: Fuse coplanar triangle pairs into quads
+        fuse_coplanar_triangles(&mut mesh, config.vertex_tolerance_mm);
+
+        if !config.quiet {
+            eprintln!(
+                "Stage 1.3: Fused {} triangle pairs into quads ({} faces remaining)",
+                mesh.stats.mesh_quads, mesh.stats.mesh_faces
+            );
         }
     }
 

@@ -74,8 +74,8 @@ cargo test --test stage1_integration
 ```
 
 Integration tests in `tests/stage1_integration.rs` verify that:
-- All STL files in `tests/manual/`, `tests/onshape/`, `tests/ccad/generated/`, and `tests/fusion/` pass stage 1 mesh validation
-- All STL/STEP pairs pass `--compare` surface distance checks
+- All STL files in `tests/manual/`, `tests/onshape/`, `tests/ccad/generated/`, and `tests/fusion/` pass stage 1 mesh validation and coplanar triangle fusion
+- All STL/STEP pairs pass `--compare` surface distance checks (after fusion)
 - Bad files in `tests/bad/` fail with expected error types (degenerate faces, non-manifold edges, inconsistent winding, compare failures)
 
 Integration tests in `tests/stage2_integration.rs` verify that:

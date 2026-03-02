@@ -65,7 +65,7 @@ fn cube_produces_six_planar_hypotheses() {
         "cube should have 6 planar hypotheses"
     );
     for h in &output.planar_hypotheses {
-        assert_eq!(h.faces.len(), 2, "each cube face hypothesis should have 2 triangles");
+        assert_eq!(h.faces.len(), 1, "each cube face hypothesis should have 1 quad");
     }
 }
 
