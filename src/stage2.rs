@@ -1684,68 +1684,137 @@ fn compare_spherical_hypotheses(
 // Stage 2.6: Select surfaces for reconstruction
 // ---------------------------------------------------------------------------
 
-/// Apply per-face priority rule to select exactly one surface hypothesis per face.
-/// Returns a vector of unique SelectedSurface entries covering all mesh faces.
+/// Greedy area-based surface selection.
 ///
-/// Priority (highest first):
-/// 1. Spherical hypothesis (most constrained: 4 DOF)
-/// 2. Cylindrical hypothesis (6 DOF)
-/// 3. Multi-face planar hypothesis (face count > 1)
-/// 4. Single-face planar hypothesis (fallback)
+/// Selects hypotheses greedily by total mesh face area (largest first).
+/// This naturally resolves conflicts: real surface hypotheses cover many faces
+/// with large total area, while bogus hypotheses cover minimal area and lose.
+///
+/// After selection, updates hypothesis face/vertex lists to reflect only the
+/// faces actually assigned to each selected surface.
 fn select_surfaces(
     mesh: &ConnectedMesh,
-    planar_hypotheses: &[PlanarHypothesis],
+    planar_hypotheses: &mut [PlanarHypothesis],
+    cylindrical_hypotheses: &mut [CylindricalHypothesis],
+    spherical_hypotheses: &mut [SphericalHypothesis],
 ) -> Vec<SelectedSurface> {
-    // For each face, determine which hypothesis wins
-    let mut face_selection: Vec<Option<SelectedSurface>> = vec![None; mesh.faces.len()];
+    let num_faces = mesh.faces.len();
 
-    for (fi, face) in mesh.faces.iter().enumerate() {
-        let pi = face.planar_hypothesis;
-        let ci = face.cylindrical_hypothesis;
-        let si = face.spherical_hypothesis;
+    // Step 1: Compute geometric area of each mesh face.
+    let face_areas: Vec<f64> = (0..num_faces)
+        .map(|fi| face_area(&mesh.faces[fi], &mesh.vertices))
+        .collect();
 
-        // Priority 1: spherical hypothesis (most constrained: 4 DOF)
-        if si >= 0 {
-            face_selection[fi] = Some(SelectedSurface::Spherical(si as usize));
-            continue;
+    // Step 2: Build candidate list from multi-face hypotheses.
+    // Each candidate tracks its hypothesis type/index and original face set.
+    struct Candidate {
+        surface_type: u8, // 0=planar, 1=cylindrical, 2=spherical
+        hypothesis_index: usize,
+        faces: Vec<usize>,
+    }
+
+    let mut candidates: Vec<Candidate> = Vec::new();
+
+    for (i, hyp) in planar_hypotheses.iter().enumerate() {
+        if hyp.faces.len() > 1 {
+            candidates.push(Candidate {
+                surface_type: 0,
+                hypothesis_index: i,
+                faces: hyp.faces.clone(),
+            });
         }
+    }
+    for (i, hyp) in cylindrical_hypotheses.iter().enumerate() {
+        candidates.push(Candidate {
+            surface_type: 1,
+            hypothesis_index: i,
+            faces: hyp.faces.clone(),
+        });
+    }
+    for (i, hyp) in spherical_hypotheses.iter().enumerate() {
+        candidates.push(Candidate {
+            surface_type: 2,
+            hypothesis_index: i,
+            faces: hyp.faces.clone(),
+        });
+    }
 
-        // Priority 2: cylindrical hypothesis (6 DOF)
-        if ci >= 0 {
-            face_selection[fi] = Some(SelectedSurface::Cylindrical(ci as usize));
-            continue;
-        }
+    // Step 3: Greedy loop — select candidate with largest remaining area.
+    let mut assigned = vec![false; num_faces];
+    let mut selected: Vec<SelectedSurface> = Vec::new();
 
-        // Priority 3: multi-face planar hypothesis
-        if pi >= 0 {
-            let ph = &planar_hypotheses[pi as usize];
-            if ph.faces.len() > 1 {
-                face_selection[fi] = Some(SelectedSurface::Planar(pi as usize));
-                continue;
+    loop {
+        let mut best_ci = None;
+        let mut best_area = 0.0_f64;
+
+        for (ci, cand) in candidates.iter().enumerate() {
+            let area: f64 = cand.faces.iter()
+                .filter(|fi| !assigned[**fi])
+                .map(|fi| face_areas[*fi])
+                .sum();
+            if area > best_area {
+                best_area = area;
+                best_ci = Some(ci);
             }
         }
 
-        // Priority 4: single-face planar hypothesis (fallback)
-        if pi >= 0 {
-            face_selection[fi] = Some(SelectedSurface::Planar(pi as usize));
-            continue;
+        let Some(ci) = best_ci else { break };
+
+        // Collect still-unassigned faces for the winning candidate.
+        let sel_faces: Vec<usize> = candidates[ci].faces.iter()
+            .filter(|fi| !assigned[**fi])
+            .copied()
+            .collect();
+
+        for &fi in &sel_faces {
+            assigned[fi] = true;
         }
 
-        // Should not happen — every face should have at least a planar hypothesis
-        panic!("face {fi} has no hypothesis assigned (planar={pi}, cylindrical={ci}, spherical={si})");
+        // Build vertex set for the selected faces.
+        let sel_vertices: Vec<usize> = {
+            let mut vset = HashSet::new();
+            for &fi in &sel_faces {
+                let f = &mesh.faces[fi];
+                for vi in 0..f.vertex_count as usize {
+                    vset.insert(f.vertex_indices[vi]);
+                }
+            }
+            let mut v: Vec<usize> = vset.into_iter().collect();
+            v.sort_unstable();
+            v
+        };
+
+        // Update hypothesis face/vertex lists to reflect only the assigned faces,
+        // and create the SelectedSurface entry.
+        let selected_surface = match candidates[ci].surface_type {
+            0 => {
+                let idx = candidates[ci].hypothesis_index;
+                planar_hypotheses[idx].faces = sel_faces;
+                planar_hypotheses[idx].vertices = sel_vertices;
+                SelectedSurface::Planar(idx)
+            }
+            1 => {
+                let idx = candidates[ci].hypothesis_index;
+                cylindrical_hypotheses[idx].faces = sel_faces;
+                cylindrical_hypotheses[idx].vertices = sel_vertices;
+                SelectedSurface::Cylindrical(idx)
+            }
+            _ => {
+                let idx = candidates[ci].hypothesis_index;
+                spherical_hypotheses[idx].faces = sel_faces;
+                spherical_hypotheses[idx].vertices = sel_vertices;
+                SelectedSurface::Spherical(idx)
+            }
+        };
+        selected.push(selected_surface);
     }
 
-    // Collect unique selected surfaces
-    let mut seen = HashSet::new();
-    let mut selected = Vec::new();
-    for sel in face_selection.iter().flatten() {
-        let key = match sel {
-            SelectedSurface::Planar(i) => (0, *i),
-            SelectedSurface::Cylindrical(i) => (1, *i),
-            SelectedSurface::Spherical(i) => (2, *i),
-        };
-        if seen.insert(key) {
-            selected.push(*sel);
+    // Step 4: Assign remaining faces to their single-face planar hypothesis.
+    for fi in 0..num_faces {
+        if !assigned[fi] {
+            let pi = mesh.faces[fi].planar_hypothesis;
+            assert!(pi >= 0, "face {fi} has no hypothesis assigned");
+            selected.push(SelectedSurface::Planar(pi as usize));
         }
     }
 
@@ -1845,13 +1914,7 @@ fn compare_selected_surfaces(
             max_dist = max_dist.max(dist);
         }
 
-        // Use vertex_tolerance for properly fitted surfaces (cylindrical,
-        // spherical). Use surface_tolerance for all planar hypotheses — multi-face
-        // planar on curved surfaces (e.g. cylinder fillets) can have large error.
-        let tolerance = match surface {
-            SelectedSurface::Planar(_) => config.surface_tolerance_mm,
-            _ => config.vertex_tolerance_mm,
-        };
+        let tolerance = config.vertex_tolerance_mm;
 
         if max_dist > tolerance {
             return Err(Stage2CompareError {
@@ -1873,7 +1936,7 @@ fn compare_selected_surfaces(
 /// Run stage 2: fit surface hypotheses to mesh faces and select surfaces.
 pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, Stage2Error> {
     // Stage 2.1: Deduce planar hypotheses
-    let planar_hypotheses = deduce_planar_hypotheses(&mut mesh, config.vertex_tolerance_mm);
+    let mut planar_hypotheses = deduce_planar_hypotheses(&mut mesh, config.vertex_tolerance_mm);
 
     if !config.quiet {
         let multi_face_count = planar_hypotheses.iter().filter(|h| h.faces.len() > 1).count();
@@ -1920,7 +1983,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
     }
 
     // Stage 2.2: Deduce cylindrical hypotheses
-    let cylindrical_hypotheses = deduce_cylindrical_hypotheses(
+    let mut cylindrical_hypotheses = deduce_cylindrical_hypotheses(
         &mut mesh, &planar_hypotheses, config.vertex_tolerance_mm,
         config.surface_tolerance_mm, config.angular_tolerance_rad,
     );
@@ -1970,7 +2033,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
     // Stage 2.3: Deduce spherical hypotheses
     let bb_diag = bounding_box_diagonal(&mesh.vertices);
     let max_sphere_radius = bb_diag * MAX_SPHERE_RADIUS_FACTOR;
-    let spherical_hypotheses = deduce_spherical_hypotheses(
+    let mut spherical_hypotheses = deduce_spherical_hypotheses(
         &mut mesh, &planar_hypotheses, config.vertex_tolerance_mm,
         config.surface_tolerance_mm, config.angular_tolerance_rad, max_sphere_radius,
     );
@@ -2051,7 +2114,8 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
 
     // Stage 2.6: Select surfaces for reconstruction
     let selected_surfaces = select_surfaces(
-        &mesh, &planar_hypotheses,
+        &mesh, &mut planar_hypotheses, &mut cylindrical_hypotheses,
+        &mut spherical_hypotheses,
     );
 
     if !config.quiet {

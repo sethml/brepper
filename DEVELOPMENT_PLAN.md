@@ -372,15 +372,14 @@ The algorithm selects hypotheses greedily by total mesh face area, largest first
 
 **Why this works better than a fixed type-priority rule:** A fixed priority (e.g., spherical > cylindrical > multi-face planar) fails when a bogus hypothesis of a high-priority type (3-face r=139mm sphere) competes with a correct hypothesis of a lower-priority type (35-face r=2mm cylinder). Area-based greedy selection naturally picks the correct hypothesis because it covers vastly more area.
 
-**Nerfed tests (TODO: restore once greedy selection is implemented):**
-- `onshape_rounded_cube_stage26`: Runs without `--compare` because the per-face priority rule selects bogus large-radius hypotheses over correct cylindrical/spherical ones. Expected to pass with greedy area selection.
+**Nerfed tests:**
+- `onshape_rounded_cube_stage26`: Runs without `--compare` because sphere BFS in stage 2.3 grows along cylinder fillet surfaces (locally, adjacent cylinder faces fit on a sphere within vertex_tolerance), creating oversized sphere hypotheses (~1277 faces each). Greedy selection picks these over correct cylinders since they have larger total area. Needs sphere overgrowth limiting, angular-extent filtering, or torus support to fix.
 - `onshape_pipe_elbow_stage26`: Runs without `--compare` because torus surfaces can't be fitted with current primitives (planes, cylinders, spheres). This is a missing surface type issue, not a selection algorithm issue — greedy selection alone won't fix it.
 
 - With the `--compare` flag, for each selected surface:
     - Compute face centroids and project them onto the selected surface.
     - Measure distance from each projected centroid to the nearest surface in the reference STEP file.
-    - For cylindrical and spherical hypotheses, report an error if distance exceeds `--vertex-tolerance`.
-    - For planar hypotheses (both single-face and multi-face), use `--surface-tolerance` since single-face planar on curved surfaces can have large centroid-to-STEP distances.
+    - For all hypotheses, report an error if distance exceeds `--vertex-tolerance`.
 
 #### 2.7 Surface refitting (optional)
 
@@ -589,7 +588,8 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Implement stage 2.3: Deduce spherical hypotheses.
 - [x] Implement stage 2.6: Select surfaces for reconstruction using per-face priority rule.
 - [x] Implement the --angular-tolerance flag for cylindrical and spherical surface hypothesis generation.
-- [ ] Revisit stage 2.6: Replace per-face priority rule with greedy area-based selection. Restore nerfed `onshape_rounded_cube_stage26` compare test.
+- [x] Revisit stage 2.6: Replace per-face priority rule with greedy area-based selection.
+- [ ] Fix sphere overgrowth: sphere BFS in stage 2.3 grows along cylinder fillet surfaces, creating oversized hypotheses. This blocks restoring the `onshape_rounded_cube_stage26` compare test. Consider angular-extent limits, curvature-consistency checks, or torus support.
 
 ### Stage 3: Surface Reconstruction
 - [x] Implement stage 3.1: Create OCCT surface objects and build adjacency graph from mesh connectivity.

@@ -83,7 +83,7 @@ Generated with assistance from Model Name (Provider, 2026)
 
 User prompt(s):
 - 'Prompt with "quotes" and other special chars'
-EOF
+'EOF'
 ```
 
 ## Development Plan Maintenance

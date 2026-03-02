@@ -1137,9 +1137,10 @@ test_stl_step_stage26_compare!(
     "tests/onshape/plate_with_hole_100x50_coarse.step"
 );
 // Rounded cube: 6 planes + 12 cylindrical edge fillets + 8 spherical corners.
-// Surface selection is imperfect: multi-face planar faces on cylinder fillets
-// and bogus large-radius hypotheses get selected over correct cylindrical ones.
-// Needs more sophisticated stage 2.6 selection to resolve. Skipping compare.
+// Sphere BFS in stage 2.3 grows along cylinder fillet surfaces (locally,
+// adjacent cylinder faces fit on a sphere within vertex_tolerance), creating
+// oversized sphere hypotheses (~1277 faces each). Greedy selection picks these
+// over correct cylinders. Needs sphere overgrowth limiting or torus support.
 #[test]
 fn onshape_rounded_cube_stage26_runs() {
     let stl = format!("{}/tests/onshape/rounded_cube_10_r2_fine.stl", manifest_dir());

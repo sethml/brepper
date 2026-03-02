@@ -156,10 +156,12 @@ All node/triangle indices are **1-based** (OCCT convention).
 - Angular tolerance check: same as cylindrical — seed pairs and BFS neighbors must have dihedral angle ≤ `--angular-tolerance`. This fixed the spurious sphere detection on the 1mm manual cube.
 
 ### Stage 2.6 surface selection
-- Simple per-face priority rule: spherical > cylindrical > multi-face planar > single-face planar.
-- Previously: multi-face planar had highest priority (assumed genuinely flat). Changed because on finely tessellated curved surfaces, adjacent nearly-coplanar faces form multi-face planar groups that should be overridden by cylindrical/spherical hypotheses.
-- Previously known issue (now fixed): small cubes (e.g., manual/cube.stl at 1mm) got spurious sphere/cylinder hypotheses because all 8 vertices lie exactly on a circumscribed sphere. Fixed by the `--angular-tolerance` flag (default 17.5°): adjacent cube faces meet at 90°, far exceeding the angular tolerance, so the seed pair is rejected.
-- The `select_surfaces` function reads cylindrical/spherical hypothesis indices from the per-face fields and planar hypothesis index to check face count.
+- Greedy area-based selection: iteratively selects the hypothesis with the largest total remaining mesh face area, assigns its unassigned faces, removes those faces from all other candidates, repeats.
+- Multi-face planar, cylindrical, and spherical hypotheses are candidates. Single-face planar hypotheses are fallback for unclaimed faces.
+- After selection, hypothesis face/vertex lists are updated in-place to reflect only the faces actually assigned.
+- Replaced the old per-face priority rule (spherical > cylindrical > multi-face planar > single-face planar) which failed when bogus small-area hypotheses of a high-priority type beat correct large-area hypotheses of a lower-priority type.
+- Known issue: sphere BFS in stage 2.3 grows along cylinder fillet surfaces (locally, adjacent cylinder faces fit on a sphere), creating oversized sphere hypotheses. Greedy selection picks these over correct cylinders because they have more total area. Needs sphere overgrowth limiting to fix.
+- Compare tolerance now uses `vertex_tolerance` for all hypothesis types (previously used `surface_tolerance` for planar).
 
 
 ### Stage 3.1 adjacency graph construction
