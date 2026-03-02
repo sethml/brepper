@@ -105,33 +105,39 @@ This section enumerates the OCCT classes and functions needed, for evaluating Ru
 
 #### 1.1 Read STL File
 Read the input STL file and generate an in-memory representation of the triangle mesh, with fields for future stages to traverse the mesh and fit shapes to sets of mesh faces. Weld vertices by position (with tolerance) to build connectivity.
-- **Library**: OCCT `TKSTL::RWStl_Reader` from `RWSTL.hxx`
+- **Library**: OCCT `RWStl::ReadFile` (static function, via `rw_stl::read_file_charptr_progressrange_2` in the Rust bindings)
 - **Input**: Binary or ASCII STL file
 - **Output**: `ConnectedMesh`, storing:
-    - Vector of mesh vertices with double-precision 3d coordinates.
-    - Vector of mesh faces with:
-        - vertex_count;  // 3 or 4 (or 0 if the face is unused).
-        - vertex_indices[4];  // Indices of vertices, ordered by right-hand rule. Must be coplanar.
-        - neighbors[4];  // Index of the mesh face across each edge, or -1 if none. Filled in stage 1.2.
-        - gp_Dir normal;  // Mesh face normal, computed from vertices in stage 1.2.
-        - planar_hypothesis;  // Index of active planar hypothesis, or -1 if none, or -2 if not yet deduced.
-        - cylindrical_hypothesis;  // Index of active cylindrical hypothesis, or -1 if none.
-        - spherical_hypothesis;  // Index of active spherical hypothesis, or -1 if none.
-    - Vector of planar hypotheses, cylindrical hypotheses, and spherical hypotheses - defined later.
-    - Statistics described in stage 1.2.
+    - `vertices: Vec<MeshVertex>` — Mesh vertices with double-precision 3D coordinates (`x`, `y`, `z: f64`).
+    - `faces: Vec<MeshFace>` — Mesh faces with:
+        - `vertex_count: u8` — Always 3 for STL input (4 reserved for future quad support).
+        - `vertex_indices: [usize; 4]` — Indices of vertices, ordered by right-hand rule.
+        - `neighbors: [i32; 4]` — Index of the mesh face across each edge, or -1 if none. Filled in stage 1.2.
+        - `normal: Option<[f64; 3]>` — Mesh face normal, computed from vertices in stage 1.2. `None` for degenerate faces. (Changed from `gp_Dir` in original plan — native Rust arrays avoid OCCT binding complexity and keep the mesh data structure self-contained.)
+        - `planar_hypothesis: i32` — Index of active planar hypothesis, or `NO_HYPOTHESIS` (-1) if none, or `UNDEDUCED_PLANAR_HYPOTHESIS` (-2) if not yet deduced.
+        - `cylindrical_hypothesis: i32` — Index of active cylindrical hypothesis, or `NO_HYPOTHESIS` (-1) if none.
+        - `spherical_hypothesis: i32` — Index of active spherical hypothesis, or `NO_HYPOTHESIS` (-1) if none.
+    - `stats: MeshValidationStats` — Statistics described in stage 1.2.
 
-For now, each face can belong to a single hypothesis of each type. Hopefully that's sufficient since hypotheses should nearly exactly match the vertices, but it's possible that in the future we may need to keep set of candidate hypothesis indices per type, then select the best one in stage 2.6.
+Note: hypotheses vectors (planar, cylindrical, spherical) are stored in `Stage2Output`, not in `ConnectedMesh`. The mesh stores only per-face hypothesis indices. (Changed from original plan which listed hypothesis vectors as part of `ConnectedMesh` — separating them into the stage 2 output keeps each stage's output self-contained and avoids coupling the mesh representation to later stages.)
+
+For now, each face can belong to a single hypothesis of each type. Hopefully that's sufficient since hypotheses should nearly exactly match the vertices, but it's possible that in the future we may need to keep a set of candidate hypothesis indices per type, then select the best one in stage 2.6.
+
+**Vertex welding** uses a spatial hash grid: each vertex is bucketed by integer coordinates `(round(x/tol), round(y/tol), round(z/tol))`. To find matches, adjacent cells (3×3×3 neighborhood) are checked for distance ≤ tolerance. This gives O(1) average lookup. The weld tolerance is derived from `--vertex-tolerance` as `min(1e-9, vertex_tolerance * 0.01)`, so welding is much tighter than the surface-fitting tolerance.
 
 #### 1.2 Mesh Validation
-Traverse the faces of the mesh, collecting some basic statistics, validating the geometry, and populating normals and neighbors.
-- Collect stats and optionally print: number of mesh faces, number of mesh vertices, number of mesh edges with 0 neighbors, number of mesh edges with >1 neighbors, number of connected shells, number of solids, number of voids within solids.
-- Compute and populate mesh face normals.
-- Compute mesh face neighbors based on shared mesh edges.
-- With the --compare flag: check that all vertices are within --vertex-tolerance of the surface of a solid from the STEP file. Also check that each mesh face centroid is within --surface-tolerance of the surfaces. (Implemented.)
+Traverse the faces of the mesh, collecting statistics, validating the geometry, and populating normals and neighbors.
+- Collect stats into `MeshValidationStats` and optionally print: `mesh_faces`, `mesh_vertices`, `mesh_edges_open` (edges with only 1 incident face), `mesh_edges_non_manifold` (edges with >2 incident faces), `mesh_edges_inconsistent_orientation`, `mesh_faces_degenerate`, `connected_shells`, `solids`, `voids_within_solids`.
+- Compute and populate mesh face normals using Newell's method (handles both triangles and quads with consistent winding).
+- Compute mesh face neighbors based on shared mesh edges. For each edge (vertex pair), collect all face uses. For manifold edges (exactly 2 uses), set both faces as neighbors. Also check orientation consistency: properly oriented adjacent faces should traverse the shared edge in opposite directions.
+- Count connected shells via BFS over a face adjacency graph. A shell is counted as a "solid" if all its edges are manifold (exactly 2 faces per edge). (Simplified from the original plan which suggested ray casting or signed volume analysis — the current heuristic is sufficient for well-formed meshes. Voids within solids are tracked in the stats struct but not yet computed.)
+- With the `--compare` flag: check that all vertices are within `--vertex-tolerance` of the STEP shape, and that all face centroids are within `--surface-tolerance`. Uses `BRepExtrema_DistShapeShape` for bounded distance (respects face trimming). Reports the worst vertex and worst centroid with their distances.
 
-At this stage, validate the mesh: Edges with >1 neighbor indicate non-manifold geometry; degenerate triangles (zero area), flipped normals (inconsistent orientation within a shell), and self-intersections.
-
-The "number of solids" and "voids" computation is non-trivial and may require ray casting or signed volume analysis—consider deferring this to after surface reconstruction.
+Validation checks, in priority order (first failure is reported):
+1. **Degenerate faces**: faces with <3 vertices or zero-area normals.
+2. **Non-manifold edges**: edges shared by >2 faces.
+3. **Inconsistent orientation**: adjacent faces that traverse a shared edge in the same direction (indicating flipped normals within a shell).
+4. **Self-intersections**: intentionally deferred to a later stage where richer geometric predicates are available and O(N²) triangle checks can be avoided.
 
 ---
 
