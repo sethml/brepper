@@ -147,6 +147,22 @@ def generate_cube_shifted():
     dst = os.path.join(BAD_DIR, "cube_shifted.step")
     shutil.copy2(src, dst)
     print(f"  Copied {src} -> {dst}")
+def generate_cube_on_plane():
+    """Unit cube with vertex 6 (1,1,1) shifted to (10,1,1) for --compare failure.
+    The shifted point lies on the infinite y=1 and z=1 planes of the cube, so
+    unbounded ProjectPointOnSurf would report distance 0. But BRepExtrema
+    DistShapeShape correctly reports the bounded distance (~9mm from the x=1 face).
+    This tests that --compare uses bounded face distance, not unbounded surface.
+    """
+    triangles = cube_triangles(shift_vertex=(6, (9, 0, 0)))
+    write_ascii_stl("cube_on_plane.stl", triangles, "on_plane_cube")
+
+    # Copy the normal cube.step as reference for --compare
+    src = os.path.join(PROJECT_DIR, "tests", "manual", "cube.step")
+    dst = os.path.join(BAD_DIR, "cube_on_plane.step")
+    shutil.copy2(src, dst)
+    print(f"  Copied {src} -> {dst}")
+
 
 
 def main():
@@ -156,6 +172,7 @@ def main():
     generate_non_manifold_edge()
     generate_inconsistent_winding()
     generate_cube_shifted()
+    generate_cube_on_plane()
     print("Done.")
 
 

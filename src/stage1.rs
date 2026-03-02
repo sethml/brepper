@@ -4,7 +4,7 @@
 //! 1.2: Validate mesh topology, compute normals and neighbors.
 
 use crate::config::Config;
-use opencascade_sys::{extrema, geom_api, gp, message, rw_stl};
+use opencascade_sys::{b_rep_builder_api, b_rep_extrema, extrema, gp, message, rw_stl};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -537,38 +537,39 @@ impl Display for CompareError {
 
 impl Error for CompareError {}
 
-/// Compute the minimum distance from a point to any of the compare surfaces.
-fn min_distance_to_surfaces(
+/// Compute the minimum distance from a point to the bounded compare shape
+/// using BRepExtrema_DistShapeShape, which respects face trimming boundaries.
+fn min_distance_to_shape(
     pt: &gp::Pnt,
-    surfaces: &[opencascade_sys::OwnedPtr<opencascade_sys::shape_extend::HandleGeomSurface>],
+    compare_shape: &opencascade_sys::topo_ds::Shape,
 ) -> f64 {
-    let mut min_dist = f64::MAX;
-    for surface in surfaces {
-        let projector = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
-            pt,
-            surface,
-            extrema::ExtAlgo::Grad,
-        );
-        if projector.is_done() && projector.nb_points() > 0 {
-            let d = projector.lower_distance();
-            if d < min_dist {
-                min_dist = d;
-            }
-        }
+    let mut vertex = b_rep_builder_api::MakeVertex::new_pnt(pt);
+    let vtx_shape = vertex.vertex();
+    let progress = message::ProgressRange::new();
+    let dist_calc = b_rep_extrema::DistShapeShape::new_shape2_extflag_extalgo_progressrange(
+        vtx_shape.as_shape(),
+        compare_shape,
+        0, // F (unused/obsolete)
+        extrema::ExtAlgo::Grad,
+        &progress,
+    );
+    if dist_calc.is_done() && dist_calc.nb_solution() > 0 {
+        dist_calc.value()
+    } else {
+        f64::MAX
     }
-    min_dist
 }
 
-/// Check mesh vertices and face centroids against comparison STEP surfaces.
+/// Check mesh vertices and face centroids against comparison STEP shape.
 fn compare_mesh_to_step(mesh: &ConnectedMesh, config: &Config) -> Result<(), CompareError> {
-    let surfaces = &config.compare_surfaces;
+    let compare_shape = config.compare_shape.as_ref().unwrap();
 
     // Check all vertices
     let mut vtx_max_dist = 0.0_f64;
     let mut vtx_max_idx = 0_usize;
     for (i, v) in mesh.vertices.iter().enumerate() {
         let pt = gp::Pnt::new_real3(v.x, v.y, v.z);
-        let d = min_distance_to_surfaces(&pt, surfaces);
+        let d = min_distance_to_shape(&pt, compare_shape);
         if d > vtx_max_dist {
             vtx_max_dist = d;
             vtx_max_idx = i;
@@ -591,7 +592,7 @@ fn compare_mesh_to_step(mesh: &ConnectedMesh, config: &Config) -> Result<(), Com
         }
         let inv_n = 1.0 / n as f64;
         let pt = gp::Pnt::new_real3(cx * inv_n, cy * inv_n, cz * inv_n);
-        let d = min_distance_to_surfaces(&pt, surfaces);
+        let d = min_distance_to_shape(&pt, compare_shape);
         if d > ctr_max_dist {
             ctr_max_dist = d;
             ctr_max_face = fi;
@@ -663,7 +664,7 @@ pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
     }
 
     // Compare against STEP file if --compare was specified.
-    if !config.compare_surfaces.is_empty() {
+    if config.compare_shape.is_some() {
         compare_mesh_to_step(&mesh, config)?;
     }
 

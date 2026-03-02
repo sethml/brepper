@@ -261,3 +261,18 @@ fn bad_compare_cube_shifted() {
         "error should mention comparison failure, got: {msg}"
     );
 }
+
+#[test]
+fn bad_compare_cube_on_plane() {
+    // Vertex shifted along an infinite surface plane (y=1, z=1) but far off
+    // the bounded face. Verifies that --compare uses bounded face distance.
+    let stl = format!("{}/tests/bad/cube_on_plane.stl", manifest_dir());
+    let step = format!("{}/tests/bad/cube_on_plane.step", manifest_dir());
+    let config = config_for_compare(&stl, &step);
+    let err = stage1::stage1(&config).expect_err("should fail: vertex on infinite plane but off bounded face");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("comparison failed"),
+        "error should mention comparison failure, got: {msg}"
+    );
+}

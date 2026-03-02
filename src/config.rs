@@ -1,5 +1,5 @@
 use clap::{Parser, ValueEnum};
-use opencascade_sys::{b_rep, message, step_control, top_abs, top_exp, topo_ds};
+use opencascade_sys::{message, step_control, top_abs, top_exp};
 use std::fmt::{Display, Formatter};
 
 // ---------------------------------------------------------------------------
@@ -184,8 +184,10 @@ pub struct Config {
     pub step_units: Units,
     /// STEP file path to compare against at each stage.
     pub compare_step: Option<String>,
-    /// Surfaces extracted from the --compare STEP file, for comparison checks.
-    pub compare_surfaces: Vec<opencascade_sys::OwnedPtr<opencascade_sys::shape_extend::HandleGeomSurface>>,
+    /// Shape loaded from the --compare STEP file, for bounded distance checks.
+    pub compare_shape: Option<opencascade_sys::OwnedPtr<opencascade_sys::topo_ds::Shape>>,
+    /// Number of faces in the compare shape (for status output).
+    pub compare_face_count: usize,
     /// Fitting tolerance for vertex-to-surface distance, in mm.
     pub vertex_tolerance_mm: f64,
     /// Tolerance for surface-to-triangle-face offset, in mm.
@@ -208,7 +210,7 @@ impl std::fmt::Debug for Config {
             .field("stl_units", &self.stl_units)
             .field("step_units", &self.step_units)
             .field("compare_step", &self.compare_step)
-            .field("compare_surfaces", &format!("[{} surfaces]", self.compare_surfaces.len()))
+            .field("compare_shape", &if self.compare_shape.is_some() { format!("[{} faces]", self.compare_face_count) } else { "None".to_string() })
             .field("vertex_tolerance_mm", &self.vertex_tolerance_mm)
             .field("surface_tolerance_mm", &self.surface_tolerance_mm)
             .field("verbose", &self.verbose)
@@ -228,7 +230,8 @@ impl Config {
             stl_units: args.stl_units,
             step_units: args.step_units,
             compare_step: args.compare_step,
-            compare_surfaces: Vec::new(),
+            compare_shape: None,
+            compare_face_count: 0,
             vertex_tolerance_mm: args.vertex_tolerance * scale,
             surface_tolerance_mm: args.surface_tolerance * scale,
             verbose: args.verbose,
@@ -238,7 +241,7 @@ impl Config {
         }
     }
 
-    /// If --compare was specified, load the STEP file and extract surfaces for comparison.
+    /// If --compare was specified, load the STEP file shape for bounded distance comparison.
     pub fn load_compare_step(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let step_path = match &self.compare_step {
             Some(p) => p.clone(),
@@ -251,25 +254,28 @@ impl Config {
         reader.transfer_roots(&progress);
         let step_shape = reader.one_shape();
 
+        // Count faces for validation and status output
+        let mut face_count = 0_usize;
         let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
             &step_shape,
             top_abs::ShapeEnum::Face,
             top_abs::ShapeEnum::Shape,
         );
         while explorer.more() {
-            let shape_ref = explorer.value();
-            let face = topo_ds::face_shape(shape_ref);
-            self.compare_surfaces.push(b_rep::Tool::surface_face(face));
+            face_count += 1;
             explorer.next();
         }
 
-        if self.compare_surfaces.is_empty() {
+        if face_count == 0 {
             return Err(format!("STEP file {step_path} contains no faces").into());
         }
 
         if !self.quiet {
-            eprintln!("Loaded {} surfaces from comparison STEP file", self.compare_surfaces.len());
+            eprintln!("Loaded {} faces from comparison STEP file", face_count);
         }
+
+        self.compare_face_count = face_count;
+        self.compare_shape = Some(step_shape);
 
         Ok(())
     }

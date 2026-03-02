@@ -1,4 +1,0 @@
-#pragma once
-
-// Test data directory (configured by CMake)
-#define TEST_DATA_DIR "@TEST_DATA_DIR@"

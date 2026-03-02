@@ -33,11 +33,9 @@ This is a **Rust** project. Key locations:
 
 ### OCCT / opencascade-rs
 
-The project uses the `opencascade-sys` crate (auto-generated Rust FFI bindings to OpenCASCADE Technology) via a path dependency:
-
+The project uses the `opencascade-sys` crate (auto-generated Rust FFI bindings to OpenCASCADE Technology) via a path dependency. All useful C++ OCCT APIs should be available in the binding - if you want to use one that doesn't seem to be bound, complain loudly about it at the end of your response.
 ```
 ../opencascade-rs/crates/opencascade-sys   ← Rust FFI bindings (8700+ types)
-../opencascade-rs/crates/occt-sys          ← Build script that compiles OCCT C++ from source
 ../opencascade-rs/crates/opencascade-sys/PORTING.md  ← Naming conventions & usage patterns
 ../opencascade-rs/crates/opencascade-sys/generated/  ← All generated .rs modules
 ../opencascade-rs/crates/occt-sys/OCCT/src/  ← OCCT C++ source (for reading docs/headers)

@@ -30,13 +30,13 @@ GENERAL OPTIONS:
 
 ```bash
 # Full conversion
-./build/brepper input.stl -o output.step
+./target/debug/brepper input.stl -o output.step
 
 # Just load and validate mesh (stage 1.2)
-./build/brepper input.stl --stage 1.2 -v
+./target/debug/brepper input.stl --stage 1.2 -v
 
 # Compare mesh against reference STEP at each stage
-./build/brepper input.stl --compare reference.step --stage 1 -v
+./target/debug/brepper input.stl --compare reference.step --stage 1 -v
 ```
 
 See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for full documentation.

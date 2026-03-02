@@ -101,5 +101,5 @@ if projector.is_done() && projector.nb_points() > 0 {
 All node/triangle indices are **1-based** (OCCT convention).
 
 
-### GeomAPI_ProjectPointOnSurf projects onto unbounded surfaces
-`GeomAPI_ProjectPointOnSurf` projects onto the *infinite* underlying surface, not the bounded face. When testing distance from a point to a STEP model, a point that is far from a face's bounded area but coincidentally lies on the infinite plane of another face will report distance 0. This means `--compare` vertex-distance checks can silently pass for points that are geometrically far from the actual solid. When creating test files for surface comparison failures, shift vertices away from ALL infinite surface planes, not just in one axis-aligned direction.
+### Bounded vs unbounded distance: BRepExtrema vs GeomAPI_ProjectPointOnSurf
+`GeomAPI_ProjectPointOnSurf` projects onto the *infinite* underlying `Geom_Surface`, not the bounded face. Use `BRepExtrema_DistShapeShape` (via `b_rep_extrema::DistShapeShape`) instead to compute distance to bounded `TopoDS_Face` shapes. Create a `BRepBuilderAPI_MakeVertex` from the point, then compute `DistShapeShape` between the vertex shape and the target shape. This correctly reports nonzero distance for points that lie on an infinite surface extension but outside the bounded face.

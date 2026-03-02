@@ -8,7 +8,7 @@
 /// file units (typically meters for Onshape exports) to mm internally.
 /// STL files have no unit metadata; coordinates are assumed to be in mm.
 use opencascade_sys::{
-    b_rep, extrema, geom_api, gp, message, rw_stl, step_control, top_abs, top_exp, topo_ds,
+    b_rep_builder_api, b_rep_extrema, extrema, gp, message, rw_stl, step_control,
 };
 use std::env;
 use std::process;
@@ -42,22 +42,23 @@ fn main() {
     reader.transfer_roots(&progress2);
     let step_shape = reader.one_shape();
 
-    // Collect surfaces from all STEP faces
-    let mut surfaces = Vec::new();
-    let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
-        &step_shape,
-        top_abs::ShapeEnum::Face,
-        top_abs::ShapeEnum::Shape,
-    );
-    while explorer.more() {
-        let shape_ref = explorer.value();
-        let face = topo_ds::face_shape(shape_ref);
-        surfaces.push(b_rep::Tool::surface_face(face));
-        explorer.next();
+    // Count faces for status output
+    let mut face_count = 0_usize;
+    {
+        use opencascade_sys::{top_abs, top_exp};
+        let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
+            &step_shape,
+            top_abs::ShapeEnum::Face,
+            top_abs::ShapeEnum::Shape,
+        );
+        while explorer.more() {
+            face_count += 1;
+            explorer.next();
+        }
     }
-    eprintln!("STEP: {} faces", surfaces.len());
+    eprintln!("STEP: {} faces", face_count);
 
-    if surfaces.is_empty() {
+    if face_count == 0 {
         eprintln!("Error: STEP file has no faces");
         process::exit(1);
     }
@@ -82,22 +83,22 @@ fn main() {
     eprintln!("Bounding box: {:.6} x {:.6} x {:.6}", extents[0], extents[1], extents[2]);
     eprintln!("Max dimension: {:.6}", max_dimension);
 
-    let min_distance_to_surfaces = |pt: &gp::Pnt| -> f64 {
-        let mut min_dist = f64::MAX;
-        for surface in &surfaces {
-            let projector = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
-                pt,
-                surface,
-                extrema::ExtAlgo::Grad,
-            );
-            if projector.is_done() && projector.nb_points() > 0 {
-                let d = projector.lower_distance();
-                if d < min_dist {
-                    min_dist = d;
-                }
-            }
+    let min_distance_to_step = |pt: &gp::Pnt| -> f64 {
+        let mut vertex = b_rep_builder_api::MakeVertex::new_pnt(pt);
+        let vtx_shape = vertex.vertex();
+        let progress = message::ProgressRange::new();
+        let dist_calc = b_rep_extrema::DistShapeShape::new_shape2_extflag_extalgo_progressrange(
+            vtx_shape.as_shape(),
+            &step_shape,
+            0,
+            extrema::ExtAlgo::Grad,
+            &progress,
+        );
+        if dist_calc.is_done() && dist_calc.nb_solution() > 0 {
+            dist_calc.value()
+        } else {
+            f64::MAX
         }
-        min_dist
     };
 
     // Vertex distances
@@ -107,7 +108,7 @@ fn main() {
 
     for i in 1..=num_nodes {
         let pt = tri.node(i);
-        let min_dist = min_distance_to_surfaces(&pt);
+        let min_dist = min_distance_to_step(&pt);
         if min_dist < f64::MAX {
             vtx_dist_sum += min_dist;
             if min_dist > vtx_max_dist {
@@ -136,7 +137,7 @@ fn main() {
             (p1.y() + p2.y() + p3.y()) / 3.0,
             (p1.z() + p2.z() + p3.z()) / 3.0,
         );
-        let min_dist = min_distance_to_surfaces(&centroid);
+        let min_dist = min_distance_to_step(&centroid);
         if min_dist < f64::MAX {
             ctr_dist_sum += min_dist;
             if min_dist > ctr_max_dist {
