@@ -382,6 +382,18 @@ The algorithm selects hypotheses greedily by total mesh face area, largest first
     - For cylindrical and spherical hypotheses, report an error if distance exceeds `--vertex-tolerance`.
     - For planar hypotheses (both single-face and multi-face), use `--surface-tolerance` since single-face planar on curved surfaces can have large centroid-to-STEP distances.
 
+#### 2.7 Surface refitting (optional)
+
+After stage 2.6 selects surfaces, some border faces may have been absorbed by a hypothesis that fits within tolerance but isn't the best fit. This step refines assignments and re-fits surfaces to improve accuracy.
+
+**Algorithm:**
+1. For each mesh face, check whether it belongs to more than one hypothesis (i.e., it has valid assignments in multiple hypothesis types — planar, cylindrical, spherical).
+2. For each such face, compute the vertex-to-surface distance for each candidate surface (using the selected surfaces from 2.6, not the raw hypotheses).
+3. Reassign the face to the selected surface with the smallest maximum vertex distance.
+4. After all reassignments, re-fit each affected surface from its updated face/vertex set to remove any bias introduced by the extra vertices.
+
+This step is expected to be most useful at boundaries between surfaces of different types (e.g., where a cylinder meets a plane), where BFS may have greedily absorbed a border face that technically fits within tolerance but belongs more naturally to the adjacent surface. It may be unnecessary if the greedy area-based selection in 2.6 already produces clean boundaries — implement only if stage 3 reconstruction reveals boundary accuracy problems.
+
 ---
 
 ### Stage 3: Surface Reconstruction
@@ -589,6 +601,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [ ] Implement stage 3.6: Construct solids from shells, determine outer/inner shell roles.
 - [ ] Revisit stage 3.2: Detect tangency relationships between adjacent surfaces. If there are any problems with models that involve tangent curves, such as tests/onshape/chamfered_cube, then imagine more tests for difficult tangency relationships including cylinder-plane and sphere-cylinder, create those tests, and ensure that tangency detection works correctly.
 - [ ] Revisit stage 3.3 if tangency detection was added.
+- [ ] Consider implementing stage 2.7 (surface refitting) if stage 3 reconstruction reveals boundary accuracy problems from incorrect face-to-surface assignments.
 
 ### Stage 4: Output
 - [ ] Implement stage 4.1: Write solids to STEP file, validate against reference with --compare.
