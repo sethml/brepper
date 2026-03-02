@@ -142,38 +142,39 @@ The "number of solids" and "voids" computation is non-trivial and may require ra
 **Response: Given vertices that lie within epsilon of precisely on the surfaces involved, hopefully the first seed will grow to the entire region. I think the depth-first search or breadth-first search should effectively find planar surfaces that are partially disconnected. If they're fully disconnected, we'll consider them independent planar surfaces, which is fine.**
 
 #### 2.1 Deduce planar hypotheses
-Fit planar hypotheses to all sets of more than one face which are coplanar. A planar hypothesis consists of:
-- gp_Dir normal;  // Vector normal to plane. Points toward the outside of the shell/solid.
-- double distance;  // Distance from origin to plane in direction of normal.
-- faces;  // Set of mesh face indices which fit this hypothesis.
-- vertices;  // Set of mesh face vertex indices which fit this hypothesis, in right-hand-rule order.
-- error_max, error_min;  // Maximum (positive) and minimum (negative) distance from a vertex to the plane.
-- error_abs_sum;  // Sum of absolute value of distance from vertex to plane.
-The algorithm:
-- Initialize all planar_hypothesis to -2.
-- For every face index fi:
-    - If face[fi].planar_hypothesis != -2: continue
-    - Push a new planar_hypothesis index hi, initialized with this face.
-    - Call explore_neighbors(fi, hi). TODO: this is a depth-first search - should we do a breadth-first search instead?
-    - Re-fit the planar hypothesis and update error metrics.
-    - TODO: If there is only one face in the planar_hypothesis, should we delete it?
-- Function explore_neighbors(fi, hi):
-    - Set face[fi].planar_hypothesis to hi.
-    - Add fi to planar_hypothesis[hi].faces.
-    - Add vertices of this face to planar_hypothesis[hi].vertices.
-    - For each neighbor ni of face[fi]:
-        - If face[ni].planar_hypothesis != -2, continue.
-        - If face[ni] is not sufficiently coplanar with planar_hypothesis[hi], continue. TODO: define parameters for coplanarity, probably an acceptable angular deviation and vertex distance. At this step, accept a vertex distance greater than the parameter, since we can attempt to re-fit if it's out of range.
-        - If an vertex of face[ni] has a distance greater from the hypothesis than the acceptable vertex distance:
-            - Test re-fitting the planar hypothesis to planar_hypothesis[hi].vertices plus this face's vertices that are not already in planar_hypothesis[hi].vertices.
-            - If after re-fitting there is still a vertex with greater error than the acceptable vertex distance, continue.
-            - Otherwise, assign the re-fit plane to planar_hypothesis[hi].
-        - Call explore_neighbors(ni, hi).
-- With the --compare flag:
-  - Project the edges of the triangular face onto the hypothesis.
-  - Check that within the projected face, the surface is within --surface-tolerance of the surface of a solid from the STEP file. If the nearest surface in the STEP file is a plane, verify that it's within --vertex-tolerance.
+Fit planar hypotheses to all connected sets of coplanar faces. Every face is assigned to exactly one planar hypothesis (including single-face hypotheses for faces on curved surfaces). A planar hypothesis consists of:
+- `normal: [f64; 3]` — Unit normal vector pointing outward from the shell/solid.
+- `distance: f64` — Signed distance from origin to plane along the normal (plane equation: normal · p = distance).
+- `faces: Vec<usize>` — Mesh face indices that fit this hypothesis.
+- `vertices: Vec<usize>` — Mesh vertex indices on this plane (unordered set, not right-hand-rule ordered — boundary representation is deferred to stage 3).
+- `error_max, error_min: f64` — Maximum (positive) and minimum (most negative) signed distance from any vertex to the plane.
+- `error_abs_sum: f64` — Sum of absolute vertex-to-plane distances.
 
-*Comment on 2.1: The DFS vs BFS question is worth considering: DFS can get "trapped" in a narrow corridor and accumulate drift before exploring the main region. BFS explores more uniformly. However, the re-fitting step partially mitigates this. A bigger issue: once you re-fit the plane, previously accepted faces might no longer fit the new plane! Consider a final validation pass that removes faces whose vertices exceed the tolerance after the final fit. Also: the "vertices in right-hand-rule order" for the hypothesis is unclear—planar regions aren't simply connected in general (they can have holes), so you'll need a more complex boundary representation.*
+The algorithm uses BFS region growing (not DFS as originally proposed — BFS explores more uniformly and avoids the "narrow corridor drift" problem where DFS could accumulate error along a thin strip before reaching the main planar region):
+- Initialize all `planar_hypothesis` to `UNDEDUCED_PLANAR_HYPOTHESIS` (-2).
+- For every face index fi:
+    - If `face[fi].planar_hypothesis != -2`: continue (already assigned).
+    - Create a new planar hypothesis hi. Seed it with face fi's normal and compute the initial plane distance as the average dot product of fi's vertices with the normal.
+    - Assign fi to hypothesis hi. Add fi to a BFS queue.
+    - BFS loop — pop faces from the queue and examine each neighbor ni:
+        - If ni is already assigned to a hypothesis, skip.
+        - **Angular alignment check**: compute `dot = current_normal · face_normal(ni)`. If `1.0 - dot > ANGULAR_THRESHOLD` (where `ANGULAR_THRESHOLD = 1e-6`, corresponding to ~0.08°), skip. This is stricter than the original plan's vague "sufficiently coplanar" — the tight threshold works because CAD mesh vertices lie precisely on the true surfaces.
+        - **Vertex distance check**: compute signed distance from each vertex of ni to the current plane. If all are within `--vertex-tolerance` (default 1e-5 mm), accept directly.
+        - **Re-fit attempt**: if any vertex exceeds tolerance, try re-fitting the plane using area-weighted normal averaging over all current faces plus ni, with the distance as the average projection of all current+new vertices. Then check that **all** vertices (existing and new) are within tolerance of the re-fitted plane. If so, accept the re-fit; otherwise skip ni. (This addresses the comment's concern about previously-accepted faces no longer fitting — the re-fit validation checks all vertices, not just the new face's.)
+        - If accepted: assign ni to hypothesis hi, add its vertices to the vertex set, push ni onto the BFS queue.
+    - After BFS completes: final re-fit using all collected faces and vertices (area-weighted normal averaging + vertex centroid). Compute error metrics (error_max, error_min, error_abs_sum).
+    - Single-face hypotheses are kept (not deleted). They represent faces on curved surfaces that will be assigned to cylindrical/spherical hypotheses in later stages.
+
+Plane fitting uses **area-weighted normal averaging**: each face's unit normal is weighted by the face's triangle area, then the weighted sum is normalized. The plane distance is the mean of `normal · vertex` over all vertices in the hypothesis. This gives larger faces more influence on the plane orientation, which is more robust than unweighted averaging.
+
+- With the `--compare` flag:
+  - For each hypothesis, compute the centroid of each member face.
+  - Project each centroid onto the fitted plane (perpendicular projection).
+  - Measure the distance from the projected point to the nearest surface in the reference STEP file using `BRepExtrema_DistShapeShape`.
+  - If any projected centroid exceeds `--surface-tolerance`, report an error.
+  - (Changed from original plan: the plan described projecting face *edges* onto the hypothesis and checking the enclosed surface region. The centroid-projection approach is simpler and sufficient for validation — it confirms the fitted plane aligns with a real STEP surface at representative interior points. Edge projection would be needed for boundary accuracy validation, which is a stage 3 concern.)
+
+*Comment on 2.1: ~~The DFS vs BFS question is worth considering: DFS can get "trapped" in a narrow corridor and accumulate drift before exploring the main region. BFS explores more uniformly. However, the re-fitting step partially mitigates this.~~ Resolved: BFS was chosen for the implementation. ~~A bigger issue: once you re-fit the plane, previously accepted faces might no longer fit the new plane! Consider a final validation pass that removes faces whose vertices exceed the tolerance after the final fit.~~ Resolved: the re-fit step checks all vertices (existing + new) before accepting, and a final re-fit with error metrics is computed at the end. ~~Also: the "vertices in right-hand-rule order" for the hypothesis is unclear—planar regions aren't simply connected in general (they can have holes), so you'll need a more complex boundary representation.~~ Resolved: vertices are stored as an unordered set; boundary representation is deferred to stage 3.*
 
 #### 2.2 Deduce cylindrical hypotheses
 TODO. Optional: Worthwhile to generalize to conic/cylindrical? Be sure to handle surfaces with negative curavature correctly - negative radius?
