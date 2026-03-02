@@ -1,5 +1,9 @@
-use std::error::Error;
+use clap::{Parser, ValueEnum};
 use std::fmt::{Display, Formatter};
+
+// ---------------------------------------------------------------------------
+// Stage
+// ---------------------------------------------------------------------------
 
 /// Stage identifier as (major, minor). Minor=0 means run all sub-stages of that major stage.
 /// Examples: (1, 2) = stage 1.2, (2, 0) = all of stage 2, (4, 1) = full pipeline.
@@ -40,10 +44,56 @@ impl Default for Stage {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+fn parse_stage(s: &str) -> Result<Stage, String> {
+    if let Some((major_s, minor_s)) = s.split_once('.') {
+        let major: u8 = major_s.parse().map_err(|_| format!("invalid stage: {s}"))?;
+        let minor: u8 = minor_s.parse().map_err(|_| format!("invalid stage: {s}"))?;
+        if major < 1 || major > 4 || minor < 1 || minor > Stage::last_minor(major) {
+            return Err(format!("invalid stage: {s} (valid: 1.1–4.1)"));
+        }
+        Ok(Stage(major, minor))
+    } else {
+        let major: u8 = s.parse().map_err(|_| format!("invalid stage: {s}"))?;
+        if major < 1 || major > 4 {
+            return Err(format!("invalid stage: {s} (valid: 1–4)"));
+        }
+        Ok(Stage(major, 0))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Units
+// ---------------------------------------------------------------------------
+
+/// Length units for STL/STEP files.
+#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
 pub enum Units {
+    /// Millimeters
     Mm,
-    // TODO: Cm, M, Inch, etc.
+    /// Centimeters
+    Cm,
+    /// Meters
+    M,
+    /// Inches
+    In,
+    /// Feet
+    Ft,
+    /// Micrometers
+    Um,
+}
+
+impl Units {
+    /// Conversion factor: 1 of this unit = N millimeters.
+    pub fn to_mm(self) -> f64 {
+        match self {
+            Units::Mm => 1.0,
+            Units::Cm => 10.0,
+            Units::M => 1000.0,
+            Units::In => 25.4,
+            Units::Ft => 304.8,
+            Units::Um => 0.001,
+        }
+    }
 }
 
 impl Default for Units {
@@ -52,10 +102,79 @@ impl Default for Units {
     }
 }
 
-/// Configuration parsed from command-line flags.
+impl Display for Units {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Units::Mm => write!(f, "mm"),
+            Units::Cm => write!(f, "cm"),
+            Units::M => write!(f, "m"),
+            Units::In => write!(f, "in"),
+            Units::Ft => write!(f, "ft"),
+            Units::Um => write!(f, "μm"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CLI args (parsed by clap)
+// ---------------------------------------------------------------------------
+
+/// brepper — Convert STL mesh to STEP with fitted analytic and freeform surfaces.
+#[derive(Parser, Debug)]
+#[command(name = "brepper", version, about)]
+struct CliArgs {
+    /// Input STL file (binary or ASCII).
+    pub input_stl: String,
+
+    /// Output STEP file.
+    #[arg(short = 'o', long = "output")]
+    pub output_step: Option<String>,
+
+    /// Units used by the STL file.
+    #[arg(long, default_value = "mm", value_enum)]
+    pub stl_units: Units,
+
+    /// Units to use in exported STEP file.
+    #[arg(long, default_value = "mm", value_enum)]
+    pub step_units: Units,
+
+    /// STEP file to compare against at each stage.
+    #[arg(long = "compare")]
+    pub compare_step: Option<String>,
+
+    /// Fitting tolerance for vertex-to-surface distance, in STL units.
+    #[arg(long, default_value = "1e-5")]
+    pub vertex_tolerance: f64,
+
+    /// Tolerance for surface-to-triangle-face offset, in STL units.
+    #[arg(long, default_value = "0.4")]
+    pub surface_tolerance: f64,
+
+    /// Enable verbose output.
+    #[arg(short = 'v', long)]
+    pub verbose: bool,
+
+    /// Suppress non-error output.
+    #[arg(short = 'q', long)]
+    pub quiet: bool,
+
+    /// Enable debug output and intermediate files.
+    #[arg(long)]
+    pub debug: bool,
+
+    /// Stop after this stage (e.g. "2.2" or "2"). Default: run all stages.
+    #[arg(long, value_parser = parse_stage)]
+    pub stage: Option<Stage>,
+}
+
+// ---------------------------------------------------------------------------
+// Config (the resolved, normalized configuration used by the pipeline)
+// ---------------------------------------------------------------------------
+
+/// Resolved configuration used by the pipeline. Tolerances are stored in mm.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Input STL file path (required).
+    /// Input STL file path.
     pub input_stl: String,
     /// Output STEP file path.
     pub output_step: Option<String>,
@@ -63,12 +182,12 @@ pub struct Config {
     pub stl_units: Units,
     /// Units for the output STEP file.
     pub step_units: Units,
-    /// STEP file to compare against at each stage (--compare).
+    /// STEP file to compare against at each stage.
     pub compare_step: Option<String>,
-    /// Fitting tolerance for vertex-to-surface distance (default 1e-5).
-    pub vertex_tolerance: f64,
-    /// Tolerance for surface-to-triangle-face offset (default 0.4).
-    pub surface_tolerance: f64,
+    /// Fitting tolerance for vertex-to-surface distance, in mm.
+    pub vertex_tolerance_mm: f64,
+    /// Tolerance for surface-to-triangle-face offset, in mm.
+    pub surface_tolerance_mm: f64,
     /// Enable verbose output.
     pub verbose: bool,
     /// Suppress non-error output.
@@ -79,191 +198,56 @@ pub struct Config {
     pub stage: Stage,
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    fn from_cli(args: CliArgs) -> Self {
+        let scale = args.stl_units.to_mm();
         Self {
-            input_stl: String::new(),
-            stl_units: Units::default(),
-            step_units: Units::default(),
-            output_step: None,
-            compare_step: None,
-            vertex_tolerance: 1e-5,
-            surface_tolerance: 0.4,
-            verbose: false,
-            quiet: false,
-            debug: false,
-            stage: Stage::default(),
+            input_stl: args.input_stl,
+            output_step: args.output_step,
+            stl_units: args.stl_units,
+            step_units: args.step_units,
+            compare_step: args.compare_step,
+            vertex_tolerance_mm: args.vertex_tolerance * scale,
+            surface_tolerance_mm: args.surface_tolerance * scale,
+            verbose: args.verbose,
+            quiet: args.quiet,
+            debug: args.debug,
+            stage: args.stage.unwrap_or_default(),
         }
     }
 }
 
-#[derive(Debug)]
-pub enum ConfigError {
-    MissingInputStl,
-    UnknownFlag(String),
-    MissingValue(String),
-    InvalidStage(String),
-    InvalidUnits(String),
-    InvalidFloat { flag: String, value: String },
+/// Parse command-line arguments and return a resolved Config.
+pub fn parse_config() -> Config {
+    Config::from_cli(CliArgs::parse())
 }
 
-impl Display for ConfigError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConfigError::MissingInputStl => write!(f, "missing required argument: <input.stl>"),
-            ConfigError::UnknownFlag(flag) => write!(f, "unknown flag: {flag}"),
-            ConfigError::MissingValue(flag) => write!(f, "flag {flag} requires a value"),
-            ConfigError::InvalidStage(s) => write!(f, "invalid --stage value: {s} (expected e.g. '2' or '2.3')"),
-            ConfigError::InvalidUnits(s) => write!(f, "invalid units: {s} (expected: mm)"),
-            ConfigError::InvalidFloat { flag, value } => write!(f, "invalid number for {flag}: {value}"),
-        }
-    }
+/// Parse from an explicit argument iterator (for testing or embedding).
+pub fn parse_config_from<I, T>(args: I) -> Result<Config, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    CliArgs::try_parse_from(args).map(Config::from_cli)
 }
 
-impl Error for ConfigError {}
-
-fn parse_units(s: &str) -> Result<Units, ConfigError> {
-    match s.to_lowercase().as_str() {
-        "mm" => Ok(Units::Mm),
-        _ => Err(ConfigError::InvalidUnits(s.to_string())),
-    }
-}
-
-fn parse_stage(s: &str) -> Result<Stage, ConfigError> {
-    if let Some((major_s, minor_s)) = s.split_once('.') {
-        let major: u8 = major_s.parse().map_err(|_| ConfigError::InvalidStage(s.to_string()))?;
-        let minor: u8 = minor_s.parse().map_err(|_| ConfigError::InvalidStage(s.to_string()))?;
-        if major < 1 || major > 4 || minor < 1 || minor > Stage::last_minor(major) {
-            return Err(ConfigError::InvalidStage(s.to_string()));
-        }
-        Ok(Stage(major, minor))
-    } else {
-        let major: u8 = s.parse().map_err(|_| ConfigError::InvalidStage(s.to_string()))?;
-        if major < 1 || major > 4 {
-            return Err(ConfigError::InvalidStage(s.to_string()));
-        }
-        Ok(Stage(major, 0))
-    }
-}
-
-fn parse_float(flag: &str, value: &str) -> Result<f64, ConfigError> {
-    value.parse::<f64>().map_err(|_| ConfigError::InvalidFloat {
-        flag: flag.to_string(),
-        value: value.to_string(),
-    })
-}
-
-/// Take the next value from args iterator, or split on '=' from the flag itself.
-fn take_value<'a>(
-    flag: &str,
-    eq_value: Option<&'a str>,
-    args: &mut impl Iterator<Item = String>,
-) -> Result<String, ConfigError> {
-    if let Some(v) = eq_value {
-        Ok(v.to_string())
-    } else {
-        args.next().ok_or_else(|| ConfigError::MissingValue(flag.to_string()))
-    }
-}
-
-pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Config, ConfigError> {
-    let mut config = Config::default();
-    let mut args = args.peekable();
-    let mut positional_count = 0;
-
-    while let Some(arg) = args.next() {
-        // Split --flag=value
-        let (flag, eq_value) = if let Some(idx) = arg.find('=') {
-            (&arg[..idx], Some(&arg[idx + 1..]))
-        } else {
-            (arg.as_str(), None)
-        };
-
-        match flag {
-            "-o" | "--output" => {
-                config.output_step = Some(take_value(flag, eq_value, &mut args)?);
-            }
-            "--stl-units" => {
-                let v = take_value(flag, eq_value, &mut args)?;
-                config.stl_units = parse_units(&v)?;
-            }
-            "--step-units" => {
-                let v = take_value(flag, eq_value, &mut args)?;
-                config.step_units = parse_units(&v)?;
-            }
-            "--compare" => {
-                config.compare_step = Some(take_value(flag, eq_value, &mut args)?);
-            }
-            "--vertex-tolerance" => {
-                let v = take_value(flag, eq_value, &mut args)?;
-                config.vertex_tolerance = parse_float(flag, &v)?;
-            }
-            "--surface-tolerance" => {
-                let v = take_value(flag, eq_value, &mut args)?;
-                config.surface_tolerance = parse_float(flag, &v)?;
-            }
-            "-v" | "--verbose" => config.verbose = true,
-            "-q" | "--quiet" => config.quiet = true,
-            "--debug" => config.debug = true,
-            "--stage" => {
-                let v = take_value(flag, eq_value, &mut args)?;
-                config.stage = parse_stage(&v)?;
-            }
-            _ if flag.starts_with('-') => {
-                return Err(ConfigError::UnknownFlag(flag.to_string()));
-            }
-            _ => {
-                // Positional argument
-                if positional_count == 0 {
-                    config.input_stl = arg;
-                } else {
-                    return Err(ConfigError::UnknownFlag(arg));
-                }
-                positional_count += 1;
-            }
-        }
-    }
-
-    if config.input_stl.is_empty() {
-        return Err(ConfigError::MissingInputStl);
-    }
-
-    Ok(config)
-}
-
-pub fn print_usage(program: &str) {
-    eprintln!("brepper - Convert STL mesh to STEP with fitted surfaces");
-    eprintln!();
-    eprintln!("USAGE:");
-    eprintln!("    {program} [OPTIONS] <input.stl> [-o <output.step>]");
-    eprintln!();
-    eprintln!("REQUIRED:");
-    eprintln!("    <input.stl>              Input STL file (binary or ASCII)");
-    eprintln!();
-    eprintln!("GENERAL OPTIONS:");
-    eprintln!("    -o <step>, --output=<step>  Output STEP file");
-    eprintln!("    --stl-units=<units>      Units used by the STL file (default: mm)");
-    eprintln!("    --step-units=<units>     Units to use in exported STEP file (default: mm)");
-    eprintln!("    --compare=<step>         STEP file to compare to at each step");
-    eprintln!("    --vertex-tolerance=<val> Fitting tolerance in STL units (default: 1e-5)");
-    eprintln!("    --surface-tolerance=<val> Surface-to-face offset tolerance (default: 0.4 mm)");
-    eprintln!("    -v, --verbose            Enable verbose output");
-    eprintln!("    -q, --quiet              Suppress non-error output");
-    eprintln!("    --debug                  Enable debug output and intermediate files");
-    eprintln!("    --stage=<stage>          Stop after stage, e.g. 2.2 (default: 4.1)");
-}
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse(args: &[&str]) -> Result<Config, ConfigError> {
-        parse_args(args.iter().map(|s| s.to_string()))
+    fn parse(args: &[&str]) -> Config {
+        let mut full = vec!["brepper"];
+        full.extend_from_slice(args);
+        parse_config_from(full).expect("parse should succeed")
     }
 
     #[test]
     fn minimal_args() {
-        let config = parse(&["input.stl"]).unwrap();
+        let config = parse(&["input.stl"]);
         assert_eq!(config.input_stl, "input.stl");
         assert_eq!(config.stage, Stage(4, 1));
         assert!(!config.verbose);
@@ -274,13 +258,22 @@ mod tests {
         let config = parse(&[
             "input.stl", "-o", "output.step", "--compare", "ref.step",
             "--stage=2.3", "-v", "--vertex-tolerance=1e-6",
-        ]).unwrap();
+        ]);
         assert_eq!(config.input_stl, "input.stl");
         assert_eq!(config.output_step.as_deref(), Some("output.step"));
         assert_eq!(config.compare_step.as_deref(), Some("ref.step"));
         assert_eq!(config.stage, Stage(2, 3));
         assert!(config.verbose);
-        assert!((config.vertex_tolerance - 1e-6).abs() < 1e-15);
+        // vertex_tolerance is in STL units (default mm), so 1e-6 mm
+        assert!((config.vertex_tolerance_mm - 1e-6).abs() < 1e-15);
+    }
+
+    #[test]
+    fn tolerance_converted_from_stl_units() {
+        // --stl-units=in means 1e-5 inches = 1e-5 * 25.4 mm
+        let config = parse(&["input.stl", "--stl-units=in", "--vertex-tolerance=1e-5"]);
+        let expected = 1e-5 * 25.4;
+        assert!((config.vertex_tolerance_mm - expected).abs() < 1e-15);
     }
 
     #[test]
@@ -299,14 +292,18 @@ mod tests {
     }
 
     #[test]
-    fn missing_input() {
-        let err = parse(&["-v"]).unwrap_err();
-        assert!(matches!(err, ConfigError::MissingInputStl));
+    fn all_units_parse() {
+        for unit in ["mm", "cm", "m", "in", "ft", "um"] {
+            let config = parse(&["input.stl", &format!("--stl-units={unit}")]);
+            // Just verify it parses without error
+            assert!(config.vertex_tolerance_mm > 0.0);
+        }
     }
 
     #[test]
-    fn unknown_flag() {
-        let err = parse(&["input.stl", "--bogus"]).unwrap_err();
-        assert!(matches!(err, ConfigError::UnknownFlag(_)));
+    fn missing_input() {
+        let args = vec!["brepper", "-v"];
+        let result = parse_config_from(args);
+        assert!(result.is_err());
     }
 }

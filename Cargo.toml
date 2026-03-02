@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 opencascade-sys = { path = "../opencascade-rs/crates/opencascade-sys" }
+clap = { version = "4", features = ["derive"] }
 
 [lib]
 name = "brepper"

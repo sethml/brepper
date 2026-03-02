@@ -2,7 +2,6 @@
 
 use brepper::config::{self, Config};
 use brepper::{stage1, stage2, stage3, stage4};
-use std::env;
 use std::process;
 
 fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
@@ -34,18 +33,7 @@ fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    let program = args[0].clone();
-
-    let config = match config::parse_args(args.into_iter().skip(1)) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error: {e}");
-            eprintln!();
-            config::print_usage(&program);
-            process::exit(1);
-        }
-    };
+    let config = config::parse_config();
 
     if let Err(e) = run(&config) {
         eprintln!("Error: {e}");

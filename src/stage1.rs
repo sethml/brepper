@@ -503,7 +503,7 @@ pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
     let mut mesh = read_connected_mesh_from_stl(
         &config.input_stl,
         VertexWeldOptions {
-            tolerance: config.vertex_tolerance.min(1e-9_f64.max(config.vertex_tolerance * 0.01)),
+            tolerance: config.vertex_tolerance_mm.min(1e-9_f64.max(config.vertex_tolerance_mm * 0.01)),
         },
     )?;
 
