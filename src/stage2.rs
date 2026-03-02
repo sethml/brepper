@@ -160,10 +160,6 @@ impl Error for Stage2CompareError {}
 // Stage 2.1: Planar hypothesis deduction
 // ---------------------------------------------------------------------------
 
-/// Threshold for normal alignment: 1 - cos(theta).
-/// Faces with normals differing by more than ~0.08° are not considered coplanar.
-const ANGULAR_THRESHOLD: f64 = 1e-6;
-
 /// Signed distance from a vertex to a plane defined by (normal, distance).
 fn vertex_to_plane_distance(v: &MeshVertex, normal: &[f64; 3], distance: f64) -> f64 {
     normal[0] * v.x + normal[1] * v.y + normal[2] * v.z - distance
@@ -295,17 +291,6 @@ fn deduce_planar_hypotheses(
                 if mesh.faces[ni].planar_hypothesis != UNDEDUCED_PLANAR_HYPOTHESIS {
                     continue;
                 }
-
-                let face_normal = mesh.faces[ni].normal.unwrap();
-
-                // Angular alignment check
-                let dot = current_normal[0] * face_normal[0]
-                    + current_normal[1] * face_normal[1]
-                    + current_normal[2] * face_normal[2];
-                if 1.0 - dot > ANGULAR_THRESHOLD {
-                    continue;
-                }
-
                 // Vertex distance check
                 let nvc = mesh.faces[ni].vertex_count as usize;
                 let nvi = mesh.faces[ni].vertex_indices;
