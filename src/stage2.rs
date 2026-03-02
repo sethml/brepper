@@ -14,6 +14,44 @@ use std::collections::{HashSet, VecDeque};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Lower bound on cross product magnitude |n₁ × n₂| for a valid cylinder/sphere
+/// seed pair. Since |n₁ × n₂| = sin(θ) for unit normals, this corresponds to a
+/// minimum dihedral angle of arcsin(0.01) ≈ 0.57° (~0.6°). Seed pairs closer
+/// than this are too nearly parallel for numerically stable axis estimation
+/// (cylinders) or sphere fitting (spheres). Together with `angular_tol` (the
+/// upper bound, typically 17.5°), this defines the valid seed-pair window
+/// [~0.6°, angular_tol].
+const MIN_CROSS_THRESHOLD: f64 = 0.01;
+
+/// Fast-reject multiplier for BFS vertex-distance checks. When a candidate face
+/// has a vertex farther than `REFIT_SKIP_MULTIPLIER × vertex_tol` from the
+/// current fitted surface, the distance is too large for a re-fit to absorb and
+/// the face is rejected immediately without attempting re-fitting.
+const REFIT_SKIP_MULTIPLIER: f64 = 2.0;
+
+/// Minimum number of mesh faces required to accept a cylindrical hypothesis.
+/// Any real CAD tessellation of a cylinder produces at least 3 facets around
+/// the circumference; this rejects spurious 2-face fits (e.g. adjacent torus
+/// facets that locally approximate a cylinder).
+const MIN_CYLINDER_FACES: usize = 3;
+
+/// Minimum number of mesh faces required to accept a spherical hypothesis.
+/// Sphere fitting has 4 degrees of freedom (cx, cy, cz, r), so at least 4
+/// non-degenerate faces are needed for a well-determined fit. This also rejects
+/// spurious fits from small patches that are consistent with many surface types.
+const MIN_SPHERE_FACES: usize = 4;
+
+/// Maximum sphere radius as a multiple of the mesh bounding-box diagonal.
+/// Spurious sphere fits on near-planar or near-cylindrical patches can produce
+/// astronomically large radii; this cap rejects them while comfortably allowing
+/// any sphere that could plausibly be part of the modelled object.
+const MAX_SPHERE_RADIUS_FACTOR: f64 = 10.0;
+
 // ---------------------------------------------------------------------------
 // Hypothesis data structures
 // ---------------------------------------------------------------------------
@@ -305,7 +343,7 @@ fn deduce_planar_hypotheses(
                     let abs_d = d.abs();
                     if abs_d > vertex_tol {
                         all_ok = false;
-                        if abs_d > 2.0 * vertex_tol {
+                        if abs_d > REFIT_SKIP_MULTIPLIER * vertex_tol {
                             any_far = true;
                             break;
                         }
@@ -451,8 +489,6 @@ fn compare_planar_hypotheses(
 // ---------------------------------------------------------------------------
 // Stage 2.2: Cylindrical hypothesis deduction
 // ---------------------------------------------------------------------------
-
-const MIN_CROSS_THRESHOLD: f64 = 0.01;
 
 /// Compute the face centroid for a mesh face.
 fn face_centroid(face: &MeshFace, vertices: &[MeshVertex]) -> [f64; 3] {
@@ -977,7 +1013,7 @@ fn deduce_cylindrical_hypotheses(
                         ).abs();
                         if d > vertex_tol {
                             all_ok = false;
-                            if d > 2.0 * vertex_tol {
+                            if d > REFIT_SKIP_MULTIPLIER * vertex_tol {
                                 any_far = true;
                                 break;
                             }
@@ -1048,13 +1084,10 @@ fn deduce_cylindrical_hypotheses(
                 error_abs_sum += d;
             }
 
-            // Validate: require at least 3 faces for a cylindrical hypothesis.
-            // Any real CAD tessellation of a cylinder produces at least 3 facets
-            // around the circumference. This rejects spurious 2-face fits from
-            // e.g. adjacent torus facets that locally approximate a cylinder.
-            // Also validate that face centroids lie within surface_tol of the
-            // cylinder, catching spurious fits from perpendicular planar faces.
-            let min_faces_ok = face_list.len() >= 3;
+            // Validate: require minimum faces (see MIN_CYLINDER_FACES) and that
+            // face centroids lie within surface_tol of the cylinder, catching
+            // spurious fits from perpendicular planar faces.
+            let min_faces_ok = face_list.len() >= MIN_CYLINDER_FACES;
             let mut centroid_ok = true;
             if min_faces_ok {
                 for &f in &face_list {
@@ -1496,7 +1529,7 @@ fn deduce_spherical_hypotheses(
                             ).abs();
                             if d > vertex_tol {
                                 all_ok = false;
-                                if d > 2.0 * vertex_tol {
+                                if d > REFIT_SKIP_MULTIPLIER * vertex_tol {
                                     any_far = true;
                                     break;
                                 }
@@ -1565,7 +1598,7 @@ fn deduce_spherical_hypotheses(
                 }
 
                 // Validate: require at least 4 faces
-                let min_faces_ok = face_list.len() >= 4;
+                let min_faces_ok = face_list.len() >= MIN_SPHERE_FACES;
                 let mut centroid_ok = true;
                 if min_faces_ok {
                     for &f in &face_list {
@@ -1946,7 +1979,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
 
     // Stage 2.3: Deduce spherical hypotheses
     let bb_diag = bounding_box_diagonal(&mesh.vertices);
-    let max_sphere_radius = bb_diag * 10.0;
+    let max_sphere_radius = bb_diag * MAX_SPHERE_RADIUS_FACTOR;
     let spherical_hypotheses = deduce_spherical_hypotheses(
         &mut mesh, &planar_hypotheses, config.vertex_tolerance_mm,
         config.surface_tolerance_mm, config.angular_tolerance_rad, max_sphere_radius,
