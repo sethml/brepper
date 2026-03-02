@@ -7,8 +7,8 @@ This file contains guidelines for AI/LLM coding assistants working on this proje
 - Read LEARNINGS.md.
 - Read README.md.
 - Read DEVELOPMENT_PLAN.md.
-- Find the next incomplete item in the "## Implementation Phases" section of DEVELOPMENT_PLAN.md.
-- Implement that item. Make sure tests pass. Don't skip important functionality. If there's enough ambiguity in the specification that you're unsure how to proceed, ask the user what to do. Don't be afraid to modify existing data structures or code if it's helpful.
+- Find the next incomplete single item prefixed by "[ ]" in the "## Implementation Phases" section of DEVELOPMENT_PLAN.md.
+- Implement that single item. Make sure tests pass. Don't skip important functionality. If there's enough ambiguity in the specification that you're unsure how to proceed, ask the user what to do. Don't be afraid to modify existing data structures or code if it's helpful.
 - Update README.md and DEVELOPMENT_PLAN to refect your changes.
 - Think about whether items in LEARNINGS.md are obsolete - if so, delete or rewrite them.
 - Think about whether you've learned things that may be useful to a future AI agent editing the code - if so, add them to LEARNINGS.md.

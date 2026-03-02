@@ -182,9 +182,65 @@ Plane fitting uses **area-weighted normal averaging**: each face's unit normal i
 *Comment on 2.1: ~~The DFS vs BFS question is worth considering: DFS can get "trapped" in a narrow corridor and accumulate drift before exploring the main region. BFS explores more uniformly. However, the re-fitting step partially mitigates this.~~ Resolved: BFS was chosen for the implementation. ~~A bigger issue: once you re-fit the plane, previously accepted faces might no longer fit the new plane! Consider a final validation pass that removes faces whose vertices exceed the tolerance after the final fit.~~ Resolved: the re-fit step checks all vertices (existing + new) before accepting, and a final re-fit with error metrics is computed at the end. ~~Also: the "vertices in right-hand-rule order" for the hypothesis is unclear—planar regions aren't simply connected in general (they can have holes), so you'll need a more complex boundary representation.~~ Resolved: vertices are stored as an unordered set; boundary representation is deferred to stage 3.*
 
 #### 2.2 Deduce cylindrical hypotheses
-TODO. Optional: Worthwhile to generalize to conic/cylindrical? Be sure to handle surfaces with negative curavature correctly - negative radius?
+Fit cylindrical hypotheses to connected sets of faces that lie on a common cylinder. Only faces with single-face planar hypotheses (from stage 2.1) are candidates — faces belonging to multi-face planar hypotheses are genuinely flat and get `cylindrical_hypothesis = NO_HYPOTHESIS` (-1). A cylindrical hypothesis consists of:
+- `axis_origin: [f64; 3]` — A point on the cylinder axis.
+- `axis_direction: [f64; 3]` — Unit direction vector along the axis.
+- `radius: f64` — Radius of the cylinder (always positive).
+- `convex: bool` — Whether face normals point away from the axis (convex, like the outside of a pipe) or toward it (concave, like the inside of a hole).
+- `faces: Vec<usize>` — Mesh face indices that fit this hypothesis.
+- `vertices: Vec<usize>` — Mesh vertex indices on this cylinder.
+- `error_max: f64` — Maximum absolute distance from any vertex to the cylinder surface (i.e. max of `| ||v - axis_closest|| - radius |`).
+- `error_abs_sum: f64` — Sum of absolute vertex-to-surface distances.
 
-*Comment: Cylinders are parameterized by axis (point + direction) and radius—6 DOF total. Minimum 5 points needed for a unique fit, but robust fitting requires more. Key considerations: (1) A cylindrical patch has principal curvature in one direction only—use this to distinguish from spheres/cones. (2) "Negative radius" isn't the right framing; instead, track whether the surface normal points toward or away from the axis (convex vs concave). (3) For cones: 7 DOF (axis point, direction, half-angle). Cones degenerate to cylinders when half-angle→0, so you might fit cones first and detect near-zero angles. (4) Watch out for nearly-planar cylindrical patches (large radius)—they may fit planes better.*
+The algorithm uses BFS region growing, analogous to stage 2.1 but seeded from pairs of adjacent faces (since a single triangle is always planar and cannot determine curvature):
+
+**Seeding:**
+- Initialize all `cylindrical_hypothesis` to `UNDEDUCED` (-2).
+- For each face fi where `cylindrical_hypothesis == -2`:
+    - If fi belongs to a multi-face planar hypothesis: set `cylindrical_hypothesis = -1`, skip.
+    - Search fi's neighbors for a seed partner ni: an adjacent face that is also unassigned (`cylindrical_hypothesis == -2`), also has a single-face planar hypothesis, and has a sufficiently different normal (their cross product magnitude exceeds a minimum threshold, e.g. 0.01, to avoid near-parallel normals that would produce an unreliable axis estimate).
+    - If no valid seed partner found: set `cylindrical_hypothesis = -1`, skip. (This face will be considered for spherical or other hypotheses in later stages.)
+    - Estimate initial cylinder parameters from the seed pair (fi, ni) — see Cylinder Fitting below.
+    - Verify seed validity: check that all vertices of fi and ni are within `--vertex-tolerance` of the estimated cylinder surface. If not, try the next neighbor. If no neighbor produces a valid seed, set `cylindrical_hypothesis = -1` and skip.
+    - Determine convexity: compute the vector from the axis to the centroid of fi. If fi's face normal points in the same direction as this vector (positive dot product), the cylinder is convex; otherwise concave.
+    - Create a new cylindrical hypothesis, assign both fi and ni, add both to a BFS queue.
+
+**BFS expansion:**
+- Pop faces from the queue and examine each neighbor ni:
+    - If ni is already assigned a cylindrical hypothesis, skip.
+    - If ni belongs to a multi-face planar hypothesis, skip.
+    - **Vertex distance check**: for each vertex of ni, compute `| ||v - axis_closest|| - radius |`. If all are within `--vertex-tolerance`, accept directly. If any exceeds `2 * vertex_tolerance`, skip immediately (re-fitting cannot help, same reasoning as for planar hypotheses). If between 1x and 2x, proceed to re-fit attempt.
+    - **Convexity check**: compute the vector from the axis to ni's centroid. Check that ni's face normal agrees with the hypothesis convexity (dot product with radial vector has the expected sign). Reject if inconsistent — this prevents merging the inner and outer surfaces of a thin-walled cylinder.
+    - **Re-fit attempt**: if any vertex exceeds tolerance but none exceeds 2x, re-fit the cylinder from all current faces plus ni (see Cylinder Fitting below). Check that **all** vertices (existing and new) are within tolerance of the re-fitted cylinder. If so, accept the re-fit; otherwise skip ni.
+    - If accepted: assign ni to the hypothesis, add its vertices to the vertex set, push ni onto the BFS queue.
+- After BFS completes: final re-fit from all accumulated faces and vertices. Compute error metrics.
+
+**Cylinder fitting** (used for seeding and re-fitting):
+
+The fitting proceeds in two steps:
+
+1. **Axis direction estimation from face normals.** On a cylinder, every face normal is perpendicular to the axis: `n · a = 0`. So the axis direction `a` minimizes $\sum w_i (n_i \cdot a)^2$ subject to $\|a\| = 1$, where $w_i$ is the area of face $i$. This is the eigenvector corresponding to the *smallest* eigenvalue of the 3×3 weighted covariance matrix $M = \sum w_i \, n_i \, n_i^T$. For the two-face seed, this simplifies to `a = normalize(n_fi × n_ni)`.
+
+2. **Axis position and radius via 2D circle fitting.** Given the axis direction `a`, choose two orthogonal unit vectors `u`, `w` perpendicular to `a`. Project each vertex onto the 2D plane: `(x_i, y_i) = (v_i · u, v_i · w)`. Fit a circle to the 2D points using the algebraic least-squares method: fit the linear model $x^2 + y^2 + Dx + Ey + F = 0$ via least squares, then `center = (-D/2, -E/2)` and `radius = sqrt(center_x² + center_y² - F)`. The axis origin in 3D is `center_x * u + center_y * w` (the component along `a` is arbitrary).
+
+The normal covariance matrix `M` can be maintained incrementally during BFS (add $w_i \, n_i \, n_i^T$ when accepting a face), but the eigenvector solve and circle fit must be recomputed from scratch when re-fitting, since a change in axis direction invalidates the 2D projection. This is O(n) in vertices but involves only simple arithmetic — no iterative optimization.
+
+**Subtleties and edge cases:**
+- **Near-parallel seed normals**: If the cross product of the two seed normals is small, the axis estimate is unreliable. Require `||n_fi × n_ni|| > MIN_CROSS_THRESHOLD` (e.g. 0.01, corresponding to ~0.6° between normals). Skip seed pairs that fail this.
+- **Cones vs cylinders**: A cone has varying radius along the axis. If we fit a cylinder to conical faces, vertex distances near the ends will exceed tolerance, so cone faces will be naturally rejected. Cone fitting is deferred.
+- **Large-radius cylinders**: A cylinder with very large radius looks locally planar. Such faces will belong to multi-face planar hypotheses from stage 2.1 (since vertices on a nearly-flat cylinder are nearly coplanar within tolerance). So they won't be considered for cylindrical fitting. This is the correct behavior — stage 2.6 will resolve any ambiguity.
+- **Cylinder wrapping >180°**: This works naturally with BFS. The convexity check ensures we don't accidentally merge inner and outer surfaces.
+- **Multiple cylinders sharing an axis**: E.g. stepped bore holes with different radii. These will form separate hypotheses because vertices at different radii will exceed the vertex tolerance.
+- **Seam between cylinder and plane**: Faces at the junction have some vertices on the plane and some on the cylinder. Since the plane vertices aren't on the cylinder surface, the vertex distance check rejects them. This correctly excludes boundary faces.
+
+- With the `--compare` flag:
+  - For each hypothesis, compute the centroid of each member face.
+  - Project each centroid onto the cylinder surface (nearest point: project onto axis, then move radially to radius distance).
+  - Measure the distance from the projected point to the nearest surface in the reference STEP file using `BRepExtrema_DistShapeShape`.
+  - If any projected centroid exceeds `--surface-tolerance`, report an error.
+  - Note: centroid-to-surface distance measures both fitting accuracy and tessellation sagitta (the flat triangle's centroid lies inside/outside the curved surface by approximately $h^2 / 8R$ where $h$ is the chord length). For typical tessellations this is small relative to `--surface-tolerance`, but it could become significant for very coarse meshes on tight-radius cylinders.
+
+*Comment: ~~Cylinders are parameterized by axis (point + direction) and radius—6 DOF total. Minimum 5 points needed for a unique fit, but robust fitting requires more.~~ Addressed: the two-step fitting (normal eigenvector + 2D circle) handles this robustly from 2+ non-parallel faces. ~~Key considerations: (1) A cylindrical patch has principal curvature in one direction only—use this to distinguish from spheres/cones.~~ Addressed: the axis direction estimate will be well-defined for cylinders (normals span a plane perpendicular to axis) but degenerate for spheres (normals span all directions, smallest eigenvalue is not well-separated). ~~(2) "Negative radius" isn't the right framing; instead, track whether the surface normal points toward or away from the axis (convex vs concave).~~ Addressed: `convex` field + convexity check during BFS. ~~(3) For cones: 7 DOF. Cones degenerate to cylinders when half-angle→0, so you might fit cones first and detect near-zero angles.~~ Deferred: cone fitting will be considered as a future enhancement. For now, conical faces will fail the cylinder vertex distance check and remain as single-face planar hypotheses. ~~(4) Watch out for nearly-planar cylindrical patches (large radius)—they may fit planes better.~~ Addressed: large-radius cylinders are captured by multi-face planar hypotheses in stage 2.1 and excluded from cylinder candidates.*
 
 #### 2.3 Deduce spherical hypotheses
 TODO. Be sure to handle surfaces with negative curavature correctly - negative radius?
@@ -351,7 +407,9 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 ### Stage 2: Surface Fitting
 - [x] Understand stage 2.1 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.1. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
 - [x] Implement stage 2.1. Make sure --compare passes for all test shapes composed only of planar surfaces.
+- [ ] Understand stage 2.2 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.2. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
 - [ ] Implement stage 2.2: Deduce cylindrical hypotheses.
+- [ ] Understand stage 2.3 and the existing test models under tests/. Imagine additional test shapes which will be challenging for stage 2.2. Create these test shapes in tests/ccad/ - see tests/ccad/README.md.
 - [ ] Implement stage 2.3: Deduce spherical hypotheses.
 
 ---
