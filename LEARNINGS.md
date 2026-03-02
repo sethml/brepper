@@ -134,9 +134,9 @@ All node/triangle indices are **1-based** (OCCT convention).
 - 3×3 symmetric eigenvalue computation uses depressed cubic (trigonometric solution with cos(θ/3)), plus null-space eigenvector via cross products of (M - λI) rows.
 - BFS seeds from pairs of adjacent single-face planar hypothesis faces with cross product magnitude > 0.01 (MIN_CROSS_THRESHOLD).
 - Centroid validation after BFS: each face centroid must be within surface_tolerance of the fitted cylinder. This rejects spurious fits from perpendicular planar faces that algebraically fit a cylinder.
-- On non-cylindrical curved surfaces (spheres, cones, tori, fillets), locally adjacent faces will produce many small 2-face cylinder hypotheses. This is expected behavior — they'll be superseded by appropriate surface type detection in later stages.
+- Minimum 3-face requirement: cylinder hypotheses must contain at least 3 faces. Any real cylindrical surface from a CAD tessellation will have at least 3 facets around its circumference. This eliminates spurious 2-face cylinder fits from locally adjacent faces on tori, cones, and spheres (e.g., cone went from 29 to 0 spurious fits, pipe_elbow from 252 to 51).
 
 ### ccad box() coordinate system
 - `box(w, h, d)` places the box in the positive octant: (0,0,0) to (w,h,d). It does NOT center at origin.
 - To center a box, use `translate(box(w,h,d), -w/2, -h/2, -d/2)`.
-- `cylinder(diameter, height)` is vertical (Z-axis), centered at the XY origin, also in positive Z direction.
+- `cylinder(diameter, height)` is vertical (Z-axis), centered at the XY origin, extends from z=0 to z=height (NOT centered vertically). To make through-holes, translate cylinders vertically so they extend past both sides of the target body.

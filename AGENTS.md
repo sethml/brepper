@@ -13,6 +13,7 @@ This file contains guidelines for AI/LLM coding assistants working on this proje
 - Think about whether items in LEARNINGS.md are obsolete - if so, delete or rewrite them.
 - Think about whether you've learned things that may be useful to a future AI agent editing the code - if so, add them to LEARNINGS.md.
 - Commit your changes, including any pre-existing staged files.
+- Run `cargo clippy` and fix any warnings before committing. The codebase should have zero clippy warnings at all times.
 - Think about whether you encountered code that would be clearer or more correct if refactored or improved. If so, make the improvements, test, and commit.
 - Tell the user a limmerick inspired by your work this session.
 

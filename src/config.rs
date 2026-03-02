@@ -49,13 +49,13 @@ fn parse_stage(s: &str) -> Result<Stage, String> {
     if let Some((major_s, minor_s)) = s.split_once('.') {
         let major: u8 = major_s.parse().map_err(|_| format!("invalid stage: {s}"))?;
         let minor: u8 = minor_s.parse().map_err(|_| format!("invalid stage: {s}"))?;
-        if major < 1 || major > 4 || minor < 1 || minor > Stage::last_minor(major) {
+        if !(1..=4).contains(&major) || !(1..=Stage::last_minor(major)).contains(&minor) {
             return Err(format!("invalid stage: {s} (valid: 1.1–4.1)"));
         }
         Ok(Stage(major, minor))
     } else {
         let major: u8 = s.parse().map_err(|_| format!("invalid stage: {s}"))?;
-        if major < 1 || major > 4 {
+        if !(1..=4).contains(&major) {
             return Err(format!("invalid stage: {s} (valid: 1–4)"));
         }
         Ok(Stage(major, 0))
@@ -67,9 +67,10 @@ fn parse_stage(s: &str) -> Result<Stage, String> {
 // ---------------------------------------------------------------------------
 
 /// Length units for STL/STEP files.
-#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, ValueEnum)]
 pub enum Units {
     /// Millimeters
+    #[default]
     Mm,
     /// Centimeters
     Cm,
@@ -97,11 +98,6 @@ impl Units {
     }
 }
 
-impl Default for Units {
-    fn default() -> Self {
-        Units::Mm
-    }
-}
 
 impl Display for Units {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {

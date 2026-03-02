@@ -282,8 +282,7 @@ fn deduce_planar_hypotheses(
             let vertex_count = mesh.faces[current_fi].vertex_count as usize;
             let neighbors = mesh.faces[current_fi].neighbors;
 
-            for edge_idx in 0..vertex_count {
-                let ni = neighbors[edge_idx];
+            for &ni in &neighbors[..vertex_count] {
                 if ni < 0 {
                     continue;
                 }
@@ -297,9 +296,9 @@ fn deduce_planar_hypotheses(
                 let nvi = mesh.faces[ni].vertex_indices;
                 let mut all_ok = true;
                 let mut any_far = false;
-                for vi_idx in 0..nvc {
+                for &vi in &nvi[..nvc] {
                     let d = vertex_to_plane_distance(
-                        &mesh.vertices[nvi[vi_idx]],
+                        &mesh.vertices[vi],
                         &current_normal,
                         current_distance,
                     );
@@ -321,8 +320,8 @@ fn deduce_planar_hypotheses(
                 if !all_ok {
                     // Try re-fitting with current + new face's vertices
                     let mut trial_vertices = vertex_set.clone();
-                    for vi_idx in 0..nvc {
-                        trial_vertices.insert(nvi[vi_idx]);
+                    for &vi in &nvi[..nvc] {
+                        trial_vertices.insert(vi);
                     }
                     let mut trial_faces = face_list.clone();
                     trial_faces.push(ni);
@@ -353,8 +352,8 @@ fn deduce_planar_hypotheses(
                 // Accept this face into the hypothesis
                 mesh.faces[ni].planar_hypothesis = hi;
                 face_list.push(ni);
-                for vi_idx in 0..nvc {
-                    vertex_set.insert(nvi[vi_idx]);
+                for &vi in &nvi[..nvc] {
+                    vertex_set.insert(vi);
                 }
                 queue.push_back(ni);
             }
@@ -1021,23 +1020,29 @@ fn deduce_cylindrical_hypotheses(
                 error_abs_sum += d;
             }
 
-            // Validate: check that face centroids lie within surface_tol
-            // of the cylinder. This catches spurious fits (e.g. two perpendicular
-            // planar faces that happen to fit a cylinder algebraically).
+            // Validate: require at least 3 faces for a cylindrical hypothesis.
+            // Any real CAD tessellation of a cylinder produces at least 3 facets
+            // around the circumference. This rejects spurious 2-face fits from
+            // e.g. adjacent torus facets that locally approximate a cylinder.
+            // Also validate that face centroids lie within surface_tol of the
+            // cylinder, catching spurious fits from perpendicular planar faces.
+            let min_faces_ok = face_list.len() >= 3;
             let mut centroid_ok = true;
-            for &f in &face_list {
-                let c = face_centroid(&mesh.faces[f], &mesh.vertices);
-                let d = vertex_to_cylinder_distance(
-                    &MeshVertex::from_xyz(c[0], c[1], c[2]),
-                    &current_axis_origin, &current_axis_direction, current_radius,
-                ).abs();
-                if d > surface_tol {
-                    centroid_ok = false;
-                    break;
+            if min_faces_ok {
+                for &f in &face_list {
+                    let c = face_centroid(&mesh.faces[f], &mesh.vertices);
+                    let d = vertex_to_cylinder_distance(
+                        &MeshVertex::from_xyz(c[0], c[1], c[2]),
+                        &current_axis_origin, &current_axis_direction, current_radius,
+                    ).abs();
+                    if d > surface_tol {
+                        centroid_ok = false;
+                        break;
+                    }
                 }
             }
 
-            if !centroid_ok {
+            if !min_faces_ok || !centroid_ok {
                 // Undo assignments
                 for &f in &face_list {
                     mesh.faces[f].cylindrical_hypothesis = UNDEDUCED_CYLINDRICAL_HYPOTHESIS;

@@ -243,6 +243,7 @@ The algorithm uses BFS region growing, analogous to stage 2.1 but seeded from pa
     - If accepted: assign ni to the hypothesis, add its vertices to the vertex set, push ni onto the BFS queue.
 - After BFS completes: final re-fit from all accumulated faces and vertices. Compute error metrics.
 - **Centroid validation**: After BFS completes and error metrics are computed, validate that **all** face centroids lie within `--surface-tolerance` of the fitted cylinder surface. This catches spurious fits (e.g. two perpendicular planar faces that happen to fit a cylinder algebraically but whose centroids are far from any actual cylindrical surface). If validation fails, undo assignments and discard the hypothesis.
+- **Minimum face count**: Require at least 3 faces in a cylindrical hypothesis. Any real cylindrical surface from a CAD tessellation will produce at least 3 facets around its circumference. This eliminates spurious 2-face cylinder fits that arise from locally adjacent faces on non-cylindrical curved surfaces (tori, cones, spheres). Combined with centroid validation, this significantly reduces false positives.
 
 **Cylinder fitting** (used for seeding and re-fitting):
 

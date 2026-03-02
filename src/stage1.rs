@@ -264,7 +264,7 @@ pub fn read_connected_mesh_from_stl(
         let triangle = tri.triangle(tri_idx);
 
         let mut face_vertex_indices = [0_usize; 4];
-        for slot in 0..3 {
+        for (slot, fvi) in face_vertex_indices.iter_mut().take(3).enumerate() {
             let node_index = triangle.value((slot + 1) as i32);
             let node_slot = node_index as usize;
 
@@ -278,7 +278,7 @@ pub fn read_connected_mesh_from_stl(
                 idx
             };
 
-            face_vertex_indices[slot] = welded_idx;
+            *fvi = welded_idx;
         }
 
         faces.push(MeshFace {
@@ -347,7 +347,7 @@ impl ConnectedMesh {
             face.neighbors = [-1, -1, -1, -1];
 
             let vertex_count = face.vertex_count as usize;
-            if vertex_count < 3 || vertex_count > 4 {
+            if !(3..=4).contains(&vertex_count) {
                 degenerate_faces.push(face_idx);
                 continue;
             }
@@ -477,7 +477,7 @@ impl ConnectedMesh {
 
 fn compute_face_normal(face: &MeshFace, vertices: &[MeshVertex]) -> Option<[f64; 3]> {
     let vertex_count = face.vertex_count as usize;
-    if vertex_count < 3 || vertex_count > 4 {
+    if !(3..=4).contains(&vertex_count) {
         return None;
     }
 
