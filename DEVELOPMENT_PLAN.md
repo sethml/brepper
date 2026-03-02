@@ -127,7 +127,7 @@ Traverse the faces of the mesh, collecting some basic statistics, validating the
 - Collect stats and optionally print: number of mesh faces, number of mesh vertices, number of mesh edges with 0 neighbors, number of mesh edges with >1 neighbors, number of connected shells, number of solids, number of voids within solids.
 - Compute and populate mesh face normals.
 - Compute mesh face neighbors based on shared mesh edges.
-- With the --compare_step flag: check that all vertices are within --vertex-tolerance of the surface of a solid from the STEP file. Also check that each mesh face centroid is within --surface-tolerance of the surfaces. (Implemented.)
+- With the --compare flag: check that all vertices are within --vertex-tolerance of the surface of a solid from the STEP file. Also check that each mesh face centroid is within --surface-tolerance of the surfaces. (Implemented.)
 
 At this stage, validate the mesh: Edges with >1 neighbor indicate non-manifold geometry; degenerate triangles (zero area), flipped normals (inconsistent orientation within a shell), and self-intersections.
 
@@ -169,7 +169,7 @@ The algorithm:
             - If after re-fitting there is still a vertex with greater error than the acceptable vertex distance, continue.
             - Otherwise, assign the re-fit plane to planar_hypothesis[hi].
         - Call explore_neighbors(ni, hi).
-- With the --compare_step flag:
+- With the --compare flag:
   - Project the edges of the triangular face onto the hypothesis.
   - Check that within the projected face, the surface is within --surface-tolerance of the surface of a solid from the STEP file. If the nearest surface in the STEP file is a plane, verify that it's within --vertex-tolerance.
 
@@ -201,7 +201,7 @@ TODO: for groups of adjacent faces which are covered by one- or two-face planar 
     - Mark all faces using that hypothesis used.
     - Delete those faces from all other hypotheses that use them. Delete or mark invalid any hypothesis that ends up with insufficient faces left.
 - Every face should be covered by one selected hypothesis.
-- With the --compare_step flag, for each selected surface:
+- With the --compare flag, for each selected surface:
   - Project the bounding edges of the faces that handled by the surface onto the surface.
   - Check that within the projected bounding edge, the surface is within --vertex-tolerance of the surface of a solid from the STEP file.
 
@@ -315,7 +315,7 @@ And a vector of vertices, each containing:
 Each stage will be represented by a function which takes a ref to a configuration data structure and consumes an input data structure, and returns an output data structure (or error). That data structure is passed to the next stage:
 
 - main:
-  - let config = parse flags, load --compare_step STEP file
+  - let config = parse flags, load --compare STEP file
   - out1 = stage1(config).unwrap()
   - if config.stage < 2: exit
   - out2 = stage2(congig, out1).unwrap()
@@ -346,7 +346,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 
 ## Testing Strategy
 
-The main testing strategy is to process a set of example stl/step pairs, and use the --compare_step flag to ensure that the pipeline is working correctly for each. 
+The main testing strategy is to process a set of example stl/step pairs, and use the --compare flag to ensure that the pipeline is working correctly for each. 
 
 1. **Unit Tests**: Individual components (readers, fitters, converters)
 2. **Integration Tests**: Full pipeline on known geometries
