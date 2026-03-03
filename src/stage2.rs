@@ -48,9 +48,18 @@ const MIN_SPHERE_FACES: usize = 4;
 
 /// Maximum sphere radius as a multiple of the mesh bounding-box diagonal.
 /// Spurious sphere fits on near-planar or near-cylindrical patches can produce
-/// astronomically large radii; this cap rejects them while comfortably allowing
-/// any sphere that could plausibly be part of the modelled object.
-const MAX_SPHERE_RADIUS_FACTOR: f64 = 10.0;
+/// very large radii (e.g., fitting a sphere to a small arc of a cylinder gives
+/// r ≈ r_cyl/sin²(α/2), which is enormous for small arcs). This cap rejects
+/// them. Real spherical features have radii at most comparable to the object
+/// size; a factor of 2 comfortably accommodates hemispheres, domes, and lenses
+/// while rejecting fits like r=139mm on a 17mm-diagonal model.
+const MAX_SPHERE_RADIUS_FACTOR: f64 = 2.0;
+/// Maximum cylinder radius as a multiple of the mesh bounding-box diagonal.
+/// Same rationale as MAX_SPHERE_RADIUS_FACTOR: cylinder fits to small arcs of
+/// curved surfaces can produce spuriously large radii.
+const MAX_CYLINDER_RADIUS_FACTOR: f64 = 2.0;
+
+
 
 // ---------------------------------------------------------------------------
 // Hypothesis data structures
@@ -835,6 +844,7 @@ fn deduce_cylindrical_hypotheses(
     vertex_tol: f64,
     surface_tol: f64,
     angular_tol: f64,
+    max_cylinder_radius: f64,
 ) -> Vec<CylindricalHypothesis> {
     let num_faces = mesh.faces.len();
     let mut hypotheses: Vec<CylindricalHypothesis> = Vec::new();
@@ -924,6 +934,11 @@ fn deduce_cylindrical_hypotheses(
             if !all_vertices_within_cylinder_tolerance(
                 &vertex_set, &axis_origin, &axis_direction, radius, vertex_tol, &mesh.vertices,
             ) {
+                continue;
+            }
+
+            // Radius sanity check
+            if radius > max_cylinder_radius {
                 continue;
             }
 
@@ -1032,6 +1047,10 @@ fn deduce_cylindrical_hypotheses(
                             None => continue,
                         };
 
+                        if new_radius > max_cylinder_radius {
+                            continue;
+                        }
+
                         if !all_vertices_within_cylinder_tolerance(
                             &trial_vertices, &new_origin, &new_dir, new_radius,
                             vertex_tol, &mesh.vertices,
@@ -1093,8 +1112,9 @@ fn deduce_cylindrical_hypotheses(
                     }
                 }
             }
+            let radius_ok = current_radius <= max_cylinder_radius;
 
-            if !min_faces_ok || !centroid_ok {
+            if !min_faces_ok || !centroid_ok || !radius_ok {
                 // Undo assignments
                 for &f in &face_list {
                     mesh.faces[f].cylindrical_hypothesis = UNDEDUCED_CYLINDRICAL_HYPOTHESIS;
@@ -1810,8 +1830,8 @@ fn select_surfaces(
     }
 
     // Step 4: Assign remaining faces to their single-face planar hypothesis.
-    for fi in 0..num_faces {
-        if !assigned[fi] {
+    for (fi, is_assigned) in assigned.iter().enumerate() {
+        if !is_assigned {
             let pi = mesh.faces[fi].planar_hypothesis;
             assert!(pi >= 0, "face {fi} has no hypothesis assigned");
             selected.push(SelectedSurface::Planar(pi as usize));
@@ -1982,10 +2002,15 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
         });
     }
 
+    // Compute bounding box diagonal for max radius caps (stages 2.2 and 2.3)
+    let bb_diag = bounding_box_diagonal(&mesh.vertices);
+    let max_cylinder_radius = bb_diag * MAX_CYLINDER_RADIUS_FACTOR;
+    let max_sphere_radius = bb_diag * MAX_SPHERE_RADIUS_FACTOR;
+
     // Stage 2.2: Deduce cylindrical hypotheses
     let mut cylindrical_hypotheses = deduce_cylindrical_hypotheses(
         &mut mesh, &planar_hypotheses, config.vertex_tolerance_mm,
-        config.surface_tolerance_mm, config.angular_tolerance_rad,
+        config.surface_tolerance_mm, config.angular_tolerance_rad, max_cylinder_radius,
     );
 
     if !config.quiet {
@@ -2031,8 +2056,6 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
     }
 
     // Stage 2.3: Deduce spherical hypotheses
-    let bb_diag = bounding_box_diagonal(&mesh.vertices);
-    let max_sphere_radius = bb_diag * MAX_SPHERE_RADIUS_FACTOR;
     let mut spherical_hypotheses = deduce_spherical_hypotheses(
         &mut mesh, &planar_hypotheses, config.vertex_tolerance_mm,
         config.surface_tolerance_mm, config.angular_tolerance_rad, max_sphere_radius,
@@ -2304,7 +2327,7 @@ mod tests {
         let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
         // 17.5° angular tolerance: cube faces meet at 90°, so no cylinders
         let cyls = deduce_cylindrical_hypotheses(
-            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(),
+            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 1000.0,
         );
         assert_eq!(cyls.len(), 0, "cube should produce 0 cylinders at 17.5° angular tolerance");
     }
@@ -2314,7 +2337,7 @@ mod tests {
         let mut mesh = load_stage1("manual/cube.stl");
         let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
         let _ = deduce_cylindrical_hypotheses(
-            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(),
+            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 1000.0,
         );
         // 17.5° angular tolerance: cube faces meet at 90°, so no spheres
         let sphs = deduce_spherical_hypotheses(
@@ -2328,7 +2351,7 @@ mod tests {
         let mut mesh = load_stage1("manual/cube.stl");
         let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
         let _ = deduce_cylindrical_hypotheses(
-            &mut mesh, &planar, 1e-5, 0.4, 91.0_f64.to_radians(),
+            &mut mesh, &planar, 1e-5, 0.4, 91.0_f64.to_radians(), 1000.0,
         );
         // 91° angular tolerance: exceeds 90° dihedral angle of cube
         let sphs = deduce_spherical_hypotheses(
@@ -2342,7 +2365,7 @@ mod tests {
         let mut mesh = load_stage1("ccad/generated/simple_cylinder.stl");
         let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
         let cyls = deduce_cylindrical_hypotheses(
-            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(),
+            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 1000.0,
         );
         assert_eq!(cyls.len(), 1, "simple cylinder should produce 1 cylinder hypothesis");
         assert!(cyls[0].convex);
@@ -2354,7 +2377,7 @@ mod tests {
         let mut mesh = load_stage1("ccad/generated/simple_sphere.stl");
         let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
         let _ = deduce_cylindrical_hypotheses(
-            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(),
+            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 1000.0,
         );
         let sphs = deduce_spherical_hypotheses(
             &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 1000.0,

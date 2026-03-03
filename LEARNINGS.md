@@ -147,7 +147,8 @@ All node/triangle indices are **1-based** (OCCT convention).
 - Algebraic least-squares sphere fitting: expand |v-c|²=r² linearly into 4 unknowns (cx, cy, cz, k=r²-|c|²). Normal equations AᵀAx = Aᵀb solved via 4×4 Gaussian elimination with partial pivoting.
 - BFS seeds from pairs of adjacent faces with non-parallel normals (cross product > MIN_CROSS_THRESHOLD=0.01), analogous to cylindrical seeding. Multi-face planar faces excluded from seeding but absorb-able by BFS, same as cylindrical.
 - Original plan called for 3-face seeds with normals-span-3D eigenvalue check, but this failed on finely tessellated spheres where 3 adjacent faces span only ~6° and fall below the eigenvalue ratio threshold. Pair-based seeding works because the 4-DOF sphere fit from 6+ vertices validates the geometry.
-- max_sphere_radius = bounding_box_diagonal * 10 prevents degenerate large-radius fits on chamfer/bevel faces.
+- `MAX_SPHERE_RADIUS_FACTOR = 2.0`: max_sphere_radius = bounding_box_diagonal × 2. Previously was 10.0, which allowed bogus r≈139mm sphere hypotheses from small arcs on cylinder fillet faces of a 17.3mm-diagonal model.
+- `MAX_CYLINDER_RADIUS_FACTOR = 2.0`: analogous cap for cylinder hypotheses. Radius checked at seed acceptance, BFS refit, and final validation.
 - Centroid validation after BFS: each face centroid must be within surface_tolerance of the fitted sphere.
 - Minimum 4-face requirement: a sphere needs at least 4 non-coplanar points for a unique fit.
 - All faces are candidates for BFS expansion (including those with cylindrical hypotheses and multi-face planar hypotheses). Only seeding excludes multi-face planar. Stage 2.6 resolves overlapping hypotheses using per-face priority.
@@ -160,7 +161,7 @@ All node/triangle indices are **1-based** (OCCT convention).
 - Multi-face planar, cylindrical, and spherical hypotheses are candidates. Single-face planar hypotheses are fallback for unclaimed faces.
 - After selection, hypothesis face/vertex lists are updated in-place to reflect only the faces actually assigned.
 - Replaced the old per-face priority rule (spherical > cylindrical > multi-face planar > single-face planar) which failed when bogus small-area hypotheses of a high-priority type beat correct large-area hypotheses of a lower-priority type.
-- Known issue: sphere BFS in stage 2.3 grows along cylinder fillet surfaces (locally, adjacent cylinder faces fit on a sphere), creating oversized sphere hypotheses. Greedy selection picks these over correct cylinders because they have more total area. Needs sphere overgrowth limiting to fix.
+- Known issue: cylinder BFS captures only ~20% of fillet faces on the rounded_cube model, leaving most as planar fallbacks. This blocks the `onshape_rounded_cube_stage26` compare test because planar fallback centroids on curved fillet faces have sagitta > vertex_tolerance from the STEP cylinder surface.
 - Compare tolerance now uses `vertex_tolerance` for all hypothesis types (previously used `surface_tolerance` for planar).
 
 

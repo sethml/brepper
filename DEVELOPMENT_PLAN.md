@@ -373,7 +373,7 @@ The algorithm selects hypotheses greedily by total mesh face area, largest first
 **Why this works better than a fixed type-priority rule:** A fixed priority (e.g., spherical > cylindrical > multi-face planar) fails when a bogus hypothesis of a high-priority type (3-face r=139mm sphere) competes with a correct hypothesis of a lower-priority type (35-face r=2mm cylinder). Area-based greedy selection naturally picks the correct hypothesis because it covers vastly more area.
 
 **Nerfed tests:**
-- `onshape_rounded_cube_stage26`: Runs without `--compare` because sphere BFS in stage 2.3 grows along cylinder fillet surfaces (locally, adjacent cylinder faces fit on a sphere within vertex_tolerance), creating oversized sphere hypotheses (~1277 faces each). Greedy selection picks these over correct cylinders since they have larger total area. Needs sphere overgrowth limiting, angular-extent filtering, or torus support to fix.
+- `onshape_rounded_cube_stage26`: Runs without `--compare`. The sphere corner hypotheses (~1277 faces each) are geometrically correct — Onshape fine tessellation creates many tiny faces on spherical corners, and all vertices genuinely lie on the r=2mm corner spheres within tolerance. Bogus large-radius hypotheses (r≈139mm from fitting small arcs on cylinder fillets) are prevented by `MAX_SPHERE_RADIUS_FACTOR` and `MAX_CYLINDER_RADIUS_FACTOR` caps (2× bounding box diagonal). The remaining compare blocker is cylinder coverage: the cylindrical BFS captures only ~20% of cylinder fillet faces, so most fillet faces fall back to single/multi-face planar hypotheses, whose centroid-to-STEP distance exceeds `vertex-tolerance` due to sagitta of flat faces on curved surfaces.
 - `onshape_pipe_elbow_stage26`: Runs without `--compare` because torus surfaces can't be fitted with current primitives (planes, cylinders, spheres). This is a missing surface type issue, not a selection algorithm issue — greedy selection alone won't fix it.
 
 - With the `--compare` flag, for each selected surface:
@@ -589,7 +589,8 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Implement stage 2.6: Select surfaces for reconstruction using per-face priority rule.
 - [x] Implement the --angular-tolerance flag for cylindrical and spherical surface hypothesis generation.
 - [x] Revisit stage 2.6: Replace per-face priority rule with greedy area-based selection.
-- [ ] Fix sphere overgrowth: sphere BFS in stage 2.3 grows along cylinder fillet surfaces, creating oversized hypotheses. This blocks restoring the `onshape_rounded_cube_stage26` compare test. Consider angular-extent limits, curvature-consistency checks, or torus support.
+- [x] Fix bogus large-radius hypotheses: Added `MAX_SPHERE_RADIUS_FACTOR` and `MAX_CYLINDER_RADIUS_FACTOR` caps (2× bounding box diagonal) to prevent r≈139mm hypotheses from small arcs on cylinder fillets. The 1277-face corner sphere hypotheses (r=2mm) are geometrically correct.
+- [ ] Improve cylinder BFS coverage on rounded_cube: Cylinder BFS captures only ~20% of fillet faces, leaving the rest as planar fallbacks. This blocks restoring the `onshape_rounded_cube_stage26` compare test. Planar fallback centroids on fillet faces have sagitta > vertex_tolerance from the STEP cylinder surface.
 
 ### Stage 3: Surface Reconstruction
 - [x] Implement stage 3.1: Create OCCT surface objects and build adjacency graph from mesh connectivity.
