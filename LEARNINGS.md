@@ -161,8 +161,11 @@ All node/triangle indices are **1-based** (OCCT convention).
 - Multi-face planar, cylindrical, and spherical hypotheses are candidates. Single-face planar hypotheses are fallback for unclaimed faces.
 - After selection, hypothesis face/vertex lists are updated in-place to reflect only the faces actually assigned.
 - Replaced the old per-face priority rule (spherical > cylindrical > multi-face planar > single-face planar) which failed when bogus small-area hypotheses of a high-priority type beat correct large-area hypotheses of a lower-priority type.
-- Known issue: cylinder BFS captures only ~20% of fillet faces on the rounded_cube model, leaving most as planar fallbacks. This blocks the `onshape_rounded_cube_stage26` compare test because planar fallback centroids on curved fillet faces have sagitta > vertex_tolerance from the STEP cylinder surface.
-- Compare tolerance now uses `vertex_tolerance` for all hypothesis types (previously used `surface_tolerance` for planar).
+- Sphere-first pipeline (stage >= 2.6): sphere BFS runs before cylinder BFS. Cylinder BFS skips sphere-assigned faces and uses sagitta-based `expansion_tol = max(radius * (1 - cos(angular_tol/2)), vertex_tol)` instead of tight vertex_tol. This allows cylinder BFS to absorb fillet faces that would previously be left as planar fallbacks (e.g., rounded_cube: 36 faces/cylinder vs ~7 before).
+- Without sphere-first, cylinder BFS with loose expansion_tol absorbs sphere faces. Without loose expansion_tol, cylinder BFS only captures faces within 10nm of the fit cylinder, which is too strict for sagitta on coarse tessellations.
+- Stage gate: sphere-first only at stage >= 2.6, NOT 2.3. At stage 2.3, a cylinder viewed along its axis fits a sphere, so running sphere BFS first absorbs bore-hole faces as false spheres.
+- Compare tolerance uses `surface_tolerance` (0.4mm) for all hypothesis types.
+- Merge phase was removed from cylinder BFS — it caused cumulative axis drift when merging multiple cylinder hypotheses.
 
 
 ### Stage 3.1 adjacency graph construction

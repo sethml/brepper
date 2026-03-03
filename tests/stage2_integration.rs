@@ -1137,20 +1137,14 @@ test_stl_step_stage26_compare!(
     "tests/onshape/plate_with_hole_100x50_coarse.step"
 );
 // Rounded cube: 6 planes + 12 cylindrical edge fillets + 8 spherical corners.
-// The sphere BFS correctly captures ~1277 faces per corner (fine tessellation
-// places many tiny faces on the spherical patches). Bogus large-radius
-// hypotheses (r≈139mm from small arcs on cylinder fillets) are prevented by
-// MAX_SPHERE_RADIUS_FACTOR and MAX_CYLINDER_RADIUS_FACTOR caps.
-// Compare not yet restored: the cylinder BFS captures only ~20% of cylinder
-// fillet faces, leaving the rest as single/multi-face planar fallbacks whose
-// centroid-to-STEP distance exceeds vertex_tolerance (sagitta of flat faces
-// on curved surfaces). Needs improved cylinder coverage to pass compare.
-#[test]
-fn onshape_rounded_cube_stage26_runs() {
-    let stl = format!("{}/tests/onshape/rounded_cube_10_r2_fine.stl", manifest_dir());
-    let config = config_for_stl_stage26(&stl);
-    run_stage2(&config);
-}
+// Rounded cube: sphere-first pipeline at stage >= 2.6 prevents sphere faces
+// from being absorbed by cylinder BFS. Cylinders use expansion_tol (sagitta-
+// based) and spheres use tight vertex_tol. Stage 2.6 compare uses surface_tol.
+test_stl_step_stage26_compare!(
+    onshape_rounded_cube_stage26_compare,
+    "tests/onshape/rounded_cube_10_r2_fine.stl",
+    "tests/onshape/rounded_cube_10_r2_fine.step"
+);
 test_stl_step_stage26_compare!(
     onshape_cone_stage26_compare,
     "tests/onshape/cone_15x20_medium.stl",

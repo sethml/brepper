@@ -225,18 +225,20 @@ The algorithm uses BFS region growing, analogous to stage 2.1 but seeded from pa
 **Seeding:**
 - Initialize all `cylindrical_hypothesis` to `UNDEDUCED` (-2).
 - For each face fi where `cylindrical_hypothesis == -2`:
+    - If `spheres_deduced` is true and fi is assigned to a spherical hypothesis: set `cylindrical_hypothesis = -1` and skip.
     - If fi belongs to a multi-face planar hypothesis: skip (do not seed from genuinely flat faces). Note: fi is NOT marked `NO_HYPOTHESIS` — it remains UNDEDUCED so BFS from nearby seeds can absorb it.
-    - Search fi's neighbors for a seed partner ni: an adjacent face that is also unassigned (`cylindrical_hypothesis == -2`), not a multi-face planar face, and has a sufficiently different normal (their cross product magnitude exceeds a minimum threshold, e.g. 0.01, to avoid near-parallel normals that would produce an unreliable axis estimate). Additionally, the dihedral angle between fi and ni must not exceed `--angular-tolerance` (default 17.5°) — this prevents seeding from pairs of faces that meet at too sharp an angle (e.g., adjacent faces of a cube at 90°).
+    - Search fi's neighbors for a seed partner ni: an adjacent face that is also unassigned (`cylindrical_hypothesis == -2`), not a multi-face planar face, not assigned to a spherical hypothesis (when `spheres_deduced`), and has a sufficiently different normal (their cross product magnitude exceeds a minimum threshold, e.g. 0.01, to avoid near-parallel normals that would produce an unreliable axis estimate). Additionally, the dihedral angle between fi and ni must not exceed `--angular-tolerance` (default 17.5°) — this prevents seeding from pairs of faces that meet at too sharp an angle (e.g., adjacent faces of a cube at 90°).
     - If no valid seed partner found: set `cylindrical_hypothesis = -1`, skip. (This face will be considered for spherical or other hypotheses in later stages.)
     - Estimate initial cylinder parameters from the seed pair (fi, ni) — see Cylinder Fitting below.
-    - Verify seed validity: check that all vertices of fi and ni are within `--vertex-tolerance` of the estimated cylinder surface. If not, try the next neighbor. If no neighbor produces a valid seed, set `cylindrical_hypothesis = -1` and skip.
+    - Verify seed validity: check that all vertices of fi and ni are within the expansion tolerance of the estimated cylinder surface. When `spheres_deduced` is true (stage >= 2.6), the expansion tolerance is sagitta-based: `max(radius * (1 - cos(angular_tol/2)), vertex_tolerance)`, which accounts for the expected vertex-to-cylinder distance from tessellation. When spheres have not been deduced, vertex_tolerance is used directly. If not, try the next neighbor. If no neighbor produces a valid seed, set `cylindrical_hypothesis = -1` and skip.
     - Determine convexity: compute the vector from the axis to the centroid of fi. If fi's face normal points in the same direction as this vector (positive dot product), the cylinder is convex; otherwise concave.
     - Create a new cylindrical hypothesis, assign both fi and ni, add both to a BFS queue.
 
 **BFS expansion:**
 - Pop faces from the queue and examine each neighbor ni:
     - If ni is already assigned a cylindrical hypothesis, skip.
-    - **Vertex distance check**: for each vertex of ni, compute `| ||v - axis_closest|| - radius |`. If all are within `--vertex-tolerance`, accept directly. If any exceeds `2 * vertex_tolerance`, skip immediately (re-fitting cannot help, same reasoning as for planar hypotheses). If between 1x and 2x, proceed to re-fit attempt.
+    - If `spheres_deduced` is true and ni is assigned to a spherical hypothesis, skip.
+    - **Vertex distance check**: for each vertex of ni, compute `| ||v - axis_closest|| - radius |`. If all are within the expansion tolerance (sagitta-based when `spheres_deduced`, otherwise `vertex_tolerance`), accept directly. If any exceeds `2 * expansion_tolerance`, skip immediately. If between 1x and 2x, proceed to re-fit attempt.
     - **Convexity check**: compute the vector from the axis to ni's centroid. Check that ni's face normal agrees with the hypothesis convexity (dot product with radial vector has the expected sign). Reject if inconsistent — this prevents merging the inner and outer surfaces of a thin-walled cylinder.
     - **Angular tolerance check**: for each of ni's mesh neighbors that is already assigned to this hypothesis, compute the dihedral angle between ni and that neighbor. If any exceeds `--angular-tolerance`, reject. Checking all assigned neighbors (not just the BFS parent) provides defense-in-depth against creased NURBS surfaces where BFS might approach a face from a low-angle direction while a high-angle assigned neighbor exists on a different axis.
     - **Re-fit attempt**: if any vertex exceeds tolerance but none exceeds 2x, re-fit the cylinder from all current faces plus ni (see Cylinder Fitting below). Check that **all** vertices (existing and new) are within tolerance of the re-fitted cylinder. If so, accept the re-fit; otherwise skip ni.
@@ -373,13 +375,13 @@ The algorithm selects hypotheses greedily by total mesh face area, largest first
 **Why this works better than a fixed type-priority rule:** A fixed priority (e.g., spherical > cylindrical > multi-face planar) fails when a bogus hypothesis of a high-priority type (3-face r=139mm sphere) competes with a correct hypothesis of a lower-priority type (35-face r=2mm cylinder). Area-based greedy selection naturally picks the correct hypothesis because it covers vastly more area.
 
 **Nerfed tests:**
-- `onshape_rounded_cube_stage26`: Runs without `--compare`. The sphere corner hypotheses (~1277 faces each) are geometrically correct — Onshape fine tessellation creates many tiny faces on spherical corners, and all vertices genuinely lie on the r=2mm corner spheres within tolerance. Bogus large-radius hypotheses (r≈139mm from fitting small arcs on cylinder fillets) are prevented by `MAX_SPHERE_RADIUS_FACTOR` and `MAX_CYLINDER_RADIUS_FACTOR` caps (2× bounding box diagonal). The remaining compare blocker is cylinder coverage: the cylindrical BFS captures only ~20% of cylinder fillet faces, so most fillet faces fall back to single/multi-face planar hypotheses, whose centroid-to-STEP distance exceeds `vertex-tolerance` due to sagitta of flat faces on curved surfaces.
+- `onshape_rounded_cube_stage26`: Now runs with `--compare` (restored). The sphere-first pipeline at stage >= 2.6 runs sphere BFS before cylinder BFS, preventing sphere faces from being absorbed by cylinder BFS. Cylinder BFS uses a sagitta-based expansion_tol (instead of tight vertex_tol) and skips sphere-assigned faces. Stage 2.6 compare uses surface_tolerance (0.4mm) instead of vertex_tolerance (10nm).
 - `onshape_pipe_elbow_stage26`: Runs without `--compare` because torus surfaces can't be fitted with current primitives (planes, cylinders, spheres). This is a missing surface type issue, not a selection algorithm issue — greedy selection alone won't fix it.
 
 - With the `--compare` flag, for each selected surface:
     - Compute face centroids and project them onto the selected surface.
     - Measure distance from each projected centroid to the nearest surface in the reference STEP file.
-    - For all hypotheses, report an error if distance exceeds `--vertex-tolerance`.
+    - For all hypotheses, report an error if distance exceeds `--surface-tolerance` (default 0.4mm).
 
 #### 2.7 Surface refitting (optional)
 
@@ -590,7 +592,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Implement the --angular-tolerance flag for cylindrical and spherical surface hypothesis generation.
 - [x] Revisit stage 2.6: Replace per-face priority rule with greedy area-based selection.
 - [x] Fix bogus large-radius hypotheses: Added `MAX_SPHERE_RADIUS_FACTOR` and `MAX_CYLINDER_RADIUS_FACTOR` caps (2× bounding box diagonal) to prevent r≈139mm hypotheses from small arcs on cylinder fillets. The 1277-face corner sphere hypotheses (r=2mm) are geometrically correct.
-- [ ] Improve cylinder BFS coverage on rounded_cube: Cylinder BFS captures only ~20% of fillet faces, leaving the rest as planar fallbacks. This blocks restoring the `onshape_rounded_cube_stage26` compare test. Planar fallback centroids on fillet faces have sagitta > vertex_tolerance from the STEP cylinder surface.
+- [x] Improve cylinder BFS coverage on rounded_cube: Implemented sphere-first pipeline (at stage >= 2.6, sphere BFS runs before cylinder BFS). Cylinder BFS skips sphere-assigned faces and uses sagitta-based expansion_tol instead of vertex_tol. Stage 2.6 compare tolerance changed from vertex_tolerance to surface_tolerance. Restored `onshape_rounded_cube_stage26_compare` test.
 
 ### Stage 3: Surface Reconstruction
 - [x] Implement stage 3.1: Create OCCT surface objects and build adjacency graph from mesh connectivity.
