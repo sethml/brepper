@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 opencascade-sys = { path = "../opencascade-rs/crates/opencascade-sys" }
 clap = { version = "4", features = ["derive"] }
+three-d = "0.17"
 
 [lib]
 name = "brepper"
@@ -18,3 +19,8 @@ path = "src/bin/brepper.rs"
 [[bin]]
 name = "step-measure-tolerance"
 path = "src/bin/step_measure_tolerance.rs"
+
+
+[[bin]]
+name = "viewer"
+path = "src/bin/viewer.rs"

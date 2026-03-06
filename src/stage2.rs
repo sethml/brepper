@@ -1810,8 +1810,8 @@ fn select_surfaces(
     }
 
     // Step 4: Assign remaining faces to their single-face planar hypothesis.
-    for fi in 0..num_faces {
-        if !assigned[fi] {
+    for (fi, assigned) in assigned.iter().enumerate().take(num_faces) {
+        if !assigned {
             let pi = mesh.faces[fi].planar_hypothesis;
             assert!(pi >= 0, "face {fi} has no hypothesis assigned");
             selected.push(SelectedSurface::Planar(pi as usize));
