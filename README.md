@@ -83,6 +83,53 @@ To add or modify these models:
 3. Run `./tests/ccad/generate_models.sh`
 
 
+## Viewer
+
+`viewer` is an interactive 3D viewer for STL and STEP files.
+
+```
+USAGE:
+    viewer [OPTIONS] <file>...
+
+ARGUMENTS:
+    <file>...   One or more STL or STEP files to view (detected by extension)
+
+OPTIONS:
+    --deflection <value>          Linear deflection for STEP tessellation (default: 0.1)
+    --angular-deflection <value>  Angular deflection for STEP tessellation in radians (default: 0.5)
+```
+
+Multiple files can be loaded simultaneously; each is rendered in a distinct color.
+
+### Examples
+
+```bash
+# View a single STEP file
+./target/release/viewer part.step
+
+# View a STEP and an STL side by side
+./target/release/viewer reference.step output.stl
+
+# Finer tessellation for curved surfaces
+./target/release/viewer part.step --deflection 0.01 --angular-deflection 0.1
+```
+
+### Controls
+
+| Action | Control |
+|--------|:--------|
+| Rotate (around model center) | Left-click + drag |
+| Pan | Right-click + drag |
+| Zoom (at cursor) | Scroll wheel |
+| Quit | `q` or `Esc` |
+| Toggle perspective/orthographic | `p` |
+| Toggle wireframe edges | `e` |
+| Toggle soft (mesh) edges | `Shift+E` |
+| Toggle solid faces | `s` |
+| Toggle hidden-edge removal | `h` |
+
+Rendering uses PBR shading with ambient and two directional lights. Sharp feature edges (boundary edges and edges where the dihedral angle exceeds ~45°) are drawn as a solid wireframe overlay. Softer mesh edges (dihedral angle below ~45°) are drawn at 50% opacity and can be toggled independently with `Shift+E`. Zooming targets the point under the mouse cursor.
+
 ### Running Tests
 
 ```bash
