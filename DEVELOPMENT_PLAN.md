@@ -236,7 +236,7 @@ The algorithm uses BFS region growing, analogous to stage 2.1 but seeded from pa
 **BFS expansion** (run once per trial seed, using temporary assignment tracking):
 - Pop faces from the queue and examine each neighbor ni:
     - If ni is already assigned a cylindrical hypothesis (in the mesh) or claimed by this trial, skip.
-    - **Vertex distance check**: for each vertex of ni, compute `| ||v - axis_closest|| - radius |`. If all are within `--vertex-tolerance`, accept directly. If any exceeds `2 * vertex_tolerance`, skip immediately (re-fitting cannot help, same reasoning as for planar hypotheses). If between 1x and 2x, proceed to re-fit attempt.
+    - **Vertex distance check**: for each vertex of ni, compute `| ||v - axis_closest|| - radius |`. If all are within `--vertex-tolerance`, proceed to remaining checks (no re-fit needed). If any exceeds `2 * vertex_tolerance`, skip immediately (re-fitting cannot help, same reasoning as for planar hypotheses). If between 1x and 2x, proceed to re-fit attempt. (Note: the direct acceptance path does not check centroid distance — in practice this is fine since a face with all vertices within tolerance of the cylinder has centroid deviation of only $h^2/(8R)$, which is negligible. The stage 2.3 spherical BFS adds a separate centroid validation step with a 2x hard skip threshold, which could be backported here for consistency.)
     - **Convexity check**: compute the vector from the axis to ni's centroid. Check that ni's face normal agrees with the hypothesis convexity (dot product with radial vector has the expected sign). Reject if inconsistent — this prevents merging the inner and outer surfaces of a thin-walled cylinder.
     - **Angular tolerance check**: for each of ni's mesh neighbors that is already assigned to this hypothesis, compute the dihedral angle between ni and that neighbor. If any exceeds `--angular-tolerance`, reject. Checking all assigned neighbors (not just the BFS parent) provides defense-in-depth against creased NURBS surfaces where BFS might approach a face from a low-angle direction while a high-angle assigned neighbor exists on a different axis.
     - **Re-fit attempt**: if any vertex exceeds tolerance but none exceeds 2x, or if the current face's centroid is more than `--surface-tolerance` from the cylinder, re-fit the cylinder from all current faces plus ni (see Cylinder Fitting below). Check that **all** vertices (existing and new) are within tolerance of the re-fitted cylinder and **all** face centroids lie within `--surface-tolerance` of the fitted cylinder surface. If so, accept the re-fit; otherwise skip ni.
@@ -290,7 +290,7 @@ The normal covariance matrix `M` can be maintained incrementally during BFS (add
 
 #### 2.3 Deduce spherical hypotheses
 
-Fit spherical hypotheses to connected sets of faces that lie on a common sphere. Faces with cylindrical hypotheses are not excluded — a face can legitimately belong to both a cylinder and a sphere (e.g., equator faces). Multi-face planar faces are excluded from seeding (same as cylindrical: prevents bogus large-radius sphere seeds from nearly-coplanar face pairs on curved surfaces) but can be absorbed by BFS expansion. Stage 2.6 resolves overlapping hypotheses later. A spherical hypothesis consists of:
+Fit spherical hypotheses to connected sets of faces that lie on a common sphere. Faces with cylindrical hypotheses are not excluded — a face can legitimately belong to both a cylinder and a sphere (e.g., equator faces). Stage 2.6 resolves overlapping hypotheses later. A spherical hypothesis consists of:
 - `center: [f64; 3]` — Center of the sphere.
 - `radius: f64` — Radius of the sphere (always positive).
 - `convex: bool` — Whether face normals point away from the center (convex, like the outside of a ball) or toward it (concave, like a bowl).
@@ -299,33 +299,49 @@ Fit spherical hypotheses to connected sets of faces that lie on a common sphere.
 - `error_max: f64` — Maximum absolute distance from any vertex to the sphere surface.
 - `error_abs_sum: f64` — Sum of absolute vertex-to-surface distances.
 
-The algorithm uses BFS region growing, analogous to stages 2.1 and 2.2 but seeded from pairs of adjacent faces with non-parallel normals (analogous to cylindrical seeding). The algebraic sphere fit from 4+ non-coplanar vertices (from 2 adjacent triangles/quads) determines a unique sphere, and validation catches bad fits:
+The algorithm uses BFS region growing, analogous to stages 2.1 and 2.2 but seeded from the group of faces surrounding a mesh vertex. A vertex neighborhood on a sphere naturally provides normals spanning 3D (unlike cylinder seeding which only needs normals spanning a 2D plane), making it a more natural seed geometry for the 4-DOF sphere fit. The algebraic sphere fit from 4+ non-coplanar vertices determines a unique sphere, and validation catches bad fits:
 
 **Seeding:**
-- For each face fi where `spherical_hypothesis == UNDEDUCED` (-2):
-    - If fi belongs to a multi-face planar hypothesis: skip (do not seed from genuinely flat faces). fi remains UNDEDUCED so BFS from nearby seeds can absorb it.
-    - Search fi's neighbors for a seed partner ni: an adjacent face that is also unassigned (`spherical_hypothesis == UNDEDUCED`), not a multi-face planar face, and has a sufficiently different normal (cross product magnitude exceeds `MIN_CROSS_THRESHOLD` = 0.01). The dihedral angle between fi and ni must also not exceed `--angular-tolerance` (default 17.5°).
-    - If no valid seed partner found: set `spherical_hypothesis = NO_HYPOTHESIS`, skip.
-    - Estimate initial sphere parameters from the seed pair (fi, ni) using least-squares sphere fitting (see Sphere Fitting below). The combined vertices of two non-coplanar faces (at least 6 for two triangles, 8 for two quads) provide enough constraints for the 4-DOF sphere fit.
-    - Verify seed validity: check that all vertices of fi and ni are within `--vertex-tolerance` of the estimated sphere surface.
-    - **Radius sanity check**: reject the seed if the fitted radius exceeds `max_sphere_radius` (see below). This prevents degenerate fits where a very large sphere approximates locally flat chamfer/bevel faces.
-    - Determine convexity: the vector from sphere center to fi's centroid should align with fi's normal (positive dot product → convex, negative → concave).
-    - Create a new spherical hypothesis, assign both seed faces, add to BFS queue.
+- For each mesh vertex V, collect the faces incident on V ("surrounding faces"). Exclude any face that has `spherical_hypothesis != UNDEDUCED` or that belongs to a multi-face planar hypothesis (same rationale as cylindrical seeding: their vertices lie on flat surfaces, not spheres). Multi-face planar faces remain UNDEDUCED so BFS can absorb them later.
+    - If fewer than 3 non-excluded faces remain around V, skip this vertex (not enough angular diversity for a reliable sphere fit).
+    - Compute a spherical fit to all vertices of the remaining surrounding faces using least-squares sphere fitting (see Sphere Fitting below).
+    - Skip this vertex if:
+        - The fitted radius exceeds `max_sphere_radius` (see below).
+        - Any vertex of the seed faces is not within `--vertex-tolerance` of the estimated sphere surface.
+        - The dihedral angle between any pair of adjacent seed faces (i.e., seed faces sharing a mesh edge) exceeds `--angular-tolerance` (default 17.5°).
+        - The distance from any seed face centroid to the sphere exceeds `--surface-tolerance`.
+    - Determine convexity: for each seed face, compute the dot product of the face normal with the vector from sphere center to face centroid. Positive → convex, negative → concave. If convexity is inconsistent across seed faces, skip this vertex.
+    - Create a new spherical hypothesis, assign all seed faces, and perform BFS expansion.
 
-*Design note: The original plan called for 3-face seeds with a normals-span-3D eigenvalue check, but this failed on finely tessellated spheres where 3 adjacent faces have nearly identical normals (spanning only ~6°, below the eigenvalue ratio threshold). Pair-based seeding works because the sphere fit itself validates geometry — if the vertices don't lie on a sphere, the fit produces a large radius or high error, which is caught by max_sphere_radius and vertex distance checks.*
+*Design note: The original plan called for pair-based seeding (two adjacent faces with non-parallel normals, as in cylindrical), then 3-face seeds with a normals-span-3D eigenvalue check. Pair-based seeding failed on finely tessellated spheres where adjacent faces have nearly identical normals (spanning only ~6°). Vertex-neighborhood seeding is superior for spheres: it naturally collects faces spanning multiple directions around a vertex, providing better constraints for the 4-DOF sphere fit without needing an explicit normals-span check. The sphere fit itself validates geometry — if the vertices don't lie on a sphere, the fit produces a large radius or high error, caught by max_sphere_radius and vertex distance checks.*
 
 **BFS expansion:**
-- Pop faces from the queue and examine each neighbor ni:
+- Pop faces from the BFS queue and examine each neighbor ni:
     - If ni already has a spherical hypothesis, skip.
-    - **Vertex distance check**: for each vertex of ni, compute `| ||v - center|| - radius |`. If all within `--vertex-tolerance`, accept directly. If any exceeds `2 * vertex_tolerance`, skip. If between 1x and 2x, re-fit.
-    - **Convexity check**: verify ni's normal agrees with the hypothesis convexity (dot product of normal with radial vector has the expected sign).
-    - **Angular tolerance check**: for each of ni's mesh neighbors that is already assigned to this hypothesis, compute the dihedral angle between ni and that neighbor. If any exceeds `--angular-tolerance`, reject. Same all-neighbors check as cylindrical (defense-in-depth).
-    - **Re-fit attempt**: re-fit sphere from all current faces plus ni. Check all vertices within tolerance and radius within `max_sphere_radius`. Accept or reject.
-    - If accepted: assign ni, add vertices, push onto BFS queue.
+    - **Vertex distance check**: for each vertex of ni, compute `| ||v - center|| - radius |`. If all are within `--vertex-tolerance`, proceed to remaining checks (no re-fit needed). If any exceeds `2 * vertex_tolerance`, skip (re-fitting cannot help, same reasoning as planar and cylindrical). If between 1x and 2x, flag for re-fit.
+    - **Centroid validation**: compute the distance from ni's centroid to the fitted sphere. If beyond `2 * surface_tolerance`, skip. If beyond `surface_tolerance`, flag for re-fit. (Note: stage 2.2 triggers centroid re-fit at 1x surface_tolerance but has no 2x hard skip; the 2x skip here is an efficiency improvement that could be backported to 2.2.)
+    - **Convexity check**: verify ni's normal agrees with the hypothesis convexity (dot product of normal with radial vector has the expected sign). If not, skip.
+    - **Angular tolerance check**: for each of ni's mesh neighbors that is already assigned to this hypothesis, compute the dihedral angle between ni and that neighbor. If any exceeds `--angular-tolerance`, skip.
+    - **Re-fit attempt**: if vertex distance or centroid validation flagged a re-fit, re-fit sphere from all current faces plus ni. If all vertices are within `--vertex-tolerance` and all face centroids within `--surface-tolerance` and radius within `max_sphere_radius`, accept the face with the updated sphere parameters. If not, revert to the previous sphere fit and skip the face.
+    - If accepted: assign ni to the spherical hypothesis, and add its neighbors to the BFS queue.
 - After BFS completes: final re-fit, compute error metrics.
-- **Centroid validation**: all face centroids must be within `--surface-tolerance` of the fitted sphere. Discard hypothesis if validation fails.
 - **Minimum face count**: require at least 4 faces (a sphere needs at least 4 non-coplanar points for a unique fit).
-- **Maximum radius**: `max_sphere_radius = bounding_box_diagonal * 10`, where `bounding_box_diagonal` is the diagonal of the axis-aligned bounding box of all mesh vertices. Compute the bounding box once at stage 2 entry. This limit prevents degenerate sphere fits: on a chamfered cube, corner chamfer faces have normals spanning 3D (e.g., [1,1,1]/√3, [1,1,0]/√2, [1,0,1]/√2) and pass the eigenvalue check, but they're flat — a sphere of radius R ≈ L²/(8·vertex_tolerance) could fit them numerically. For a 14mm model with vertex_tolerance=1e-5, R ≈ 112 km, far exceeding `14mm × 10 = 140mm`. Real spherical features (bearings, domes, lenses) have radius within ~10× the model extent.
+
+**Solid-angle coverage validation** (applied to the completed hypothesis, analogous to angular coverage for cylinders):
+
+The problem: sphere BFS can grow along cylinder fillet surfaces, because locally adjacent cylinder faces fit on a sphere within vertex_tolerance. This produces oversized sphere hypotheses spanning a thin strip around a cylinder fillet (observed on `onshape_rounded_cube`). The analog of the cylindrical angular coverage test is a **solid-angle coverage test**: faces on a genuine spherical patch produce centroid-to-center directions that span 3D, while faces on a cylinder fillet produce directions that span only a 1D strip.
+
+Algorithm:
+1. For each face in the hypothesis, compute the unit vector from sphere center to face centroid: $d_i = \text{normalize}(\text{centroid}_i - \text{center})$.
+2. Compute the area-weighted 3×3 covariance matrix of these unit vectors: $C = \sum w_i \, d_i \, d_i^T$ where $w_i$ is the face's mesh area.
+3. Compute eigenvalues of $C$. Let $\lambda_1 \geq \lambda_2 \geq \lambda_3$.
+4. Require $\lambda_3 / \lambda_1$ to exceed a minimum threshold (e.g., 0.01). If it fails, the hypothesis directions are nearly coplanar (a strip on the sphere, characteristic of cylinder fillet growth) or nearly collinear (a narrow band), and the hypothesis should be discarded.
+
+*Note: Fillet faces lie along a 1D arc on the sphere's direction space, producing $\lambda_3 \approx 0$. Genuine spherical patches (hemispheres, domes, spherical pockets) have centroid directions spanning 3D, so all eigenvalues are substantial. For partial spherical caps, the directions span at least 2D; very small caps may fail but such small patches are unlikely to be meaningful spherical features.*
+
+*Note: Like cylindrical angular coverage, this should NOT be applied during BFS growth — early in BFS, faces are clustered near the seed and naturally appear low-dimensional. It is a global structural validation for completed hypotheses.*
+
+**Maximum radius**: `max_sphere_radius`. With solid-angle coverage validation and surface-tolerance validation during BFS, the radius limit no longer needs to be tight — those checks prevent the pathological growth patterns that the original 10× bounding box diagonal limit was designed to catch. A large value like `bounding_box_diagonal * 1000` suffices as a numerical guard rail, preventing sphere fits with absurd radii (where floating-point precision of vertex coordinates could make flat faces appear spherical) while not rejecting any plausible real-world spherical feature. Compute the bounding box once at stage 2 entry.
 
 **Sphere fitting** (used for seeding and re-fitting):
 - Given vertices on a sphere: $|v - c|^2 = r^2$, expand to $v \cdot v - 2 v \cdot c + |c|^2 = r^2$.
@@ -335,12 +351,13 @@ The algorithm uses BFS region growing, analogous to stages 2.1 and 2.2 but seede
 
 **Distinguishing spheres from cylinders:**
 - Faces with cylindrical hypotheses are NOT excluded — they may legitimately belong to both a cylinder and a sphere (e.g., equator band). Stage 2.6 disambiguates.
-- On cylindrical surfaces, sphere fits from pairs of nearly-parallel-normal faces tend to produce unreliable results (very large or negative r²), which are caught by `max_sphere_radius` and the `r² > 0` check in sphere fitting.
-- The pair-based seeding requires non-parallel normals (cross product > 0.01), which naturally excludes seeds from planar regions but allows seeds from curved regions of any type.
+- On cylindrical surfaces, sphere fits from vertex neighborhoods with nearly-parallel normals tend to produce unreliable results (very large or negative $r^2$), which are caught by `max_sphere_radius` and the $r^2 > 0$ check in sphere fitting. The solid-angle coverage test provides additional protection: faces along a cylinder strip span only 1D in direction space, failing the eigenvalue ratio test.
+- Vertex-based seeding with the minimum-3-face requirement and angular diversity naturally avoids seeds from planar regions while allowing seeds from curved regions.
 
 **Preventing false positives on chamfers/bevels:**
-- On a chamfered or beveled cube, corner and edge chamfer faces can seed sphere fits. However, these faces are flat — the sphere fit produces a degenerate radius vastly larger than the model. The `max_sphere_radius` constraint (10× bounding box diagonal) catches this. For a 14mm model with vertex_tolerance=1e-5, a degenerate sphere fit would have R ≈ 112 km, far exceeding `14mm × 10 = 140mm`.
+- On a chamfered or beveled cube, corner and edge chamfer faces can seed sphere fits. However, these faces are flat — the sphere fit produces a degenerate radius vastly larger than the model. The `max_sphere_radius` constraint catches this even at 1000× bounding box diagonal: for a 14mm model with vertex_tolerance=1e-5, a degenerate sphere fit would have R ≈ 112 km, far exceeding `14mm × 1000 = 14m`.
 - The centroid validation check also catches spurious fits where the algebraic fit succeeds but the sphere doesn't actually pass through the face centroids.
+- The solid-angle coverage test may also reject chamfer fits where few faces span a limited set of directions.
 
 **Test models:**
 - Simple sphere (ccad): full convex sphere, radius 10 → 1 convex spherical hypothesis.
@@ -350,7 +367,7 @@ The algorithm uses BFS region growing, analogous to stages 2.1 and 2.2 but seede
 - Sphere (onshape): full sphere, fine tessellation.
 - Dome/hemisphere (onshape): hemisphere with flat base.
 
-*Comment: Spheres are 4 DOF (center + radius). Minimum 4 non-coplanar points for a unique fit. For "negative curvature" (concave spherical patch), track normal orientation relative to center rather than using negative radius. ~~Key challenge: partial spherical patches are hard to distinguish from cylinders or even planes if the patch is small relative to the radius. Consider requiring a minimum angular extent or using curvature analysis to disambiguate.~~ Addressed: the max_sphere_radius constraint prevents degenerate large-radius fits, and pair-based seeding with vertex distance + centroid validation prevents false positives. Also consider toroidal surfaces (donuts, fillets)—they’re common in CAD and combine characteristics of cylinders and spheres. Note: torus faces locally fit spheres, producing sphere hypotheses on torus surfaces (e.g., pipe_elbow). Stage 2.6 will need torus hypothesis support to resolve this.*
+*Comment: Spheres are 4 DOF (center + radius). Minimum 4 non-coplanar points for a unique fit. For "negative curvature" (concave spherical patch), track normal orientation relative to center rather than using negative radius. ~~Key challenge: partial spherical patches are hard to distinguish from cylinders or even planes if the patch is small relative to the radius. Consider requiring a minimum angular extent or using curvature analysis to disambiguate.~~ Addressed: solid-angle coverage validation prevents 1D strip growth (cylinder fillets), surface-tolerance validation in BFS prevents growth along non-spherical surfaces, and max_sphere_radius prevents degenerate large-radius fits on flat faces. Also consider toroidal surfaces (donuts, fillets)—they're common in CAD and combine characteristics of cylinders and spheres. Note: torus faces locally fit spheres, producing sphere hypotheses on torus surfaces (e.g., pipe_elbow). Stage 2.6 will need torus hypothesis support to resolve this.*
 
 #### 2.4 Deduce ruled surface hypotheses
 TODO Optional. Find mesh which is coplanar on one axis, and model as an extruded curve surface/ruled surface.
@@ -389,7 +406,7 @@ The algorithm selects hypotheses greedily by total mesh face area, largest first
 **Why this works better than a fixed type-priority rule:** A fixed priority (e.g., spherical > cylindrical > multi-face planar) fails when a bogus hypothesis of a high-priority type (3-face r=139mm sphere) competes with a correct hypothesis of a lower-priority type (35-face r=2mm cylinder). Area-based greedy selection naturally picks the correct hypothesis because it covers vastly more area.
 
 **Nerfed tests:**
-- `onshape_rounded_cube_stage26`: Runs without `--compare` because sphere BFS in stage 2.3 grows along cylinder fillet surfaces (locally, adjacent cylinder faces fit on a sphere within vertex_tolerance), creating oversized sphere hypotheses (~1277 faces each). Greedy selection picks these over correct cylinders since they have larger total area. Needs sphere overgrowth limiting, angular-extent filtering, or torus support to fix.
+- `onshape_rounded_cube_stage26`: Runs without `--compare` because sphere BFS in stage 2.3 grows along cylinder fillet surfaces (locally, adjacent cylinder faces fit on a sphere within vertex_tolerance), creating oversized sphere hypotheses (~1277 faces each). Greedy selection picks these over correct cylinders since they have larger total area. Fix: solid-angle coverage validation (described in stage 2.3) should reject these strip-like sphere hypotheses, since fillet faces span only 1D in direction space.
 - `onshape_pipe_elbow_stage26`: Runs without `--compare` because torus surfaces can't be fitted with current primitives (planes, cylinders, spheres). This is a missing surface type issue, not a selection algorithm issue — greedy selection alone won't fix it.
 
 - With the `--compare` flag, for each selected surface:
@@ -606,7 +623,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Implement the --angular-tolerance flag for cylindrical and spherical surface hypothesis generation.
 - [x] Revisit stage 2.6: Replace per-face priority rule with greedy area-based selection.
 - [x] Revisit stage 2.2: Update cylindrical hypothesis to match updated algorithm description from commits 2ac6d4f onward. Test that deduced cylinders on test models match the step cylinders.
-- [ ] Fix sphere overgrowth: sphere BFS in stage 2.3 grows along cylinder fillet surfaces, creating oversized hypotheses. This blocks restoring the `onshape_rounded_cube_stage26` compare test. Consider angular-extent limits, curvature-consistency checks, or torus support.
+- [ ] Revisit stage 2.3: Update spherical hypothesis to match updated algorithm description (vertex-based seeding, solid-angle coverage validation, surface-tolerance in BFS, relaxed max_sphere_radius). Test that deduced spheres on test models match the step spheres. This should fix the sphere overgrowth problem blocking `onshape_rounded_cube_stage26`.
 
 ### Stage 3: Surface Reconstruction
 - [x] Implement stage 3.1: Create OCCT surface objects and build adjacency graph from mesh connectivity.
