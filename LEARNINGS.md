@@ -180,3 +180,8 @@ All node/triangle indices are **1-based** (OCCT convention).
 - Stage 3.1 --compare check: validates that (a) ReconEdge boundary mesh vertices lie within vertex_tolerance of STEP edges, and (b) BRepVertex positions lie within vertex_tolerance of STEP vertices. Uses `topo_ds::Compound` to build compounds of all STEP edges and vertices separately, then `BRepExtrema_DistShapeShape` against those compounds.
 - Building a `topo_ds::Compound`: use `topo_ds::Builder::new()`, `builder.make_compound(&mut compound)`, then `builder.add(compound.as_shape_mut(), shape)`. Also available via `b_rep::Builder` which inherits from `topo_ds::Builder`.
 - Shape downcasting: `topo_ds::edge(shape)`, `topo_ds::vertex(shape)`, `topo_ds::face_shape(shape)` etc. These panic on type mismatch — check `shape.shape_type()` first.
+
+### Stage 3.2 tangency detection
+- Surface normals at boundary points can be computed analytically for planar/cylindrical/spherical surfaces without needing OCCT UV evaluation. Plane: constant normal. Cylinder: radial direction from axis (negate for concave). Sphere: direction from center (negate for concave).
+- Tangency threshold of 2° (cos ≈ 0.9994) works well. Current test models have no tangent edges since all surface intersections (plane-plane, plane-cylinder, plane-sphere, cylinder-sphere) meet at angles far exceeding 2°.
+- Tangent edges will arise from fillets and blends (e.g., cylinder tangent to plane at a fillet edge).

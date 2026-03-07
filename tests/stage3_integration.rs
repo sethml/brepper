@@ -15,12 +15,12 @@ fn manifest_dir() -> String {
 }
 
 fn config_for_stl(stl_path: &str) -> config::Config {
-    config::parse_config_from(["brepper", stl_path, "--stage=3.1", "-q"]).unwrap()
+    config::parse_config_from(["brepper", stl_path, "--stage=3.2", "-q"]).unwrap()
 }
 
 fn config_for_compare(stl_path: &str, step_path: &str) -> config::Config {
     let mut config =
-        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=3.1", "-q"])
+        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=3.2", "-q"])
             .unwrap();
     config.load_compare_step().unwrap();
     config
@@ -405,4 +405,63 @@ fn manual_cube_stage31_compare() {
         &format!("{dir}/tests/manual/cube.step"),
     );
     run_stage3(&config);
+}
+
+// ---------------------------------------------------------------------------
+// Tangency detection tests (stage 3.2)
+// ---------------------------------------------------------------------------
+
+/// For models composed only of planar surfaces meeting at angles, no edges should be tangent.
+#[test]
+fn cube_no_tangent_edges() {
+    let stl = format!("{}/tests/ccad/generated/cube.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let output = run_stage3(&config);
+    for (ei, edge) in output.edges.iter().enumerate() {
+        assert!(!edge.tangent, "cube edge {ei} should not be tangent");
+    }
+}
+
+/// Chamfered cube: all surfaces are planar at distinct angles, no tangency.
+#[test]
+fn chamfered_cube_no_tangent_edges() {
+    let stl = format!("{}/tests/onshape/chamfered_cube_10_c1_medium.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let output = run_stage3(&config);
+    for (ei, edge) in output.edges.iter().enumerate() {
+        assert!(!edge.tangent, "chamfered cube edge {ei} should not be tangent");
+    }
+}
+
+/// Cylinder with planar end caps: plane-cylinder edges are not tangent.
+#[test]
+fn cylinder_no_tangent_edges() {
+    let stl = format!("{}/tests/ccad/generated/simple_cylinder.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let output = run_stage3(&config);
+    for (ei, edge) in output.edges.iter().enumerate() {
+        assert!(!edge.tangent, "cylinder edge {ei} should not be tangent");
+    }
+}
+
+/// Block with hole: plane-cylinder edges are not tangent.
+#[test]
+fn block_with_hole_no_tangent_edges() {
+    let stl = format!("{}/tests/ccad/generated/block_with_hole.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let output = run_stage3(&config);
+    for (ei, edge) in output.edges.iter().enumerate() {
+        assert!(!edge.tangent, "block_with_hole edge {ei} should not be tangent");
+    }
+}
+
+/// Hemisphere: sphere-plane edge is not tangent (they meet at 90° around the equator).
+#[test]
+fn hemisphere_no_tangent_edges() {
+    let stl = format!("{}/tests/ccad/generated/hemisphere.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let output = run_stage3(&config);
+    for (ei, edge) in output.edges.iter().enumerate() {
+        assert!(!edge.tangent, "hemisphere edge {ei} should not be tangent");
+    }
 }

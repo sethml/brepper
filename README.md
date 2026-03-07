@@ -159,6 +159,7 @@ Integration tests in `tests/stage3_integration.rs` verify that:
 - Euler's formula V-E+F=2 holds for genus-0 models
 - Edge validity, adjacency symmetry, and edge-face consistency are maintained
 - All STL/STEP pairs pass `--compare` validation at stage 3.1, verifying that reconstructed edge boundary vertices lie on STEP edges and BRep vertices coincide with STEP vertices
+- Tangency detection (stage 3.2) correctly identifies no tangent edges for models composed of planar, cylindrical, and spherical surfaces meeting at angles > 2°
 
 
 
