@@ -1044,7 +1044,18 @@ fn run_cylinder_trial_bfs(
                 continue;
             }
 
-            if !all_ok {
+            // Centroid validation: check face centroid distance to cylinder
+            let centroid = face_centroid(&mesh.faces[cni], &mesh.vertices);
+            let centroid_dist = vertex_to_cylinder_distance(
+                &MeshVertex::from_xyz(centroid[0], centroid[1], centroid[2]),
+                &current_origin, &current_dir, current_radius,
+            ).abs();
+            if centroid_dist > REFIT_SKIP_MULTIPLIER * surface_tol {
+                continue;
+            }
+            let needs_refit = !all_ok || centroid_dist > surface_tol;
+
+            if needs_refit {
                 // Try re-fitting with new face included
                 let mut trial_vertices = vertex_set.clone();
                 for &vi in &cni_vi[..cni_vc] {
@@ -1065,6 +1076,23 @@ fn run_cylinder_trial_bfs(
                     &trial_vertices, &new_origin, &new_dir, new_radius,
                     vertex_tol, &mesh.vertices,
                 ) {
+                    continue;
+                }
+
+                // Check all face centroids within surface tolerance after re-fit
+                let mut centroids_ok = true;
+                for &f in &trial_faces {
+                    let c = face_centroid(&mesh.faces[f], &mesh.vertices);
+                    let d = vertex_to_cylinder_distance(
+                        &MeshVertex::from_xyz(c[0], c[1], c[2]),
+                        &new_origin, &new_dir, new_radius,
+                    ).abs();
+                    if d > surface_tol {
+                        centroids_ok = false;
+                        break;
+                    }
+                }
+                if !centroids_ok {
                     continue;
                 }
 
