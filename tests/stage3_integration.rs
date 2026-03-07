@@ -547,3 +547,258 @@ fn ball_on_cylinder_edge_curves() {
     check_all_edges_have_curves(&output);
     assert_eq!(output.edges.len(), 2);
 }
+
+// ---------------------------------------------------------------------------
+// Face creation tests (stage 3.4)
+// ---------------------------------------------------------------------------
+
+fn config_for_stl_34(stl_path: &str) -> config::Config {
+    config::parse_config_from(["brepper", stl_path, "--stage=3.4", "-q"]).unwrap()
+}
+
+fn config_for_compare_34(stl_path: &str, step_path: &str) -> config::Config {
+    let mut config =
+        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=3.4", "-q"])
+            .unwrap();
+    config.load_compare_step().unwrap();
+    config
+}
+
+fn run_stage3_34(config: &config::Config) -> stage3::Stage3Output {
+    let mesh = stage1::stage1(config).expect("stage1 should pass");
+    let surfaces = stage2::stage2(config, mesh).expect("stage2 should pass");
+    stage3::stage3(config, surfaces).expect("stage3 should pass")
+}
+
+/// Verify that every face descriptor has a corresponding OCCT face.
+fn check_all_faces_created(output: &stage3::Stage3Output) {
+    assert_eq!(
+        output.make_faces.len(),
+        output.face_descriptors.len(),
+        "make_faces count should match face_descriptors count"
+    );
+}
+
+// --- Cube ---
+
+#[test]
+fn cube_face_creation() {
+    let stl = format!("{}/tests/ccad/generated/cube.stl", manifest_dir());
+    let config = config_for_stl_34(&stl);
+    let output = run_stage3_34(&config);
+    check_all_faces_created(&output);
+    assert_eq!(output.make_faces.len(), 6);
+}
+
+// --- Wedge ---
+
+#[test]
+fn wedge_face_creation() {
+    let stl = format!("{}/tests/ccad/generated/wedge.stl", manifest_dir());
+    let config = config_for_stl_34(&stl);
+    let output = run_stage3_34(&config);
+    check_all_faces_created(&output);
+    assert_eq!(output.make_faces.len(), 6);
+}
+
+// --- Cylinder ---
+
+#[test]
+fn simple_cylinder_face_creation() {
+    let stl = format!("{}/tests/ccad/generated/simple_cylinder.stl", manifest_dir());
+    let config = config_for_stl_34(&stl);
+    let output = run_stage3_34(&config);
+    check_all_faces_created(&output);
+    assert_eq!(output.make_faces.len(), 3);
+}
+
+// --- Block with hole ---
+
+#[test]
+fn block_with_hole_face_creation() {
+    let stl = format!("{}/tests/ccad/generated/block_with_hole.stl", manifest_dir());
+    let config = config_for_stl_34(&stl);
+    let output = run_stage3_34(&config);
+    check_all_faces_created(&output);
+    assert_eq!(output.make_faces.len(), 7);
+}
+
+// --- Pipe ---
+
+#[test]
+fn pipe_face_creation() {
+    let stl = format!("{}/tests/ccad/generated/pipe.stl", manifest_dir());
+    let config = config_for_stl_34(&stl);
+    let output = run_stage3_34(&config);
+    check_all_faces_created(&output);
+    assert_eq!(output.make_faces.len(), 4);
+}
+
+// --- Sphere ---
+
+#[test]
+fn simple_sphere_face_creation() {
+    let stl = format!("{}/tests/ccad/generated/simple_sphere.stl", manifest_dir());
+    let config = config_for_stl_34(&stl);
+    let output = run_stage3_34(&config);
+    check_all_faces_created(&output);
+    assert_eq!(output.make_faces.len(), 1);
+}
+
+// --- Hemisphere ---
+
+#[test]
+fn hemisphere_face_creation() {
+    let stl = format!("{}/tests/ccad/generated/hemisphere.stl", manifest_dir());
+    let config = config_for_stl_34(&stl);
+    let output = run_stage3_34(&config);
+    check_all_faces_created(&output);
+    assert_eq!(output.make_faces.len(), 2);
+}
+
+// --- Ball on cylinder ---
+
+#[test]
+fn ball_on_cylinder_face_creation() {
+    let stl = format!("{}/tests/ccad/generated/ball_on_cylinder.stl", manifest_dir());
+    let config = config_for_stl_34(&stl);
+    let output = run_stage3_34(&config);
+    check_all_faces_created(&output);
+    assert_eq!(output.make_faces.len(), 3);
+}
+
+// --- Spherical pocket ---
+
+#[test]
+fn spherical_pocket_face_creation() {
+    let stl = format!("{}/tests/ccad/generated/spherical_pocket.stl", manifest_dir());
+    let config = config_for_stl_34(&stl);
+    let output = run_stage3_34(&config);
+    check_all_faces_created(&output);
+    assert_eq!(output.make_faces.len(), 7);
+}
+
+// --- Chamfered cube ---
+
+#[test]
+fn chamfered_cube_face_creation() {
+    let stl = format!("{}/tests/onshape/chamfered_cube_10_c1_medium.stl", manifest_dir());
+    let config = config_for_stl_34(&stl);
+    let output = run_stage3_34(&config);
+    check_all_faces_created(&output);
+    assert_eq!(output.make_faces.len(), 26);
+}
+
+// ---------------------------------------------------------------------------
+// Stage 3.4 compare tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ccad_cube_stage34_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_34(
+        &format!("{dir}/tests/ccad/generated/cube.stl"),
+        &format!("{dir}/tests/ccad/generated/cube.step"),
+    );
+    run_stage3_34(&config);
+}
+
+#[test]
+fn ccad_wedge_stage34_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_34(
+        &format!("{dir}/tests/ccad/generated/wedge.stl"),
+        &format!("{dir}/tests/ccad/generated/wedge.step"),
+    );
+    run_stage3_34(&config);
+}
+
+#[test]
+fn ccad_simple_cylinder_stage34_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_34(
+        &format!("{dir}/tests/ccad/generated/simple_cylinder.stl"),
+        &format!("{dir}/tests/ccad/generated/simple_cylinder.step"),
+    );
+    run_stage3_34(&config);
+}
+
+#[test]
+fn ccad_block_with_hole_stage34_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_34(
+        &format!("{dir}/tests/ccad/generated/block_with_hole.stl"),
+        &format!("{dir}/tests/ccad/generated/block_with_hole.step"),
+    );
+    run_stage3_34(&config);
+}
+
+#[test]
+fn ccad_pipe_stage34_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_34(
+        &format!("{dir}/tests/ccad/generated/pipe.stl"),
+        &format!("{dir}/tests/ccad/generated/pipe.step"),
+    );
+    run_stage3_34(&config);
+}
+
+#[test]
+fn ccad_simple_sphere_stage34_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_34(
+        &format!("{dir}/tests/ccad/generated/simple_sphere.stl"),
+        &format!("{dir}/tests/ccad/generated/simple_sphere.step"),
+    );
+    run_stage3_34(&config);
+}
+
+#[test]
+fn ccad_hemisphere_stage34_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_34(
+        &format!("{dir}/tests/ccad/generated/hemisphere.stl"),
+        &format!("{dir}/tests/ccad/generated/hemisphere.step"),
+    );
+    run_stage3_34(&config);
+}
+
+#[test]
+fn ccad_ball_on_cylinder_stage34_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_34(
+        &format!("{dir}/tests/ccad/generated/ball_on_cylinder.stl"),
+        &format!("{dir}/tests/ccad/generated/ball_on_cylinder.step"),
+    );
+    run_stage3_34(&config);
+}
+
+#[test]
+fn ccad_spherical_pocket_stage34_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_34(
+        &format!("{dir}/tests/ccad/generated/spherical_pocket.stl"),
+        &format!("{dir}/tests/ccad/generated/spherical_pocket.step"),
+    );
+    run_stage3_34(&config);
+}
+
+#[test]
+fn onshape_chamfered_cube_stage34_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_34(
+        &format!("{dir}/tests/onshape/chamfered_cube_10_c1_medium.stl"),
+        &format!("{dir}/tests/onshape/chamfered_cube_10_c1_medium.step"),
+    );
+    run_stage3_34(&config);
+}
+
+#[test]
+fn manual_cube_stage34_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_34(
+        &format!("{dir}/tests/manual/cube.stl"),
+        &format!("{dir}/tests/manual/cube.step"),
+    );
+    run_stage3_34(&config);
+}

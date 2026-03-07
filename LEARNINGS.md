@@ -195,3 +195,13 @@ All node/triangle indices are **1-based** (OCCT convention).
 - `ReconEdge.curve_3d` stores `Option<OwnedPtr<geom::HandleGeomCurve>>`. `OwnedPtr` does not implement `Debug`, so `ReconEdge` needs a manual `Debug` impl.
 - All current test models compute 100% of edge curves successfully via IntSS (cube 12/12, cylinder 2/2, hemisphere 1/1, ball_on_cylinder 2/2, block_with_hole 15/15, pipe 4/4, spherical_pocket 13/13, chamfered_cube 48/48).
 - Tangent edges will arise from fillets and blends (e.g., cylinder tangent to plane at a fillet edge).
+
+### Stage 3.4 face creation
+- **Planar faces**: Create `TopoDS_Edge` from trimmed curve using `BRepBuilderAPI_MakeEdge::new_handlegeomcurve(curve)`. Group edges into wire loops by `BRepVertex` vertex connectivity (union-find style). Build `MakeWire` from edges, `MakeFace` from surface + outer wire + hole wires.
+- **Periodic faces (cylinder/sphere)**: Use UV parameter bounds approach instead of wire-based. `MakeFace::new_handlegeomsurface_real5(surface, u_min, u_max, v_min, v_max, tolerance)`. This avoids needing to construct seam edges and handle parameter periodicity in wires.
+- **Cylindrical V bounds**: V = (P - axis_origin) · axis_direction, computed from edge boundary mesh vertices. U is always [0, 2π].
+- **Spherical V bounds**: V = asin((P - center) · z_dir / |P - center|). Extended by mesh face centroids to detect pole coverage. Snapped to ±π/2 if within 0.1 radians (~5.7°).
+- **Full spheres** (no edges): Use `MakeFace::new_handlegeomsurface_real(surface, tolerance)` which uses natural surface bounds.
+- `MakeEdge::edge()` takes `&mut self`, not `&self`. Need `&mut` references when accessing edges.
+- `BRepCheck_Analyzer::new_shape_bool(shape, true)` validates faces. `.is_valid()` returns bool.
+- The base `geom::Surface` type does NOT have `bounds()` or `first_u_parameter()` etc. in the Rust bindings. These are available on specific subtypes (CylindricalSurface, SphericalSurface, Plane, etc.). For UV bounds, compute them from geometry (mesh vertices, hypothesis parameters) rather than trying to query the surface.
