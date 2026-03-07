@@ -485,14 +485,18 @@ A vector of `BRepVertex` structs:
 #### 3.2 Detect tangency relationships
 For each ReconEdge, determine whether the two adjacent surfaces are tangent along the shared boundary. This matters because `GeomAPI_IntSS` can fail or produce degenerate results for tangent/near-tangent surfaces, requiring special handling in edge curve computation (3.3).
 
-**Detection algorithm:**
-- Sample several mesh vertices along the shared boundary (e.g., every 5th boundary vertex, minimum 3 samples).
-- At each sample point, compute the surface normal of both adjacent surfaces.
-- If all sampled normal pairs agree within a small angle threshold (e.g., 2°), mark the edge as tangent.
+**Detection algorithm (implemented):**
+- For each ReconEdge, sample mesh boundary vertices along the shared boundary (every 5th vertex, minimum 3 samples, always including first and last).
+- At each sample point, compute the outward-facing surface normal of both adjacent surfaces analytically:
+    - Planar: the hypothesis normal (constant).
+    - Cylindrical: normalized radial direction from axis to point, negated if concave.
+    - Spherical: normalized direction from center to point, negated if concave.
+- Compute the dot product of the two normals. If all sampled pairs agree within 2° (dot > cos(2°) ≈ 0.9994), mark the edge as tangent.
+- Points too close to a cylinder axis or sphere center (degenerate) cause the edge to be marked non-tangent.
 
 **Decision: do not modify surfaces to enforce tangency.** Modifying analytic surfaces would change the geometry. Instead, tangent edges get special handling in edge curve computation (3.3): construct the edge curve directly rather than relying on surface-surface intersection.
 
-For the initial implementation, tangency detection can be deferred (mark all edges as non-tangent) since the early test models (planar + cylindrical + spherical intersections) typically don't have tangent edges. Tangent edges arise from fillets and blends, which will be addressed when those test models are added.
+For the current test models (planar + cylindrical + spherical intersections), no edges are tangent — tangent edges arise from fillets and blends, which will be addressed when those test models are added.
 
 #### 3.3 Create edge curves
 For each ReconEdge, compute the 3D intersection curve between the two adjacent surfaces, trim it to the vertex endpoints, and derive pcurves.
@@ -628,7 +632,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 ### Stage 3: Surface Reconstruction
 - [x] Implement stage 3.1: Create OCCT surface objects and build adjacency graph from mesh connectivity.
 - [x] Revisit stage 3.1: Implement newly-described --compare check.
-- [ ] Implement stage 3.2: Detect tangency relationships between adjacent surfaces (initially mark all as non-tangent).
+- [x] Implement stage 3.2: Detect tangency relationships between adjacent surfaces. Computes outward-facing surface normals at sampled boundary points and compares angle; marks edge as tangent if normals agree within 2°. No tangent edges expected for current test models (all planar/cylindrical/spherical intersections meet at angles > 2°).
 - [ ] Implement stage 3.3: Compute edge curves via surface-surface intersection, trim to vertices, derive pcurves.
 - [ ] Implement stage 3.4: Create OCCT faces from surfaces bounded by edge wires.
 - [ ] Implement stage 3.5: Stitch faces into shells using BRepBuilderAPI_Sewing.

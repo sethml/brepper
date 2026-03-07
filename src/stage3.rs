@@ -819,7 +819,152 @@ fn build_surfaces_and_adjacency(
         face_descriptors,
         edges: recon_edges,
         vertices: brep_vertices,
-    })
+    })}
+
+// ---------------------------------------------------------------------------
+// Stage 3.2: Detect tangency relationships
+// ---------------------------------------------------------------------------
+
+/// Compute the outward-facing surface normal at a 3D point for a given selected surface.
+///
+/// For planes: the hypothesis normal (constant everywhere).
+/// For cylinders: the radial direction from axis to point, outward if convex.
+/// For spheres: the direction from center to point, outward if convex.
+///
+/// Returns None if the point is degenerate (e.g., on the cylinder axis or sphere center).
+fn surface_normal_at_point(
+    surface: &SelectedSurface,
+    stage2: &Stage2Output,
+    point: &[f64; 3],
+) -> Option<[f64; 3]> {
+    match surface {
+        SelectedSurface::Planar(idx) => {
+            let hyp = &stage2.planar_hypotheses[*idx];
+            Some(hyp.normal)
+        }
+        SelectedSurface::Cylindrical(idx) => {
+            let hyp = &stage2.cylindrical_hypotheses[*idx];
+            // Project point onto the axis to find the closest axis point
+            let ax = hyp.axis_direction;
+            let ao = hyp.axis_origin;
+            let dp = [
+                point[0] - ao[0],
+                point[1] - ao[1],
+                point[2] - ao[2],
+            ];
+            let t = dp[0] * ax[0] + dp[1] * ax[1] + dp[2] * ax[2];
+            let radial = [
+                dp[0] - t * ax[0],
+                dp[1] - t * ax[1],
+                dp[2] - t * ax[2],
+            ];
+            let len = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+            if len < 1e-15 {
+                return None; // Point is on the axis
+            }
+            let mut n = [radial[0] / len, radial[1] / len, radial[2] / len];
+            if !hyp.convex {
+                n = [-n[0], -n[1], -n[2]];
+            }
+            Some(n)
+        }
+        SelectedSurface::Spherical(idx) => {
+            let hyp = &stage2.spherical_hypotheses[*idx];
+            let dp = [
+                point[0] - hyp.center[0],
+                point[1] - hyp.center[1],
+                point[2] - hyp.center[2],
+            ];
+            let len = (dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]).sqrt();
+            if len < 1e-15 {
+                return None; // Point is at the center
+            }
+            let mut n = [dp[0] / len, dp[1] / len, dp[2] / len];
+            if !hyp.convex {
+                n = [-n[0], -n[1], -n[2]];
+            }
+            Some(n)
+        }
+    }
+}
+
+/// Detect tangency relationships along edges.
+///
+/// For each ReconEdge, samples mesh boundary vertices and compares the surface
+/// normals of the two adjacent surfaces. If all sampled normals agree within
+/// a small angle threshold (2°), the edge is marked as tangent.
+fn detect_tangency(mut output: Stage3Output, config: &Config) -> Stage3Output {
+    const TANGENCY_ANGLE_DEG: f64 = 2.0;
+    let tangency_cos = (TANGENCY_ANGLE_DEG * std::f64::consts::PI / 180.0).cos();
+    let min_samples = 3;
+    let sample_step = 5; // sample every 5th boundary vertex
+
+    let mut tangent_count = 0;
+
+    for edge in output.edges.iter_mut() {
+        let [fi0, fi1] = edge.face_indices;
+        let surf0 = &output.stage2.selected_surfaces[output.face_descriptors[fi0].selected_surface_idx];
+        let surf1 = &output.stage2.selected_surfaces[output.face_descriptors[fi1].selected_surface_idx];
+
+        let boundary = &edge.mesh_boundary_vertices;
+        if boundary.len() < 2 {
+            continue;
+        }
+
+        // Choose sample indices: every sample_step-th vertex, at least min_samples,
+        // always including first and last.
+        let step = if boundary.len() <= min_samples * sample_step {
+            (boundary.len() / min_samples).max(1)
+        } else {
+            sample_step
+        };
+        let mut sample_indices: Vec<usize> = (0..boundary.len()).step_by(step).collect();
+        if let Some(&last) = sample_indices.last() {
+            if last != boundary.len() - 1 {
+                sample_indices.push(boundary.len() - 1);
+            }
+        }
+
+        let mut all_tangent = true;
+        for &si in &sample_indices {
+            let vi = boundary[si];
+            let v = &output.stage2.mesh.vertices[vi];
+            let pt = [v.x, v.y, v.z];
+
+            let n0 = surface_normal_at_point(surf0, &output.stage2, &pt);
+            let n1 = surface_normal_at_point(surf1, &output.stage2, &pt);
+
+            match (n0, n1) {
+                (Some(a), Some(b)) => {
+                    let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+                    if dot < tangency_cos {
+                        all_tangent = false;
+                        break;
+                    }
+                }
+                _ => {
+                    // Degenerate point — cannot determine tangency
+                    all_tangent = false;
+                    break;
+                }
+            }
+        }
+
+        if all_tangent {
+            edge.tangent = true;
+            tangent_count += 1;
+        }
+    }
+
+    if !config.quiet {
+        eprintln!(
+            "Stage 3.2: Tangency detection: {} of {} edges are tangent",
+            tangent_count,
+            output.edges.len(),
+        );
+    }
+
+    output
 }
 
 // ---------------------------------------------------------------------------
@@ -835,14 +980,11 @@ pub fn stage3(config: &Config, input: Stage2Output) -> Result<Stage3Output, Stag
         return Ok(output);
     }
 
-    // Stage 3.2: Detect and create tangency relationships
-    // TODO: Check surface normals along shared boundaries
-    if !config.quiet {
-        eprintln!("Stage 3.2: Detect tangency relationships (not yet implemented)");
-    }
+    // Stage 3.2: Detect tangency relationships along edges
+    let output = detect_tangency(output, config);
 
     if !config.stage.at_least(3, 3) {
-        return Err(Stage3Error::NotImplemented("3.2".into()));
+        return Ok(output);
     }
 
     // Stage 3.3: Create OCCT edge wires
