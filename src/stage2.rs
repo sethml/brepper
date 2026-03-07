@@ -677,17 +677,7 @@ fn fit_cylinder(
     }
 
     // Step 2: Compute orthogonal basis perpendicular to axis.
-    let (ax, ay, az) = (axis_dir[0].abs(), axis_dir[1].abs(), axis_dir[2].abs());
-    let perp = if ax <= ay && ax <= az {
-        [1.0, 0.0, 0.0]
-    } else if ay <= az {
-        [0.0, 1.0, 0.0]
-    } else {
-        [0.0, 0.0, 1.0]
-    };
-    let mut u = cross3(&axis_dir, &perp);
-    normalize3(&mut u);
-    let w = cross3(&axis_dir, &u);
+    let (u, w) = perpendicular_basis(&axis_dir);
 
     // Step 3: Project vertices onto 2D plane perpendicular to axis and fit circle.
     let verts: Vec<usize> = vertex_set.iter().copied().collect();
@@ -828,7 +818,352 @@ fn determine_convexity(
     dot3(&n, &radial) > 0.0
 }
 
-/// Deduce cylindrical hypotheses from the mesh using BFS region growing.
+/// Build an orthonormal basis (u, w) perpendicular to a unit direction `d`.
+fn perpendicular_basis(d: &[f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let (ax, ay, az) = (d[0].abs(), d[1].abs(), d[2].abs());
+    let perp = if ax <= ay && ax <= az {
+        [1.0, 0.0, 0.0]
+    } else if ay <= az {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    let mut u = cross3(d, &perp);
+    normalize3(&mut u);
+    let w = cross3(d, &u);
+    (u, w)
+}
+
+/// Validate that faces in a cylindrical hypothesis have sufficient angular
+/// coverage around the cylinder — i.e., they are distributed around the
+/// circumference, not clustered on one side.
+///
+/// Requires at least 3 distinct angular clusters. The check is:
+/// - Compute the angular coordinate θ of each face centroid around the axis.
+/// - Sort θ values and compute all N inter-face gaps plus the wraparound gap.
+/// - The largest gap defines the "empty arc"; span = 2π − largest_gap.
+/// - The second-largest gap must be ≤ span / 3.
+fn angular_coverage_valid(
+    face_list: &[usize],
+    axis_origin: &[f64; 3],
+    axis_direction: &[f64; 3],
+    faces: &[MeshFace],
+    vertices: &[MeshVertex],
+) -> bool {
+    if face_list.len() < 3 {
+        return false;
+    }
+
+    let (u, w) = perpendicular_basis(axis_direction);
+
+    // Compute angular coordinate for each face centroid
+    let mut thetas: Vec<f64> = Vec::with_capacity(face_list.len());
+    for &fi in face_list {
+        let c = face_centroid(&faces[fi], vertices);
+        let d = [
+            c[0] - axis_origin[0],
+            c[1] - axis_origin[1],
+            c[2] - axis_origin[2],
+        ];
+        let t = dot3(&d, axis_direction);
+        let radial = [
+            d[0] - t * axis_direction[0],
+            d[1] - t * axis_direction[1],
+            d[2] - t * axis_direction[2],
+        ];
+        let theta = f64::atan2(dot3(&radial, &w), dot3(&radial, &u));
+        thetas.push(theta);
+    }
+
+    thetas.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = thetas.len();
+
+    // Compute all gaps (including wraparound)
+    let mut gaps: Vec<f64> = Vec::with_capacity(n);
+    for i in 1..n {
+        gaps.push(thetas[i] - thetas[i - 1]);
+    }
+    // Wraparound gap
+    gaps.push(thetas[0] + 2.0 * std::f64::consts::PI - thetas[n - 1]);
+
+    // Find largest and second-largest gaps
+    let mut largest = 0.0_f64;
+    let mut second_largest = 0.0_f64;
+    for &g in &gaps {
+        if g > largest {
+            second_largest = largest;
+            largest = g;
+        } else if g > second_largest {
+            second_largest = g;
+        }
+    }
+
+    let span = 2.0 * std::f64::consts::PI - largest;
+    if span <= 0.0 {
+        return false;
+    }
+
+    second_largest <= span / 3.0
+}
+
+/// Result of a trial BFS for cylindrical hypothesis evaluation.
+struct CylinderTrialResult {
+    faces: Vec<usize>,
+    vertices: HashSet<usize>,
+    axis_origin: [f64; 3],
+    axis_direction: [f64; 3],
+    radius: f64,
+    convex: bool,
+    error_max: f64,
+    error_abs_sum: f64,
+}
+
+/// Run a trial BFS for a cylindrical hypothesis starting from a seed pair,
+/// using temporary data structures (not mutating mesh face assignments).
+/// Returns `None` if the trial fails validation (min faces, centroid check).
+#[allow(clippy::too_many_arguments)]
+fn run_cylinder_trial_bfs(
+    seed_fi: usize,
+    seed_ni: usize,
+    mesh: &ConnectedMesh,
+    vertex_tol: f64,
+    surface_tol: f64,
+    angular_tol: f64,
+    best_candidate: Option<&CylinderTrialResult>,
+) -> Option<CylinderTrialResult> {
+    let fi_vc = mesh.faces[seed_fi].vertex_count as usize;
+    let ni_vc = mesh.faces[seed_ni].vertex_count as usize;
+
+    // Collect seed vertices
+    let mut vertex_set: HashSet<usize> = mesh.faces[seed_fi].vertex_indices[..fi_vc]
+        .iter().copied().collect();
+    for &vi in &mesh.faces[seed_ni].vertex_indices[..ni_vc] {
+        vertex_set.insert(vi);
+    }
+
+    let mut face_list = vec![seed_fi, seed_ni];
+
+    // Fit cylinder to seed pair
+    let (mut current_origin, mut current_dir, mut current_radius) =
+        fit_cylinder(&face_list, &vertex_set, &mesh.faces, &mesh.vertices)?;
+
+    // Verify seed: all vertices within tolerance
+    if !all_vertices_within_cylinder_tolerance(
+        &vertex_set, &current_origin, &current_dir, current_radius,
+        vertex_tol, &mesh.vertices,
+    ) {
+        return None;
+    }
+
+    // Determine convexity from seed face
+    let convex = determine_convexity(
+        &mesh.faces[seed_fi], &mesh.vertices, &current_origin, &current_dir,
+    );
+
+    // Track claimed faces in this trial (using a HashSet, not mesh mutation)
+    let mut trial_claimed: HashSet<usize> = HashSet::new();
+    trial_claimed.insert(seed_fi);
+    trial_claimed.insert(seed_ni);
+
+    let mut queue = VecDeque::new();
+    queue.push_back(seed_fi);
+    queue.push_back(seed_ni);
+
+    // BFS expansion
+    while let Some(current_fi) = queue.pop_front() {
+        let vc = mesh.faces[current_fi].vertex_count as usize;
+        let neighbors = mesh.faces[current_fi].neighbors;
+
+        for &cni in &neighbors[..vc] {
+            if cni < 0 {
+                continue;
+            }
+            let cni = cni as usize;
+
+            // Skip if already committed to a real hypothesis or claimed by this trial
+            if mesh.faces[cni].cylindrical_hypothesis != UNDEDUCED_CYLINDRICAL_HYPOTHESIS {
+                continue;
+            }
+            if trial_claimed.contains(&cni) {
+                continue;
+            }
+
+            // Convexity check
+            let cni_convex = determine_convexity(
+                &mesh.faces[cni], &mesh.vertices, &current_origin, &current_dir,
+            );
+            if cni_convex != convex {
+                continue;
+            }
+
+            // Angular tolerance: reject if dihedral angle with ANY already-claimed
+            // neighbor exceeds the limit
+            if let Some(n_cni) = mesh.faces[cni].normal {
+                let cni_vc2 = mesh.faces[cni].vertex_count as usize;
+                let cni_neighbors = mesh.faces[cni].neighbors;
+                let mut angular_reject = false;
+                for &adj in &cni_neighbors[..cni_vc2] {
+                    if adj < 0 { continue; }
+                    let adj = adj as usize;
+                    // Check against both committed (same hypothesis doesn't exist yet)
+                    // and trial-claimed faces
+                    if !trial_claimed.contains(&adj) { continue; }
+                    if let Some(n_adj) = mesh.faces[adj].normal {
+                        let cos_a = dot3(&n_adj, &n_cni).clamp(-1.0, 1.0);
+                        if cos_a.acos() > angular_tol {
+                            angular_reject = true;
+                            break;
+                        }
+                    }
+                }
+                if angular_reject { continue; }
+            }
+
+            // Vertex distance check
+            let cni_vc = mesh.faces[cni].vertex_count as usize;
+            let cni_vi = mesh.faces[cni].vertex_indices;
+            let mut all_ok = true;
+            let mut any_far = false;
+            for &vi in &cni_vi[..cni_vc] {
+                let d = vertex_to_cylinder_distance(
+                    &mesh.vertices[vi],
+                    &current_origin,
+                    &current_dir,
+                    current_radius,
+                ).abs();
+                if d > vertex_tol {
+                    all_ok = false;
+                    if d > REFIT_SKIP_MULTIPLIER * vertex_tol {
+                        any_far = true;
+                        break;
+                    }
+                }
+            }
+
+            if any_far {
+                continue;
+            }
+
+            if !all_ok {
+                // Try re-fitting with new face included
+                let mut trial_vertices = vertex_set.clone();
+                for &vi in &cni_vi[..cni_vc] {
+                    trial_vertices.insert(vi);
+                }
+                let mut trial_faces = face_list.clone();
+                trial_faces.push(cni);
+
+                let refit = fit_cylinder(
+                    &trial_faces, &trial_vertices, &mesh.faces, &mesh.vertices,
+                );
+                let (new_origin, new_dir, new_radius) = match refit {
+                    Some(params) => params,
+                    None => continue,
+                };
+
+                if !all_vertices_within_cylinder_tolerance(
+                    &trial_vertices, &new_origin, &new_dir, new_radius,
+                    vertex_tol, &mesh.vertices,
+                ) {
+                    continue;
+                }
+
+                // Accept re-fit
+                current_origin = new_origin;
+                current_dir = new_dir;
+                current_radius = new_radius;
+            }
+
+            // Accept this face
+            trial_claimed.insert(cni);
+            face_list.push(cni);
+            for &vi in &cni_vi[..cni_vc] {
+                vertex_set.insert(vi);
+            }
+            queue.push_back(cni);
+        }
+
+        // Early termination: if we have 3+ faces and are rediscovering the
+        // same cylinder as the current best candidate, abandon.
+        if face_list.len() >= 3 {
+            if let Some(best) = best_candidate {
+                let axis_dot = dot3(&current_dir, &best.axis_direction).abs();
+                if axis_dot > 1.0 - 1e-6
+                    && (current_radius - best.radius).abs() < vertex_tol
+                {
+                    // Check axis-to-axis distance
+                    let d = [
+                        current_origin[0] - best.axis_origin[0],
+                        current_origin[1] - best.axis_origin[1],
+                        current_origin[2] - best.axis_origin[2],
+                    ];
+                    let t = dot3(&d, &current_dir);
+                    let perp_sq = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] - t * t;
+                    let perp_dist = if perp_sq > 0.0 { perp_sq.sqrt() } else { 0.0 };
+
+                    if perp_dist < vertex_tol
+                        && face_list.iter().all(|f| best.faces.contains(f))
+                    {
+                        return None; // Redundant trial
+                    }
+                }
+            }
+        }
+    }
+
+    // Final re-fit
+    if let Some((final_origin, final_dir, final_radius)) =
+        fit_cylinder(&face_list, &vertex_set, &mesh.faces, &mesh.vertices)
+    {
+        current_origin = final_origin;
+        current_dir = final_dir;
+        current_radius = final_radius;
+    }
+
+    // Compute error metrics
+    let mut error_max = 0.0_f64;
+    let mut error_abs_sum = 0.0_f64;
+    for &vi in &vertex_set {
+        let d = vertex_to_cylinder_distance(
+            &mesh.vertices[vi], &current_origin, &current_dir, current_radius,
+        ).abs();
+        error_max = error_max.max(d);
+        error_abs_sum += d;
+    }
+
+    // Validate: minimum face count
+    if face_list.len() < MIN_CYLINDER_FACES {
+        return None;
+    }
+
+    // Validate: centroid check
+    for &f in &face_list {
+        let c = face_centroid(&mesh.faces[f], &mesh.vertices);
+        let d = vertex_to_cylinder_distance(
+            &MeshVertex::from_xyz(c[0], c[1], c[2]),
+            &current_origin, &current_dir, current_radius,
+        ).abs();
+        if d > surface_tol {
+            return None;
+        }
+    }
+
+    Some(CylinderTrialResult {
+        faces: face_list,
+        vertices: vertex_set,
+        axis_origin: current_origin,
+        axis_direction: current_dir,
+        radius: current_radius,
+        convex,
+        error_max,
+        error_abs_sum,
+    })
+}
+
+/// Deduce cylindrical hypotheses from the mesh using multi-seed BFS evaluation.
+///
+/// For each face, collects all valid seed partners, runs a trial BFS for each,
+/// keeps the best trial (most faces), validates with angular coverage, and commits.
 fn deduce_cylindrical_hypotheses(
     mesh: &mut ConnectedMesh,
     planar_hypotheses: &[PlanarHypothesis],
@@ -838,7 +1173,6 @@ fn deduce_cylindrical_hypotheses(
 ) -> Vec<CylindricalHypothesis> {
     let num_faces = mesh.faces.len();
     let mut hypotheses: Vec<CylindricalHypothesis> = Vec::new();
-
 
     for fi in 0..num_faces {
         if mesh.faces[fi].cylindrical_hypothesis != UNDEDUCED_CYLINDRICAL_HYPOTHESIS {
@@ -860,10 +1194,10 @@ fn deduce_cylindrical_hypotheses(
             }
         };
 
-        // Search for a seed partner: adjacent face with sufficiently different normal
+        // Collect ALL valid seed partners
         let fi_vc = mesh.faces[fi].vertex_count as usize;
         let fi_neighbors = mesh.faces[fi].neighbors;
-        let mut seed_found = false;
+        let mut seed_partners: Vec<usize> = Vec::new();
 
         for &ni in &fi_neighbors[..fi_vc] {
             if ni < 0 {
@@ -899,225 +1233,58 @@ fn deduce_cylindrical_hypotheses(
                 continue;
             }
 
-            // Estimate initial cylinder from seed pair
-            let mut axis_dir = cross;
-            normalize3(&mut axis_dir);
+            seed_partners.push(ni);
+        }
 
-            // Collect vertices of both seed faces
-            let mut vertex_set: HashSet<usize> = mesh.faces[fi].vertex_indices[..fi_vc]
-                .iter().copied().collect();
-            let ni_vc = mesh.faces[ni].vertex_count as usize;
-            for &vi in &mesh.faces[ni].vertex_indices[..ni_vc] {
-                vertex_set.insert(vi);
+        if seed_partners.is_empty() {
+            mesh.faces[fi].cylindrical_hypothesis = NO_HYPOTHESIS;
+            continue;
+        }
+
+        // Multi-seed evaluation: try each seed partner, keep best
+        let mut best_candidate: Option<CylinderTrialResult> = None;
+
+        for &ni in &seed_partners {
+            let trial = run_cylinder_trial_bfs(
+                fi, ni, mesh,
+                vertex_tol, surface_tol, angular_tol,
+                best_candidate.as_ref(),
+            );
+
+            if let Some(trial) = trial {
+                if best_candidate.as_ref().is_none_or(|b| trial.faces.len() > b.faces.len()) {
+                    best_candidate = Some(trial);
+                }
             }
+        }
 
-            let face_list = vec![fi, ni];
-
-            // Fit cylinder to seed pair
-            let fit = fit_cylinder(&face_list, &vertex_set, &mesh.faces, &mesh.vertices);
-            let (axis_origin, axis_direction, radius) = match fit {
-                Some(params) => params,
-                None => continue,
-            };
-
-            // Verify seed: all vertices within tolerance
-            if !all_vertices_within_cylinder_tolerance(
-                &vertex_set, &axis_origin, &axis_direction, radius, vertex_tol, &mesh.vertices,
+        if let Some(candidate) = best_candidate {
+            // Angular coverage validation
+            if !angular_coverage_valid(
+                &candidate.faces, &candidate.axis_origin, &candidate.axis_direction,
+                &mesh.faces, &mesh.vertices,
             ) {
+                mesh.faces[fi].cylindrical_hypothesis = NO_HYPOTHESIS;
                 continue;
             }
 
-            // Determine convexity from seed face
-            let convex = determine_convexity(&mesh.faces[fi], &mesh.vertices, &axis_origin, &axis_direction);
-
-            // Seed is valid — create hypothesis and start BFS
+            // Commit: assign all faces to this hypothesis
             let hi = hypotheses.len() as i32;
-            mesh.faces[fi].cylindrical_hypothesis = hi;
-            mesh.faces[ni].cylindrical_hypothesis = hi;
-
-            let mut face_list = vec![fi, ni];
-
-            let mut current_axis_origin = axis_origin;
-            let mut current_axis_direction = axis_direction;
-            let mut current_radius = radius;
-
-            let mut queue = VecDeque::new();
-            queue.push_back(fi);
-            queue.push_back(ni);
-
-            // BFS expansion
-            while let Some(current_fi) = queue.pop_front() {
-                let vc = mesh.faces[current_fi].vertex_count as usize;
-                let neighbors = mesh.faces[current_fi].neighbors;
-
-                for &cni in &neighbors[..vc] {
-                    if cni < 0 {
-                        continue;
-                    }
-                    let cni = cni as usize;
-
-                    if mesh.faces[cni].cylindrical_hypothesis != UNDEDUCED_CYLINDRICAL_HYPOTHESIS {
-                        continue;
-                    }
-
-
-                    // Convexity check
-                    let cni_convex = determine_convexity(
-                        &mesh.faces[cni], &mesh.vertices, &current_axis_origin, &current_axis_direction,
-                    );
-                    if cni_convex != convex {
-                        continue;
-                    }
-
-                    // Angular tolerance: reject if dihedral angle with ANY already-assigned
-                    // neighbor exceeds the limit (defense-in-depth against creased surfaces)
-                    if let Some(n_cni) = mesh.faces[cni].normal {
-                        let cni_vc2 = mesh.faces[cni].vertex_count as usize;
-                        let cni_neighbors = mesh.faces[cni].neighbors;
-                        let mut angular_reject = false;
-                        for &adj in &cni_neighbors[..cni_vc2] {
-                            if adj < 0 { continue; }
-                            let adj = adj as usize;
-                            if mesh.faces[adj].cylindrical_hypothesis != hi { continue; }
-                            if let Some(n_adj) = mesh.faces[adj].normal {
-                                let cos_a = dot3(&n_adj, &n_cni).clamp(-1.0, 1.0);
-                                if cos_a.acos() > angular_tol {
-                                    angular_reject = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if angular_reject { continue; }
-                    }
-
-                    // Vertex distance check
-                    let cni_vc = mesh.faces[cni].vertex_count as usize;
-                    let cni_vi = mesh.faces[cni].vertex_indices;
-                    let mut all_ok = true;
-                    let mut any_far = false;
-                    for &vi in &cni_vi[..cni_vc] {
-                        let d = vertex_to_cylinder_distance(
-                            &mesh.vertices[vi],
-                            &current_axis_origin,
-                            &current_axis_direction,
-                            current_radius,
-                        ).abs();
-                        if d > vertex_tol {
-                            all_ok = false;
-                            if d > REFIT_SKIP_MULTIPLIER * vertex_tol {
-                                any_far = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if any_far {
-                        continue;
-                    }
-
-                    if !all_ok {
-                        // Try re-fitting with new face included
-                        let mut trial_vertices = vertex_set.clone();
-                        for &vi in &cni_vi[..cni_vc] {
-                            trial_vertices.insert(vi);
-                        }
-                        let mut trial_faces = face_list.clone();
-                        trial_faces.push(cni);
-
-                        let refit = fit_cylinder(
-                            &trial_faces, &trial_vertices, &mesh.faces, &mesh.vertices,
-                        );
-                        let (new_origin, new_dir, new_radius) = match refit {
-                            Some(params) => params,
-                            None => continue,
-                        };
-
-                        if !all_vertices_within_cylinder_tolerance(
-                            &trial_vertices, &new_origin, &new_dir, new_radius,
-                            vertex_tol, &mesh.vertices,
-                        ) {
-                            continue;
-                        }
-
-                        // Accept re-fit
-                        current_axis_origin = new_origin;
-                        current_axis_direction = new_dir;
-                        current_radius = new_radius;
-                    }
-
-                    // Accept this face
-                    mesh.faces[cni].cylindrical_hypothesis = hi;
-                    face_list.push(cni);
-                    for &vi in &cni_vi[..cni_vc] {
-                        vertex_set.insert(vi);
-                    }
-                    queue.push_back(cni);
-                }
-            }
-
-            // Final re-fit from all accumulated faces
-            if let Some((final_origin, final_dir, final_radius)) =
-                fit_cylinder(&face_list, &vertex_set, &mesh.faces, &mesh.vertices)
-            {
-                current_axis_origin = final_origin;
-                current_axis_direction = final_dir;
-                current_radius = final_radius;
-            }
-
-            // Compute error metrics
-            let mut error_max = 0.0_f64;
-            let mut error_abs_sum = 0.0_f64;
-            for &vi in &vertex_set {
-                let d = vertex_to_cylinder_distance(
-                    &mesh.vertices[vi], &current_axis_origin, &current_axis_direction, current_radius,
-                ).abs();
-                error_max = error_max.max(d);
-                error_abs_sum += d;
-            }
-
-            // Validate: require minimum faces (see MIN_CYLINDER_FACES) and that
-            // face centroids lie within surface_tol of the cylinder, catching
-            // spurious fits from perpendicular planar faces.
-            let min_faces_ok = face_list.len() >= MIN_CYLINDER_FACES;
-            let mut centroid_ok = true;
-            if min_faces_ok {
-                for &f in &face_list {
-                    let c = face_centroid(&mesh.faces[f], &mesh.vertices);
-                    let d = vertex_to_cylinder_distance(
-                        &MeshVertex::from_xyz(c[0], c[1], c[2]),
-                        &current_axis_origin, &current_axis_direction, current_radius,
-                    ).abs();
-                    if d > surface_tol {
-                        centroid_ok = false;
-                        break;
-                    }
-                }
-            }
-
-            if !min_faces_ok || !centroid_ok {
-                // Undo assignments
-                for &f in &face_list {
-                    mesh.faces[f].cylindrical_hypothesis = UNDEDUCED_CYLINDRICAL_HYPOTHESIS;
-                }
-                continue;
+            for &f in &candidate.faces {
+                mesh.faces[f].cylindrical_hypothesis = hi;
             }
 
             hypotheses.push(CylindricalHypothesis {
-                axis_origin: current_axis_origin,
-                axis_direction: current_axis_direction,
-                radius: current_radius,
-                convex,
-                faces: face_list,
-                vertices: vertex_set.into_iter().collect(),
-                error_max,
-                error_abs_sum,
+                axis_origin: candidate.axis_origin,
+                axis_direction: candidate.axis_direction,
+                radius: candidate.radius,
+                convex: candidate.convex,
+                faces: candidate.faces,
+                vertices: candidate.vertices.into_iter().collect(),
+                error_max: candidate.error_max,
+                error_abs_sum: candidate.error_abs_sum,
             });
-
-            seed_found = true;
-            break;
-        }
-
-        if !seed_found {
+        } else {
             mesh.faces[fi].cylindrical_hypothesis = NO_HYPOTHESIS;
         }
     }

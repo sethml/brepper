@@ -16,6 +16,7 @@ This file contains guidelines for AI/LLM coding assistants working on this proje
 - Run `cargo clippy` and fix any warnings before committing. The codebase should have zero clippy warnings at all times.
 - Think about whether you encountered code that would be clearer or more correct if refactored or improved. If so, make the improvements, test, and commit.
 - Tell the user a limmerick inspired by your work this session.
+- Stop.
 
 ## Project Layout
 

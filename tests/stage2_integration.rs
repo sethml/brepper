@@ -1169,3 +1169,186 @@ test_stl_step_stage26_compare!(
     "tests/fusion/plate_with_hole_100x50_high.stl",
     "tests/fusion/plate_with_hole_100x50_high.step"
 );
+
+// ===========================================================================
+// Stage 2.2: Cylinder parameter matching tests
+// Verify that deduced cylinder hypotheses match STEP cylinder parameters
+// (axis direction, radius, axis position).
+// ===========================================================================
+
+/// Extract cylinder parameters from a STEP file: returns Vec<(axis_dir, axis_origin, radius)>.
+fn extract_step_cylinders(step_path: &str) -> Vec<([f64; 3], [f64; 3], f64)> {
+    use opencascade_sys::{step_control, message};
+    let mut reader = step_control::Reader::new();
+    reader.read_file_charptr(step_path);
+    reader.transfer_roots(&message::ProgressRange::new());
+    let shape = reader.one_shape();
+
+    let mut cylinders = Vec::new();
+    let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
+        &shape, top_abs::ShapeEnum::Face, top_abs::ShapeEnum::Shape,
+    );
+    while explorer.more() {
+        let face = topo_ds::face_shape(explorer.current());
+        let adaptor = b_rep_adaptor::Surface::new_face(face);
+        if adaptor.get_type() == geom_abs::SurfaceType::Cylinder {
+            let cyl = adaptor.cylinder();
+            let radius = cyl.radius();
+            let axis = cyl.axis();
+            let dir = axis.direction();
+            let loc = axis.location();
+            cylinders.push((
+                [dir.x(), dir.y(), dir.z()],
+                [loc.x(), loc.y(), loc.z()],
+                radius,
+            ));
+        }
+        explorer.next();
+    }
+
+    // Deduplicate: STEP files can have multiple faces on the same cylinder.
+    // Group by matching axis direction (parallel), axis position (colinear),
+    // and radius.
+    let mut unique: Vec<([f64; 3], [f64; 3], f64)> = Vec::new();
+    'outer: for (dir, origin, r) in &cylinders {
+        for (udir, uorigin, ur) in &unique {
+            // Axis directions must be parallel
+            let d = udir[0] * dir[0] + udir[1] * dir[1] + udir[2] * dir[2];
+            if d.abs() < 0.999 {
+                continue;
+            }
+            // Radii must match
+            if (ur - r).abs() > 0.01 {
+                continue;
+            }
+            // Axis origins must be colinear (distance between axes < tolerance)
+            let diff = [origin[0] - uorigin[0], origin[1] - uorigin[1], origin[2] - uorigin[2]];
+            let t = diff[0] * udir[0] + diff[1] * udir[1] + diff[2] * udir[2];
+            let perp_sq = diff[0]*diff[0] + diff[1]*diff[1] + diff[2]*diff[2] - t*t;
+            if perp_sq < 0.01 * 0.01 {
+                continue 'outer; // Already have this cylinder
+            }
+        }
+        unique.push((*dir, *origin, *r));
+    }
+    unique
+}
+
+/// Verify that each STEP cylinder has a matching hypothesis with compatible
+/// axis direction, axis position, and radius.
+fn assert_cylinders_match_step(
+    output: &stage2::Stage2Output,
+    step_path: &str,
+) {
+    let step_cylinders = extract_step_cylinders(step_path);
+    let hypotheses = &output.cylindrical_hypotheses;
+
+    assert_eq!(
+        hypotheses.len(), step_cylinders.len(),
+        "Expected {} cylinder hypotheses (from STEP), got {}",
+        step_cylinders.len(), hypotheses.len(),
+    );
+
+    for (i, (step_dir, step_origin, step_radius)) in step_cylinders.iter().enumerate() {
+        // Find a matching hypothesis
+        let matched = hypotheses.iter().any(|h| {
+            // Radius match
+            if (h.radius - step_radius).abs() > 0.1 {
+                return false;
+            }
+            // Axis direction: must be parallel (or anti-parallel)
+            let d = h.axis_direction[0] * step_dir[0]
+                  + h.axis_direction[1] * step_dir[1]
+                  + h.axis_direction[2] * step_dir[2];
+            if d.abs() < 0.999 {
+                return false;
+            }
+            // Axis position: distance between axes must be small
+            let diff = [
+                h.axis_origin[0] - step_origin[0],
+                h.axis_origin[1] - step_origin[1],
+                h.axis_origin[2] - step_origin[2],
+            ];
+            let t = diff[0] * h.axis_direction[0]
+                  + diff[1] * h.axis_direction[1]
+                  + diff[2] * h.axis_direction[2];
+            let perp_sq = diff[0]*diff[0] + diff[1]*diff[1] + diff[2]*diff[2] - t*t;
+            perp_sq < 0.1 * 0.1
+        });
+
+        assert!(
+            matched,
+            "STEP cylinder {} (dir=[{:.3},{:.3},{:.3}], r={:.3}) has no matching hypothesis",
+            i, step_dir[0], step_dir[1], step_dir[2], step_radius,
+        );
+    }
+}
+
+macro_rules! test_cylinder_params_match {
+    ($name:ident, $stl_path:literal, $step_path:literal) => {
+        #[test]
+        fn $name() {
+            let stl = format!("{}/{}", manifest_dir(), $stl_path);
+            let step = format!("{}/{}", manifest_dir(), $step_path);
+            let config = config_for_stl_stage22(&stl);
+            let output = run_stage2(&config);
+            assert_cylinders_match_step(&output, &step);
+        }
+    };
+}
+
+test_cylinder_params_match!(
+    ccad_simple_cylinder_params_match,
+    "tests/ccad/generated/simple_cylinder.stl",
+    "tests/ccad/generated/simple_cylinder.step"
+);
+test_cylinder_params_match!(
+    ccad_block_with_hole_params_match,
+    "tests/ccad/generated/block_with_hole.stl",
+    "tests/ccad/generated/block_with_hole.step"
+);
+test_cylinder_params_match!(
+    ccad_pipe_params_match,
+    "tests/ccad/generated/pipe.stl",
+    "tests/ccad/generated/pipe.step"
+);
+test_cylinder_params_match!(
+    ccad_stepped_cylinder_params_match,
+    "tests/ccad/generated/stepped_cylinder.stl",
+    "tests/ccad/generated/stepped_cylinder.step"
+);
+test_cylinder_params_match!(
+    ccad_two_holes_params_match,
+    "tests/ccad/generated/two_holes.stl",
+    "tests/ccad/generated/two_holes.step"
+);
+test_cylinder_params_match!(
+    ccad_ball_on_cylinder_params_match,
+    "tests/ccad/generated/ball_on_cylinder.stl",
+    "tests/ccad/generated/ball_on_cylinder.step"
+);
+test_cylinder_params_match!(
+    onshape_cylinder_params_match,
+    "tests/onshape/cylinder_10x30_medium.stl",
+    "tests/onshape/cylinder_10x30_medium.step"
+);
+test_cylinder_params_match!(
+    onshape_plate_with_hole_params_match,
+    "tests/onshape/plate_with_hole_100x50_coarse.stl",
+    "tests/onshape/plate_with_hole_100x50_coarse.step"
+);
+test_cylinder_params_match!(
+    fusion_plate_low_params_match,
+    "tests/fusion/plate_with_hole_100x50_low.stl",
+    "tests/fusion/plate_with_hole_100x50_low.step"
+);
+test_cylinder_params_match!(
+    fusion_plate_medium_params_match,
+    "tests/fusion/plate_with_hole_100x50_medium.stl",
+    "tests/fusion/plate_with_hole_100x50_medium.step"
+);
+test_cylinder_params_match!(
+    fusion_plate_high_params_match,
+    "tests/fusion/plate_with_hole_100x50_high.stl",
+    "tests/fusion/plate_with_hole_100x50_high.step"
+);

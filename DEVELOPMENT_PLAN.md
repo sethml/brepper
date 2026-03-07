@@ -605,7 +605,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Implement stage 2.6: Select surfaces for reconstruction using per-face priority rule.
 - [x] Implement the --angular-tolerance flag for cylindrical and spherical surface hypothesis generation.
 - [x] Revisit stage 2.6: Replace per-face priority rule with greedy area-based selection.
-- [ ] Revisit stage 2.2: Update cylindrical hypothesis to match updated algorithm description from commits 2ac6d4f and ae219a3. Test that deduced cylinders on test models match the step cylinders.
+- [x] Revisit stage 2.2: Update cylindrical hypothesis to match updated algorithm description from commits 2ac6d4f onward. Test that deduced cylinders on test models match the step cylinders.
 - [ ] Fix sphere overgrowth: sphere BFS in stage 2.3 grows along cylinder fillet surfaces, creating oversized hypotheses. This blocks restoring the `onshape_rounded_cube_stage26` compare test. Consider angular-extent limits, curvature-consistency checks, or torus support.
 
 ### Stage 3: Surface Reconstruction
