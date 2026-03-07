@@ -148,10 +148,10 @@ All node/triangle indices are **1-based** (OCCT convention).
 
 ### Stage 2.3 spherical hypothesis algorithm
 - Algebraic least-squares sphere fitting: expand |v-c|²=r² linearly into 4 unknowns (cx, cy, cz, k=r²-|c|²). Normal equations AᵀAx = Aᵀb solved via 4×4 Gaussian elimination with partial pivoting.
-- Current implementation: BFS seeds from pairs of adjacent faces with non-parallel normals. Planned change: vertex-neighborhood seeding (all faces incident on a mesh vertex), which naturally provides better angular diversity for the 4-DOF sphere fit.
+- Vertex-neighborhood seeding: for each mesh vertex, collect surrounding non-excluded faces (≥3), fit sphere from all their vertices. Naturally provides angular diversity for the 4-DOF sphere fit. Superior to pair-based seeding which failed on finely tessellated spheres.
 - Multi-face planar faces excluded from seeding but absorb-able by BFS, same as cylindrical.
-- Planned: solid-angle coverage validation (eigenvalue ratio test on centroid-to-center direction covariance matrix) to reject strip-like sphere hypotheses from cylinder fillet growth. Analogous to angular coverage for cylinders.
-- With solid-angle coverage + surface-tolerance in BFS, max_sphere_radius can be relaxed from 10× to ~1000× bounding box diagonal — it only needs to prevent numerical precision issues, not algorithmic overgrowth.
+- Solid-angle coverage validation: area-weighted 3×3 covariance matrix of centroid-to-center unit direction vectors. Eigenvalues via depressed cubic (same as cylinder axis). Require λ_min/λ_max ≥ MIN_SPHERE_EIGENVALUE_RATIO (0.01). Rejects strip-like hypotheses from cylinder fillet growth.
+- MAX_SPHERE_RADIUS_FACTOR = 1000.0 (was 10.0). With solid-angle coverage + surface-tolerance in BFS, radius limit only needs to prevent numerical precision issues.
 - Centroid validation during BFS (not just post-BFS): each face centroid checked against surface_tolerance with 2x hard skip threshold.
 - Minimum 4-face requirement: a sphere needs at least 4 non-coplanar points for a unique fit.
 - All faces are candidates for BFS expansion (including those with cylindrical hypotheses and multi-face planar hypotheses). Only seeding excludes multi-face planar. Stage 2.6 resolves overlapping hypotheses.
@@ -164,8 +164,8 @@ All node/triangle indices are **1-based** (OCCT convention).
 - Multi-face planar, cylindrical, and spherical hypotheses are candidates. Single-face planar hypotheses are fallback for unclaimed faces.
 - After selection, hypothesis face/vertex lists are updated in-place to reflect only the faces actually assigned.
 - Replaced the old per-face priority rule (spherical > cylindrical > multi-face planar > single-face planar) which failed when bogus small-area hypotheses of a high-priority type beat correct large-area hypotheses of a lower-priority type.
-- Known issue: sphere BFS in stage 2.3 grows along cylinder fillet surfaces (locally, adjacent cylinder faces fit on a sphere), creating oversized sphere hypotheses. Greedy selection picks these over correct cylinders because they have more total area. Fix: solid-angle coverage validation in stage 2.3.
-- Compare tolerance now uses `vertex_tolerance` for all hypothesis types (previously used `surface_tolerance` for planar).
+- Sphere BFS overgrowth along cylinder fillets was fixed by solid-angle coverage validation in stage 2.3. Vertex-based seeding also helps by providing better initial seeds.
+- Compare tolerance uses `surface_tolerance` for all hypothesis types (stages 2.1-2.3 and 2.6 all use the same tolerance). Previously used `vertex_tolerance` which was too tight for centroid-to-surface distance checks.
 
 
 ### Stage 3.1 adjacency graph construction

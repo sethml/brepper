@@ -407,13 +407,12 @@ The algorithm selects hypotheses greedily by total mesh face area, largest first
 **Why this works better than a fixed type-priority rule:** A fixed priority (e.g., spherical > cylindrical > multi-face planar) fails when a bogus hypothesis of a high-priority type (3-face r=139mm sphere) competes with a correct hypothesis of a lower-priority type (35-face r=2mm cylinder). Area-based greedy selection naturally picks the correct hypothesis because it covers vastly more area.
 
 **Nerfed tests:**
-- `onshape_rounded_cube_stage26`: Runs without `--compare` because sphere BFS in stage 2.3 grows along cylinder fillet surfaces (locally, adjacent cylinder faces fit on a sphere within vertex_tolerance), creating oversized sphere hypotheses (~1277 faces each). Greedy selection picks these over correct cylinders since they have larger total area. Fix: solid-angle coverage validation (described in stage 2.3) should reject these strip-like sphere hypotheses, since fillet faces span only 1D in direction space.
 - `onshape_pipe_elbow_stage26`: Runs without `--compare` because torus surfaces can't be fitted with current primitives (planes, cylinders, spheres). This is a missing surface type issue, not a selection algorithm issue — greedy selection alone won't fix it.
 
 - With the `--compare` flag, for each selected surface:
     - Compute face centroids and project them onto the selected surface.
     - Measure distance from each projected centroid to the nearest surface in the reference STEP file.
-    - For all hypotheses, report an error if distance exceeds `--vertex-tolerance`.
+    - For all hypotheses, report an error if distance exceeds `--surface-tolerance`.
 
 #### 2.7 Surface refitting (optional)
 
@@ -624,7 +623,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Implement the --angular-tolerance flag for cylindrical and spherical surface hypothesis generation.
 - [x] Revisit stage 2.6: Replace per-face priority rule with greedy area-based selection.
 - [x] Revisit stage 2.2: Update cylindrical hypothesis to match updated algorithm description from commits 2ac6d4f onward. Test that deduced cylinders on test models match the step cylinders.
-- [ ] Revisit stage 2.3: Update spherical hypothesis to match updated algorithm description (vertex-based seeding, solid-angle coverage validation, surface-tolerance in BFS, relaxed max_sphere_radius). Test that deduced spheres on test models match the step spheres. This should fix the sphere overgrowth problem blocking `onshape_rounded_cube_stage26`.
+- [x] Revisit stage 2.3: Update spherical hypothesis to match updated algorithm description (vertex-based seeding, solid-angle coverage validation, surface-tolerance in BFS, relaxed max_sphere_radius). Test that deduced spheres on test models match the step spheres. This should fix the sphere overgrowth problem blocking `onshape_rounded_cube_stage26`. Unnerf that test and ensure it passes.
 
 ### Stage 3: Surface Reconstruction
 - [x] Implement stage 3.1: Create OCCT surface objects and build adjacency graph from mesh connectivity.

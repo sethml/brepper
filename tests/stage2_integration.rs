@@ -1136,17 +1136,11 @@ test_stl_step_stage26_compare!(
     "tests/onshape/plate_with_hole_100x50_coarse.stl",
     "tests/onshape/plate_with_hole_100x50_coarse.step"
 );
-// Rounded cube: 6 planes + 12 cylindrical edge fillets + 8 spherical corners.
-// Sphere BFS in stage 2.3 grows along cylinder fillet surfaces (locally,
-// adjacent cylinder faces fit on a sphere within vertex_tolerance), creating
-// oversized sphere hypotheses (~1277 faces each). Greedy selection picks these
-// over correct cylinders. Needs sphere overgrowth limiting or torus support.
-#[test]
-fn onshape_rounded_cube_stage26_runs() {
-    let stl = format!("{}/tests/onshape/rounded_cube_10_r2_fine.stl", manifest_dir());
-    let config = config_for_stl_stage26(&stl);
-    run_stage2(&config);
-}
+test_stl_step_stage26_compare!(
+    onshape_rounded_cube_stage26_compare,
+    "tests/onshape/rounded_cube_10_r2_fine.stl",
+    "tests/onshape/rounded_cube_10_r2_fine.step"
+);
 test_stl_step_stage26_compare!(
     onshape_cone_stage26_compare,
     "tests/onshape/cone_15x20_medium.stl",
@@ -1351,4 +1345,139 @@ test_cylinder_params_match!(
     fusion_plate_high_params_match,
     "tests/fusion/plate_with_hole_100x50_high.stl",
     "tests/fusion/plate_with_hole_100x50_high.step"
+);
+
+
+// ===========================================================================
+// Stage 2.3: Sphere parameter matching tests
+// Verify that deduced sphere hypotheses match STEP sphere parameters
+// (center, radius).
+// ===========================================================================
+
+/// Extract sphere parameters from a STEP file: returns Vec<(center, radius)>.
+fn extract_step_spheres(step_path: &str) -> Vec<([f64; 3], f64)> {
+    use opencascade_sys::{step_control, message};
+    let mut reader = step_control::Reader::new();
+    reader.read_file_charptr(step_path);
+    reader.transfer_roots(&message::ProgressRange::new());
+    let shape = reader.one_shape();
+
+    let mut spheres = Vec::new();
+    let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
+        &shape, top_abs::ShapeEnum::Face, top_abs::ShapeEnum::Shape,
+    );
+    while explorer.more() {
+        let face = topo_ds::face_shape(explorer.current());
+        let adaptor = b_rep_adaptor::Surface::new_face(face);
+        if adaptor.get_type() == geom_abs::SurfaceType::Sphere {
+            let sph = adaptor.sphere();
+            let radius = sph.radius();
+            let loc = sph.location();
+            spheres.push((
+                [loc.x(), loc.y(), loc.z()],
+                radius,
+            ));
+        }
+        explorer.next();
+    }
+
+    // Deduplicate: STEP files can have multiple faces on the same sphere.
+    let mut unique: Vec<([f64; 3], f64)> = Vec::new();
+    'outer: for (center, r) in &spheres {
+        for (ucenter, ur) in &unique {
+            // Radii must match
+            if (ur - r).abs() > 0.01 {
+                continue;
+            }
+            // Centers must be close
+            let d2 = (center[0]-ucenter[0]).powi(2)
+                   + (center[1]-ucenter[1]).powi(2)
+                   + (center[2]-ucenter[2]).powi(2);
+            if d2 < 0.01 * 0.01 {
+                continue 'outer; // Already have this sphere
+            }
+        }
+        unique.push((*center, *r));
+    }
+    unique
+}
+
+/// Verify that each STEP sphere has a matching hypothesis with compatible
+/// center and radius.
+fn assert_spheres_match_step(
+    output: &stage2::Stage2Output,
+    step_path: &str,
+) {
+    let step_spheres = extract_step_spheres(step_path);
+    let hypotheses = &output.spherical_hypotheses;
+
+    assert_eq!(
+        hypotheses.len(), step_spheres.len(),
+        "Expected {} sphere hypotheses (from STEP), got {}",
+        step_spheres.len(), hypotheses.len(),
+    );
+
+    for (i, (step_center, step_radius)) in step_spheres.iter().enumerate() {
+        let matched = hypotheses.iter().any(|h| {
+            // Radius match
+            if (h.radius - step_radius).abs() > 0.1 {
+                return false;
+            }
+            // Center position match
+            let d2 = (h.center[0] - step_center[0]).powi(2)
+                    + (h.center[1] - step_center[1]).powi(2)
+                    + (h.center[2] - step_center[2]).powi(2);
+            d2 < 0.1 * 0.1
+        });
+
+        assert!(
+            matched,
+            "STEP sphere {} (center=[{:.3},{:.3},{:.3}], r={:.3}) has no matching hypothesis",
+            i, step_center[0], step_center[1], step_center[2], step_radius,
+        );
+    }
+}
+
+macro_rules! test_sphere_params_match {
+    ($name:ident, $stl_path:literal, $step_path:literal) => {
+        #[test]
+        fn $name() {
+            let stl = format!("{}/{}", manifest_dir(), $stl_path);
+            let step = format!("{}/{}", manifest_dir(), $step_path);
+            let config = config_for_stl_stage23(&stl);
+            let output = run_stage2(&config);
+            assert_spheres_match_step(&output, &step);
+        }
+    };
+}
+
+test_sphere_params_match!(
+    ccad_simple_sphere_params_match,
+    "tests/ccad/generated/simple_sphere.stl",
+    "tests/ccad/generated/simple_sphere.step"
+);
+test_sphere_params_match!(
+    ccad_hemisphere_params_match,
+    "tests/ccad/generated/hemisphere.stl",
+    "tests/ccad/generated/hemisphere.step"
+);
+test_sphere_params_match!(
+    ccad_spherical_pocket_params_match,
+    "tests/ccad/generated/spherical_pocket.stl",
+    "tests/ccad/generated/spherical_pocket.step"
+);
+test_sphere_params_match!(
+    ccad_ball_on_cylinder_sphere_params_match,
+    "tests/ccad/generated/ball_on_cylinder.stl",
+    "tests/ccad/generated/ball_on_cylinder.step"
+);
+test_sphere_params_match!(
+    onshape_sphere_params_match,
+    "tests/onshape/sphere_25_fine.stl",
+    "tests/onshape/sphere_25_fine.step"
+);
+test_sphere_params_match!(
+    onshape_dome_hemisphere_params_match,
+    "tests/onshape/dome_hemisphere_20_fine.stl",
+    "tests/onshape/dome_hemisphere_20_fine.step"
 );
