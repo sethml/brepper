@@ -368,6 +368,13 @@ Algorithm:
 - Sphere (onshape): full sphere, fine tessellation.
 - Dome/hemisphere (onshape): hemisphere with flat base.
 
+- With the `--compare` flag:
+  - For each hypothesis, compute the centroid of each member face.
+  - Project each centroid onto the fitted sphere surface (nearest point: normalize the centroid-to-center vector and scale to radius distance).
+  - Measure the distance from the projected point to the nearest surface in the reference STEP file using `BRepExtrema_DistShapeShape`.
+  - If any projected centroid exceeds `--surface-tolerance`, report an error.
+  - Note: same centroid-to-surface sagitta caveat as for cylindrical hypotheses (stage 2.2). For spheres the sagitta is approximately $h^2 / 8R$ where $h$ is the chord length of the facet.
+
 *Comment: Spheres are 4 DOF (center + radius). Minimum 4 non-coplanar points for a unique fit. For "negative curvature" (concave spherical patch), track normal orientation relative to center rather than using negative radius. ~~Key challenge: partial spherical patches are hard to distinguish from cylinders or even planes if the patch is small relative to the radius. Consider requiring a minimum angular extent or using curvature analysis to disambiguate.~~ Addressed: solid-angle coverage validation prevents 1D strip growth (cylinder fillets), surface-tolerance validation in BFS prevents growth along non-spherical surfaces, and max_sphere_radius prevents degenerate large-radius fits on flat faces. Also consider toroidal surfaces (donuts, fillets)—they're common in CAD and combine characteristics of cylinders and spheres. Note: torus faces locally fit spheres, producing sphere hypotheses on torus surfaces (e.g., pipe_elbow). Stage 2.6 will need torus hypothesis support to resolve this.*
 
 #### 2.4 Deduce ruled surface hypotheses
@@ -445,7 +452,7 @@ A vector of `FaceDescriptor` structs, one per selected surface:
 A vector of `ReconEdge` structs:
 - `face_indices: [usize; 2]` — Indices of the two adjacent FaceDescriptors.
 - `vertex_indices: [usize; 2]` — Indices of the two BRepVertices at each end. For closed-loop edges (no vertices), both are `usize::MAX`.
-- (TODO) `curve_3d: Handle<Geom_Curve>` — 3D intersection curve, trimmed to vertex endpoints.
+- `curve_3d: Option<OwnedPtr<HandleGeomCurve>>` — 3D intersection curve, trimmed to vertex endpoints (populated in 3.3).
 - (TODO) `pcurves: [Handle<Geom2d_Curve>; 2]` — 2D parametric curve on each adjacent face's surface.
 - `tangent: bool` — Whether the adjacent surfaces are tangent along this edge (detected in 3.2).
 - `mesh_boundary_vertices: Vec<usize>` — Mesh vertex indices along this boundary, ordered along the boundary.
@@ -498,6 +505,10 @@ For each ReconEdge, determine whether the two adjacent surfaces are tangent alon
 
 For the current test models (planar + cylindrical + spherical intersections), no edges are tangent — tangent edges arise from fillets and blends, which will be addressed when those test models are added.
 
+- With the `--compare` flag:
+    - For each ReconEdge marked as tangent, verify that the corresponding edge in the reference STEP file is also tangent (i.e., the two adjacent STEP surfaces have matching normals along the STEP edge). Report a warning if tangency is detected in the mesh but not in the STEP reference, or vice versa.
+    - This is a consistency check, not a geometry check — stage 3.1's --compare already validates that mesh edge boundary vertices lie on STEP edges. Stage 3.2 adds validation that the tangency classification itself is correct.
+
 #### 3.3 Create edge curves
 For each ReconEdge, compute the 3D intersection curve between the two adjacent surfaces, trim it to the vertex endpoints, and store in `edge.curve_3d`.
 
@@ -522,6 +533,11 @@ For each ReconEdge, compute the 3D intersection curve between the two adjacent s
 **Vertex position consistency (future):**
 - OCCT requires all edges at a vertex to share the same `TopoDS_Vertex` (same 3D point). When edges computed independently disagree slightly about vertex position, use the averaged position from the ReconVertex and set the vertex tolerance to the maximum deviation.
 
+- With the `--compare` flag:
+    - For each ReconEdge with a computed `curve_3d`, sample points along the trimmed curve (e.g., 10 evenly-spaced parameter values between start and end). For each sample point, compute the distance to the nearest edge in the reference STEP file using `BRepExtrema_DistShapeShape`. Report an error if any sample exceeds `--vertex-tolerance`.
+    - Additionally, verify that the curve endpoints coincide with BRepVertex positions within `--vertex-tolerance`.
+    - This validates that the computed intersection curves not only connect the right vertices but also follow the correct geometric path between them.
+
 #### 3.4 Create OCCT faces
 For each ReconFace, construct a `TopoDS_Face` from the surface and bounding wires.
 
@@ -532,6 +548,11 @@ For each ReconFace, construct a `TopoDS_Face` from the surface and bounding wire
 - Construct the face: `BRepBuilderAPI_MakeFace` with the surface and outer wire, then add inner wires.
 - If face construction fails, attempt repair with `ShapeFix_Face`. Investigate and fix the root cause if repair is needed frequently.
 - For periodic surfaces (cylinders, spheres), include the seam edge in the wire and ensure pcurves respect the parameter periodicity.
+
+- With the `--compare` flag:
+    - For each constructed `TopoDS_Face`, sample interior points on the face (e.g., evaluate the surface at a grid of UV parameters within the wire bounds). For each sample, compute the distance to the nearest face in the reference STEP file using `BRepExtrema_DistShapeShape`. Report an error if any sample exceeds `--surface-tolerance`.
+    - Verify face count: the number of constructed faces should match the number of faces in the reference STEP file. Report a warning on mismatch.
+    - Validate each face with `BRepCheck_Analyzer` and report any topology or geometry errors.
 
 #### 3.5 Construct shells
 Group connected ReconFaces into shells and assemble each group into a `TopoDS_Shell`.
@@ -545,6 +566,11 @@ Group connected ReconFaces into shells and assemble each group into a `TopoDS_Sh
 - Validate with `ShapeAnalysis_Shell::CheckOrientedShells` to detect orientation inconsistencies.
 - If sewing produces errors, fall back to manual shell construction with `BRep_Builder`.
 
+- With the `--compare` flag:
+    - Verify shell count: the number of shells should match the reference STEP file. Report a warning on mismatch.
+    - For each shell, verify it is closed (all edges shared by exactly 2 faces). Report an error if any shell is open.
+    - Validate shell orientation with `ShapeAnalysis_Shell::CheckOrientedShells`. Report an error if orientation is inconsistent.
+
 #### 3.6 Construct solids
 Convert closed shells into `TopoDS_Solid` objects.
 
@@ -556,6 +582,12 @@ Convert closed shells into `TopoDS_Solid` objects.
 - For multi-shell solids (outer shell containing voids): combine the outer shell with inner/void shells using `BRepBuilderAPI_MakeSolid`.
 - Validate with `BRepCheck_Analyzer`. If validation fails, attempt repair with `ShapeFix_Shape`, but investigate root causes.
 - Compute and report final volume using `BRepGProp` for comparison with expected values.
+
+- With the `--compare` flag:
+    - Compute the volume of each constructed solid using `BRepGProp::VolumeProperties`. Compare against the corresponding solid in the reference STEP file. Report an error if the relative volume difference exceeds a threshold (e.g., 1%).
+    - Verify solid count matches the reference STEP file.
+    - Validate each solid with `BRepCheck_Analyzer`. Report any topology or geometry errors.
+    - Compute `BRepExtrema_DistShapeShape` between the constructed solid and the reference solid. Report the maximum distance — this is the tightest geometric accuracy check, measuring the worst-case surface deviation across the entire model.
 
 ---
 
