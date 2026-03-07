@@ -499,33 +499,27 @@ For each ReconEdge, determine whether the two adjacent surfaces are tangent alon
 For the current test models (planar + cylindrical + spherical intersections), no edges are tangent — tangent edges arise from fillets and blends, which will be addressed when those test models are added.
 
 #### 3.3 Create edge curves
-For each ReconEdge, compute the 3D intersection curve between the two adjacent surfaces, trim it to the vertex endpoints, and derive pcurves.
+For each ReconEdge, compute the 3D intersection curve between the two adjacent surfaces, trim it to the vertex endpoints, and store in `edge.curve_3d`.
 
-**Intersection computation:**
-- For non-tangent edges: use `GeomAPI_IntSS` to compute intersection curves. IntSS may return multiple curves (e.g., a plane cutting through a torus); select the one closest to the mesh boundary vertices. For each candidate curve, project the centroids of mesh boundary edges onto the curve and pick the one with smallest total distance.
-- For tangent edges: construct curves directly based on surface pair types:
-    - Plane tangent to cylinder: line along the cylinder ruling where the cylinder normal matches the plane normal.
-    - Cylinder tangent to cylinder: line along the shared ruling direction.
-    - Cylinder tangent to sphere: circular arc where the normals match.
-    - General tangent case: project mesh boundary vertices onto both surfaces and fit a `Geom_BSplineCurve` through the projected midpoints.
+**Intersection computation (implemented):**
+- For non-tangent edges: use `GeomAPI_IntSS` to compute intersection curves with tolerance `vertex_tolerance_mm`. IntSS may return multiple curves (e.g., a plane cutting through a torus); `select_closest_curve()` picks the one closest to the mesh boundary vertices by sampling up to 10 evenly-spaced boundary vertices, projecting each onto each candidate curve via `GeomAPI_ProjectPointOnCurve`, and summing distances.
+- For tangent edges: currently skipped (no tangent edges arise in the current test models). Future implementation will construct curves directly based on surface pair types.
 
-**Trimming to vertex endpoints:**
+**Trimming to vertex endpoints (implemented):**
 - For each ReconVertex at an edge endpoint, project the vertex's 3D position onto the intersection curve using `GeomAPI_ProjectPointOnCurve` to get the curve parameter value.
-- Trim the curve to the parameter range `[t_start, t_end]`.
-- For closed-loop edges (no vertices at endpoints), use the full intersection curve.
+- Trim the curve to the parameter range `[t_start, t_end]` using `Geom_TrimmedCurve`.
+- For closed-loop edges (vertex_indices == usize::MAX), use the full intersection curve parameter range.
+- For non-periodic curves, ensure `t_start < t_end` (swap if needed).
+- The resulting `TrimmedCurve` is upcast to `HandleGeomCurve` via `.to_handle().to_handle_curve()` and stored in `edge.curve_3d`.
 
-**Pcurve computation:**
-- Compute all intersections in 3D, then derive pcurves from the 3D curve.
-- For analytic curve-on-analytic-surface cases, compute pcurves analytically:
-    - Line on plane → `Geom2d_Line`
-    - Circle on plane, cylinder, or sphere → `Geom2d_Circle` or `Geom2d_Line` (for iso-parametric curves)
-- For other cases: sample points along the 3D curve, project each onto the surface to get UV coordinates, and fit a `Geom2d_BSplineCurve`.
-- Alternatively, use `ShapeFix_Wire::FixEdgeCurves` after edge creation to compute missing pcurves automatically.
+**Pcurve computation (deferred to stage 3.4):**
+- Pcurves will be derived when creating `TopoDS_Edge` objects.
+- Options: analytic pcurves for simple cases (line on plane, circle on cylinder), or `ShapeFix_Wire::FixEdgeCurves` for general cases.
 
-**Seam edges:**
-- A face adjacent to itself (e.g., a full cylinder wrapping around) requires a seam edge at a fixed U or V parameter. Create the seam as an iso-parametric curve on the surface (e.g., U=0 and U=2π for a cylinder). The 3D curve is the same for both parameterizations; the two pcurves differ by the period.
+**Seam edges (future):**
+- A face adjacent to itself (e.g., a full cylinder wrapping around) requires a seam edge at a fixed U or V parameter. Create the seam as an iso-parametric curve on the surface.
 
-**Vertex position consistency:**
+**Vertex position consistency (future):**
 - OCCT requires all edges at a vertex to share the same `TopoDS_Vertex` (same 3D point). When edges computed independently disagree slightly about vertex position, use the averaged position from the ReconVertex and set the vertex tolerance to the maximum deviation.
 
 #### 3.4 Create OCCT faces
@@ -633,7 +627,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Implement stage 3.1: Create OCCT surface objects and build adjacency graph from mesh connectivity.
 - [x] Revisit stage 3.1: Implement newly-described --compare check.
 - [x] Implement stage 3.2: Detect tangency relationships between adjacent surfaces. Computes outward-facing surface normals at sampled boundary points and compares angle; marks edge as tangent if normals agree within 2°. No tangent edges expected for current test models (all planar/cylindrical/spherical intersections meet at angles > 2°).
-- [ ] Implement stage 3.3: Compute edge curves via surface-surface intersection, trim to vertices, derive pcurves.
+- [x] Implement stage 3.3: Compute edge curves via surface-surface intersection (`GeomAPI_IntSS`), trim to vertex endpoints via `GeomAPI_ProjectPointOnCurve` + `Geom_TrimmedCurve`. Multi-curve selection picks closest to mesh boundary vertices. Tangent edges skipped (no tangent edges in current models). All edges computed successfully for all test models. Pcurves deferred to stage 3.4.
 - [ ] Implement stage 3.4: Create OCCT faces from surfaces bounded by edge wires.
 - [ ] Implement stage 3.5: Stitch faces into shells using BRepBuilderAPI_Sewing.
 - [ ] Implement stage 3.6: Construct solids from shells, determine outer/inner shell roles.

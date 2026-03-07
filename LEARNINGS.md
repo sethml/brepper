@@ -185,3 +185,13 @@ All node/triangle indices are **1-based** (OCCT convention).
 - Surface normals at boundary points can be computed analytically for planar/cylindrical/spherical surfaces without needing OCCT UV evaluation. Plane: constant normal. Cylinder: radial direction from axis (negate for concave). Sphere: direction from center (negate for concave).
 - Tangency threshold of 2° (cos ≈ 0.9994) works well. Current test models have no tangent edges since all surface intersections (plane-plane, plane-cylinder, plane-sphere, cylinder-sphere) meet at angles far exceeding 2°.
 - Tangent edges will arise from fillets and blends (e.g., cylinder tangent to plane at a fillet edge).
+
+### Stage 3.3 edge curve computation
+- `GeomAPI_IntSS::new_handlegeomsurface2_real(S1, S2, Tol)` computes surface-surface intersection curves. Returns 1-indexed curves via `.nb_lines()` and `.line(i)` which returns `&HandleGeomCurve`.
+- When IntSS returns multiple curves, select the one closest to mesh boundary vertices by projecting sampled boundary points onto each curve via `GeomAPI_ProjectPointOnCurve` and picking minimum total distance.
+- `GeomAPI_ProjectPointOnCurve::new_pnt_handlegeomcurve(&pt, curve)` projects a point onto a curve. `.lower_distance_parameter()` returns the parameter of the closest point.
+- `Geom_TrimmedCurve::new_handlegeomcurve_real2(curve, U1, U2)` trims a curve to a parameter range. Convert to handle via `Geom_TrimmedCurve::to_handle(owned).to_handle_curve()`.
+- For closed-loop edges (no vertex endpoints, e.g., full circle on a cylinder cap), use the curve's full parameter range `[first_parameter, last_parameter]`.
+- `ReconEdge.curve_3d` stores `Option<OwnedPtr<geom::HandleGeomCurve>>`. `OwnedPtr` does not implement `Debug`, so `ReconEdge` needs a manual `Debug` impl.
+- All current test models compute 100% of edge curves successfully via IntSS (cube 12/12, cylinder 2/2, hemisphere 1/1, ball_on_cylinder 2/2, block_with_hole 15/15, pipe 4/4, spherical_pocket 13/13, chamfered_cube 48/48).
+- Tangent edges will arise from fillets and blends (e.g., cylinder tangent to plane at a fillet edge).
