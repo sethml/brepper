@@ -198,10 +198,24 @@ All node/triangle indices are **1-based** (OCCT convention).
 
 ### Stage 3.4 face creation
 - **Planar faces**: Create `TopoDS_Edge` from trimmed curve using `BRepBuilderAPI_MakeEdge::new_handlegeomcurve(curve)`. Group edges into wire loops by `BRepVertex` vertex connectivity (union-find style). Build `MakeWire` from edges, `MakeFace` from surface + outer wire + hole wires.
-- **Periodic faces (cylinder/sphere)**: Use UV parameter bounds approach instead of wire-based. `MakeFace::new_handlegeomsurface_real5(surface, u_min, u_max, v_min, v_max, tolerance)`. This avoids needing to construct seam edges and handle parameter periodicity in wires.
-- **Cylindrical V bounds**: V = (P - axis_origin) · axis_direction, computed from edge boundary mesh vertices. U is always [0, 2π].
-- **Spherical V bounds**: V = asin((P - center) · z_dir / |P - center|). Extended by mesh face centroids to detect pole coverage. Snapped to ±π/2 if within 0.1 radians (~5.7°).
+- **Periodic faces (cylinder/sphere) with edges**: Use wire-based construction (same edge-grouping as planar faces) so that `TopoDS_Edge` objects are shared with adjacent faces. This is critical for `BRepBuilderAPI_Sewing` in stage 3.5 — UV-bounds construction creates edges that don't match IntSS curves on adjacent faces, causing sewing to produce free edges.
 - **Full spheres** (no edges): Use `MakeFace::new_handlegeomsurface_real(surface, tolerance)` which uses natural surface bounds.
 - `MakeEdge::edge()` takes `&mut self`, not `&self`. Need `&mut` references when accessing edges.
 - `BRepCheck_Analyzer::new_shape_bool(shape, true)` validates faces. `.is_valid()` returns bool.
 - The base `geom::Surface` type does NOT have `bounds()` or `first_u_parameter()` etc. in the Rust bindings. These are available on specific subtypes (CylindricalSurface, SphericalSurface, Plane, etc.). For UV bounds, compute them from geometry (mesh vertices, hypothesis parameters) rather than trying to query the surface.
+
+### Stage 3.3 edge curve computation: tricky cases
+- **IntSS degenerate curves for plane-through-cylinder-axis**: When a plane passes through a cylinder's axis, `GeomAPI_IntSS` returns 4 degenerate curves with extreme parameter ranges (~-846M to -846M+47k), none containing the model's actual z-range. `ProjectPointOnCurve` fails on 3 of 4 curves. Fallback: validate IntSS curve by projecting boundary vertices — if distance exceeds 1mm, construct a `Geom_Line` from the two vertex positions instead.
+- **`is_periodic()` returns false for IntSS circles**: Circle curves from cylinder×plane⊥axis intersections have `is_periodic()=false` despite being full circles with `first_param=0, last_param=2π`. Detect by checking `(last_param - first_param - 2π).abs() < 1e-6` instead.
+- **Closed curve arc selection**: When a curve has param span ≈ 2π (full circle), the default parameter range may select the wrong arc (e.g., 270° instead of 90°). Fix: sample mesh boundary vertices, count which ones lie on the direct vs. complementary arc, and pick the arc with more support.
+- **Centroid-based curve selection**: When IntSS returns multiple curves, selecting the one closest to a centroid computed from boundary vertices is more robust than sequential `ProjectPointOnCurve` calls, which can fail on degenerate curves.
+
+### Stage 3.5 shell construction
+- `BRepBuilderAPI_Sewing`: Create with `Sewing::new_real(tolerance)` where tolerance = `vertex_tolerance_mm`. Add all faces via `.add(face.as_shape())`, then `.perform(&ProgressRange::new())`.
+- The sewed shape can contain mixed types: `Shell` (most common), `Face` (single-face models like `simple_sphere`), `Solid`, `Compound`, `Compsolid`. Iterate sub-shapes by type to extract all shells.
+- For `Face` results, wrap in a `TopoDS_Shell` manually: `topo_ds::Builder::new()`, `.make_shell(&mut shell)`, `.add(shell.as_shape_mut(), face.as_shape())`.
+- `ShapeAnalysis_Shell::check_oriented_shells(shape, false, false)` returns `true` when BAD edges are found (orientation problems), not when the shell is valid. The return value is inverted from what you might expect.
+- `ShapeFix_Shell::new_shell(shell)`, then `.fix_face_orientation(shell, false, false)`, `.perform(&ProgressRange::new())`, `.shell()` returns the fixed shell.
+- `top_abs::ShapeEnum::Compsolid` (not `CompSolid`) — watch the capitalization.
+- `topo_ds::shell_shape(shape)` downcasts `&Shape` to `&Shell` reference; Shell implements `CppCopyable`/`ToOwned` so you can `.to_owned()` to get `OwnedPtr<Shell>`.
+- Sewing statistics: `.nb_free_edges()`, `.nb_multiple_edges()`, `.nb_contigous_edges()` — note the OCCT typo "contigous" (not "contiguous").

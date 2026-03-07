@@ -802,3 +802,174 @@ fn manual_cube_stage34_compare() {
     );
     run_stage3_34(&config);
 }
+
+// ===========================================================================
+// Stage 3.5 tests — shell construction via BRepBuilderAPI_Sewing
+// ===========================================================================
+
+fn config_for_stl_35(stl_path: &str) -> config::Config {
+    config::parse_config_from(["brepper", stl_path, "--stage=3.5", "-q"]).unwrap()
+}
+
+fn config_for_compare_35(stl_path: &str, step_path: &str) -> config::Config {
+    let mut config =
+        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=3.5", "-q"])
+            .unwrap();
+    config.load_compare_step().unwrap();
+    config
+}
+
+fn run_stage3_35(config: &config::Config) -> stage3::Stage3Output {
+    let mesh = stage1::stage1(config).expect("stage1 should pass");
+    let surfaces = stage2::stage2(config, mesh).expect("stage2 should pass");
+    stage3::stage3(config, surfaces).expect("stage3 should pass")
+}
+
+/// Verify that at least one shell was constructed.
+fn check_shells_constructed(output: &stage3::Stage3Output) {
+    assert!(
+        !output.shells.is_empty(),
+        "at least one shell should be constructed"
+    );
+}
+
+// --- Shell construction tests ---
+
+#[test]
+fn cube_shell_construction() {
+    let stl = format!("{}/tests/ccad/generated/cube.stl", manifest_dir());
+    let config = config_for_stl_35(&stl);
+    let output = run_stage3_35(&config);
+    check_shells_constructed(&output);
+    assert_eq!(output.shells.len(), 1);
+}
+
+#[test]
+fn simple_cylinder_shell_construction() {
+    let stl = format!("{}/tests/ccad/generated/simple_cylinder.stl", manifest_dir());
+    let config = config_for_stl_35(&stl);
+    let output = run_stage3_35(&config);
+    check_shells_constructed(&output);
+    assert_eq!(output.shells.len(), 1);
+}
+
+#[test]
+fn simple_sphere_shell_construction() {
+    let stl = format!("{}/tests/ccad/generated/simple_sphere.stl", manifest_dir());
+    let config = config_for_stl_35(&stl);
+    let output = run_stage3_35(&config);
+    check_shells_constructed(&output);
+    assert_eq!(output.shells.len(), 1);
+}
+
+// --- Stage 3.5 compare tests ---
+
+#[test]
+fn ccad_cube_stage35_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_35(
+        &format!("{dir}/tests/ccad/generated/cube.stl"),
+        &format!("{dir}/tests/ccad/generated/cube.step"),
+    );
+    run_stage3_35(&config);
+}
+
+#[test]
+fn ccad_wedge_stage35_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_35(
+        &format!("{dir}/tests/ccad/generated/wedge.stl"),
+        &format!("{dir}/tests/ccad/generated/wedge.step"),
+    );
+    run_stage3_35(&config);
+}
+
+#[test]
+fn ccad_simple_cylinder_stage35_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_35(
+        &format!("{dir}/tests/ccad/generated/simple_cylinder.stl"),
+        &format!("{dir}/tests/ccad/generated/simple_cylinder.step"),
+    );
+    run_stage3_35(&config);
+}
+
+#[test]
+fn ccad_block_with_hole_stage35_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_35(
+        &format!("{dir}/tests/ccad/generated/block_with_hole.stl"),
+        &format!("{dir}/tests/ccad/generated/block_with_hole.step"),
+    );
+    run_stage3_35(&config);
+}
+
+#[test]
+fn ccad_pipe_stage35_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_35(
+        &format!("{dir}/tests/ccad/generated/pipe.stl"),
+        &format!("{dir}/tests/ccad/generated/pipe.step"),
+    );
+    run_stage3_35(&config);
+}
+
+#[test]
+fn ccad_simple_sphere_stage35_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_35(
+        &format!("{dir}/tests/ccad/generated/simple_sphere.stl"),
+        &format!("{dir}/tests/ccad/generated/simple_sphere.step"),
+    );
+    run_stage3_35(&config);
+}
+
+#[test]
+fn ccad_hemisphere_stage35_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_35(
+        &format!("{dir}/tests/ccad/generated/hemisphere.stl"),
+        &format!("{dir}/tests/ccad/generated/hemisphere.step"),
+    );
+    run_stage3_35(&config);
+}
+
+#[test]
+fn ccad_ball_on_cylinder_stage35_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_35(
+        &format!("{dir}/tests/ccad/generated/ball_on_cylinder.stl"),
+        &format!("{dir}/tests/ccad/generated/ball_on_cylinder.step"),
+    );
+    run_stage3_35(&config);
+}
+
+#[test]
+fn ccad_spherical_pocket_stage35_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_35(
+        &format!("{dir}/tests/ccad/generated/spherical_pocket.stl"),
+        &format!("{dir}/tests/ccad/generated/spherical_pocket.step"),
+    );
+    run_stage3_35(&config);
+}
+
+#[test]
+fn onshape_chamfered_cube_stage35_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_35(
+        &format!("{dir}/tests/onshape/chamfered_cube_10_c1_medium.stl"),
+        &format!("{dir}/tests/onshape/chamfered_cube_10_c1_medium.step"),
+    );
+    run_stage3_35(&config);
+}
+
+#[test]
+fn manual_cube_stage35_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_35(
+        &format!("{dir}/tests/manual/cube.stl"),
+        &format!("{dir}/tests/manual/cube.step"),
+    );
+    run_stage3_35(&config);
+}
