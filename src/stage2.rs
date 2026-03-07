@@ -47,10 +47,16 @@ const MIN_CYLINDER_FACES: usize = 3;
 const MIN_SPHERE_FACES: usize = 4;
 
 /// Maximum sphere radius as a multiple of the mesh bounding-box diagonal.
-/// Spurious sphere fits on near-planar or near-cylindrical patches can produce
-/// astronomically large radii; this cap rejects them while comfortably allowing
-/// any sphere that could plausibly be part of the modelled object.
-const MAX_SPHERE_RADIUS_FACTOR: f64 = 10.0;
+/// With solid-angle coverage validation and surface-tolerance validation during
+/// BFS, this no longer needs to be tight — those checks prevent pathological
+/// growth. A large value serves as a numerical guardrail against degenerate fits.
+const MAX_SPHERE_RADIUS_FACTOR: f64 = 1000.0;
+
+/// Minimum eigenvalue ratio for solid-angle coverage validation.
+/// Centroid-to-center direction vectors of a genuine spherical hypothesis span
+/// 3D, so all eigenvalues of their covariance matrix are substantial.
+/// Fillet-strip growth produces nearly coplanar directions (λ₃ ≈ 0).
+const MIN_SPHERE_EIGENVALUE_RATIO: f64 = 0.01;
 
 // ---------------------------------------------------------------------------
 // Hypothesis data structures
@@ -1536,6 +1542,126 @@ fn determine_sphere_convexity(
 }
 
 /// Deduce spherical hypotheses from the mesh using BFS region growing.
+/// Validate solid-angle coverage of a spherical hypothesis.
+/// Returns true if the centroid-to-center direction vectors span 3D
+/// (not a 1D strip like a cylinder fillet).
+fn solid_angle_coverage_valid(
+    face_list: &[usize],
+    center: &[f64; 3],
+    faces: &[MeshFace],
+    vertices: &[MeshVertex],
+) -> bool {
+    if face_list.len() < MIN_SPHERE_FACES {
+        return false;
+    }
+
+    // Compute area-weighted covariance of unit direction vectors from center to centroid.
+    let mut cov = [0.0_f64; 6]; // upper triangle: [c00, c01, c02, c11, c12, c22]
+    let mut total_weight = 0.0_f64;
+    for &fi in face_list {
+        let c = face_centroid(&faces[fi], vertices);
+        let mut d = [
+            c[0] - center[0],
+            c[1] - center[1],
+            c[2] - center[2],
+        ];
+        let len = normalize3(&mut d);
+        if len < 1e-15 {
+            continue;
+        }
+        let w = face_area(&faces[fi], vertices);
+        total_weight += w;
+        cov[0] += w * d[0] * d[0];
+        cov[1] += w * d[0] * d[1];
+        cov[2] += w * d[0] * d[2];
+        cov[3] += w * d[1] * d[1];
+        cov[4] += w * d[1] * d[2];
+        cov[5] += w * d[2] * d[2];
+    }
+    if total_weight < 1e-30 {
+        return false;
+    }
+    // Normalize
+    for v in &mut cov {
+        *v /= total_weight;
+    }
+
+    // Compute eigenvalues of the 3x3 symmetric matrix.
+    // Use the cubic formula for eigenvalues of a symmetric matrix.
+    let a = cov[0];
+    let b = cov[3];
+    let c = cov[5];
+    let d = cov[1];
+    let e = cov[4];
+    let f = cov[2];
+
+    let p1 = d * d + f * f + e * e;
+    if p1 < 1e-30 {
+        // Already diagonal
+        let mut eigs = [a, b, c];
+        eigs.sort_by(|x, y| y.partial_cmp(x).unwrap());
+        if eigs[0] < 1e-30 {
+            return false;
+        }
+        return eigs[2] / eigs[0] >= MIN_SPHERE_EIGENVALUE_RATIO;
+    }
+
+    let q = (a + b + c) / 3.0;
+    let p2 = (a - q) * (a - q) + (b - q) * (b - q) + (c - q) * (c - q) + 2.0 * p1;
+    let p = (p2 / 6.0).sqrt();
+
+    // B = (1/p) * (A - q*I)
+    let b00 = (a - q) / p;
+    let b11 = (b - q) / p;
+    let b22 = (c - q) / p;
+    let b01 = d / p;
+    let b02 = f / p;
+    let b12 = e / p;
+
+    let det_b = b00 * (b11 * b22 - b12 * b12)
+              - b01 * (b01 * b22 - b12 * b02)
+              + b02 * (b01 * b12 - b11 * b02);
+    let r = det_b / 2.0;
+
+    let phi = if r <= -1.0 {
+        std::f64::consts::PI / 3.0
+    } else if r >= 1.0 {
+        0.0
+    } else {
+        r.acos() / 3.0
+    };
+
+    let eig1 = q + 2.0 * p * phi.cos();
+    let eig3 = q + 2.0 * p * (phi + 2.0 * std::f64::consts::PI / 3.0).cos();
+    let eig2 = 3.0 * q - eig1 - eig3;
+
+    let lambda_max = eig1.max(eig2).max(eig3);
+    let lambda_min = eig1.min(eig2).min(eig3);
+
+    if lambda_max < 1e-30 {
+        return false;
+    }
+    lambda_min / lambda_max >= MIN_SPHERE_EIGENVALUE_RATIO
+}
+
+/// Build a map from vertex index to the set of face indices incident on that vertex.
+fn build_vertex_to_faces_map(mesh: &ConnectedMesh) -> Vec<Vec<usize>> {
+    let mut vtf: Vec<Vec<usize>> = vec![Vec::new(); mesh.vertices.len()];
+    for (fi, face) in mesh.faces.iter().enumerate() {
+        let vc = face.vertex_count as usize;
+        for &vi in &face.vertex_indices[..vc] {
+            vtf[vi].push(fi);
+        }
+    }
+    vtf
+}
+
+/// Deduce spherical hypotheses from the mesh using vertex-neighborhood seeding
+/// and BFS region growing.
+///
+/// For each mesh vertex, collect the surrounding faces and fit a sphere to their
+/// vertices. If the fit is good, seed a BFS to grow the hypothesis. After BFS,
+/// validate solid-angle coverage to reject fillet-strip growth.
 fn deduce_spherical_hypotheses(
     mesh: &mut ConnectedMesh,
     planar_hypotheses: &[PlanarHypothesis],
@@ -1544,278 +1670,311 @@ fn deduce_spherical_hypotheses(
     angular_tol: f64,
     max_sphere_radius: f64,
 ) -> Vec<SphericalHypothesis> {
-    let num_faces = mesh.faces.len();
     let mut hypotheses: Vec<SphericalHypothesis> = Vec::new();
 
+    // Build vertex-to-faces map for vertex-neighborhood seeding
+    let vtf = build_vertex_to_faces_map(mesh);
+    for face_indices in &vtf {
+        // Collect surrounding faces that are valid seed candidates
+        let surrounding: Vec<usize> = face_indices
+            .iter()
+            .copied()
+            .filter(|&fi| {
+                // Must be undeduced
+                if mesh.faces[fi].spherical_hypothesis != UNDEDUCED_SPHERICAL_HYPOTHESIS {
+                    return false;
+                }
+                // Skip multi-face planar faces (genuinely flat)
+                let ph = mesh.faces[fi].planar_hypothesis;
+                if ph >= 0 && planar_hypotheses[ph as usize].faces.len() > 1 {
+                    return false;
+                }
+                // Must have valid normal
+                mesh.faces[fi].normal.is_some()
+            })
+            .collect();
 
-    for fi in 0..num_faces {
-        if mesh.faces[fi].spherical_hypothesis != UNDEDUCED_SPHERICAL_HYPOTHESIS {
+        if surrounding.len() < 3 {
             continue;
         }
 
-        // Skip multi-face planar faces as seeds — they are likely genuinely flat.
-        // Leave them UNDEDUCED so BFS can absorb them into nearby sphere hypotheses.
-        let ph = mesh.faces[fi].planar_hypothesis;
-        if ph >= 0 && planar_hypotheses[ph as usize].faces.len() > 1 {
-            continue;
-        }
-
-        let fi_normal = match mesh.faces[fi].normal {
-            Some(n) => n,
-            None => {
-                mesh.faces[fi].spherical_hypothesis = NO_HYPOTHESIS;
-                continue;
+        // Collect all vertices from surrounding faces
+        let mut seed_vertex_set: HashSet<usize> = HashSet::new();
+        for &fi in &surrounding {
+            let vc = mesh.faces[fi].vertex_count as usize;
+            for &v in &mesh.faces[fi].vertex_indices[..vc] {
+                seed_vertex_set.insert(v);
             }
+        }
+
+        // Fit sphere to seed vertices
+        let (center, radius) = match fit_sphere(&seed_vertex_set, &mesh.vertices) {
+            Some(params) => params,
+            None => continue,
         };
 
-        // Search for a seed partner: adjacent face with sufficiently different normal
-        // (like cylindrical seeding, but fitting a sphere instead)
-        let fi_vc = mesh.faces[fi].vertex_count as usize;
-        let fi_neighbors = mesh.faces[fi].neighbors;
-        let mut seed_found = false;
+        if radius > max_sphere_radius {
+            continue;
+        }
 
-        for &ni in &fi_neighbors[..fi_vc] {
-            if ni < 0 { continue; }
-            let ni = ni as usize;
+        // Verify all seed vertices within tolerance
+        if !all_vertices_within_sphere_tolerance(
+            &seed_vertex_set, &center, radius, vertex_tol, &mesh.vertices,
+        ) {
+            continue;
+        }
 
-            if mesh.faces[ni].spherical_hypothesis != UNDEDUCED_SPHERICAL_HYPOTHESIS {
-                continue;
-            }
-
-            // Skip multi-face planar neighbors as seed partners
-            let ni_ph = mesh.faces[ni].planar_hypothesis;
-            if ni_ph >= 0 && planar_hypotheses[ni_ph as usize].faces.len() > 1 {
-                continue;
-            }
-
-            let ni_normal = match mesh.faces[ni].normal {
+        // Angular tolerance: reject if any pair of adjacent seed faces exceeds limit
+        let mut angular_reject = false;
+        for &fi in &surrounding {
+            let fi_n = match mesh.faces[fi].normal {
                 Some(n) => n,
                 None => continue,
             };
-
-            // Check cross product magnitude for sufficient angular difference
-            let cross = cross3(&fi_normal, &ni_normal);
-            let cross_mag = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
-            if cross_mag < MIN_CROSS_THRESHOLD {
-                continue;
-            }
-
-            // Angular tolerance: reject seed pairs with dihedral angle > limit
-            let cos_angle = dot3(&fi_normal, &ni_normal).clamp(-1.0, 1.0);
-            if cos_angle.acos() > angular_tol {
-                continue;
-            }
-
-            // Collect vertices of both seed faces
-            let mut vertex_set: HashSet<usize> = mesh.faces[fi].vertex_indices[..fi_vc]
-                .iter().copied().collect();
-            let ni_vc = mesh.faces[ni].vertex_count as usize;
-            for &vi in &mesh.faces[ni].vertex_indices[..ni_vc] {
-                vertex_set.insert(vi);
-            }
-
-            // Fit sphere to seed pair vertices
-            let (center, radius) = match fit_sphere(&vertex_set, &mesh.vertices) {
-                Some(params) => params,
-                None => continue,
-            };
-
-            // Radius sanity check
-            if radius > max_sphere_radius {
-                continue;
-            }
-
-            // Verify seed: all vertices within tolerance
-            if !all_vertices_within_sphere_tolerance(
-                &vertex_set, &center, radius, vertex_tol, &mesh.vertices,
-            ) {
-                continue;
-            }
-
-            // Determine convexity
-            let convex = determine_sphere_convexity(
-                &mesh.faces[fi], &mesh.vertices, &center,
-            );
-
-            // Seed is valid — create hypothesis and start BFS
-            let hi = hypotheses.len() as i32;
-            mesh.faces[fi].spherical_hypothesis = hi;
-            mesh.faces[ni].spherical_hypothesis = hi;
-
-            let mut face_list = vec![fi, ni];
-            let mut current_center = center;
-            let mut current_radius = radius;
-
-            let mut queue = VecDeque::new();
-            queue.push_back(fi);
-            queue.push_back(ni);
-
-                // BFS expansion
-                while let Some(current_fi) = queue.pop_front() {
-                    let vc = mesh.faces[current_fi].vertex_count as usize;
-                    let neighbors = mesh.faces[current_fi].neighbors;
-
-                    for &cni in &neighbors[..vc] {
-                        if cni < 0 { continue; }
-                        let cni = cni as usize;
-
-                        if mesh.faces[cni].spherical_hypothesis != UNDEDUCED_SPHERICAL_HYPOTHESIS {
-                            continue;
-                        }
-
-
-                        // Convexity check
-                        let cni_convex = determine_sphere_convexity(
-                            &mesh.faces[cni], &mesh.vertices, &current_center,
-                        );
-                        if cni_convex != convex {
-                            continue;
-                        }
-
-                        // Angular tolerance: reject if dihedral angle with ANY already-assigned
-                        // neighbor exceeds the limit (defense-in-depth against creased surfaces)
-                        if let Some(n_cni) = mesh.faces[cni].normal {
-                            let cni_vc2 = mesh.faces[cni].vertex_count as usize;
-                            let cni_neighbors = mesh.faces[cni].neighbors;
-                            let mut angular_reject = false;
-                            for &adj in &cni_neighbors[..cni_vc2] {
-                                if adj < 0 { continue; }
-                                let adj = adj as usize;
-                                if mesh.faces[adj].spherical_hypothesis != hi { continue; }
-                                if let Some(n_adj) = mesh.faces[adj].normal {
-                                    let cos_a = dot3(&n_adj, &n_cni).clamp(-1.0, 1.0);
-                                    if cos_a.acos() > angular_tol {
-                                        angular_reject = true;
-                                        break;
-                                    }
-                                }
-                            }
-                            if angular_reject { continue; }
-                        }
-
-                        // Vertex distance check
-                        let cni_vc = mesh.faces[cni].vertex_count as usize;
-                        let cni_vi = mesh.faces[cni].vertex_indices;
-                        let mut all_ok = true;
-                        let mut any_far = false;
-                        for &vi in &cni_vi[..cni_vc] {
-                            let d = vertex_to_sphere_distance(
-                                &mesh.vertices[vi],
-                                &current_center,
-                                current_radius,
-                            ).abs();
-                            if d > vertex_tol {
-                                all_ok = false;
-                                if d > REFIT_SKIP_MULTIPLIER * vertex_tol {
-                                    any_far = true;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if any_far { continue; }
-
-                        if !all_ok {
-                            // Try re-fitting with new face included
-                            let mut trial_vertices = vertex_set.clone();
-                            for &vi in &cni_vi[..cni_vc] {
-                                trial_vertices.insert(vi);
-                            }
-
-                            let (new_center, new_radius) = match fit_sphere(
-                                &trial_vertices, &mesh.vertices,
-                            ) {
-                                Some(params) => params,
-                                None => continue,
-                            };
-
-                            if new_radius > max_sphere_radius {
-                                continue;
-                            }
-
-                            if !all_vertices_within_sphere_tolerance(
-                                &trial_vertices, &new_center, new_radius,
-                                vertex_tol, &mesh.vertices,
-                            ) {
-                                continue;
-                            }
-
-                            // Accept re-fit
-                            current_center = new_center;
-                            current_radius = new_radius;
-                        }
-
-                        // Accept this face
-                        mesh.faces[cni].spherical_hypothesis = hi;
-                        face_list.push(cni);
-                        for &vi in &cni_vi[..cni_vc] {
-                            vertex_set.insert(vi);
-                        }
-                        queue.push_back(cni);
+            let fi_vc = mesh.faces[fi].vertex_count as usize;
+            for &ni in &mesh.faces[fi].neighbors[..fi_vc] {
+                if ni < 0 { continue; }
+                let ni = ni as usize;
+                if !surrounding.contains(&ni) { continue; }
+                if let Some(ni_n) = mesh.faces[ni].normal {
+                    let cos_a = dot3(&fi_n, &ni_n).clamp(-1.0, 1.0);
+                    if cos_a.acos() > angular_tol {
+                        angular_reject = true;
+                        break;
                     }
                 }
+            }
+            if angular_reject { break; }
+        }
+        if angular_reject {
+            continue;
+        }
 
-                // Final re-fit from all accumulated faces
-                if let Some((final_center, final_radius)) =
-                    fit_sphere(&vertex_set, &mesh.vertices)
-                {
-                    current_center = final_center;
-                    current_radius = final_radius;
+        // Centroid validation for seed faces
+        let mut centroid_reject = false;
+        for &fi in &surrounding {
+            let c = face_centroid(&mesh.faces[fi], &mesh.vertices);
+            let d = vertex_to_sphere_distance(
+                &MeshVertex::from_xyz(c[0], c[1], c[2]),
+                &center, radius,
+            ).abs();
+            if d > surface_tol {
+                centroid_reject = true;
+                break;
+            }
+        }
+        if centroid_reject {
+            continue;
+        }
+
+        // Determine convexity from first seed face
+        let convex = determine_sphere_convexity(
+            &mesh.faces[surrounding[0]], &mesh.vertices, &center,
+        );
+        // Check convexity consistency across seed faces
+        let mut convex_reject = false;
+        for &fi in &surrounding[1..] {
+            if determine_sphere_convexity(&mesh.faces[fi], &mesh.vertices, &center) != convex {
+                convex_reject = true;
+                break;
+            }
+        }
+        if convex_reject {
+            continue;
+        }
+
+        // Seed is valid — assign seed faces and start BFS
+        let hi = hypotheses.len() as i32;
+        for &fi in &surrounding {
+            mesh.faces[fi].spherical_hypothesis = hi;
+        }
+        let mut face_list: Vec<usize> = surrounding.clone();
+        let mut vertex_set: HashSet<usize> = seed_vertex_set;
+        let mut current_center = center;
+        let mut current_radius = radius;
+
+        let mut queue: VecDeque<usize> = surrounding.iter().copied().collect();
+
+        // BFS expansion
+        while let Some(current_fi) = queue.pop_front() {
+            let vc = mesh.faces[current_fi].vertex_count as usize;
+            let neighbors = mesh.faces[current_fi].neighbors;
+
+            for &cni in &neighbors[..vc] {
+                if cni < 0 { continue; }
+                let cni = cni as usize;
+
+                if mesh.faces[cni].spherical_hypothesis != UNDEDUCED_SPHERICAL_HYPOTHESIS {
+                    continue;
                 }
 
-                // Compute error metrics
-                let mut error_max = 0.0_f64;
-                let mut error_abs_sum = 0.0_f64;
-                for &vi in &vertex_set {
+                // Convexity check
+                let cni_convex = determine_sphere_convexity(
+                    &mesh.faces[cni], &mesh.vertices, &current_center,
+                );
+                if cni_convex != convex {
+                    continue;
+                }
+
+                // Angular tolerance: reject if dihedral angle with ANY already-assigned
+                // neighbor exceeds the limit (defense-in-depth against creased surfaces)
+                if let Some(n_cni) = mesh.faces[cni].normal {
+                    let cni_vc2 = mesh.faces[cni].vertex_count as usize;
+                    let cni_neighbors = mesh.faces[cni].neighbors;
+                    let mut ang_reject = false;
+                    for &adj in &cni_neighbors[..cni_vc2] {
+                        if adj < 0 { continue; }
+                        let adj = adj as usize;
+                        if mesh.faces[adj].spherical_hypothesis != hi { continue; }
+                        if let Some(n_adj) = mesh.faces[adj].normal {
+                            let cos_a = dot3(&n_adj, &n_cni).clamp(-1.0, 1.0);
+                            if cos_a.acos() > angular_tol {
+                                ang_reject = true;
+                                break;
+                            }
+                        }
+                    }
+                    if ang_reject { continue; }
+                }
+
+                // Vertex distance check
+                let cni_vc = mesh.faces[cni].vertex_count as usize;
+                let cni_vi = mesh.faces[cni].vertex_indices;
+                let mut all_ok = true;
+                let mut any_far = false;
+                for &v in &cni_vi[..cni_vc] {
                     let d = vertex_to_sphere_distance(
-                        &mesh.vertices[vi], &current_center, current_radius,
+                        &mesh.vertices[v],
+                        &current_center,
+                        current_radius,
                     ).abs();
-                    error_max = error_max.max(d);
-                    error_abs_sum += d;
-                }
-
-                // Validate: require at least 4 faces
-                let min_faces_ok = face_list.len() >= MIN_SPHERE_FACES;
-                let mut centroid_ok = true;
-                if min_faces_ok {
-                    for &f in &face_list {
-                        let c = face_centroid(&mesh.faces[f], &mesh.vertices);
-                        let d = vertex_to_sphere_distance(
-                            &MeshVertex::from_xyz(c[0], c[1], c[2]),
-                            &current_center, current_radius,
-                        ).abs();
-                        if d > surface_tol {
-                            centroid_ok = false;
+                    if d > vertex_tol {
+                        all_ok = false;
+                        if d > REFIT_SKIP_MULTIPLIER * vertex_tol {
+                            any_far = true;
                             break;
                         }
                     }
                 }
-                let radius_ok = current_radius <= max_sphere_radius;
+                if any_far { continue; }
 
-                if !min_faces_ok || !centroid_ok || !radius_ok {
-                    // Undo assignments
-                    for &f in &face_list {
-                        mesh.faces[f].spherical_hypothesis = UNDEDUCED_SPHERICAL_HYPOTHESIS;
-                    }
+                // Centroid validation (surface_tol check during BFS)
+                let centroid = face_centroid(&mesh.faces[cni], &mesh.vertices);
+                let centroid_dist = vertex_to_sphere_distance(
+                    &MeshVertex::from_xyz(centroid[0], centroid[1], centroid[2]),
+                    &current_center, current_radius,
+                ).abs();
+                if centroid_dist > REFIT_SKIP_MULTIPLIER * surface_tol {
                     continue;
                 }
+                let needs_refit = !all_ok || centroid_dist > surface_tol;
 
-                hypotheses.push(SphericalHypothesis {
-                    center: current_center,
-                    radius: current_radius,
-                    convex,
-                    faces: face_list,
-                    vertices: vertex_set.into_iter().collect(),
-                    error_max,
-                    error_abs_sum,
-                });
+                if needs_refit {
+                    // Try re-fitting with new face included
+                    let mut trial_vertices = vertex_set.clone();
+                    for &v in &cni_vi[..cni_vc] {
+                        trial_vertices.insert(v);
+                    }
 
-                seed_found = true;
-                break;
+                    let (new_center, new_radius) = match fit_sphere(
+                        &trial_vertices, &mesh.vertices,
+                    ) {
+                        Some(params) => params,
+                        None => continue,
+                    };
+
+                    if new_radius > max_sphere_radius {
+                        continue;
+                    }
+
+                    if !all_vertices_within_sphere_tolerance(
+                        &trial_vertices, &new_center, new_radius,
+                        vertex_tol, &mesh.vertices,
+                    ) {
+                        continue;
+                    }
+
+                    // Verify all existing centroids still pass
+                    let mut refit_centroid_ok = true;
+                    for &f in &face_list {
+                        let c = face_centroid(&mesh.faces[f], &mesh.vertices);
+                        let d = vertex_to_sphere_distance(
+                            &MeshVertex::from_xyz(c[0], c[1], c[2]),
+                            &new_center, new_radius,
+                        ).abs();
+                        if d > surface_tol {
+                            refit_centroid_ok = false;
+                            break;
+                        }
+                    }
+                    if !refit_centroid_ok {
+                        continue;
+                    }
+
+                    // Accept re-fit
+                    current_center = new_center;
+                    current_radius = new_radius;
+                }
+
+                // Accept this face
+                mesh.faces[cni].spherical_hypothesis = hi;
+                face_list.push(cni);
+                for &v in &cni_vi[..cni_vc] {
+                    vertex_set.insert(v);
+                }
+                queue.push_back(cni);
+            }
         }
 
-        if !seed_found {
-            mesh.faces[fi].spherical_hypothesis = NO_HYPOTHESIS;
+        // Final re-fit from all accumulated faces
+        if let Some((final_center, final_radius)) =
+            fit_sphere(&vertex_set, &mesh.vertices)
+        {
+            current_center = final_center;
+            current_radius = final_radius;
+        }
+
+        // Compute error metrics
+        let mut error_max = 0.0_f64;
+        let mut error_abs_sum = 0.0_f64;
+        for &v in &vertex_set {
+            let d = vertex_to_sphere_distance(
+                &mesh.vertices[v], &current_center, current_radius,
+            ).abs();
+            error_max = error_max.max(d);
+            error_abs_sum += d;
+        }
+
+        // Validate: minimum face count, centroid check, radius, and solid-angle coverage
+        let min_faces_ok = face_list.len() >= MIN_SPHERE_FACES;
+        let radius_ok = current_radius <= max_sphere_radius;
+        let coverage_ok = min_faces_ok && solid_angle_coverage_valid(
+            &face_list, &current_center, &mesh.faces, &mesh.vertices,
+        );
+
+        if !min_faces_ok || !radius_ok || !coverage_ok {
+            // Undo assignments
+            for &f in &face_list {
+                mesh.faces[f].spherical_hypothesis = UNDEDUCED_SPHERICAL_HYPOTHESIS;
+            }
+            continue;
+        }
+
+        hypotheses.push(SphericalHypothesis {
+            center: current_center,
+            radius: current_radius,
+            convex,
+            faces: face_list,
+            vertices: vertex_set.into_iter().collect(),
+            error_max,
+            error_abs_sum,
+        });
+    }
+
+    // Mark remaining undeduced faces as NO_HYPOTHESIS
+    for face in &mut mesh.faces {
+        if face.spherical_hypothesis == UNDEDUCED_SPHERICAL_HYPOTHESIS {
+            face.spherical_hypothesis = NO_HYPOTHESIS;
         }
     }
 
@@ -2109,7 +2268,7 @@ fn compare_selected_surfaces(
             max_dist = max_dist.max(dist);
         }
 
-        let tolerance = config.vertex_tolerance_mm;
+        let tolerance = config.surface_tolerance_mm;
 
         if max_dist > tolerance {
             return Err(Stage2CompareError {

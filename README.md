@@ -152,6 +152,7 @@ Integration tests in `tests/stage2_integration.rs` verify that:
 - Surface selection (stage 2.6) produces correct surface type counts for known models (block_with_hole=6 planar+1 cylindrical, pipe=2 planar+2 cylindrical, ball_on_cylinder=1 planar+1 cylindrical+1 spherical, hemisphere=1 planar+1 spherical, simple_sphere=1 spherical)
 - All STL/STEP pairs pass `--compare` validation at stages 2.1, 2.2, 2.3, and 2.6
 - Deduced cylinder parameters (axis direction, axis position, radius) match STEP cylinder parameters for all cylindrical test models
+- Deduced sphere parameters (center, radius) match STEP sphere parameters for all spherical test models
 - Angular tolerance enforcement prevents spurious cylindrical/spherical hypotheses on planar-only models (e.g., cube faces meet at 90°, exceeding the 17.5° default)
 
 Bad test STL files can be regenerated with `python3 scripts/generate_bad_tests.py`.
