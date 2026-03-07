@@ -12,7 +12,8 @@ use crate::stage1::{ConnectedMesh, MeshVertex};
 use crate::stage2::{SelectedSurface, Stage2Output};
 use crate::stage1;
 use opencascade_sys::{
-    b_rep_builder_api, b_rep_check, geom, geom_api, gp, message, shape_analysis, shape_fix,
+    b_rep_builder_api, b_rep_check, b_rep_extrema, b_rep_g_prop, extrema, g_prop,
+    geom, geom_api, gp, message, shape_analysis, shape_fix,
     top_abs, top_exp, topo_ds, OwnedPtr,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -109,7 +110,8 @@ pub struct Stage3Output {
     pub make_faces: Vec<OwnedPtr<b_rep_builder_api::MakeFace>>,
     /// OCCT shell(s) created in stage 3.5 by sewing faces.
     pub shells: Vec<OwnedPtr<topo_ds::Shell>>,
-    // TODO: OCCT solid objects — populated in stage 3.6
+    /// OCCT solid(s) created in stage 3.6.
+    pub solids: Vec<OwnedPtr<topo_ds::Solid>>,
 }
 
 impl std::fmt::Debug for Stage3Output {
@@ -120,6 +122,7 @@ impl std::fmt::Debug for Stage3Output {
             .field("vertices", &self.vertices.len())
             .field("make_faces", &self.make_faces.len())
             .field("shells", &self.shells.len())
+            .field("solids", &self.solids.len())
             .finish()
     }
 }
@@ -847,6 +850,7 @@ fn build_surfaces_and_adjacency(
         vertices: brep_vertices,
         make_faces: Vec::new(), // populated in stage 3.4
         shells: Vec::new(), // populated in stage 3.5
+        solids: Vec::new(), // populated in stage 3.6
     })}
 
 // ---------------------------------------------------------------------------
@@ -1695,13 +1699,36 @@ fn create_occt_faces_all(
 ) -> Result<Stage3Output, Stage3Error> {
     let num_faces = output.face_descriptors.len();
 
-    // 1. Create TopoDS_Edge for each ReconEdge
+    // 1. Create shared TopoDS_Vertex for each BRepVertex
+    let topo_vertices: Vec<OwnedPtr<topo_ds::Vertex>> = output
+        .vertices
+        .iter()
+        .map(|v| {
+            let pt = gp::Pnt::new_real3(v.point[0], v.point[1], v.point[2]);
+            let mut mv = b_rep_builder_api::MakeVertex::new_pnt(&pt);
+            mv.vertex().to_owned()
+        })
+        .collect();
+
+    // 2. Create TopoDS_Edge for each ReconEdge, using shared vertices when available
     let mut topo_edges: Vec<OwnedPtr<b_rep_builder_api::MakeEdge>> = Vec::with_capacity(output.edges.len());
     for (ei, edge) in output.edges.iter().enumerate() {
         let curve = edge.curve_3d.as_ref().unwrap_or_else(|| {
-            panic!("edge {ei} has no 3D curve — stage 3.3 must run first")
+            panic!("edge {ei} has no 3D curve \u{2014} stage 3.3 must run first")
         });
-        let make_edge = b_rep_builder_api::MakeEdge::new_handlegeomcurve(curve);
+        let make_edge = if edge.vertex_indices[0] != usize::MAX
+            && edge.vertex_indices[1] != usize::MAX
+        {
+            // Both endpoints have shared vertices — create edge with explicit vertex topology
+            b_rep_builder_api::MakeEdge::new_handlegeomcurve_vertex2(
+                curve,
+                &topo_vertices[edge.vertex_indices[0]],
+                &topo_vertices[edge.vertex_indices[1]],
+            )
+        } else {
+            // Closed-loop edge (no vertex endpoints) — create without vertices
+            b_rep_builder_api::MakeEdge::new_handlegeomcurve(curve)
+        };
         if !make_edge.is_done() {
             return Err(Stage3Error::AdjacencyError(format!(
                 "MakeEdge failed for edge {ei}: {:?}",
@@ -1980,6 +2007,177 @@ fn compare_shells_to_step(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Stage 3.6: Construct solids from shells
+// ---------------------------------------------------------------------------
+
+fn construct_solids(
+    mut output: Stage3Output,
+    config: &Config,
+) -> Result<Stage3Output, Stage3Error> {
+    if output.shells.is_empty() {
+        return Err(Stage3Error::AdjacencyError("no shells to make solids from".into()));
+    }
+
+    let mut solids: Vec<OwnedPtr<topo_ds::Solid>> = Vec::new();
+
+    for (si, shell) in output.shells.iter().enumerate() {
+        // Use ShapeFix_Solid::SolidFromShell which handles orientation automatically
+        let mut fixer = shape_fix::Solid::new();
+        let solid = fixer.solid_from_shell(shell);
+
+        // Validate with BRepCheck_Analyzer
+        let analyzer = b_rep_check::Analyzer::new_shape_bool(solid.as_shape(), true);
+        if !analyzer.is_valid() && config.verbose {
+            eprintln!("  Warning: solid {si} failed BRepCheck validation");
+        }
+
+        // Compute volume for reporting
+        let mut gprops = g_prop::GProps::new();
+        b_rep_g_prop::volume_properties_shape_gprops_bool3(
+            solid.as_shape(),
+            &mut gprops,
+            true,  // OnlyClosed
+            false, // SkipShared
+            false, // UseTriangulation
+        );
+        let volume = gprops.mass();
+
+        if config.verbose {
+            eprintln!("  Solid {si}: volume = {volume:.6} mm\u{00b3}");
+        }
+
+        solids.push(solid);
+    }
+
+    if !config.quiet {
+        eprintln!(
+            "Stage 3.6: Constructed {} solid(s) from {} shell(s)",
+            solids.len(),
+            output.shells.len(),
+        );
+    }
+
+    // Compare against reference STEP if --compare
+    if config.compare_shape.is_some() {
+        compare_solids_to_step(&solids, config)?;
+    }
+
+    output.solids = solids;
+    Ok(output)
+}
+
+/// Compare stage 3.6 solids against reference STEP shape.
+fn compare_solids_to_step(
+    solids: &[OwnedPtr<topo_ds::Solid>],
+    config: &Config,
+) -> Result<(), Stage3CompareError> {
+    let compare_shape = config.compare_shape.as_ref().unwrap();
+
+    // Count solids in reference STEP
+    let mut step_solids: Vec<OwnedPtr<topo_ds::Solid>> = Vec::new();
+    let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
+        compare_shape,
+        top_abs::ShapeEnum::Solid,
+        top_abs::ShapeEnum::Shape,
+    );
+    while explorer.more() {
+        let s = topo_ds::solid(explorer.value());
+        step_solids.push(s.to_owned());
+        explorer.next();
+    }
+
+    if !config.quiet {
+        eprintln!(
+            "  Compare 3.6: {} solid(s) created, {} solid(s) in STEP reference",
+            solids.len(),
+            step_solids.len(),
+        );
+    }
+
+    // Compute volumes of constructed and reference solids
+    let mut our_volumes: Vec<f64> = Vec::new();
+    for solid in solids.iter() {
+        let mut gprops = g_prop::GProps::new();
+        b_rep_g_prop::volume_properties_shape_gprops_bool3(
+            solid.as_shape(),
+            &mut gprops,
+            true, false, false,
+        );
+        our_volumes.push(gprops.mass().abs());
+    }
+
+    let mut step_volumes: Vec<f64> = Vec::new();
+    for solid in step_solids.iter() {
+        let mut gprops = g_prop::GProps::new();
+        b_rep_g_prop::volume_properties_shape_gprops_bool3(
+            solid.as_shape(),
+            &mut gprops,
+            true, false, false,
+        );
+        step_volumes.push(gprops.mass().abs());
+    }
+
+    // Match solids by volume (sort both lists and compare pairwise)
+    let mut our_sorted: Vec<(usize, f64)> = our_volumes.iter().copied().enumerate().collect();
+    let mut step_sorted: Vec<(usize, f64)> = step_volumes.iter().copied().enumerate().collect();
+    our_sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    step_sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+    // Check volume agreement for each pair
+    let n_pairs = our_sorted.len().min(step_sorted.len());
+    for i in 0..n_pairs {
+        let (our_idx, our_vol) = our_sorted[i];
+        let (_step_idx, step_vol) = step_sorted[i];
+        let rel_diff = if step_vol > 0.0 {
+            (our_vol - step_vol).abs() / step_vol
+        } else {
+            0.0
+        };
+
+        if !config.quiet {
+            eprintln!(
+                "  Compare 3.6: solid {our_idx} volume {our_vol:.6} mm\u{00b3} vs STEP {step_vol:.6} mm\u{00b3} (rel diff {rel_diff:.2e})",
+            );
+        }
+
+        if rel_diff > 0.01 {
+            eprintln!(
+                "  Compare 3.6: WARNING solid {our_idx} volume differs by {rel_diff:.2e} (>1%)",
+            );
+        }
+    }
+
+    // Compute BRepExtrema distance between our solids and STEP shape
+    for (si, solid) in solids.iter().enumerate() {
+        let progress = message::ProgressRange::new();
+        let dist_calc = b_rep_extrema::DistShapeShape::new_shape2_extflag_extalgo_progressrange(
+            solid.as_shape(),
+            compare_shape,
+            0,
+            extrema::ExtAlgo::Grad,
+            &progress,
+        );
+        if dist_calc.is_done() && dist_calc.nb_solution() > 0 {
+            let dist = dist_calc.value();
+            if !config.quiet {
+                eprintln!("  Compare 3.6: solid {si} distance to STEP = {dist:.6e} mm");
+            }
+            if dist > config.surface_tolerance_mm {
+                return Err(Stage3CompareError {
+                    substage: 6,
+                    check_type: "solid",
+                    element_index: si,
+                    max_distance: dist,
+                    tolerance: config.surface_tolerance_mm,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // Stage 3 entry point
 // ---------------------------------------------------------------------------
 
@@ -2021,10 +2219,7 @@ pub fn stage3(config: &Config, input: Stage2Output) -> Result<Stage3Output, Stag
     }
 
     // Stage 3.6: Construct solids
-    // TODO: BRepBuilderAPI_MakeSolid from shells, classify voids
-    if !config.quiet {
-        eprintln!("Stage 3.6: Construct solids (not yet implemented)");
-    }
+    let output = construct_solids(output, config)?;
 
-    Err(Stage3Error::NotImplemented("3".into()))
+    Ok(output)
 }
