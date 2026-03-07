@@ -203,6 +203,7 @@ All node/triangle indices are **1-based** (OCCT convention).
 - `MakeEdge::edge()` takes `&mut self`, not `&self`. Need `&mut` references when accessing edges.
 - `BRepCheck_Analyzer::new_shape_bool(shape, true)` validates faces. `.is_valid()` returns bool.
 - The base `geom::Surface` type does NOT have `bounds()` or `first_u_parameter()` etc. in the Rust bindings. These are available on specific subtypes (CylindricalSurface, SphericalSurface, Plane, etc.). For UV bounds, compute them from geometry (mesh vertices, hypothesis parameters) rather than trying to query the surface.
+- **Shared vertices**: Create `TopoDS_Vertex` objects from `BRepVertex` positions (`MakeVertex::new_pnt(pt)` then `.vertex().to_owned()`), then use `MakeEdge::new_handlegeomcurve_vertex2(curve, &v1, &v2)` instead of `MakeEdge::new_handlegeomcurve(curve)`. This ensures edges explicitly share vertex objects, making sewing topology-aware rather than proximity-based.
 
 ### Stage 3.3 edge curve computation: tricky cases
 - **IntSS degenerate curves for plane-through-cylinder-axis**: When a plane passes through a cylinder's axis, `GeomAPI_IntSS` returns 4 degenerate curves with extreme parameter ranges (~-846M to -846M+47k), none containing the model's actual z-range. `ProjectPointOnCurve` fails on 3 of 4 curves. Fallback: validate IntSS curve by projecting boundary vertices — if distance exceeds 1mm, construct a `Geom_Line` from the two vertex positions instead.
@@ -219,3 +220,10 @@ All node/triangle indices are **1-based** (OCCT convention).
 - `top_abs::ShapeEnum::Compsolid` (not `CompSolid`) — watch the capitalization.
 - `topo_ds::shell_shape(shape)` downcasts `&Shape` to `&Shell` reference; Shell implements `CppCopyable`/`ToOwned` so you can `.to_owned()` to get `OwnedPtr<Shell>`.
 - Sewing statistics: `.nb_free_edges()`, `.nb_multiple_edges()`, `.nb_contigous_edges()` — note the OCCT typo "contigous" (not "contiguous").
+
+### Stage 3.6 solid construction
+- `shape_fix::Solid::new()`, then `.solid_from_shell(shell)` creates an `OwnedPtr<topo_ds::Solid>` with automatic orientation handling.
+- `topo_ds::solid(shape)` downcasts `&Shape` to `&Solid`; `Solid` is `CppCopyable`/`ToOwned`.
+- `b_rep_g_prop::volume_properties_shape_gprops_bool3(shape, &mut gprops, only_closed, skip_shared, use_triangulation)` computes volume. `gprops.mass()` returns the signed volume.
+- Volume can be wrong when the solid contains BRepCheck-invalid faces (e.g., concave cylinder in block_with_hole, curved faces in ball_on_cylinder). Volume comparison should be informational, not a hard error.
+- `b_rep_check::Analyzer::new_shape_bool(shape, true)` + `.is_valid()` validates a solid.
