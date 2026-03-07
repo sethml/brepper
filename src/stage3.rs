@@ -10,7 +10,8 @@
 use crate::config::Config;
 use crate::stage1::{ConnectedMesh, MeshVertex};
 use crate::stage2::{SelectedSurface, Stage2Output};
-use opencascade_sys::{geom, gp, OwnedPtr};
+use crate::stage1;
+use opencascade_sys::{geom, gp, top_abs, top_exp, topo_ds, OwnedPtr};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -109,6 +110,7 @@ impl std::fmt::Debug for Stage3Output {
 pub enum Stage3Error {
     NotImplemented(String),
     AdjacencyError(String),
+    Compare(Stage3CompareError),
 }
 
 impl Display for Stage3Error {
@@ -116,11 +118,158 @@ impl Display for Stage3Error {
         match self {
             Stage3Error::NotImplemented(stage) => write!(f, "stage {stage} not yet implemented"),
             Stage3Error::AdjacencyError(msg) => write!(f, "stage 3.1 adjacency error: {msg}"),
+            Stage3Error::Compare(e) => write!(f, "stage 3.1 compare: {e}"),
         }
     }
 }
 
 impl Error for Stage3Error {}
+
+impl From<Stage3CompareError> for Stage3Error {
+    fn from(e: Stage3CompareError) -> Self {
+        Stage3Error::Compare(e)
+    }
+}
+
+#[derive(Debug)]
+pub struct Stage3CompareError {
+    pub check_type: &'static str,
+    pub element_index: usize,
+    pub max_distance: f64,
+    pub tolerance: f64,
+}
+
+impl Display for Stage3CompareError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} {} is {:.6e} mm from nearest STEP {} (tolerance: {:.6e} mm)",
+            self.check_type, self.element_index, self.max_distance,
+            if self.check_type == "vertex" { "vertex" } else { "edge" },
+            self.tolerance
+        )
+    }
+}
+
+impl Error for Stage3CompareError {}
+
+/// Build a compound containing all edges from the reference STEP shape.
+fn build_edge_compound(compare_shape: &topo_ds::Shape) -> OwnedPtr<topo_ds::Compound> {
+    let builder = topo_ds::Builder::new();
+    let mut compound = topo_ds::Compound::new();
+    builder.make_compound(&mut compound);
+    let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
+        compare_shape,
+        top_abs::ShapeEnum::Edge,
+        top_abs::ShapeEnum::Shape,
+    );
+    while explorer.more() {
+        builder.add(compound.as_shape_mut(), explorer.value());
+        explorer.next();
+    }
+    compound
+}
+
+/// Build a compound containing all vertices from the reference STEP shape.
+fn build_vertex_compound(compare_shape: &topo_ds::Shape) -> OwnedPtr<topo_ds::Compound> {
+    let builder = topo_ds::Builder::new();
+    let mut compound = topo_ds::Compound::new();
+    builder.make_compound(&mut compound);
+    let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
+        compare_shape,
+        top_abs::ShapeEnum::Vertex,
+        top_abs::ShapeEnum::Shape,
+    );
+    while explorer.more() {
+        builder.add(compound.as_shape_mut(), explorer.value());
+        explorer.next();
+    }
+    compound
+}
+
+/// Compute minimum distance from a point to a shape.
+fn min_distance_to_shape(pt: &gp::Pnt, shape: &topo_ds::Shape) -> f64 {
+    stage1::min_distance_to_shape(pt, shape)
+}
+
+/// Compare stage 3.1 adjacency graph against reference STEP shape.
+///
+/// For each ReconEdge, samples mesh boundary vertices along the edge and checks
+/// that each is within vertex_tolerance of a STEP edge.
+/// For each BRepVertex, checks that it is within vertex_tolerance of a STEP vertex.
+fn compare_adjacency_to_step(
+    edges: &[ReconEdge],
+    vertices: &[BRepVertex],
+    mesh: &ConnectedMesh,
+    config: &Config,
+) -> Result<(), Stage3CompareError> {
+    let compare_shape = config.compare_shape.as_ref().unwrap();
+
+    // Build compounds of edges and vertices from the reference STEP shape
+    let edge_compound = build_edge_compound(compare_shape);
+    let vertex_compound = build_vertex_compound(compare_shape);
+
+    // Check ReconEdge boundary vertices against STEP edges
+    let mut edge_overall_max = 0.0_f64;
+    for (ei, edge) in edges.iter().enumerate() {
+        let mut max_dist = 0.0_f64;
+        let boundary = &edge.mesh_boundary_vertices;
+
+        // Sample mesh boundary vertices: for short edges check all, for longer ones sample
+        let step = if boundary.len() <= 10 { 1 } else { boundary.len() / 10 };
+        let mut sample_indices: Vec<usize> = (0..boundary.len()).step_by(step).collect();
+        // Always include first and last
+        if let Some(&last_idx) = sample_indices.last() {
+            if last_idx != boundary.len() - 1 {
+                sample_indices.push(boundary.len() - 1);
+            }
+        }
+
+        for &si in &sample_indices {
+            let vi = boundary[si];
+            let v = &mesh.vertices[vi];
+            let pt = gp::Pnt::new_real3(v.x, v.y, v.z);
+            let d = min_distance_to_shape(&pt, edge_compound.as_shape());
+            max_dist = max_dist.max(d);
+        }
+
+        edge_overall_max = edge_overall_max.max(max_dist);
+        if max_dist > config.vertex_tolerance_mm {
+            return Err(Stage3CompareError {
+                check_type: "edge",
+                element_index: ei,
+                max_distance: max_dist,
+                tolerance: config.vertex_tolerance_mm,
+            });
+        }
+    }
+
+    // Check BRepVertices against STEP vertices
+    let mut vert_overall_max = 0.0_f64;
+    for (vi, vert) in vertices.iter().enumerate() {
+        let pt = gp::Pnt::new_real3(vert.point[0], vert.point[1], vert.point[2]);
+        let d = min_distance_to_shape(&pt, vertex_compound.as_shape());
+
+        vert_overall_max = vert_overall_max.max(d);
+        if d > config.vertex_tolerance_mm {
+            return Err(Stage3CompareError {
+                check_type: "vertex",
+                element_index: vi,
+                max_distance: d,
+                tolerance: config.vertex_tolerance_mm,
+            });
+        }
+    }
+
+    if !config.quiet {
+        eprintln!(
+            "  Compare 3.1: edge boundary max dist {:.6e} mm, vertex max dist {:.6e} mm",
+            edge_overall_max, vert_overall_max
+        );
+    }
+
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Stage 3.1: Create OCCT surfaces and build adjacency graph
@@ -659,6 +808,10 @@ fn build_surfaces_and_adjacency(
                 );
             }
         }
+    }
+    // Compare against STEP edges/vertices if --compare was specified
+    if config.compare_shape.is_some() {
+        compare_adjacency_to_step(&recon_edges, &brep_vertices, &input.mesh, config)?;
     }
 
     Ok(Stage3Output {

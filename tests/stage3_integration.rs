@@ -336,3 +336,73 @@ fn ccad_ball_on_cylinder_stage31_compare() {
     );
     run_stage3(&config);
 }
+
+#[test]
+fn ccad_wedge_stage31_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/ccad/generated/wedge.stl"),
+        &format!("{dir}/tests/ccad/generated/wedge.step"),
+    );
+    run_stage3(&config);
+}
+
+#[test]
+fn ccad_block_with_hole_stage31_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/ccad/generated/block_with_hole.stl"),
+        &format!("{dir}/tests/ccad/generated/block_with_hole.step"),
+    );
+    run_stage3(&config);
+}
+
+#[test]
+fn ccad_pipe_stage31_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/ccad/generated/pipe.stl"),
+        &format!("{dir}/tests/ccad/generated/pipe.step"),
+    );
+    run_stage3(&config);
+}
+
+#[test]
+fn ccad_simple_sphere_stage31_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/ccad/generated/simple_sphere.stl"),
+        &format!("{dir}/tests/ccad/generated/simple_sphere.step"),
+    );
+    run_stage3(&config);
+}
+
+#[test]
+fn ccad_spherical_pocket_stage31_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/ccad/generated/spherical_pocket.stl"),
+        &format!("{dir}/tests/ccad/generated/spherical_pocket.step"),
+    );
+    run_stage3(&config);
+}
+
+#[test]
+fn onshape_chamfered_cube_stage31_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/onshape/chamfered_cube_10_c1_medium.stl"),
+        &format!("{dir}/tests/onshape/chamfered_cube_10_c1_medium.step"),
+    );
+    run_stage3(&config);
+}
+
+#[test]
+fn manual_cube_stage31_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/manual/cube.stl"),
+        &format!("{dir}/tests/manual/cube.step"),
+    );
+    run_stage3(&config);
+}

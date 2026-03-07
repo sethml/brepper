@@ -627,7 +627,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 
 ### Stage 3: Surface Reconstruction
 - [x] Implement stage 3.1: Create OCCT surface objects and build adjacency graph from mesh connectivity.
-- [ ] Revisit stage 3.1: Implement newly-described --compare check.
+- [x] Revisit stage 3.1: Implement newly-described --compare check.
 - [ ] Implement stage 3.2: Detect tangency relationships between adjacent surfaces (initially mark all as non-tangent).
 - [ ] Implement stage 3.3: Compute edge curves via surface-surface intersection, trim to vertices, derive pcurves.
 - [ ] Implement stage 3.4: Create OCCT faces from surfaces bounded by edge wires.
