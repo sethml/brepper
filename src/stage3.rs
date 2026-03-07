@@ -11,7 +11,9 @@ use crate::config::Config;
 use crate::stage1::{ConnectedMesh, MeshVertex};
 use crate::stage2::{SelectedSurface, Stage2Output};
 use crate::stage1;
-use opencascade_sys::{geom, geom_api, gp, top_abs, top_exp, topo_ds, OwnedPtr};
+use opencascade_sys::{
+    b_rep_builder_api, b_rep_check, geom, geom_api, gp, top_abs, top_exp, topo_ds, OwnedPtr,
+};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -101,6 +103,9 @@ pub struct Stage3Output {
     pub edges: Vec<ReconEdge>,
     /// Vertices where faces and edges meet.
     pub vertices: Vec<BRepVertex>,
+    /// OCCT face objects created in stage 3.4 (one per face descriptor).
+    /// Each MakeFace owns the resulting TopoDS_Face; access via `.face()`.
+    pub make_faces: Vec<OwnedPtr<b_rep_builder_api::MakeFace>>,
     // TODO: OCCT shell and solid objects — populated in stages 3.5/3.6
 }
 
@@ -110,6 +115,7 @@ impl std::fmt::Debug for Stage3Output {
             .field("face_descriptors", &self.face_descriptors.len())
             .field("edges", &self.edges.len())
             .field("vertices", &self.vertices.len())
+            .field("make_faces", &self.make_faces.len())
             .finish()
     }
 }
@@ -832,6 +838,7 @@ fn build_surfaces_and_adjacency(
         face_descriptors,
         edges: recon_edges,
         vertices: brep_vertices,
+        make_faces: Vec::new(), // populated in stage 3.4
     })}
 
 // ---------------------------------------------------------------------------
@@ -1213,6 +1220,504 @@ fn compute_edge_curves_all(
 
     Ok(output)
 }
+
+// ---------------------------------------------------------------------------
+// Stage 3.4: Create OCCT faces from surfaces bounded by edge wires
+// ---------------------------------------------------------------------------
+
+/// Compute the centroid of a mesh face.
+fn compute_mesh_face_centroid(face_idx: usize, mesh: &ConnectedMesh) -> [f64; 3] {
+    let face = &mesh.faces[face_idx];
+    let vc = face.vertex_count as usize;
+    let mut cx = 0.0;
+    let mut cy = 0.0;
+    let mut cz = 0.0;
+    for i in 0..vc {
+        let v = &mesh.vertices[face.vertex_indices[i]];
+        cx += v.x;
+        cy += v.y;
+        cz += v.z;
+    }
+    let n = vc as f64;
+    [cx / n, cy / n, cz / n]
+}
+
+/// Group a face's edges into separate wire loops based on vertex connectivity.
+///
+/// Edges sharing BRepVertices are grouped together. Closed-loop edges
+/// (both vertex_indices == usize::MAX) each form their own wire.
+fn group_edges_into_wires(fd: &FaceDescriptor, edges: &[ReconEdge]) -> Vec<Vec<usize>> {
+    if fd.edge_indices.is_empty() {
+        return Vec::new();
+    }
+
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    // Map from BRepVertex index to which group it belongs to
+    let mut vertex_group: HashMap<usize, usize> = HashMap::new();
+
+    for &ei in &fd.edge_indices {
+        let edge = &edges[ei];
+        let [v0, v1] = edge.vertex_indices;
+
+        if v0 == usize::MAX && v1 == usize::MAX {
+            // Closed loop — its own wire
+            groups.push(vec![ei]);
+            continue;
+        }
+
+        // Find existing group for v0 or v1
+        let g0 = if v0 != usize::MAX {
+            vertex_group.get(&v0).copied()
+        } else {
+            None
+        };
+        let g1 = if v1 != usize::MAX {
+            vertex_group.get(&v1).copied()
+        } else {
+            None
+        };
+
+        match (g0, g1) {
+            (None, None) => {
+                let gi = groups.len();
+                groups.push(vec![ei]);
+                if v0 != usize::MAX {
+                    vertex_group.insert(v0, gi);
+                }
+                if v1 != usize::MAX {
+                    vertex_group.insert(v1, gi);
+                }
+            }
+            (Some(gi), None) => {
+                groups[gi].push(ei);
+                if v1 != usize::MAX {
+                    vertex_group.insert(v1, gi);
+                }
+            }
+            (None, Some(gi)) => {
+                groups[gi].push(ei);
+                if v0 != usize::MAX {
+                    vertex_group.insert(v0, gi);
+                }
+            }
+            (Some(g0i), Some(g1i)) if g0i == g1i => {
+                groups[g0i].push(ei);
+            }
+            (Some(g0i), Some(g1i)) => {
+                // Merge two groups
+                let (keep, merge) = if g0i < g1i {
+                    (g0i, g1i)
+                } else {
+                    (g1i, g0i)
+                };
+                groups[keep].push(ei);
+                let merged = std::mem::take(&mut groups[merge]);
+                groups[keep].extend(merged);
+                // Update vertex_group references
+                for g in vertex_group.values_mut() {
+                    if *g == merge {
+                        *g = keep;
+                    }
+                }
+            }
+        }
+    }
+
+    // Filter empty groups (from merges)
+    groups.into_iter().filter(|g| !g.is_empty()).collect()
+}
+
+/// Create an OCCT face for a planar surface, building wires from edge curves.
+fn create_planar_face(
+    fi: usize,
+    output: &Stage3Output,
+    topo_edges: &mut [OwnedPtr<b_rep_builder_api::MakeEdge>],
+    config: &Config,
+) -> Result<OwnedPtr<b_rep_builder_api::MakeFace>, Stage3Error> {
+    let fd = &output.face_descriptors[fi];
+
+    // Group edges into wire loops
+    let wire_groups = group_edges_into_wires(fd, &output.edges);
+
+    if wire_groups.is_empty() {
+        return Err(Stage3Error::AdjacencyError(format!(
+            "planar face {fi} has no edges"
+        )));
+    }
+
+    // Build MakeWire for each group
+    let mut wires: Vec<OwnedPtr<b_rep_builder_api::MakeWire>> = Vec::new();
+    for (gi, group) in wire_groups.iter().enumerate() {
+        let first_edge = topo_edges[group[0]].edge();
+        let mut make_wire = b_rep_builder_api::MakeWire::new_edge(first_edge);
+        for &ei in &group[1..] {
+            make_wire.add_edge(topo_edges[ei].edge());
+        }
+        if !make_wire.is_done() {
+            if config.verbose {
+                eprintln!(
+                    "  Face {fi} wire {gi}: MakeWire error {:?} ({} edges)",
+                    make_wire.error(),
+                    group.len(),
+                );
+            }
+            return Err(Stage3Error::AdjacencyError(format!(
+                "MakeWire failed for planar face {fi} wire group {gi} ({} edges): {:?}",
+                group.len(),
+                make_wire.error(),
+            )));
+        }
+        wires.push(make_wire);
+    }
+
+    // Identify the outer wire: the one with the most edges (heuristic)
+    let outer_idx = wires
+        .iter()
+        .enumerate()
+        .max_by_key(|(i, _)| wire_groups[*i].len())
+        .map(|(i, _)| i)
+        .unwrap();
+
+    // Create face with the outer wire
+    let mut make_face = b_rep_builder_api::MakeFace::new_handlegeomsurface_wire(
+        &fd.surface,
+        wires[outer_idx].wire(),
+    );
+
+    if !make_face.is_done() {
+        return Err(Stage3Error::AdjacencyError(format!(
+            "MakeFace failed for planar face {fi}: {:?}",
+            make_face.error(),
+        )));
+    }
+
+    // Add inner wires (holes)
+    for (i, w) in wires.iter_mut().enumerate() {
+        if i != outer_idx {
+            make_face.add(w.wire());
+        }
+    }
+
+    Ok(make_face)
+}
+
+/// Create an OCCT face for a periodic surface (cylinder or sphere) using UV parameter bounds.
+fn create_periodic_face(
+    fi: usize,
+    output: &Stage3Output,
+    config: &Config,
+) -> Result<OwnedPtr<b_rep_builder_api::MakeFace>, Stage3Error> {
+    let fd = &output.face_descriptors[fi];
+    let surface = &output.stage2.selected_surfaces[fd.selected_surface_idx];
+
+    match surface {
+        SelectedSurface::Cylindrical(idx) => {
+            let hyp = &output.stage2.cylindrical_hypotheses[*idx];
+            let ax = hyp.axis_direction;
+            let ao = hyp.axis_origin;
+
+            // Compute V bounds from edge boundary vertices
+            let mut v_min = f64::MAX;
+            let mut v_max = f64::MIN;
+
+            for &ei in &fd.edge_indices {
+                let edge = &output.edges[ei];
+                for &vi in &edge.mesh_boundary_vertices {
+                    let v = &output.stage2.mesh.vertices[vi];
+                    let dp = [v.x - ao[0], v.y - ao[1], v.z - ao[2]];
+                    let v_param = dp[0] * ax[0] + dp[1] * ax[1] + dp[2] * ax[2];
+                    v_min = v_min.min(v_param);
+                    v_max = v_max.max(v_param);
+                }
+            }
+
+            if v_min >= v_max {
+                return Err(Stage3Error::AdjacencyError(format!(
+                    "cylinder face {fi} has no valid V parameter range"
+                )));
+            }
+
+            let u_min = 0.0;
+            let u_max = 2.0 * std::f64::consts::PI;
+
+            let make_face = b_rep_builder_api::MakeFace::new_handlegeomsurface_real5(
+                &fd.surface,
+                u_min,
+                u_max,
+                v_min,
+                v_max,
+                config.vertex_tolerance_mm,
+            );
+
+            if !make_face.is_done() {
+                return Err(Stage3Error::AdjacencyError(format!(
+                    "MakeFace failed for cylindrical face {fi}: {:?}",
+                    make_face.error(),
+                )));
+            }
+
+            Ok(make_face)
+        }
+        SelectedSurface::Spherical(idx) => {
+            let hyp = &output.stage2.spherical_hypotheses[*idx];
+
+            if fd.edge_indices.is_empty() {
+                // Full sphere — use natural bounds
+                let make_face = b_rep_builder_api::MakeFace::new_handlegeomsurface_real(
+                    &fd.surface,
+                    config.vertex_tolerance_mm,
+                );
+
+                if !make_face.is_done() {
+                    return Err(Stage3Error::AdjacencyError(format!(
+                        "MakeFace failed for full sphere face {fi}: {:?}",
+                        make_face.error(),
+                    )));
+                }
+
+                return Ok(make_face);
+            }
+
+            // Compute V bounds from edge boundary vertices and mesh face centroids
+            // V parameter on sphere: V = asin((P - center) · z_dir / radius)
+            // Our Ax3 has z_dir = [0, 0, 1]
+            let center = hyp.center;
+            let mut v_min = f64::MAX;
+            let mut v_max = f64::MIN;
+
+            // Sample from edge boundary vertices
+            for &ei in &fd.edge_indices {
+                let edge = &output.edges[ei];
+                for &vi in &edge.mesh_boundary_vertices {
+                    let v = &output.stage2.mesh.vertices[vi];
+                    let dp = [v.x - center[0], v.y - center[1], v.z - center[2]];
+                    let len = (dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]).sqrt();
+                    if len < 1e-15 {
+                        continue;
+                    }
+                    let v_param = (dp[2] / len).clamp(-1.0, 1.0).asin();
+                    v_min = v_min.min(v_param);
+                    v_max = v_max.max(v_param);
+                }
+            }
+
+            // Extend V range using mesh face centroids to detect pole coverage
+            let faces = surface_faces(surface, &output.stage2);
+            for &mfi in faces {
+                let c = compute_mesh_face_centroid(mfi, &output.stage2.mesh);
+                let dp = [c[0] - center[0], c[1] - center[1], c[2] - center[2]];
+                let len = (dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]).sqrt();
+                if len < 1e-15 {
+                    continue;
+                }
+                let v_param = (dp[2] / len).clamp(-1.0, 1.0).asin();
+                v_min = v_min.min(v_param);
+                v_max = v_max.max(v_param);
+            }
+
+            // Snap to poles if close (within ~5.7°)
+            let pole_snap = 0.1; // radians
+            if v_max > std::f64::consts::FRAC_PI_2 - pole_snap {
+                v_max = std::f64::consts::FRAC_PI_2;
+            }
+            if v_min < -std::f64::consts::FRAC_PI_2 + pole_snap {
+                v_min = -std::f64::consts::FRAC_PI_2;
+            }
+
+            let u_min = 0.0;
+            let u_max = 2.0 * std::f64::consts::PI;
+
+            let make_face = b_rep_builder_api::MakeFace::new_handlegeomsurface_real5(
+                &fd.surface,
+                u_min,
+                u_max,
+                v_min,
+                v_max,
+                config.vertex_tolerance_mm,
+            );
+
+            if !make_face.is_done() {
+                return Err(Stage3Error::AdjacencyError(format!(
+                    "MakeFace failed for spherical face {fi}: {:?}",
+                    make_face.error(),
+                )));
+            }
+
+            Ok(make_face)
+        }
+        _ => unreachable!("create_periodic_face called for non-periodic surface"),
+    }
+}
+
+/// Validate created faces using BRepCheck_Analyzer.
+fn validate_faces(output: &Stage3Output, config: &Config) -> Result<(), Stage3Error> {
+    let mut invalid_count = 0;
+
+    for (fi, mf) in output.make_faces.iter().enumerate() {
+        let face = mf.face();
+        let analyzer = b_rep_check::Analyzer::new_shape(face.as_shape());
+        if !analyzer.is_valid() {
+            invalid_count += 1;
+            if config.verbose {
+                eprintln!("  Face {fi}: BRepCheck_Analyzer reports invalid");
+            }
+        }
+    }
+
+    if !config.quiet && invalid_count > 0 {
+        eprintln!(
+            "  Warning: {invalid_count}/{} faces failed BRepCheck validation",
+            output.make_faces.len(),
+        );
+    }
+
+    Ok(())
+}
+
+/// Compare stage 3.4 faces against reference STEP shape.
+fn compare_faces_to_step(
+    output: &Stage3Output,
+    config: &Config,
+) -> Result<(), Stage3CompareError> {
+    let compare_shape = config.compare_shape.as_ref().unwrap();
+
+    // Count faces in reference STEP
+    let mut step_face_count = 0;
+    let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
+        compare_shape,
+        top_abs::ShapeEnum::Face,
+        top_abs::ShapeEnum::Shape,
+    );
+    while explorer.more() {
+        step_face_count += 1;
+        explorer.next();
+    }
+
+    let our_face_count = output.make_faces.len();
+    if !config.quiet {
+        eprintln!(
+            "  Compare 3.4: {} faces created, {} faces in STEP reference",
+            our_face_count, step_face_count,
+        );
+    }
+
+    // For each face, sample a representative point from mesh face centroids
+    // and check distance to the reference STEP shape.
+    let mut max_dist = 0.0_f64;
+    for (fi, fd) in output.face_descriptors.iter().enumerate() {
+        let surface = &output.stage2.selected_surfaces[fd.selected_surface_idx];
+        let faces = surface_faces(surface, &output.stage2);
+        if faces.is_empty() {
+            continue;
+        }
+        // Use the centroid of the first mesh face as a sample point
+        let centroid = compute_mesh_face_centroid(faces[0], &output.stage2.mesh);
+        let pt = gp::Pnt::new_real3(centroid[0], centroid[1], centroid[2]);
+        let d_ref = min_distance_to_shape(&pt, compare_shape);
+        max_dist = max_dist.max(d_ref);
+
+        if d_ref > config.surface_tolerance_mm && config.verbose {
+            eprintln!(
+                "  Face {fi}: centroid distance to STEP: {:.6e} mm (tolerance: {:.6e})",
+                d_ref, config.surface_tolerance_mm,
+            );
+        }
+    }
+
+    if !config.quiet {
+        eprintln!(
+            "  Compare 3.4: max face sample distance to STEP: {:.6e} mm",
+            max_dist,
+        );
+    }
+
+    if max_dist > config.surface_tolerance_mm {
+        return Err(Stage3CompareError {
+            check_type: "face",
+            element_index: 0,
+            max_distance: max_dist,
+            tolerance: config.surface_tolerance_mm,
+        });
+    }
+
+    Ok(())
+}
+
+/// Create OCCT faces for all face descriptors (stage 3.4 main entry).
+fn create_occt_faces_all(
+    mut output: Stage3Output,
+    config: &Config,
+) -> Result<Stage3Output, Stage3Error> {
+    let num_faces = output.face_descriptors.len();
+
+    // 1. Create TopoDS_Edge for each ReconEdge
+    let mut topo_edges: Vec<OwnedPtr<b_rep_builder_api::MakeEdge>> = Vec::with_capacity(output.edges.len());
+    for (ei, edge) in output.edges.iter().enumerate() {
+        let curve = edge.curve_3d.as_ref().unwrap_or_else(|| {
+            panic!("edge {ei} has no 3D curve — stage 3.3 must run first")
+        });
+        let make_edge = b_rep_builder_api::MakeEdge::new_handlegeomcurve(curve);
+        if !make_edge.is_done() {
+            return Err(Stage3Error::AdjacencyError(format!(
+                "MakeEdge failed for edge {ei}: {:?}",
+                make_edge.error(),
+            )));
+        }
+        topo_edges.push(make_edge);
+    }
+
+    // 2. Create OCCT face for each face descriptor
+    let mut make_faces: Vec<OwnedPtr<b_rep_builder_api::MakeFace>> = Vec::with_capacity(num_faces);
+
+    for fi in 0..num_faces {
+        let surface_type = &output.stage2.selected_surfaces[output.face_descriptors[fi].selected_surface_idx];
+        let is_periodic = matches!(
+            surface_type,
+            SelectedSurface::Cylindrical(_) | SelectedSurface::Spherical(_)
+        );
+
+        let make_face = if is_periodic {
+            create_periodic_face(fi, &output, config)?
+        } else {
+            create_planar_face(fi, &output, &mut topo_edges, config)?
+        };
+
+        if config.verbose {
+            let stype = match surface_type {
+                SelectedSurface::Planar(_) => "planar",
+                SelectedSurface::Cylindrical(_) => "cylindrical",
+                SelectedSurface::Spherical(_) => "spherical",
+            };
+            eprintln!(
+                "  Face {fi}: {stype} — created successfully ({} edges)",
+                output.face_descriptors[fi].edge_indices.len(),
+            );
+        }
+
+        make_faces.push(make_face);
+    }
+
+    if !config.quiet {
+        eprintln!(
+            "Stage 3.4: Created {}/{} OCCT faces",
+            make_faces.len(),
+            num_faces,
+        );
+    }
+
+    output.make_faces = make_faces;
+
+    // 3. Validate faces
+    validate_faces(&output, config)?;
+
+    // 4. Compare against reference STEP if --compare
+    if config.compare_shape.is_some() {
+        compare_faces_to_step(&output, config)?;
+    }
+
+    Ok(output)
+}
+
 // Stage 3 entry point
 // ---------------------------------------------------------------------------
 
@@ -1240,13 +1745,10 @@ pub fn stage3(config: &Config, input: Stage2Output) -> Result<Stage3Output, Stag
     }
 
     // Stage 3.4: Create OCCT faces
-    // TODO: Build BRepBuilderAPI_MakeFace from surface + bounding wires
-    if !config.quiet {
-        eprintln!("Stage 3.4: Create OCCT faces (not yet implemented)");
-    }
+    let output = create_occt_faces_all(output, config)?;
 
     if !config.stage.at_least(3, 5) {
-        return Err(Stage3Error::NotImplemented("3.4".into()));
+        return Ok(output);
     }
 
     // Stage 3.5: Construct shells

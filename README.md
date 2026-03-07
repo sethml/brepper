@@ -161,6 +161,7 @@ Integration tests in `tests/stage3_integration.rs` verify that:
 - All STL/STEP pairs pass `--compare` validation at stage 3.1, verifying that reconstructed edge boundary vertices lie on STEP edges and BRep vertices coincide with STEP vertices
 - Tangency detection (stage 3.2) correctly identifies no tangent edges for models composed of planar, cylindrical, and spherical surfaces meeting at angles > 2°
 - Edge curve computation (stage 3.3) produces 3D curves for all edges via surface-surface intersection, verified across all test models (cube, cylinder, hemisphere, ball_on_cylinder, block_with_hole, chamfered_cube, spherical_pocket)
+- Face creation (stage 3.4) successfully creates OCCT `TopoDS_Face` objects for all test models: planar faces built from wire loops, cylindrical/spherical faces from UV parameter bounds. All STL/STEP pairs pass `--compare` validation at stage 3.4
 
 
 

@@ -541,18 +541,33 @@ For each ReconEdge, compute the 3D intersection curve between the two adjacent s
 #### 3.4 Create OCCT faces
 For each ReconFace, construct a `TopoDS_Face` from the surface and bounding wires.
 
-**Algorithm:**
-- Collect all ReconEdges that border this face. For each, create a `TopoDS_Edge` using `BRepBuilderAPI_MakeEdge`, providing the 3D curve, pcurve on this face's surface, and the two `TopoDS_Vertex` endpoints.
-- Order edges into closed wires. Each face has one outer wire and zero or more inner wires (holes). Determine wire connectivity by matching shared vertices.
-- Orient wires: outer wire counter-clockwise when viewed from outside the solid (along the face normal), inner wires clockwise. Use the face normal and mesh vertex positions to determine orientation.
-- Construct the face: `BRepBuilderAPI_MakeFace` with the surface and outer wire, then add inner wires.
-- If face construction fails, attempt repair with `ShapeFix_Face`. Investigate and fix the root cause if repair is needed frequently.
-- For periodic surfaces (cylinders, spheres), include the seam edge in the wire and ensure pcurves respect the parameter periodicity.
+**Algorithm (as implemented):**
 
-- With the `--compare` flag:
-    - For each constructed `TopoDS_Face`, sample interior points on the face (e.g., evaluate the surface at a grid of UV parameters within the wire bounds). For each sample, compute the distance to the nearest face in the reference STEP file using `BRepExtrema_DistShapeShape`. Report an error if any sample exceeds `--surface-tolerance`.
-    - Verify face count: the number of constructed faces should match the number of faces in the reference STEP file. Report a warning on mismatch.
-    - Validate each face with `BRepCheck_Analyzer` and report any topology or geometry errors.
+*Stage 1: Create TopoDS_Edge for each ReconEdge.*
+- For each `ReconEdge`, create a `BRepBuilderAPI_MakeEdge` using the trimmed 3D curve (from stage 3.3). No pcurves or explicit `TopoDS_Vertex` endpoints are provided at this stage — `BRepBuilderAPI_Sewing` in stage 3.5 will merge coincident vertices and edges across faces.
+
+*Stage 2: Create OCCT faces.*
+- **Planar faces** use wire-based construction:
+  - Group the face's edges into wire loops based on `BRepVertex` connectivity. Edges sharing a vertex index are grouped together; closed-loop edges (vertex_indices both `usize::MAX`) each form a separate wire.
+  - Build `BRepBuilderAPI_MakeWire` for each group by sequentially adding `TopoDS_Edge` objects.
+  - Identify the outer wire as the group with the most edges (heuristic).
+  - Create `BRepBuilderAPI_MakeFace` with the surface handle and outer wire, then add inner wires as holes.
+
+- **Cylindrical faces** use UV-bounds construction:
+  - Compute V parameter range from edge boundary mesh vertices: V = (P - axis_origin) · axis_direction.
+  - U range is always [0, 2π] (full circumference).
+  - Create face with `MakeFace::new_handlegeomsurface_real5(surface, u_min, u_max, v_min, v_max, tolerance)`.
+
+- **Spherical faces** use UV-bounds construction:
+  - Compute V parameter range from edge boundary mesh vertices: V = asin((P - center) · z_dir / |P - center|).
+  - Extend V range using mesh face centroids to detect pole coverage.
+  - Snap V to poles (±π/2) if within ~5.7° (0.1 radians).
+  - Full spheres (no edges) use `MakeFace::new_handlegeomsurface_real(surface, tolerance)` with natural bounds.
+  - Create bounded spherical faces with `MakeFace::new_handlegeomsurface_real5`.
+
+*Stage 3: Validate and compare.*
+- Validate each face with `BRepCheck_Analyzer` and report invalid faces as warnings.
+- With `--compare`: for each face, sample a representative mesh face centroid from the surface's mesh faces and compute distance to the reference STEP shape using `BRepExtrema_DistShapeShape`. Report face count comparison. Error if max distance exceeds `--surface-tolerance`.
 
 #### 3.5 Construct shells
 Group connected ReconFaces into shells and assemble each group into a `TopoDS_Shell`.
@@ -660,7 +675,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Revisit stage 3.1: Implement newly-described --compare check.
 - [x] Implement stage 3.2: Detect tangency relationships between adjacent surfaces. Computes outward-facing surface normals at sampled boundary points and compares angle; marks edge as tangent if normals agree within 2°. No tangent edges expected for current test models (all planar/cylindrical/spherical intersections meet at angles > 2°).
 - [x] Implement stage 3.3: Compute edge curves via surface-surface intersection (`GeomAPI_IntSS`), trim to vertex endpoints via `GeomAPI_ProjectPointOnCurve` + `Geom_TrimmedCurve`. Multi-curve selection picks closest to mesh boundary vertices. Tangent edges skipped (no tangent edges in current models). All edges computed successfully for all test models. Pcurves deferred to stage 3.4.
-- [ ] Implement stage 3.4: Create OCCT faces from surfaces bounded by edge wires.
+- [x] Implement stage 3.4: Create OCCT faces from surfaces bounded by edge wires. Creates `TopoDS_Edge` for each `ReconEdge` using `BRepBuilderAPI_MakeEdge` with trimmed 3D curves. Planar faces: group edges into wire loops by vertex connectivity, build `MakeWire`/`MakeFace` with outer wire + inner hole wires. Cylindrical faces: compute UV bounds from edge boundary vertex projections onto axis, create face with UV parameter bounds. Spherical faces: compute V from `asin((P-center)·z/r)`, extend with mesh centroids, snap to poles within ~5.7°; full spheres use natural bounds. Validates all faces with `BRepCheck_Analyzer`. Compare check samples mesh face centroids against reference STEP.
 - [ ] Implement stage 3.5: Stitch faces into shells using BRepBuilderAPI_Sewing.
 - [ ] Implement stage 3.6: Construct solids from shells, determine outer/inner shell roles.
 - [ ] Revisit stage 3.2: Detect tangency relationships between adjacent surfaces. If there are any problems with models that involve tangent curves, such as tests/onshape/chamfered_cube, then imagine more tests for difficult tangency relationships including cylinder-plane and sphere-cylinder, create those tests, and ensure that tangency detection works correctly.
