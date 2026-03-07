@@ -15,18 +15,18 @@ fn manifest_dir() -> String {
 }
 
 fn config_for_stl(stl_path: &str) -> config::Config {
-    config::parse_config_from(["brepper", stl_path, "--stage=3.2", "-q"]).unwrap()
+    config::parse_config_from(["brepper", stl_path, "--stage=3.3", "-q"]).unwrap()
 }
 
 fn config_for_compare(stl_path: &str, step_path: &str) -> config::Config {
     let mut config =
-        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=3.2", "-q"])
+        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=3.3", "-q"])
             .unwrap();
     config.load_compare_step().unwrap();
     config
 }
 
-/// Run stages 1, 2, and 3.1, returning the Stage3Output.
+/// Run stages 1, 2, and 3 (through current max substage), returning the Stage3Output.
 fn run_stage3(config: &config::Config) -> stage3::Stage3Output {
     let mesh = stage1::stage1(config).expect("stage1 should pass");
     let surfaces = stage2::stage2(config, mesh).expect("stage2 should pass");
@@ -464,4 +464,86 @@ fn hemisphere_no_tangent_edges() {
     for (ei, edge) in output.edges.iter().enumerate() {
         assert!(!edge.tangent, "hemisphere edge {ei} should not be tangent");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Edge curve tests (stage 3.3)
+// ---------------------------------------------------------------------------
+
+/// Verify that all edges have computed 3D curves.
+fn check_all_edges_have_curves(output: &stage3::Stage3Output) {
+    for (ei, edge) in output.edges.iter().enumerate() {
+        assert!(
+            edge.curve_3d.is_some(),
+            "edge {ei} should have a 3D curve after stage 3.3"
+        );
+    }
+}
+
+/// Cube: all 12 plane-plane intersection edges should produce line curves.
+#[test]
+fn cube_edge_curves() {
+    let stl = format!("{}/tests/ccad/generated/cube.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let output = run_stage3(&config);
+    check_all_edges_have_curves(&output);
+    assert_eq!(output.edges.len(), 12);
+}
+
+/// Cylinder: 2 plane-cylinder intersection edges should produce circle curves.
+#[test]
+fn cylinder_edge_curves() {
+    let stl = format!("{}/tests/ccad/generated/simple_cylinder.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let output = run_stage3(&config);
+    check_all_edges_have_curves(&output);
+    assert_eq!(output.edges.len(), 2);
+}
+
+/// Block with hole: 15 edges (12 planar + 2 plane-cylinder circles + 1 extra).
+#[test]
+fn block_with_hole_edge_curves() {
+    let stl = format!("{}/tests/ccad/generated/block_with_hole.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let output = run_stage3(&config);
+    check_all_edges_have_curves(&output);
+}
+
+/// Hemisphere: sphere-plane intersection should produce a circle curve.
+#[test]
+fn hemisphere_edge_curves() {
+    let stl = format!("{}/tests/ccad/generated/hemisphere.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let output = run_stage3(&config);
+    check_all_edges_have_curves(&output);
+    assert_eq!(output.edges.len(), 1);
+}
+
+/// Chamfered cube: all 48 plane-plane edges should have curves.
+#[test]
+fn chamfered_cube_edge_curves() {
+    let stl = format!("{}/tests/onshape/chamfered_cube_10_c1_medium.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let output = run_stage3(&config);
+    check_all_edges_have_curves(&output);
+    assert_eq!(output.edges.len(), 48);
+}
+
+/// Spherical pocket: 13 edges mixing plane-plane and plane-sphere intersections.
+#[test]
+fn spherical_pocket_edge_curves() {
+    let stl = format!("{}/tests/ccad/generated/spherical_pocket.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let output = run_stage3(&config);
+    check_all_edges_have_curves(&output);
+}
+
+/// Ball on cylinder: sphere-cylinder and cylinder-plane intersections.
+#[test]
+fn ball_on_cylinder_edge_curves() {
+    let stl = format!("{}/tests/ccad/generated/ball_on_cylinder.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let output = run_stage3(&config);
+    check_all_edges_have_curves(&output);
+    assert_eq!(output.edges.len(), 2);
 }

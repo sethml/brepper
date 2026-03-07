@@ -11,7 +11,7 @@ use crate::config::Config;
 use crate::stage1::{ConnectedMesh, MeshVertex};
 use crate::stage2::{SelectedSurface, Stage2Output};
 use crate::stage1;
-use opencascade_sys::{geom, gp, top_abs, top_exp, topo_ds, OwnedPtr};
+use opencascade_sys::{geom, geom_api, gp, top_abs, top_exp, topo_ds, OwnedPtr};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -52,19 +52,31 @@ impl std::fmt::Debug for FaceDescriptor {
 }
 
 /// Descriptor for an edge (boundary segment) between two adjacent reconstructed faces.
-#[derive(Debug)]
 pub struct ReconEdge {
     /// Indices of the two adjacent FaceDescriptors.
     pub face_indices: [usize; 2],
     /// Indices of the two BRepVertices at the endpoints.
     /// For closed-loop edges (no vertices), both are `usize::MAX`.
     pub vertex_indices: [usize; 2],
-    // TODO: 3D intersection curve (Geom_Curve) — populated in stage 3.3
+    /// 3D intersection curve, trimmed to vertex endpoints. Populated in stage 3.3.
+    pub curve_3d: Option<OwnedPtr<geom::HandleGeomCurve>>,
     // TODO: pcurves on each face (Geom2d_Curve) — populated in stage 3.3
     /// Whether the adjacent surfaces are tangent along this edge.
     pub tangent: bool,
     /// Mesh vertex indices along this boundary, ordered along the boundary.
     pub mesh_boundary_vertices: Vec<usize>,
+}
+
+impl std::fmt::Debug for ReconEdge {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReconEdge")
+            .field("face_indices", &self.face_indices)
+            .field("vertex_indices", &self.vertex_indices)
+            .field("curve_3d", &self.curve_3d.as_ref().map(|_| "<HandleGeomCurve>"))
+            .field("tangent", &self.tangent)
+            .field("mesh_boundary_vertices", &self.mesh_boundary_vertices)
+            .finish()
+    }
 }
 
 /// Vertex where three or more reconstructed faces meet.
@@ -615,6 +627,7 @@ fn build_surfaces_and_adjacency(
             recon_edges.push(ReconEdge {
                 face_indices: [pair.0, pair.1],
                 vertex_indices: [start_brep, end_brep],
+                curve_3d: None, // populated in stage 3.3
                 tangent: false, // determined in stage 3.2
                 mesh_boundary_vertices: chain,
             });
@@ -968,6 +981,238 @@ fn detect_tangency(mut output: Stage3Output, config: &Config) -> Stage3Output {
 }
 
 // ---------------------------------------------------------------------------
+// Stage 3.3: Compute edge curves via surface-surface intersection
+// ---------------------------------------------------------------------------
+
+/// Compute the 3D intersection curve for a single ReconEdge.
+///
+/// Uses GeomAPI_IntSS to find intersection curves between the two adjacent surfaces.
+/// If multiple curves are returned, selects the one closest to the mesh boundary vertices.
+/// Trims the selected curve to the vertex endpoint parameters.
+fn compute_edge_curve(
+    edge: &mut ReconEdge,
+    face_descriptors: &[FaceDescriptor],
+    vertices: &[BRepVertex],
+    mesh: &ConnectedMesh,
+    config: &Config,
+) -> Result<(), String> {
+    let [fi0, fi1] = edge.face_indices;
+    let surf0 = &face_descriptors[fi0].surface;
+    let surf1 = &face_descriptors[fi1].surface;
+
+    // Compute surface-surface intersection
+    let int_ss = geom_api::IntSS::new_handlegeomsurface2_real(
+        surf0, surf1, config.vertex_tolerance_mm,
+    );
+
+    if !int_ss.is_done() || int_ss.nb_lines() == 0 {
+        return Err(format!(
+            "IntSS failed for edge between faces {} and {} (is_done={}, nb_lines={})",
+            fi0, fi1, int_ss.is_done(),
+            if int_ss.is_done() { int_ss.nb_lines() } else { -1 }
+        ));
+    }
+
+    let nb_lines = int_ss.nb_lines();
+
+    // Select the best intersection curve (closest to mesh boundary vertices)
+    let best_line_idx = if nb_lines == 1 {
+        1 // 1-indexed
+    } else {
+        select_closest_curve(&int_ss, &edge.mesh_boundary_vertices, mesh)
+    };
+
+    let curve_handle = int_ss.line(best_line_idx);
+
+    // Trim the curve to vertex endpoint parameters
+    let curve = curve_handle.get();
+    let first_param = curve.first_parameter();
+    let last_param = curve.last_parameter();
+
+    let (t_start, t_end) = if edge.vertex_indices[0] == usize::MAX
+        && edge.vertex_indices[1] == usize::MAX
+    {
+        // Closed loop — use full curve
+        (first_param, last_param)
+    } else {
+        // Trim to vertex endpoints
+        let t_start = if edge.vertex_indices[0] != usize::MAX {
+            let v = &vertices[edge.vertex_indices[0]];
+            project_point_on_curve(&v.point, curve_handle)?
+        } else {
+            // No start vertex — project first mesh boundary vertex
+            let vi = edge.mesh_boundary_vertices[0];
+            let v = &mesh.vertices[vi];
+            project_point_on_curve(&[v.x, v.y, v.z], curve_handle)?
+        };
+
+        let t_end = if edge.vertex_indices[1] != usize::MAX {
+            let v = &vertices[edge.vertex_indices[1]];
+            project_point_on_curve(&v.point, curve_handle)?
+        } else {
+            // No end vertex — project last mesh boundary vertex
+            let vi = *edge.mesh_boundary_vertices.last().unwrap();
+            let v = &mesh.vertices[vi];
+            project_point_on_curve(&[v.x, v.y, v.z], curve_handle)?
+        };
+
+        // Ensure t_start < t_end (for non-periodic curves)
+        if t_start < t_end {
+            (t_start, t_end)
+        } else if curve.is_periodic() {
+            // For periodic curves, the order matters; keep as-is
+            (t_start, t_end)
+        } else {
+            (t_end, t_start)
+        }
+    };
+
+    // Create trimmed curve
+    let trimmed = geom::TrimmedCurve::new_handlegeomcurve_real2(
+        curve_handle, t_start, t_end,
+    );
+    let trimmed_handle = geom::TrimmedCurve::to_handle(trimmed).to_handle_curve();
+
+    edge.curve_3d = Some(trimmed_handle);
+    Ok(())
+}
+
+/// Select the intersection curve closest to the mesh boundary vertices.
+/// Returns the 1-indexed line number.
+fn select_closest_curve(
+    int_ss: &geom_api::IntSS,
+    boundary_vertices: &[usize],
+    mesh: &ConnectedMesh,
+) -> i32 {
+    let nb_lines = int_ss.nb_lines();
+    let mut best_idx = 1_i32;
+    let mut best_total_dist = f64::MAX;
+
+    // Sample boundary midpoints (edge centroids) for proximity test
+    let sample_count = boundary_vertices.len().min(10);
+    let step = if boundary_vertices.len() <= sample_count {
+        1
+    } else {
+        boundary_vertices.len() / sample_count
+    };
+    let sample_indices: Vec<usize> = (0..boundary_vertices.len()).step_by(step).collect();
+
+    for line_idx in 1..=nb_lines {
+        let curve_handle = int_ss.line(line_idx);
+        let mut total_dist = 0.0;
+
+        for &si in &sample_indices {
+            let vi = boundary_vertices[si];
+            let v = &mesh.vertices[vi];
+            let pt = gp::Pnt::new_real3(v.x, v.y, v.z);
+            let projector = geom_api::ProjectPointOnCurve::new_pnt_handlegeomcurve(
+                &pt, curve_handle,
+            );
+            if projector.nb_points() > 0 {
+                total_dist += projector.lower_distance();
+            } else {
+                total_dist += f64::MAX / 2.0; // Penalize curves that can't project
+            }
+        }
+
+        if total_dist < best_total_dist {
+            best_total_dist = total_dist;
+            best_idx = line_idx;
+        }
+    }
+
+    best_idx
+}
+
+/// Project a 3D point onto a curve and return the curve parameter.
+fn project_point_on_curve(
+    point: &[f64; 3],
+    curve: &geom::HandleGeomCurve,
+) -> Result<f64, String> {
+    let pt = gp::Pnt::new_real3(point[0], point[1], point[2]);
+    let projector = geom_api::ProjectPointOnCurve::new_pnt_handlegeomcurve(&pt, curve);
+    if projector.nb_points() > 0 {
+        Ok(projector.lower_distance_parameter())
+    } else {
+        Err(format!(
+            "Failed to project point [{:.6}, {:.6}, {:.6}] onto curve",
+            point[0], point[1], point[2]
+        ))
+    }
+}
+
+/// Compute edge curves for all ReconEdges.
+fn compute_edge_curves_all(
+    mut output: Stage3Output,
+    config: &Config,
+) -> Result<Stage3Output, Stage3Error> {
+    let mut success_count = 0;
+    let mut fail_count = 0;
+    let total = output.edges.len();
+
+    for ei in 0..total {
+        // Split borrow: extract edge mutably while borrowing face_descriptors immutably
+        let (before, rest) = output.edges.split_at_mut(ei);
+        let (edge, _after) = rest.split_first_mut().unwrap();
+        let _ = before; // suppress unused warning
+
+        if edge.tangent {
+            // TODO: Tangent edges need special handling (stage 3.3 tangent case)
+            if config.verbose {
+                eprintln!("  Edge {ei}: skipping tangent edge (not yet implemented)");
+            }
+            fail_count += 1;
+            continue;
+        }
+
+        match compute_edge_curve(
+            edge,
+            &output.face_descriptors,
+            &output.vertices,
+            &output.stage2.mesh,
+            config,
+        ) {
+            Ok(()) => {
+                success_count += 1;
+                if config.verbose {
+                    let curve = edge.curve_3d.as_ref().unwrap();
+                    let c = curve.get();
+                    let fp = c.first_parameter();
+                    let lp = c.last_parameter();
+                    let p_start = c.value(fp);
+                    let p_end = c.value(lp);
+                    eprintln!(
+                        "  Edge {ei}: faces [{}, {}], curve [{:.4},{:.4},{:.4}] -> [{:.4},{:.4},{:.4}], t=[{:.4}, {:.4}]",
+                        edge.face_indices[0], edge.face_indices[1],
+                        p_start.x(), p_start.y(), p_start.z(),
+                        p_end.x(), p_end.y(), p_end.z(),
+                        fp, lp,
+                    );
+                }
+            }
+            Err(msg) => {
+                if config.verbose {
+                    eprintln!("  Edge {ei}: FAILED - {msg}");
+                }
+                fail_count += 1;
+            }
+        }
+    }
+
+    if !config.quiet {
+        eprintln!(
+            "Stage 3.3: Computed {success_count}/{total} edge curves ({fail_count} failed)",
+        );
+    }
+
+    if fail_count > 0 {
+        return Err(Stage3Error::AdjacencyError(format!(
+            "{fail_count} edge curves failed to compute"
+        )));
+    }
+
+    Ok(output)
+}
 // Stage 3 entry point
 // ---------------------------------------------------------------------------
 
@@ -987,14 +1232,11 @@ pub fn stage3(config: &Config, input: Stage2Output) -> Result<Stage3Output, Stag
         return Ok(output);
     }
 
-    // Stage 3.3: Create OCCT edge wires
-    // TODO: Compute surface-surface intersections, trim to vertices
-    if !config.quiet {
-        eprintln!("Stage 3.3: Create edge wires (not yet implemented)");
-    }
+    // Stage 3.3: Compute edge curves via surface-surface intersection
+    let output = compute_edge_curves_all(output, config)?;
 
     if !config.stage.at_least(3, 4) {
-        return Err(Stage3Error::NotImplemented("3.3".into()));
+        return Ok(output);
     }
 
     // Stage 3.4: Create OCCT faces
