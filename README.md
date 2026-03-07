@@ -154,6 +154,13 @@ Integration tests in `tests/stage2_integration.rs` verify that:
 - Deduced cylinder parameters (axis direction, axis position, radius) match STEP cylinder parameters for all cylindrical test models
 - Deduced sphere parameters (center, radius) match STEP sphere parameters for all spherical test models
 - Angular tolerance enforcement prevents spurious cylindrical/spherical hypotheses on planar-only models (e.g., cube faces meet at 90°, exceeding the 17.5° default)
+Integration tests in `tests/stage3_integration.rs` verify that:
+- Adjacency graph topology (faces, edges, vertices) is correct for known models (cube=6F/12E/8V, cylinder=3F/2E/0V, sphere=1F/0E/0V, etc.)
+- Euler's formula V-E+F=2 holds for genus-0 models
+- Edge validity, adjacency symmetry, and edge-face consistency are maintained
+- All STL/STEP pairs pass `--compare` validation at stage 3.1, verifying that reconstructed edge boundary vertices lie on STEP edges and BRep vertices coincide with STEP vertices
+
+
 
 Bad test STL files can be regenerated with `python3 scripts/generate_bad_tests.py`.
 
