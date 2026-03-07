@@ -12,7 +12,8 @@ use crate::stage1::{ConnectedMesh, MeshVertex};
 use crate::stage2::{SelectedSurface, Stage2Output};
 use crate::stage1;
 use opencascade_sys::{
-    b_rep_builder_api, b_rep_check, geom, geom_api, gp, top_abs, top_exp, topo_ds, OwnedPtr,
+    b_rep_builder_api, b_rep_check, geom, geom_api, gp, message, shape_analysis, shape_fix,
+    top_abs, top_exp, topo_ds, OwnedPtr,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
@@ -106,7 +107,9 @@ pub struct Stage3Output {
     /// OCCT face objects created in stage 3.4 (one per face descriptor).
     /// Each MakeFace owns the resulting TopoDS_Face; access via `.face()`.
     pub make_faces: Vec<OwnedPtr<b_rep_builder_api::MakeFace>>,
-    // TODO: OCCT shell and solid objects — populated in stages 3.5/3.6
+    /// OCCT shell(s) created in stage 3.5 by sewing faces.
+    pub shells: Vec<OwnedPtr<topo_ds::Shell>>,
+    // TODO: OCCT solid objects — populated in stage 3.6
 }
 
 impl std::fmt::Debug for Stage3Output {
@@ -116,6 +119,7 @@ impl std::fmt::Debug for Stage3Output {
             .field("edges", &self.edges.len())
             .field("vertices", &self.vertices.len())
             .field("make_faces", &self.make_faces.len())
+            .field("shells", &self.shells.len())
             .finish()
     }
 }
@@ -136,7 +140,7 @@ impl Display for Stage3Error {
         match self {
             Stage3Error::NotImplemented(stage) => write!(f, "stage {stage} not yet implemented"),
             Stage3Error::AdjacencyError(msg) => write!(f, "stage 3.1 adjacency error: {msg}"),
-            Stage3Error::Compare(e) => write!(f, "stage 3.1 compare: {e}"),
+            Stage3Error::Compare(e) => write!(f, "stage 3.{} compare: {e}", e.substage),
         }
     }
 }
@@ -151,6 +155,7 @@ impl From<Stage3CompareError> for Stage3Error {
 
 #[derive(Debug)]
 pub struct Stage3CompareError {
+    pub substage: u8,
     pub check_type: &'static str,
     pub element_index: usize,
     pub max_distance: f64,
@@ -254,6 +259,7 @@ fn compare_adjacency_to_step(
         edge_overall_max = edge_overall_max.max(max_dist);
         if max_dist > config.vertex_tolerance_mm {
             return Err(Stage3CompareError {
+                substage: 1,
                 check_type: "edge",
                 element_index: ei,
                 max_distance: max_dist,
@@ -271,6 +277,7 @@ fn compare_adjacency_to_step(
         vert_overall_max = vert_overall_max.max(d);
         if d > config.vertex_tolerance_mm {
             return Err(Stage3CompareError {
+                substage: 1,
                 check_type: "vertex",
                 element_index: vi,
                 max_distance: d,
@@ -839,6 +846,7 @@ fn build_surfaces_and_adjacency(
         edges: recon_edges,
         vertices: brep_vertices,
         make_faces: Vec::new(), // populated in stage 3.4
+        shells: Vec::new(), // populated in stage 3.5
     })}
 
 // ---------------------------------------------------------------------------
@@ -1031,6 +1039,59 @@ fn compute_edge_curve(
 
     let curve_handle = int_ss.line(best_line_idx);
 
+    // Validate the selected curve: check if it passes near the boundary vertices.
+    // IntSS can return degenerate curves for plane-through-cylinder-axis intersections.
+    let curve_valid = {
+        let mut valid = true;
+        for &vi in edge.mesh_boundary_vertices.iter().take(3) {
+            let v = &mesh.vertices[vi];
+            let pt = gp::Pnt::new_real3(v.x, v.y, v.z);
+            let proj = geom_api::ProjectPointOnCurve::new_pnt_handlegeomcurve(&pt, curve_handle);
+            if proj.nb_points() == 0 || proj.lower_distance() > 1.0 {
+                valid = false;
+                break;
+            }
+        }
+        valid
+    };
+
+    // If the IntSS curve is degenerate (doesn't pass near boundary vertices),
+    // construct a line from vertex positions. IntSS can return degenerate curves
+    // when a plane passes through a cylinder's axis.
+    let fallback_curve: Option<OwnedPtr<geom::HandleGeomCurve>> = if !curve_valid
+        && edge.vertex_indices[0] != usize::MAX
+        && edge.vertex_indices[1] != usize::MAX
+    {
+        let v0 = &vertices[edge.vertex_indices[0]];
+        let v1 = &vertices[edge.vertex_indices[1]];
+        let dx = v1.point[0] - v0.point[0];
+        let dy = v1.point[1] - v0.point[1];
+        let dz = v1.point[2] - v0.point[2];
+        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        if len < 1e-15 {
+            return Err(format!(
+                "degenerate edge between faces {} and {}: zero-length vertex span",
+                fi0, fi1
+            ));
+        }
+        let p0 = gp::Pnt::new_real3(v0.point[0], v0.point[1], v0.point[2]);
+        let dir = gp::Dir::new_real3(dx / len, dy / len, dz / len);
+        let line = geom::Line::new_pnt_dir(&p0, &dir);
+        let line_handle = geom::Line::to_handle(line).to_handle_curve();
+
+        if config.verbose {
+            eprintln!("    Edge (f{fi0},f{fi1}): IntSS curve degenerate, using vertex-based line");
+        }
+        Some(line_handle)
+    } else {
+        None
+    };
+
+    let curve_handle = match fallback_curve.as_ref() {
+        Some(h) => &**h,
+        None => int_ss.line(best_line_idx),
+    };
+
     // Trim the curve to vertex endpoint parameters
     let curve = curve_handle.get();
     let first_param = curve.first_parameter();
@@ -1063,11 +1124,41 @@ fn compute_edge_curve(
             project_point_on_curve(&[v.x, v.y, v.z], curve_handle)?
         };
 
-        // Ensure t_start < t_end (for non-periodic curves)
-        if t_start < t_end {
+        // For closed curves (circles from cylinder/sphere intersections), check
+        // which arc the mesh boundary vertices lie on. IntSS circle curves report
+        // is_periodic()=false, so detect them by parameter span ≈ 2π.
+        let (t_lo, t_hi) = if t_start < t_end {
             (t_start, t_end)
-        } else if curve.is_periodic() {
-            // For periodic curves, the order matters; keep as-is
+        } else {
+            (t_end, t_start)
+        };
+
+        let param_span = last_param - first_param;
+        let is_closed_curve = (param_span - 2.0 * std::f64::consts::PI).abs() < 1e-6;
+        if is_closed_curve && edge.mesh_boundary_vertices.len() > 2 {
+            let period = param_span;
+            // Sample mesh boundary vertices to determine which arc they lie on
+            let step = (edge.mesh_boundary_vertices.len() / 5).max(1);
+            let mut in_direct = 0;
+            let mut in_complement = 0;
+            for i in (0..edge.mesh_boundary_vertices.len()).step_by(step) {
+                let vi = edge.mesh_boundary_vertices[i];
+                let v = &mesh.vertices[vi];
+                if let Ok(t_m) = project_point_on_curve(&[v.x, v.y, v.z], curve_handle) {
+                    if t_m >= t_lo && t_m <= t_hi {
+                        in_direct += 1;
+                    } else {
+                        in_complement += 1;
+                    }
+                }
+            }
+            if in_complement > in_direct {
+                // Boundary vertices lie on the complementary arc
+                (t_hi, t_lo + period)
+            } else {
+                (t_lo, t_hi)
+            }
+        } else if t_start < t_end {
             (t_start, t_end)
         } else {
             (t_end, t_start)
@@ -1086,6 +1177,9 @@ fn compute_edge_curve(
 
 /// Select the intersection curve closest to the mesh boundary vertices.
 /// Returns the 1-indexed line number.
+///
+/// Uses curve midpoint evaluation rather than projection because
+/// ProjectPointOnCurve can fail on certain IntSS curve representations.
 fn select_closest_curve(
     int_ss: &geom_api::IntSS,
     boundary_vertices: &[usize],
@@ -1095,35 +1189,41 @@ fn select_closest_curve(
     let mut best_idx = 1_i32;
     let mut best_total_dist = f64::MAX;
 
-    // Sample boundary midpoints (edge centroids) for proximity test
-    let sample_count = boundary_vertices.len().min(10);
-    let step = if boundary_vertices.len() <= sample_count {
-        1
-    } else {
-        boundary_vertices.len() / sample_count
-    };
-    let sample_indices: Vec<usize> = (0..boundary_vertices.len()).step_by(step).collect();
+    // Compute centroid of boundary vertices
+    let mut cx = 0.0;
+    let mut cy = 0.0;
+    let mut cz = 0.0;
+    for &vi in boundary_vertices {
+        let v = &mesh.vertices[vi];
+        cx += v.x;
+        cy += v.y;
+        cz += v.z;
+    }
+    let n = boundary_vertices.len() as f64;
+    cx /= n;
+    cy /= n;
+    cz /= n;
 
     for line_idx in 1..=nb_lines {
         let curve_handle = int_ss.line(line_idx);
-        let mut total_dist = 0.0;
+        let c = curve_handle.get();
+        let fp = c.first_parameter();
+        let lp = c.last_parameter();
 
-        for &si in &sample_indices {
-            let vi = boundary_vertices[si];
-            let v = &mesh.vertices[vi];
-            let pt = gp::Pnt::new_real3(v.x, v.y, v.z);
-            let projector = geom_api::ProjectPointOnCurve::new_pnt_handlegeomcurve(
-                &pt, curve_handle,
-            );
-            if projector.nb_points() > 0 {
-                total_dist += projector.lower_distance();
-            } else {
-                total_dist += f64::MAX / 2.0; // Penalize curves that can't project
-            }
+        // Sample 5 points along the curve and compute min distance to centroid
+        let mut min_dist = f64::MAX;
+        for i in 0..5 {
+            let t = fp + (lp - fp) * (i as f64 / 4.0);
+            let p = c.value(t);
+            let dx = p.x() - cx;
+            let dy = p.y() - cy;
+            let dz = p.z() - cz;
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+            min_dist = min_dist.min(dist);
         }
 
-        if total_dist < best_total_dist {
-            best_total_dist = total_dist;
+        if min_dist < best_total_dist {
+            best_total_dist = min_dist;
             best_idx = line_idx;
         }
     }
@@ -1401,152 +1501,96 @@ fn create_planar_face(
     Ok(make_face)
 }
 
-/// Create an OCCT face for a periodic surface (cylinder or sphere) using UV parameter bounds.
+/// Create an OCCT face for a periodic surface (cylinder or sphere).
+///
+/// For surfaces with edges (partial cylinders, hemispheres, etc.), uses wire-based
+/// construction from IntSS edge curves so that edges are shared with adjacent faces.
+/// For full spheres with no edges, uses natural surface bounds.
 fn create_periodic_face(
     fi: usize,
     output: &Stage3Output,
+    topo_edges: &mut [OwnedPtr<b_rep_builder_api::MakeEdge>],
     config: &Config,
 ) -> Result<OwnedPtr<b_rep_builder_api::MakeFace>, Stage3Error> {
     let fd = &output.face_descriptors[fi];
     let surface = &output.stage2.selected_surfaces[fd.selected_surface_idx];
 
-    match surface {
-        SelectedSurface::Cylindrical(idx) => {
-            let hyp = &output.stage2.cylindrical_hypotheses[*idx];
-            let ax = hyp.axis_direction;
-            let ao = hyp.axis_origin;
-
-            // Compute V bounds from edge boundary vertices
-            let mut v_min = f64::MAX;
-            let mut v_max = f64::MIN;
-
-            for &ei in &fd.edge_indices {
-                let edge = &output.edges[ei];
-                for &vi in &edge.mesh_boundary_vertices {
-                    let v = &output.stage2.mesh.vertices[vi];
-                    let dp = [v.x - ao[0], v.y - ao[1], v.z - ao[2]];
-                    let v_param = dp[0] * ax[0] + dp[1] * ax[1] + dp[2] * ax[2];
-                    v_min = v_min.min(v_param);
-                    v_max = v_max.max(v_param);
-                }
-            }
-
-            if v_min >= v_max {
-                return Err(Stage3Error::AdjacencyError(format!(
-                    "cylinder face {fi} has no valid V parameter range"
-                )));
-            }
-
-            let u_min = 0.0;
-            let u_max = 2.0 * std::f64::consts::PI;
-
-            let make_face = b_rep_builder_api::MakeFace::new_handlegeomsurface_real5(
-                &fd.surface,
-                u_min,
-                u_max,
-                v_min,
-                v_max,
-                config.vertex_tolerance_mm,
-            );
-
-            if !make_face.is_done() {
-                return Err(Stage3Error::AdjacencyError(format!(
-                    "MakeFace failed for cylindrical face {fi}: {:?}",
-                    make_face.error(),
-                )));
-            }
-
-            Ok(make_face)
+    // Full sphere with no edges — use natural bounds
+    if matches!(surface, SelectedSurface::Spherical(_)) && fd.edge_indices.is_empty() {
+        let make_face = b_rep_builder_api::MakeFace::new_handlegeomsurface_real(
+            &fd.surface,
+            config.vertex_tolerance_mm,
+        );
+        if !make_face.is_done() {
+            return Err(Stage3Error::AdjacencyError(format!(
+                "MakeFace failed for full sphere face {fi}: {:?}",
+                make_face.error(),
+            )));
         }
-        SelectedSurface::Spherical(idx) => {
-            let hyp = &output.stage2.spherical_hypotheses[*idx];
-
-            if fd.edge_indices.is_empty() {
-                // Full sphere — use natural bounds
-                let make_face = b_rep_builder_api::MakeFace::new_handlegeomsurface_real(
-                    &fd.surface,
-                    config.vertex_tolerance_mm,
-                );
-
-                if !make_face.is_done() {
-                    return Err(Stage3Error::AdjacencyError(format!(
-                        "MakeFace failed for full sphere face {fi}: {:?}",
-                        make_face.error(),
-                    )));
-                }
-
-                return Ok(make_face);
-            }
-
-            // Compute V bounds from edge boundary vertices and mesh face centroids
-            // V parameter on sphere: V = asin((P - center) · z_dir / radius)
-            // Our Ax3 has z_dir = [0, 0, 1]
-            let center = hyp.center;
-            let mut v_min = f64::MAX;
-            let mut v_max = f64::MIN;
-
-            // Sample from edge boundary vertices
-            for &ei in &fd.edge_indices {
-                let edge = &output.edges[ei];
-                for &vi in &edge.mesh_boundary_vertices {
-                    let v = &output.stage2.mesh.vertices[vi];
-                    let dp = [v.x - center[0], v.y - center[1], v.z - center[2]];
-                    let len = (dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]).sqrt();
-                    if len < 1e-15 {
-                        continue;
-                    }
-                    let v_param = (dp[2] / len).clamp(-1.0, 1.0).asin();
-                    v_min = v_min.min(v_param);
-                    v_max = v_max.max(v_param);
-                }
-            }
-
-            // Extend V range using mesh face centroids to detect pole coverage
-            let faces = surface_faces(surface, &output.stage2);
-            for &mfi in faces {
-                let c = compute_mesh_face_centroid(mfi, &output.stage2.mesh);
-                let dp = [c[0] - center[0], c[1] - center[1], c[2] - center[2]];
-                let len = (dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]).sqrt();
-                if len < 1e-15 {
-                    continue;
-                }
-                let v_param = (dp[2] / len).clamp(-1.0, 1.0).asin();
-                v_min = v_min.min(v_param);
-                v_max = v_max.max(v_param);
-            }
-
-            // Snap to poles if close (within ~5.7°)
-            let pole_snap = 0.1; // radians
-            if v_max > std::f64::consts::FRAC_PI_2 - pole_snap {
-                v_max = std::f64::consts::FRAC_PI_2;
-            }
-            if v_min < -std::f64::consts::FRAC_PI_2 + pole_snap {
-                v_min = -std::f64::consts::FRAC_PI_2;
-            }
-
-            let u_min = 0.0;
-            let u_max = 2.0 * std::f64::consts::PI;
-
-            let make_face = b_rep_builder_api::MakeFace::new_handlegeomsurface_real5(
-                &fd.surface,
-                u_min,
-                u_max,
-                v_min,
-                v_max,
-                config.vertex_tolerance_mm,
-            );
-
-            if !make_face.is_done() {
-                return Err(Stage3Error::AdjacencyError(format!(
-                    "MakeFace failed for spherical face {fi}: {:?}",
-                    make_face.error(),
-                )));
-            }
-
-            Ok(make_face)
-        }
-        _ => unreachable!("create_periodic_face called for non-periodic surface"),
+        return Ok(make_face);
     }
+
+    // Build faces from wires (same approach as planar faces)
+    let wire_groups = group_edges_into_wires(fd, &output.edges);
+
+    if wire_groups.is_empty() {
+        return Err(Stage3Error::AdjacencyError(format!(
+            "periodic face {fi} has no edges for wire construction"
+        )));
+    }
+
+    let mut wires: Vec<OwnedPtr<b_rep_builder_api::MakeWire>> = Vec::new();
+    for (gi, group) in wire_groups.iter().enumerate() {
+        let first_edge = topo_edges[group[0]].edge();
+        let mut make_wire = b_rep_builder_api::MakeWire::new_edge(first_edge);
+        for &ei in &group[1..] {
+            make_wire.add_edge(topo_edges[ei].edge());
+        }
+        if !make_wire.is_done() {
+            if config.verbose {
+                eprintln!(
+                    "  Face {fi} wire {gi}: MakeWire error {:?} ({} edges)",
+                    make_wire.error(),
+                    group.len(),
+                );
+            }
+            return Err(Stage3Error::AdjacencyError(format!(
+                "MakeWire failed for periodic face {fi} wire group {gi} ({} edges): {:?}",
+                group.len(),
+                make_wire.error(),
+            )));
+        }
+        wires.push(make_wire);
+    }
+
+    // Identify outer wire: the one with the most edges (heuristic)
+    let outer_idx = wires
+        .iter()
+        .enumerate()
+        .max_by_key(|(i, _)| wire_groups[*i].len())
+        .map(|(i, _)| i)
+        .unwrap();
+
+    let mut make_face = b_rep_builder_api::MakeFace::new_handlegeomsurface_wire(
+        &fd.surface,
+        wires[outer_idx].wire(),
+    );
+
+    if !make_face.is_done() {
+        return Err(Stage3Error::AdjacencyError(format!(
+            "MakeFace failed for periodic face {fi}: {:?}",
+            make_face.error(),
+        )));
+    }
+
+    // Add inner wires (holes)
+    for (i, w) in wires.iter_mut().enumerate() {
+        if i != outer_idx {
+            make_face.add(w.wire());
+        }
+    }
+
+    Ok(make_face)
 }
 
 /// Validate created faces using BRepCheck_Analyzer.
@@ -1633,6 +1677,7 @@ fn compare_faces_to_step(
 
     if max_dist > config.surface_tolerance_mm {
         return Err(Stage3CompareError {
+            substage: 4,
             check_type: "face",
             element_index: 0,
             max_distance: max_dist,
@@ -1677,7 +1722,7 @@ fn create_occt_faces_all(
         );
 
         let make_face = if is_periodic {
-            create_periodic_face(fi, &output, config)?
+            create_periodic_face(fi, &output, &mut topo_edges, config)?
         } else {
             create_planar_face(fi, &output, &mut topo_edges, config)?
         };
@@ -1718,6 +1763,223 @@ fn create_occt_faces_all(
     Ok(output)
 }
 
+
+// ---------------------------------------------------------------------------
+// Stage 3.5: Construct shells
+// ---------------------------------------------------------------------------
+
+/// Stitch OCCT faces into shells using BRepBuilderAPI_Sewing.
+///
+/// Takes all faces created in stage 3.4 and passes them to BRepBuilderAPI_Sewing,
+/// which merges shared edges and produces one or more TopoDS_Shell objects.
+fn construct_shells(
+    mut output: Stage3Output,
+    config: &Config,
+) -> Result<Stage3Output, Stage3Error> {
+    let num_faces = output.make_faces.len();
+    if num_faces == 0 {
+        return Err(Stage3Error::AdjacencyError("no faces to sew into shells".into()));
+    }
+
+    // Create sewing operator
+    let sewing_tol = config.vertex_tolerance_mm;
+    let mut sewing = b_rep_builder_api::Sewing::new_real(sewing_tol);
+
+    // Add all faces
+    for mf in output.make_faces.iter() {
+        sewing.add(mf.face().as_shape());
+    }
+
+    // Perform sewing
+    let progress = message::ProgressRange::new();
+    sewing.perform(&progress);
+
+    let sewn = sewing.sewed_shape();
+    let sewn_type = sewn.shape_type();
+
+    if config.verbose {
+        eprintln!("  Sewing result shape type: {:?}", sewn_type);
+        let n_free = sewing.nb_free_edges();
+        let n_multi = sewing.nb_multiple_edges();
+        let n_contig = sewing.nb_contigous_edges();
+        eprintln!("  Sewing stats: {n_free} free edges, {n_multi} multiple edges, {n_contig} contiguous edges");
+    }
+
+    // Extract shells from the sewing result.
+    // The result can be a Shell (single), a Solid, or a Compound containing shells.
+    let mut shells: Vec<OwnedPtr<topo_ds::Shell>> = Vec::new();
+
+    match sewn_type {
+        top_abs::ShapeEnum::Shell => {
+            // Single shell result — copy it
+            let shell = topo_ds::shell_shape(sewn);
+            shells.push(shell.to_owned());
+        }
+        top_abs::ShapeEnum::Face => {
+            // Single face — wrap it in a shell (e.g., a full sphere with no edges)
+            let mut shell = topo_ds::Shell::new();
+            let builder = topo_ds::Builder::new();
+            builder.make_shell(&mut shell);
+            builder.add(shell.as_shape_mut(), sewn);
+            shells.push(shell);
+        }
+        top_abs::ShapeEnum::Solid => {
+            // Sewing produced a solid directly — extract shells from it
+            let mut shell_explorer = top_exp::Explorer::new_shape_shapeenum2(
+                sewn,
+                top_abs::ShapeEnum::Shell,
+                top_abs::ShapeEnum::Shape,
+            );
+            while shell_explorer.more() {
+                let shell = topo_ds::shell_shape(shell_explorer.value());
+                shells.push(shell.to_owned());
+                shell_explorer.next();
+            }
+        }
+        top_abs::ShapeEnum::Compound | top_abs::ShapeEnum::Compsolid => {
+            // Multiple shells — iterate to find them; also check for loose faces
+            let mut shell_explorer = top_exp::Explorer::new_shape_shapeenum2(
+                sewn,
+                top_abs::ShapeEnum::Shell,
+                top_abs::ShapeEnum::Shape,
+            );
+            while shell_explorer.more() {
+                let shell = topo_ds::shell_shape(shell_explorer.value());
+                shells.push(shell.to_owned());
+                shell_explorer.next();
+            }
+        }
+        _ => {
+            return Err(Stage3Error::AdjacencyError(format!(
+                "unexpected sewing result shape type: {:?}",
+                sewn_type
+            )));
+        }
+    }
+
+    if shells.is_empty() {
+        return Err(Stage3Error::AdjacencyError(
+            "sewing produced no shells".into(),
+        ));
+    }
+
+    // Fix shell orientation using ShapeFix_Shell
+    let progress2 = message::ProgressRange::new();
+    for shell in shells.iter_mut() {
+        let mut fixer = shape_fix::Shell::new_shell(shell);
+        fixer.fix_face_orientation(shell, true, false);
+        fixer.perform(&progress2);
+        *shell = fixer.shell();
+    }
+
+    // Validate shells using ShapeAnalysis_Shell
+    // Note: check_oriented_shells returns true if bad edges are FOUND,
+    // false if the shell is correctly oriented.
+    let mut total_faces_in_shells = 0;
+    for (si, shell) in shells.iter().enumerate() {
+        let mut sa = shape_analysis::Shell::new();
+        let has_bad_edges = sa.check_oriented_shells(shell.as_shape(), true, false);
+
+        // Count faces in this shell
+        let mut face_count = 0;
+        let mut face_explorer = top_exp::Explorer::new_shape_shapeenum2(
+            shell.as_shape(),
+            top_abs::ShapeEnum::Face,
+            top_abs::ShapeEnum::Shape,
+        );
+        while face_explorer.more() {
+            face_count += 1;
+            face_explorer.next();
+        }
+        total_faces_in_shells += face_count;
+
+        if config.verbose {
+            let has_free = sa.has_free_edges();
+            eprintln!(
+                "  Shell {si}: {face_count} faces, bad_edges={has_bad_edges}, free_edges={has_free}"
+            );
+        }
+
+        if has_bad_edges {
+            eprintln!("  Warning: shell {si} has orientation inconsistencies after fixing");
+        }
+    }
+
+    if !config.quiet {
+        eprintln!(
+            "Stage 3.5: Constructed {} shell(s) from {} faces ({} faces in shells)",
+            shells.len(),
+            num_faces,
+            total_faces_in_shells,
+        );
+    }
+
+    // Compare against reference STEP if --compare
+    if config.compare_shape.is_some() {
+        compare_shells_to_step(&shells, config)?;
+    }
+
+    output.shells = shells;
+    Ok(output)
+}
+
+/// Compare stage 3.5 shells against reference STEP shape.
+fn compare_shells_to_step(
+    shells: &[OwnedPtr<topo_ds::Shell>],
+    config: &Config,
+) -> Result<(), Stage3CompareError> {
+    let compare_shape = config.compare_shape.as_ref().unwrap();
+
+    // Count shells in reference STEP
+    let mut step_shell_count = 0;
+    let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
+        compare_shape,
+        top_abs::ShapeEnum::Shell,
+        top_abs::ShapeEnum::Shape,
+    );
+    while explorer.more() {
+        step_shell_count += 1;
+        explorer.next();
+    }
+
+    if !config.quiet {
+        eprintln!(
+            "  Compare 3.5: {} shell(s) created, {} shell(s) in STEP reference",
+            shells.len(),
+            step_shell_count,
+        );
+    }
+
+    // Check that each shell is closed (no free edges)
+    for (si, shell) in shells.iter().enumerate() {
+        let mut sa = shape_analysis::Shell::new();
+        sa.check_oriented_shells(shell.as_shape(), true, false);
+        if sa.has_free_edges() {
+            if !config.quiet {
+                eprintln!("  Compare 3.5: shell {si} has free (unclosed) edges");
+            }
+            return Err(Stage3CompareError {
+                substage: 5,
+                check_type: "shell",
+                element_index: si,
+                max_distance: f64::INFINITY,
+                tolerance: config.vertex_tolerance_mm,
+            });
+        }
+    }
+
+    // Verify orientation (check_oriented_shells returns true if bad edges found)
+    for (si, shell) in shells.iter().enumerate() {
+        let mut sa = shape_analysis::Shell::new();
+        let has_bad_edges = sa.check_oriented_shells(shell.as_shape(), false, false);
+        if has_bad_edges && !config.quiet {
+            eprintln!("  Compare 3.5: shell {si} has orientation inconsistencies");
+        }
+    }
+
+    Ok(())
+}
+
 // Stage 3 entry point
 // ---------------------------------------------------------------------------
 
@@ -1752,13 +2014,10 @@ pub fn stage3(config: &Config, input: Stage2Output) -> Result<Stage3Output, Stag
     }
 
     // Stage 3.5: Construct shells
-    // TODO: BRepBuilderAPI_Sewing to stitch faces
-    if !config.quiet {
-        eprintln!("Stage 3.5: Construct shells (not yet implemented)");
-    }
+    let output = construct_shells(output, config)?;
 
     if !config.stage.at_least(3, 6) {
-        return Err(Stage3Error::NotImplemented("3.5".into()));
+        return Ok(output);
     }
 
     // Stage 3.6: Construct solids

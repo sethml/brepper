@@ -553,38 +553,33 @@ For each ReconFace, construct a `TopoDS_Face` from the surface and bounding wire
   - Identify the outer wire as the group with the most edges (heuristic).
   - Create `BRepBuilderAPI_MakeFace` with the surface handle and outer wire, then add inner wires as holes.
 
-- **Cylindrical faces** use UV-bounds construction:
-  - Compute V parameter range from edge boundary mesh vertices: V = (P - axis_origin) · axis_direction.
-  - U range is always [0, 2π] (full circumference).
-  - Create face with `MakeFace::new_handlegeomsurface_real5(surface, u_min, u_max, v_min, v_max, tolerance)`.
-
-- **Spherical faces** use UV-bounds construction:
-  - Compute V parameter range from edge boundary mesh vertices: V = asin((P - center) · z_dir / |P - center|).
-  - Extend V range using mesh face centroids to detect pole coverage.
-  - Snap V to poles (±π/2) if within ~5.7° (0.1 radians).
+- **Cylindrical and spherical faces** use wire-based construction (same as planar) when they have edges:
+  - Group and wire edges identically to planar faces.
+  - This ensures cylinder/sphere faces share `TopoDS_Edge` objects with adjacent planar faces, enabling `BRepBuilderAPI_Sewing` in stage 3.5 to merge them correctly.
   - Full spheres (no edges) use `MakeFace::new_handlegeomsurface_real(surface, tolerance)` with natural bounds.
-  - Create bounded spherical faces with `MakeFace::new_handlegeomsurface_real5`.
 
 *Stage 3: Validate and compare.*
 - Validate each face with `BRepCheck_Analyzer` and report invalid faces as warnings.
 - With `--compare`: for each face, sample a representative mesh face centroid from the surface's mesh faces and compute distance to the reference STEP shape using `BRepExtrema_DistShapeShape`. Report face count comparison. Error if max distance exceeds `--surface-tolerance`.
 
 #### 3.5 Construct shells
-Group connected ReconFaces into shells and assemble each group into a `TopoDS_Shell`.
+Group faces into shells using `BRepBuilderAPI_Sewing`.
 
-**Algorithm:**
-- Find connected components of the ReconFace adjacency graph via BFS/DFS.
-- For each connected component, use `BRepBuilderAPI_Sewing` to stitch the `TopoDS_Face` objects into a shell:
-    - Set sewing tolerance to `vertex_tolerance`.
-    - The sewing operation merges shared edges and ensures consistent edge geometry.
-- After sewing, verify the result is a `TopoDS_Shell` (not a `TopoDS_Compound`, which would indicate disconnected faces).
-- Validate with `ShapeAnalysis_Shell::CheckOrientedShells` to detect orientation inconsistencies.
-- If sewing produces errors, fall back to manual shell construction with `BRep_Builder`.
+**Algorithm (as implemented):**
+- Create a `BRepBuilderAPI_Sewing` instance with tolerance set to `vertex_tolerance`.
+- Add all `TopoDS_Face` objects to the sewing operation.
+- After `Perform()`, extract the sewed shape and iterate over its sub-shapes:
+  - `Shell` sub-shapes are used directly.
+  - Individual `Face` sub-shapes (e.g., a single-face model like `simple_sphere`) are wrapped in a new `TopoDS_Shell` via `BRep_Builder`.
+  - `Solid`, `Compound`, and `Compsolid` sub-shapes are explored recursively for `Shell` children.
+- Apply `ShapeFix_Shell::FixFaceOrientation` to each shell to ensure consistent normals.
+- Validate with `ShapeAnalysis_Shell::CheckOrientedShells` and report inconsistencies.
+- Report sewing statistics: free edges, multiple edges, contiguous edges.
 
 - With the `--compare` flag:
-    - Verify shell count: the number of shells should match the reference STEP file. Report a warning on mismatch.
-    - For each shell, verify it is closed (all edges shared by exactly 2 faces). Report an error if any shell is open.
-    - Validate shell orientation with `ShapeAnalysis_Shell::CheckOrientedShells`. Report an error if orientation is inconsistent.
+    - Count shells in the reference STEP file by exploring for `Shell` sub-shapes.
+    - Report an error if the sewing produced free edges (edges not shared by any pair of faces), as this indicates incomplete stitching.
+    - Report shell count comparison and orientation check results.
 
 #### 3.6 Construct solids
 Convert closed shells into `TopoDS_Solid` objects.
@@ -675,8 +670,8 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Revisit stage 3.1: Implement newly-described --compare check.
 - [x] Implement stage 3.2: Detect tangency relationships between adjacent surfaces. Computes outward-facing surface normals at sampled boundary points and compares angle; marks edge as tangent if normals agree within 2°. No tangent edges expected for current test models (all planar/cylindrical/spherical intersections meet at angles > 2°).
 - [x] Implement stage 3.3: Compute edge curves via surface-surface intersection (`GeomAPI_IntSS`), trim to vertex endpoints via `GeomAPI_ProjectPointOnCurve` + `Geom_TrimmedCurve`. Multi-curve selection picks closest to mesh boundary vertices. Tangent edges skipped (no tangent edges in current models). All edges computed successfully for all test models. Pcurves deferred to stage 3.4.
-- [x] Implement stage 3.4: Create OCCT faces from surfaces bounded by edge wires. Creates `TopoDS_Edge` for each `ReconEdge` using `BRepBuilderAPI_MakeEdge` with trimmed 3D curves. Planar faces: group edges into wire loops by vertex connectivity, build `MakeWire`/`MakeFace` with outer wire + inner hole wires. Cylindrical faces: compute UV bounds from edge boundary vertex projections onto axis, create face with UV parameter bounds. Spherical faces: compute V from `asin((P-center)·z/r)`, extend with mesh centroids, snap to poles within ~5.7°; full spheres use natural bounds. Validates all faces with `BRepCheck_Analyzer`. Compare check samples mesh face centroids against reference STEP.
-- [ ] Implement stage 3.5: Stitch faces into shells using BRepBuilderAPI_Sewing.
+- [x] Implement stage 3.4: Create OCCT faces from surfaces bounded by edge wires. Creates `TopoDS_Edge` for each `ReconEdge` using `BRepBuilderAPI_MakeEdge` with trimmed 3D curves. Planar faces: group edges into wire loops by vertex connectivity, build `MakeWire`/`MakeFace` with outer wire + inner hole wires. Cylindrical and spherical faces with edges: wire-based construction (same edge-grouping as planar) so edges are shared with adjacent faces. Full spheres (no edges): natural UV bounds. Validates all faces with `BRepCheck_Analyzer`. Compare check samples mesh face centroids against reference STEP.
+- [x] Implement stage 3.5: Stitch faces into shells using `BRepBuilderAPI_Sewing`. All faces sewn together with vertex tolerance. Handles Shell, Face, Solid, and Compound results from sewing. Applies `ShapeFix_Shell` orientation fixing. Compare validates shell count and checks for free edges.
 - [ ] Implement stage 3.6: Construct solids from shells, determine outer/inner shell roles.
 - [ ] Revisit stage 3.2: Detect tangency relationships between adjacent surfaces. If there are any problems with models that involve tangent curves, such as tests/onshape/chamfered_cube, then imagine more tests for difficult tangency relationships including cylinder-plane and sphere-cylinder, create those tests, and ensure that tangency detection works correctly.
 - [ ] Revisit stage 3.3 if tangency detection was added.
@@ -708,23 +703,23 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 
 | Test Case | Input | Expected Output | Status |
 |-----------|-------|-----------------|--------|
-| Cube | 12 triangles | 6 planes, 1 solid | ✓ Stage 3.1 (6F/12E/8V) |
-| Wedge | 12 triangles | 6 planes (incl. angled) | ✓ Stage 3.1 (6F/12E/8V) |
+| Cube | 12 triangles | 6 planes, 1 solid | ✓ Stage 3.5 (1 shell) |
+| Wedge | 12 triangles | 6 planes (incl. angled) | ✓ Stage 3.5 (1 shell) |
 | T-Shape | 28 triangles | 10 planes | ✓ Stage 2.1 |
 | Staircase | 48 triangles | 12 planes | ✓ Stage 2.1 |
-|| Chamfered Cube (onshape) | 44 triangles | 26 planes | ✓ Stage 3.1 (26F/48E/24V) |
+|| Chamfered Cube (onshape) | 44 triangles | 26 planes | ✓ Stage 3.5 (1 shell) |
 | Stepped Block | Complex planar | Multiple planes | ✓ Stage 2.1 |
 | L Bracket | Complex planar | Multiple planes | ✓ Stage 2.1 |
 | Cylinder | Tessellated cylinder | 1 cylinder + 2 planes | ✓ Stage 1 |
-|| Simple Cylinder (ccad) | 124 triangles | 1 cylinder + 2 planes | ✓ Stage 3.1 (3F/2E/0V) |
-|| Block with Hole (ccad) | 44 triangles | 6 planes + 1 concave cylinder | ✓ Stage 3.1 (7F/15E/10V) |
-|| Pipe (ccad) | 244 triangles | 2 cylinders (in/out) + 2 annular planes | ✓ Stage 3.1 (4F) |
+|| Simple Cylinder (ccad) | 124 triangles | 1 cylinder + 2 planes | ✓ Stage 3.5 (1 shell) |
+|| Block with Hole (ccad) | 44 triangles | 6 planes + 1 concave cylinder | ✓ Stage 3.5 (1 shell) |
+|| Pipe (ccad) | 244 triangles | 2 cylinders (in/out) + 2 annular planes | ✓ Stage 3.5 (1 shell) |
 || Stepped Cylinder (ccad) | 240 triangles | 2 cylinders + 3 planes | ✓ Stage 2.2 |
 || Two Holes (ccad) | 244 triangles | 6 planes + 2 concave cylinders | ✓ Stage 2.2 |
-|| Simple Sphere (ccad) | 974 triangles | 1 sphere | ✓ Stage 3.1 (1F/0E/0V) |
-|| Hemisphere (ccad) | 518 triangles | 1 sphere + 1 plane | ✓ Stage 3.1 (2F/1E/0V) |
-|| Spherical Pocket (ccad) | 486 triangles | 6 planes + 1 concave sphere | ✓ Stage 3.1 (7F) |
-|| Ball on Cylinder (ccad) | 764 triangles | 1 sphere + 1 cylinder + 1 plane | ✓ Stage 3.1 (3F/2E/0V) |
+|| Simple Sphere (ccad) | 974 triangles | 1 sphere | ✓ Stage 3.5 (1 shell) |
+|| Hemisphere (ccad) | 518 triangles | 1 sphere + 1 plane | ✓ Stage 3.5 (1 shell) |
+|| Spherical Pocket (ccad) | 486 triangles | 6 planes + 1 concave sphere | ✓ Stage 3.5 (1 shell) |
+|| Ball on Cylinder (ccad) | 764 triangles | 1 sphere + 1 cylinder + 1 plane | ✓ Stage 3.5 (1 shell) |
 || Sphere | Tessellated sphere | 1 sphere | ✓ Stage 2.3 |
 | Cone | Tessellated cone | 1 cone + 1 plane | ✓ Stage 1 |
 | Fillet | Blended edge | Planes + fillet surface | |
