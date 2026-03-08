@@ -12,7 +12,7 @@ use crate::stage1::{ConnectedMesh, MeshVertex};
 use crate::stage2::{SelectedSurface, Stage2Output};
 use crate::stage1;
 use opencascade_sys::{
-    b_rep_builder_api, b_rep_check, b_rep_extrema, b_rep_g_prop, extrema,
+    b_rep, b_rep_adaptor, b_rep_builder_api, b_rep_check, b_rep_extrema, b_rep_g_prop, extrema,
     geom, geom_api, g_prop, gp, message, shape_analysis, shape_fix,
     top_abs, top_exp, topo_ds, OwnedPtr,
 };
@@ -1744,6 +1744,204 @@ fn compare_faces_to_step(
     Ok(())
 }
 
+/// Compare surface orientations of our deduced surfaces against reference STEP faces.
+///
+/// For each of our reconstructed faces, we:
+/// 1. Sample a mesh face centroid as a representative point
+/// 2. Compute our deduced surface normal at that point
+/// 3. Find the closest STEP face by distance
+/// 4. Evaluate the STEP surface normal at the nearest point (using D1 derivatives)
+/// 5. Account for STEP face orientation (REVERSED flips normal)
+/// 6. Compare the two normals — they should point in the same direction
+fn compare_surface_orientations_to_step(
+    output: &Stage3Output,
+    config: &Config,
+) {
+    let compare_shape = config.compare_shape.as_ref().unwrap();
+
+    // Collect all STEP faces
+    let mut step_faces: Vec<OwnedPtr<topo_ds::Face>> = Vec::new();
+    let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
+        compare_shape,
+        top_abs::ShapeEnum::Face,
+        top_abs::ShapeEnum::Shape,
+    );
+    while explorer.more() {
+        step_faces.push(topo_ds::face_shape(explorer.value()).to_owned());
+        explorer.next();
+    }
+
+    let mut mismatch_count = 0;
+    let mut checked_count = 0;
+
+    for (fi, fd) in output.face_descriptors.iter().enumerate() {
+        let surface = &output.stage2.selected_surfaces[fd.selected_surface_idx];
+        let faces = surface_faces(surface, &output.stage2);
+        if faces.is_empty() {
+            continue;
+        }
+
+        // Use a centroid from one of the mesh faces as sample point
+        let centroid = compute_mesh_face_centroid(faces[0], &output.stage2.mesh);
+        let pt = gp::Pnt::new_real3(centroid[0], centroid[1], centroid[2]);
+
+        // Compute our deduced surface normal at this point
+        let our_normal = match surface_normal_at_point(surface, &output.stage2, &centroid) {
+            Some(n) => n,
+            None => continue, // degenerate point (on axis or center)
+        };
+
+        // Also get the mesh face normal for comparison
+        let mesh_normal = output.stage2.mesh.faces[faces[0]].normal;
+
+        // Find the closest STEP face
+        let mut vertex_shape = b_rep_builder_api::MakeVertex::new_pnt(&pt);
+        let mut best_face_idx = None;
+        let mut best_dist = f64::MAX;
+        for (si, step_face) in step_faces.iter().enumerate() {
+            let progress = message::ProgressRange::new();
+            let dist_calc = b_rep_extrema::DistShapeShape::new_shape2_extflag_extalgo_progressrange(
+                vertex_shape.shape(),
+                step_face.as_shape(),
+                0,
+                extrema::ExtAlgo::Grad,
+                &progress,
+            );
+            if dist_calc.is_done() && dist_calc.nb_solution() > 0 {
+                let d = dist_calc.value();
+                if d < best_dist {
+                    best_dist = d;
+                    best_face_idx = Some(si);
+                }
+            }
+        }
+
+        let step_face_idx = match best_face_idx {
+            Some(idx) if best_dist <= config.surface_tolerance_mm => idx,
+            _ => continue, // no close STEP face found
+        };
+
+        let step_face = &step_faces[step_face_idx];
+
+        // Get the underlying surface and project our point to get UV parameters
+        let step_surface = b_rep::Tool::surface_face(step_face);
+        let projector = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
+            &pt,
+            &step_surface,
+            extrema::ExtAlgo::Grad,
+        );
+
+        if !projector.is_done() || projector.nb_points() == 0 {
+            continue;
+        }
+
+        let mut u = 0.0_f64;
+        let mut v = 0.0_f64;
+        projector.parameters(1, &mut u, &mut v);
+
+        // Evaluate surface derivatives at (u,v) using BRepAdaptor_Surface
+        let adaptor = b_rep_adaptor::Surface::new_face(step_face);
+        let mut p_eval = gp::Pnt::new_real3(0.0, 0.0, 0.0);
+        let mut d1u = gp::Vec::new_real3(0.0, 0.0, 0.0);
+        let mut d1v = gp::Vec::new_real3(0.0, 0.0, 0.0);
+        adaptor.d1(u, v, &mut p_eval, &mut d1u, &mut d1v);
+
+        // Normal = D1U × D1V
+        let nx = d1u.y() * d1v.z() - d1u.z() * d1v.y();
+        let ny = d1u.z() * d1v.x() - d1u.x() * d1v.z();
+        let nz = d1u.x() * d1v.y() - d1u.y() * d1v.x();
+        let nlen = (nx * nx + ny * ny + nz * nz).sqrt();
+
+        if nlen < 1e-15 {
+            continue; // degenerate derivatives
+        }
+
+        let mut step_normal = [nx / nlen, ny / nlen, nz / nlen];
+
+        // Account for face orientation: REVERSED means the face normal is flipped
+        if step_face.as_shape().orientation() == top_abs::Orientation::Reversed {
+            step_normal = [-step_normal[0], -step_normal[1], -step_normal[2]];
+        }
+
+        checked_count += 1;
+
+        // Compare our deduced normal with the STEP normal
+        let dot_deduced = our_normal[0] * step_normal[0]
+            + our_normal[1] * step_normal[1]
+            + our_normal[2] * step_normal[2];
+
+        // Compare mesh normal with STEP normal
+        let dot_mesh = if let Some(mn) = mesh_normal {
+            mn[0] * step_normal[0] + mn[1] * step_normal[1] + mn[2] * step_normal[2]
+        } else {
+            f64::NAN
+        };
+
+        let surface_type_name = match surface {
+            SelectedSurface::Planar(_) => "planar",
+            SelectedSurface::Cylindrical(_) => "cylindrical",
+            SelectedSurface::Spherical(_) => "spherical",
+        };
+
+        let is_convex = match surface {
+            SelectedSurface::Cylindrical(idx) => {
+                Some(output.stage2.cylindrical_hypotheses[*idx].convex)
+            }
+            SelectedSurface::Spherical(idx) => {
+                Some(output.stage2.spherical_hypotheses[*idx].convex)
+            }
+            _ => None,
+        };
+
+        if dot_deduced < 0.0 {
+            mismatch_count += 1;
+            let convex_str = match is_convex {
+                Some(true) => " convex",
+                Some(false) => " concave",
+                None => "",
+            };
+            let step_orient = if step_face.as_shape().orientation() == top_abs::Orientation::Reversed {
+                "REVERSED"
+            } else {
+                "FORWARD"
+            };
+            eprintln!(
+                "  Compare 3.4 orientation: face {fi} ({surface_type_name}{convex_str}): \
+                 deduced normal DISAGREES with STEP (dot={dot_deduced:.4}, \
+                 mesh_dot={dot_mesh:.4}, step_face={step_face_idx} {step_orient}, dist={best_dist:.2e})"
+            );
+            if config.verbose {
+                eprintln!(
+                    "    deduced normal: [{:.4}, {:.4}, {:.4}]",
+                    our_normal[0], our_normal[1], our_normal[2]
+                );
+                eprintln!(
+                    "    STEP normal:    [{:.4}, {:.4}, {:.4}]",
+                    step_normal[0], step_normal[1], step_normal[2]
+                );
+                if let Some(mn) = mesh_normal {
+                    eprintln!(
+                        "    mesh normal:    [{:.4}, {:.4}, {:.4}]",
+                        mn[0], mn[1], mn[2]
+                    );
+                }
+            }
+        } else if config.verbose {
+            eprintln!(
+                "  Compare 3.4 orientation: face {fi} ({surface_type_name}): \
+                 OK (dot={dot_deduced:.4}, mesh_dot={dot_mesh:.4})"
+            );
+        }
+    }
+
+    if !config.quiet {
+        eprintln!(
+            "  Compare 3.4 orientation: {checked_count} faces checked, \
+             {mismatch_count} orientation mismatch(es)"
+        );
+    }
+}
+
 /// Create OCCT faces for all face descriptors (stage 3.4 main entry).
 fn create_occt_faces_all(
     mut output: Stage3Output,
@@ -1840,6 +2038,7 @@ fn create_occt_faces_all(
     // 4. Compare against reference STEP if --compare
     if config.compare_shape.is_some() {
         compare_faces_to_step(&output, config)?;
+        compare_surface_orientations_to_step(&output, config);
     }
 
     Ok(output)
