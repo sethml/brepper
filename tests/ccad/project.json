@@ -82,6 +82,17 @@
       "visible": true
     },
     {
+      "id": "block_corner_hole",
+      "name": "block_corner_hole",
+      "source": "parts/block_corner_hole.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
+    },
+    {
       "id": "pipe",
       "name": "pipe",
       "source": "parts/pipe.lua",

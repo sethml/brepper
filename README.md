@@ -75,12 +75,14 @@ In theory "Normal Deviation" should be the maximum angular error of the face rel
 
 ### Generating Test Models
 
-Some tests use models generated via [CodeCAD](https://codecad.xyz/). The generated STL/STEP files are committed to the repo, so CodeCAD is not required to run tests. 
+Some tests use models generated via [CodeCAD](https://codecad.xyz/). The generated STL/STEP files are committed to the repo, so CodeCAD is not required to run tests.
 
 To add or modify these models:
 1. Install CodeCAD
-2. Edit files in `tests/ccad/parts/`
+2. Edit files in `tests/ccad/parts/` — see `tests/ccad/README.md` for primitive conventions and placement rules
 3. Run `./tests/ccad/generate_models.sh`
+
+**Important:** `box(w,d,h)` places a corner at the origin, not centered. Use `center_xyz()` to center. Each part file includes analytical surface area and volume in its header comments.
 
 
 ## Viewer
