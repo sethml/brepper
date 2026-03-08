@@ -560,7 +560,8 @@ For each ReconFace, construct a `TopoDS_Face` from the surface and bounding wire
   - Full spheres (no edges) use `MakeFace::new_handlegeomsurface_real(surface, tolerance)` with natural bounds.
 
 *Stage 3: Validate and compare.*
-- Validate each face with `BRepCheck_Analyzer`. For invalid faces, run detailed `BRepCheck_Face` diagnostics (intersect_wires, classify_wires, orientation_of_wires, is_unorientable) and report human-readable warnings with the surface type and specific issue. Most BRepCheck warnings on current models are wire orientation issues on planar faces with holes (inner wire wound the wrong way) — these are cosmetic and get fixed by `ShapeFix_Shell` during sewing.
+- Validate each face with `BRepCheck_Analyzer`. For invalid faces, run detailed `BRepCheck_Face` diagnostics (intersect_wires, classify_wires, orientation_of_wires, is_unorientable) and report human-readable warnings with the surface type and specific issue.
+- Wire orientation fix: after adding inner wires (holes) to a face, apply `ShapeFix_Face::fix_orientation()` to ensure inner wires are oriented opposite to the outer wire. This eliminates BRepCheck "bad orientation of sub-shape" warnings that previously appeared on all planar faces with holes.
 - With `--compare`: for each face, sample a representative mesh face centroid from the surface's mesh faces and compute distance to the reference STEP shape using `BRepExtrema_DistShapeShape`. Report face count comparison. Error if max distance exceeds `--surface-tolerance`.
 
 #### 3.5 Construct shells

@@ -1498,10 +1498,19 @@ fn create_planar_face(
     }
 
     // Add inner wires (holes)
+    let has_holes = wires.len() > 1;
     for (i, w) in wires.iter_mut().enumerate() {
         if i != outer_idx {
             make_face.add(w.wire());
         }
+    }
+
+    // Fix wire orientation: OCCT requires inner wires to be oriented opposite
+    // to the outer wire. ShapeFix_Face::fix_orientation() handles this correctly.
+    if has_holes {
+        let mut fixer = shape_fix::Face::new_face(make_face.face());
+        fixer.fix_orientation();
+        make_face = b_rep_builder_api::MakeFace::new_face(&fixer.face());
     }
 
     Ok(make_face)
@@ -1897,10 +1906,18 @@ fn create_periodic_face(
         }
 
         // Add inner wires (holes)
+        let has_holes = wires.len() > 1;
         for (i, w) in wires.iter_mut().enumerate() {
             if i != outer_idx {
                 mf.add(w.wire());
             }
+        }
+
+        // Fix wire orientation for faces with holes
+        if has_holes {
+            let mut fixer = shape_fix::Face::new_face(mf.face());
+            fixer.fix_orientation();
+            mf = b_rep_builder_api::MakeFace::new_face(&fixer.face());
         }
 
         if config.verbose {
