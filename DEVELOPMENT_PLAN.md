@@ -545,7 +545,7 @@ For each ReconFace, construct a `TopoDS_Face` from the surface and bounding wire
 **Algorithm (as implemented):**
 
 *Stage 1: Create TopoDS_Edge for each ReconEdge.*
-- For each `ReconEdge`, create a `BRepBuilderAPI_MakeEdge` using the trimmed 3D curve (from stage 3.3). No pcurves or explicit `TopoDS_Vertex` endpoints are provided at this stage — `BRepBuilderAPI_Sewing` in stage 3.5 will merge coincident vertices and edges across faces.
+- For each `ReconEdge`, create a `BRepBuilderAPI_MakeEdge` using the trimmed 3D curve and shared `TopoDS_Vertex` endpoints from stage 3.3. For periodic curves (circles from cylinder/sphere intersections), vertex order is matched to the curve parameterization direction: V1 corresponds to `first_parameter()` and V2 to `last_parameter()`. This is critical because `MakeEdge` strips `TrimmedCurve` wrappers and uses `ElCLib::AdjustPeriodic` on the base periodic curve, which always selects the forward (CCW) arc from V1 to V2.
 
 *Stage 2: Create OCCT faces.*
 - **Planar faces** use wire-based construction:
@@ -554,9 +554,9 @@ For each ReconFace, construct a `TopoDS_Face` from the surface and bounding wire
   - Identify the outer wire as the group with the most edges (heuristic).
   - Create `BRepBuilderAPI_MakeFace` with the surface handle and outer wire, then add inner wires as holes.
 
-- **Cylindrical and spherical faces** use wire-based construction (same as planar) when they have edges:
-  - Group and wire edges identically to planar faces.
-  - This ensures cylinder/sphere faces share `TopoDS_Edge` objects with adjacent planar faces, enabling `BRepBuilderAPI_Sewing` in stage 3.5 to merge them correctly.
+- **Cylindrical and spherical faces** use two approaches:
+  - **Full revolution** (all boundary edges are closed loops): UV-bounds construction via `MakeFace::new_handlegeomsurface_real5(surface, umin, umax, vmin, vmax, tol)`. UV bounds are computed from edge projections using a circular gap algorithm that handles periodicity. This automatically creates seam edges for proper B-Rep topology.
+  - **Partial revolution** (open edges with vertices): Wire-based construction with pre-set pcurves. Before building the wire, `BRep_Builder::update_edge` sets `Geom2d_Line` pcurves on each IntSS edge for the periodic surface, mapping the edge's 3D parameter range to (u(t), v(t)) in surface UV space. This ensures MakeFace selects the correct arc and shares edges with adjacent planar faces for sewing.
   - Full spheres (no edges) use `MakeFace::new_handlegeomsurface_real(surface, tolerance)` with natural bounds.
 
 *Stage 3: Validate and compare.*
@@ -593,7 +593,7 @@ Convert closed shells into `TopoDS_Solid` objects.
 
 - With the `--compare` flag:
     - Count solids in the reference STEP file.
-    - Compute volumes of both constructed and reference solids. Match by sorted volume. Report warning if relative volume difference exceeds 1%. (Volume comparison is informational because face validity issues from stage 3.4 can cause incorrect volume computation.)
+    - Compute volumes of both constructed and reference solids. Match by sorted volume. Report warning if relative volume difference exceeds 1%. All current test models achieve volume agreement within ~1e-7 relative difference.
     - Compute `BRepExtrema_DistShapeShape` between each constructed solid and the reference STEP shape. Report error if distance exceeds `--surface-tolerance`. This is the tightest geometric accuracy check.
 
 ---
@@ -667,7 +667,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Revisit stage 3.1: Implement newly-described --compare check.
 - [x] Implement stage 3.2: Detect tangency relationships between adjacent surfaces. Computes outward-facing surface normals at sampled boundary points and compares angle; marks edge as tangent if normals agree within 2°. No tangent edges expected for current test models (all planar/cylindrical/spherical intersections meet at angles > 2°).
 - [x] Implement stage 3.3: Compute edge curves via surface-surface intersection (`GeomAPI_IntSS`), trim to vertex endpoints via `GeomAPI_ProjectPointOnCurve` + `Geom_TrimmedCurve`. Multi-curve selection picks closest to mesh boundary vertices. Tangent edges skipped (no tangent edges in current models). All edges computed successfully for all test models. Pcurves deferred to stage 3.4.
-- [x] Implement stage 3.4: Create OCCT faces from surfaces bounded by edge wires. Creates `TopoDS_Edge` for each `ReconEdge` using `BRepBuilderAPI_MakeEdge` with trimmed 3D curves. Planar faces: group edges into wire loops by vertex connectivity, build `MakeWire`/`MakeFace` with outer wire + inner hole wires. Cylindrical and spherical faces with edges: wire-based construction (same edge-grouping as planar) so edges are shared with adjacent faces. Full spheres (no edges): natural UV bounds. Validates all faces with `BRepCheck_Analyzer`. Compare check samples mesh face centroids against reference STEP.
+- [x] Implement stage 3.4: Create OCCT faces from surfaces bounded by edge wires. Creates `TopoDS_Edge` for each `ReconEdge` using `BRepBuilderAPI_MakeEdge` with trimmed 3D curves and shared `TopoDS_Vertex` endpoints. For periodic curves (circles), vertex order is matched to curve parameterization to ensure correct arc selection by `MakeEdge`. Planar faces: group edges into wire loops by vertex connectivity, build `MakeWire`/`MakeFace` with outer wire + inner hole wires. Cylindrical/spherical faces: UV-bounds construction for full-revolution (with circular gap algorithm for periodicity), wire-based construction with pre-set `Geom2d_Line` pcurves for partial-revolution. Full spheres (no edges): natural UV bounds. Validates all faces with `BRepCheck_Analyzer`. Compare check samples mesh face centroids against reference STEP.
 - [x] Implement stage 3.5: Stitch faces into shells using `BRepBuilderAPI_Sewing`. All faces sewn together with vertex tolerance. Handles Shell, Face, Solid, and Compound results from sewing. Applies `ShapeFix_Shell` orientation fixing. Compare validates shell count and checks for free edges.
 - [x] Implement stage 3.6: Construct solids from shells using `ShapeFix_Solid::SolidFromShell`. Validates with `BRepCheck_Analyzer`, computes volume via `BRepGProp::VolumeProperties`. Compare checks volume agreement (warning on >1% diff) and `BRepExtrema_DistShapeShape` distance to STEP reference.
 

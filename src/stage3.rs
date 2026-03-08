@@ -13,8 +13,8 @@ use crate::stage2::{SelectedSurface, Stage2Output};
 use crate::stage1;
 use opencascade_sys::{
     b_rep, b_rep_adaptor, b_rep_builder_api, b_rep_check, b_rep_extrema, b_rep_g_prop, extrema,
-    geom, geom_api, g_prop, gp, message, shape_analysis, shape_fix,
-    top_abs, top_exp, topo_ds, OwnedPtr,
+    geom, geom2d, geom_api, g_prop, gp, message, shape_analysis, shape_fix,
+    top_abs, top_exp, top_loc, topo_ds, OwnedPtr,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
@@ -1171,7 +1171,6 @@ fn compute_edge_curve(
             (t_end, t_start)
         }
     };
-
     // Create trimmed curve
     let trimmed = geom::TrimmedCurve::new_handlegeomcurve_real2(
         curve_handle, t_start, t_end,
@@ -1508,11 +1507,205 @@ fn create_planar_face(
     Ok(make_face)
 }
 
+/// Compute UV-parameter bounds for a periodic face from its boundary edges.
+///
+/// Projects edge midpoints and vertices onto the surface to find u and v parameters.
+/// For full-revolution faces (all closed loops), u spans [0, 2π].
+/// For partial-revolution faces, u spans the arc of the boundary edges.
+/// For a hemisphere with one boundary edge, v extends to the pole.
+fn compute_uv_bounds_from_edges(
+    fi: usize,
+    fd: &FaceDescriptor,
+    output: &Stage3Output,
+    surface: &SelectedSurface,
+    config: &Config,
+) -> Result<(f64, f64, f64, f64), Stage3Error> {
+    let mut u_values: Vec<f64> = Vec::new();
+    let mut v_values: Vec<f64> = Vec::new();
+
+    // Project edge midpoints and endpoints onto the surface
+    for &ei in &fd.edge_indices {
+        let edge = &output.edges[ei];
+        let curve = edge.curve_3d.as_ref().unwrap();
+        let c = curve.get();
+
+        // Project midpoint
+        let mid_t = (c.first_parameter() + c.last_parameter()) / 2.0;
+        let mid_pt = c.value(mid_t);
+        let proj = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
+            &mid_pt,
+            &fd.surface,
+            extrema::ExtAlgo::Grad,
+        );
+        if proj.nb_points() > 0 {
+            let mut u = 0.0;
+            let mut v = 0.0;
+            proj.lower_distance_parameters(&mut u, &mut v);
+            if config.verbose {
+                eprintln!("    edge {ei} midpoint ({:.4},{:.4},{:.4}) -> u={u:.6}, v={v:.6}", mid_pt.x(), mid_pt.y(), mid_pt.z());
+            }
+            u_values.push(u);
+            v_values.push(v);
+        }
+
+        // Project endpoints (for open edges with vertices)
+        for &vi in &edge.vertex_indices {
+            if vi != usize::MAX {
+                let vtx = &output.vertices[vi];
+                let pt = gp::Pnt::new_real3(vtx.point[0], vtx.point[1], vtx.point[2]);
+                let proj = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
+                    &pt,
+                    &fd.surface,
+                    extrema::ExtAlgo::Grad,
+                );
+                if proj.nb_points() > 0 {
+                    let mut u = 0.0;
+                    let mut v = 0.0;
+                    proj.lower_distance_parameters(&mut u, &mut v);
+                    if config.verbose {
+                        eprintln!("    edge {ei} vertex {vi} ({:.4},{:.4},{:.4}) -> u={u:.6}, v={v:.6}", vtx.point[0], vtx.point[1], vtx.point[2]);
+                    }
+                    u_values.push(u);
+                    v_values.push(v);
+                }
+            }
+        }
+    }
+
+    if v_values.is_empty() {
+        return Err(Stage3Error::AdjacencyError(format!(
+            "could not project any edge points onto surface for face {fi}"
+        )));
+    }
+
+    // Compute v bounds from all projected points
+    let mut vmin = v_values[0];
+    let mut vmax = v_values[0];
+    for &v in &v_values[1..] {
+        if v < vmin { vmin = v; }
+        if v > vmax { vmax = v; }
+    }
+
+    // Compute u bounds
+    let all_closed_loops = fd.edge_indices.iter().all(|&ei| {
+        let e = &output.edges[ei];
+        e.vertex_indices[0] == usize::MAX && e.vertex_indices[1] == usize::MAX
+    });
+
+    let (umin, umax) = if all_closed_loops {
+        // Full revolution: u spans [0, 2π]
+        (0.0, 2.0 * std::f64::consts::PI)
+    } else {
+        // Partial revolution: use circular gap algorithm to handle periodicity.
+        // Sort u values, find the largest gap (empty arc), and the face's u range
+        // is the complement of that gap.
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let mut sorted_u: Vec<f64> = u_values.iter().map(|&u| u.rem_euclid(two_pi)).collect();
+        sorted_u.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted_u.dedup_by(|a, b| (*a - *b).abs() < 1e-10);
+
+        if sorted_u.len() == 1 {
+            // Single u value — shouldn't happen for partial revolution, but handle it
+            (sorted_u[0], sorted_u[0])
+        } else {
+            // Find the largest gap between consecutive sorted u values
+            let mut max_gap = 0.0_f64;
+            let mut gap_end_idx = 0;
+            for i in 0..sorted_u.len() {
+                let next_i = (i + 1) % sorted_u.len();
+                let gap = if next_i > i {
+                    sorted_u[next_i] - sorted_u[i]
+                } else {
+                    sorted_u[next_i] + two_pi - sorted_u[i]
+                };
+                if gap > max_gap {
+                    max_gap = gap;
+                    gap_end_idx = next_i;
+                }
+            }
+            // The face spans from sorted_u[gap_end_idx] to sorted_u[gap_start_idx]
+            let gap_start_idx = if gap_end_idx == 0 { sorted_u.len() - 1 } else { gap_end_idx - 1 };
+            let u_min = sorted_u[gap_end_idx];
+            let mut u_max = sorted_u[gap_start_idx];
+            if u_max < u_min {
+                u_max += two_pi;
+            }
+            (u_min, u_max)
+        }
+    };
+
+    // For spherical surfaces with a single boundary edge, the face extends to a pole.
+    // Determine which pole by checking where the mesh face centroids are.
+    if matches!(surface, SelectedSurface::Spherical(_)) && fd.edge_indices.len() == 1 {
+        let hyp_idx = match surface {
+            SelectedSurface::Spherical(i) => *i,
+            _ => unreachable!(),
+        };
+        let hyp = &output.stage2.spherical_hypotheses[hyp_idx];
+
+        // Average v of mesh face centroids
+        let mut v_sum = 0.0;
+        let mut v_count = 0;
+        for &mfi in hyp.faces.iter().take(10) {
+            let face = &output.stage2.mesh.faces[mfi];
+            let v0 = &output.stage2.mesh.vertices[face.vertex_indices[0]];
+            let v1 = &output.stage2.mesh.vertices[face.vertex_indices[1]];
+            let v2 = &output.stage2.mesh.vertices[face.vertex_indices[2]];
+            let cx = (v0.x + v1.x + v2.x) / 3.0;
+            let cy = (v0.y + v1.y + v2.y) / 3.0;
+            let cz = (v0.z + v1.z + v2.z) / 3.0;
+            let pt = gp::Pnt::new_real3(cx, cy, cz);
+            let proj = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
+                &pt,
+                &fd.surface,
+                extrema::ExtAlgo::Grad,
+            );
+            if proj.nb_points() > 0 {
+                let mut u = 0.0;
+                let mut v = 0.0;
+                proj.lower_distance_parameters(&mut u, &mut v);
+                v_sum += v;
+                v_count += 1;
+            }
+        }
+
+        if v_count > 0 {
+            let v_avg = v_sum / v_count as f64;
+            let v_edge = vmin; // single edge, so vmin == vmax
+            if v_avg > v_edge {
+                vmax = std::f64::consts::FRAC_PI_2;
+            } else {
+                vmin = -std::f64::consts::FRAC_PI_2;
+            }
+        }
+    }
+
+    if config.verbose {
+        eprintln!("  Face {fi}: computed UV bounds u=[{umin:.6}, {umax:.6}], v=[{vmin:.6}, {vmax:.6}] from {} edge(s)", fd.edge_indices.len());
+    }
+
+    Ok((umin, umax, vmin, vmax))
+}
+/// Compute the area of a face via BRepGProp.
+fn compute_face_area(make_face: &b_rep_builder_api::MakeFace) -> f64 {
+    let face = make_face.face();
+    let mut gprops = g_prop::GProps::new();
+    b_rep_g_prop::surface_properties_shape_gprops_bool2(
+        face.as_shape(),
+        &mut gprops,
+        false, // UseTriangulation
+        false, // SkipShared
+    );
+    gprops.mass()
+}
+
 /// Create an OCCT face for a periodic surface (cylinder or sphere).
 ///
-/// For surfaces with edges (partial cylinders, hemispheres, etc.), uses wire-based
-/// construction from IntSS edge curves so that edges are shared with adjacent faces.
 /// For full spheres with no edges, uses natural surface bounds.
+/// For full-revolution surfaces (all boundary edges are closed loops),
+/// uses UV-bounds construction which automatically creates seam edges.
+/// For partial-revolution surfaces, uses wire-based construction with
+/// pre-computed pcurves to ensure the correct arc is selected.
 fn create_periodic_face(
     fi: usize,
     output: &Stage3Output,
@@ -1537,96 +1730,186 @@ fn create_periodic_face(
         return Ok((make_face, false)); // Full spheres are always convex
     }
 
-    // Build faces from wires (same approach as planar faces)
-    let wire_groups = group_edges_into_wires(fd, &output.edges);
+    // Compute UV bounds for all periodic faces
+    let (umin, umax, vmin, vmax) = compute_uv_bounds_from_edges(fi, fd, output, surface, config)?;
 
-    if wire_groups.is_empty() {
-        return Err(Stage3Error::AdjacencyError(format!(
-            "periodic face {fi} has no edges for wire construction"
-        )));
-    }
+    // Check if all boundary edges are closed loops (full revolution)
+    let all_closed_loops = fd.edge_indices.iter().all(|&ei| {
+        let e = &output.edges[ei];
+        e.vertex_indices[0] == usize::MAX && e.vertex_indices[1] == usize::MAX
+    });
 
-    let mut wires: Vec<OwnedPtr<b_rep_builder_api::MakeWire>> = Vec::new();
-    for (gi, group) in wire_groups.iter().enumerate() {
-        let first_edge = topo_edges[group[0]].edge();
-        let mut make_wire = b_rep_builder_api::MakeWire::new_edge(first_edge);
-        for &ei in &group[1..] {
-            make_wire.add_edge(topo_edges[ei].edge());
-        }
-        if !make_wire.is_done() {
-            if config.verbose {
-                eprintln!(
-                    "  Face {fi} wire {gi}: MakeWire error {:?} ({} edges)",
-                    make_wire.error(),
-                    group.len(),
-                );
-            }
+    let make_face = if all_closed_loops && !fd.edge_indices.is_empty() {
+        // Full-revolution periodic face: use UV-bounds construction.
+        // This automatically creates seam edges needed for proper pcurves.
+        let mf = b_rep_builder_api::MakeFace::new_handlegeomsurface_real5(
+            &fd.surface,
+            umin,
+            umax,
+            vmin,
+            vmax,
+            config.vertex_tolerance_mm,
+        );
+        if !mf.is_done() {
             return Err(Stage3Error::AdjacencyError(format!(
-                "MakeWire failed for periodic face {fi} wire group {gi} ({} edges): {:?}",
-                group.len(),
-                make_wire.error(),
+                "MakeFace (UV bounds) failed for periodic face {fi}: {:?}",
+                mf.error(),
             )));
         }
-        wires.push(make_wire);
-    }
-
-    // Identify outer wire: the one with the most edges (heuristic)
-    let outer_idx = wires
-        .iter()
-        .enumerate()
-        .max_by_key(|(i, _)| wire_groups[*i].len())
-        .map(|(i, _)| i)
-        .unwrap();
-
-    let mut make_face = b_rep_builder_api::MakeFace::new_handlegeomsurface_wire(
-        &fd.surface,
-        wires[outer_idx].wire(),
-    );
-
-    if !make_face.is_done() {
-        return Err(Stage3Error::AdjacencyError(format!(
-            "MakeFace failed for periodic face {fi}: {:?}",
-            make_face.error(),
-        )));
-    }
-
-    // Add inner wires (holes)
-    for (i, w) in wires.iter_mut().enumerate() {
-        if i != outer_idx {
-            make_face.add(w.wire());
+        if config.verbose {
+            let area = compute_face_area(&mf);
+            eprintln!("  Face {fi}: UV-bounds construction, u=[{umin:.4}, {umax:.4}], v=[{vmin:.4}, {vmax:.4}], area={area:.4} mm\u{b2}");
         }
-    }
+        mf
+    } else {
+        // Partial-revolution: use wire-based construction with pre-set pcurves.
+        // We set pcurves on the IntSS edges BEFORE calling MakeFace so that
+        // MakeFace selects the correct arc on the periodic surface.
+        let two_pi = 2.0 * std::f64::consts::PI;
 
-    // Fix pcurves on edges of the periodic face.
-    // MakeFace::Add(wire) does NOT compute pcurves for edges on non-planar surfaces.
-    // Without pcurves, BRepGProp cannot integrate over the face, producing zero
-    // area/volume. We use ShapeFix_Edge to project each 3D edge curve onto the
-    // surface's UV space, creating the required Geom2d_Curve pcurves.
-    {
-        let face = make_face.face();
-        let mut edge_fixer = shape_fix::Edge::new();
-        let mut edge_explorer = top_exp::Explorer::new_shape_shapeenum2(
-            face.as_shape(),
-            top_abs::ShapeEnum::Edge,
-            top_abs::ShapeEnum::Shape,
+        // Set pcurves on edges before wire construction
+        let identity_loc = top_loc::Location::new();
+        let builder = b_rep::Builder::new();
+        for &ei in &fd.edge_indices {
+            let edge = &output.edges[ei];
+            let curve = edge.curve_3d.as_ref().unwrap();
+            let c = curve.get();
+
+            // Get 3D endpoints — project onto surface to get UV coordinates
+            let t_start = c.first_parameter();
+            let t_end = c.last_parameter();
+            let p_start = c.value(t_start);
+            let p_end = c.value(t_end);
+
+            let proj_start = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
+                &p_start, &fd.surface, extrema::ExtAlgo::Grad,
+            );
+            let proj_end = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
+                &p_end, &fd.surface, extrema::ExtAlgo::Grad,
+            );
+            if proj_start.nb_points() == 0 || proj_end.nb_points() == 0 {
+                continue;
+            }
+
+            let mut u1 = 0.0;
+            let mut v1 = 0.0;
+            proj_start.lower_distance_parameters(&mut u1, &mut v1);
+            let mut u2 = 0.0;
+            let mut v2 = 0.0;
+            proj_end.lower_distance_parameters(&mut u2, &mut v2);
+
+            // Adjust u values to be consistent with the computed UV bounds.
+            // The circular gap algorithm determined [umin, umax] as the correct arc.
+            // Shift u values so they fall within [umin - π, umax + π].
+            let u_center = (umin + umax) / 2.0;
+            while u1 < u_center - std::f64::consts::PI { u1 += two_pi; }
+            while u1 > u_center + std::f64::consts::PI { u1 -= two_pi; }
+            while u2 < u_center - std::f64::consts::PI { u2 += two_pi; }
+            while u2 > u_center + std::f64::consts::PI { u2 -= two_pi; }
+
+            // Create 2D pcurve: line that evaluates to (u(t), v(t)) for the
+            // edge's parameter range [t_start, t_end].
+            // Geom2d_Line(origin, dir) gives P(t) = origin + t * unit_dir.
+            // We need: P(t_start) = (u1, v1) and P(t_end) = (u2, v2).
+            // This requires |(u2-u1, v2-v1)| = |t_end - t_start|, which holds
+            // for cylinder/sphere faces where UV distance = curve parameter.
+            let du = u2 - u1;
+            let dv = v2 - v1;
+            let span = t_end - t_start;
+            let len = (du * du + dv * dv).sqrt();
+            if len < 1e-15 || span.abs() < 1e-15 {
+                continue; // degenerate edge in UV space
+            }
+            let dir_x = du / len;
+            let dir_y = dv / len;
+            // Origin offset: P(t_start) = origin + t_start * unit_dir = (u1, v1)
+            // => origin = (u1 - t_start * dir_x, v1 - t_start * dir_y)
+            let ox = u1 - t_start * dir_x;
+            let oy = v1 - t_start * dir_y;
+            let pcurve_origin = gp::Pnt2d::new_real2(ox, oy);
+            let pcurve_dir = gp::Dir2d::new_real2(dir_x, dir_y);
+            let pcurve_line = geom2d::Line::new_pnt2d_dir2d(&pcurve_origin, &pcurve_dir);
+            let pcurve_handle = geom2d::Line::to_handle(pcurve_line).to_handle_curve();
+
+            builder.update_edge_edge_handlegeom2dcurve_handlegeomsurface_location_real(
+                topo_edges[ei].edge(),
+                &pcurve_handle,
+                &fd.surface,
+                &identity_loc,
+                config.vertex_tolerance_mm,
+            );
+
+            if config.verbose {
+                eprintln!("    Edge {ei}: set pcurve ({u1:.4},{v1:.4}) -> ({u2:.4},{v2:.4})");
+            }
+        }
+
+        // Build wire from edges
+        let wire_groups = group_edges_into_wires(fd, &output.edges);
+        if wire_groups.is_empty() {
+            return Err(Stage3Error::AdjacencyError(format!(
+                "periodic face {fi} has no edges for wire construction"
+            )));
+        }
+
+        let mut wires: Vec<OwnedPtr<b_rep_builder_api::MakeWire>> = Vec::new();
+        for (gi, group) in wire_groups.iter().enumerate() {
+            let first_edge = topo_edges[group[0]].edge();
+            let mut make_wire = b_rep_builder_api::MakeWire::new_edge(first_edge);
+            for &ei in &group[1..] {
+                make_wire.add_edge(topo_edges[ei].edge());
+            }
+            if !make_wire.is_done() {
+                if config.verbose {
+                    eprintln!(
+                        "  Face {fi} wire {gi}: MakeWire error {:?} ({} edges)",
+                        make_wire.error(),
+                        group.len(),
+                    );
+                }
+                return Err(Stage3Error::AdjacencyError(format!(
+                    "MakeWire failed for periodic face {fi} wire group {gi} ({} edges): {:?}",
+                    group.len(),
+                    make_wire.error(),
+                )));
+            }
+            wires.push(make_wire);
+        }
+
+        // Identify outer wire: the one with the most edges (heuristic)
+        let outer_idx = wires
+            .iter()
+            .enumerate()
+            .max_by_key(|(i, _)| wire_groups[*i].len())
+            .map(|(i, _)| i)
+            .unwrap();
+
+        let mut mf = b_rep_builder_api::MakeFace::new_handlegeomsurface_wire(
+            &fd.surface,
+            wires[outer_idx].wire(),
         );
-        while edge_explorer.more() {
-            let edge = topo_ds::edge(edge_explorer.value());
-            edge_fixer.fix_add_p_curve_edge_face_bool_real(
-                edge, face, false, config.vertex_tolerance_mm,
-            );
-            edge_fixer.fix_same_parameter_edge_face_real(
-                edge, face, config.vertex_tolerance_mm,
-            );
-            edge_explorer.next();
-        }
-    }
 
-    // Set face orientation based on surface convexity.
-    // OCCT surface normals always point outward (away from axis for cylinders,
-    // away from center for spheres). For concave surfaces (holes, pockets),
-    // the face normal should point inward (toward the solid interior), so
-    // we reverse the face orientation.
+        if !mf.is_done() {
+            return Err(Stage3Error::AdjacencyError(format!(
+                "MakeFace failed for periodic face {fi}: {:?}",
+                mf.error(),
+            )));
+        }
+
+        // Add inner wires (holes)
+        for (i, w) in wires.iter_mut().enumerate() {
+            if i != outer_idx {
+                mf.add(w.wire());
+            }
+        }
+
+        if config.verbose {
+            let area = compute_face_area(&mf);
+            eprintln!("  Face {fi}: wire construction with pcurves, u=[{umin:.4}, {umax:.4}], v=[{vmin:.4}, {vmax:.4}], area={area:.4} mm\u{b2}");
+        }
+        mf
+    };
+
     let is_concave = match surface {
         SelectedSurface::Cylindrical(idx) => !output.stage2.cylindrical_hypotheses[*idx].convex,
         SelectedSurface::Spherical(idx) => !output.stage2.spherical_hypotheses[*idx].convex,
@@ -1969,11 +2252,30 @@ fn create_occt_faces_all(
         let make_edge = if edge.vertex_indices[0] != usize::MAX
             && edge.vertex_indices[1] != usize::MAX
         {
-            // Both endpoints have shared vertices — create edge with explicit vertex topology
+            // Both endpoints have shared vertices — create edge with explicit vertex topology.
+            // For periodic curves (circles), MakeEdge strips the TrimmedCurve and uses
+            // AdjustPeriodic which forces p1 < p2, always taking the forward arc from V1
+            // to V2. We must ensure V1 corresponds to the curve's first_parameter and V2
+            // to last_parameter, otherwise MakeEdge will select the complementary arc.
+            let c = curve.get();
+            let p_start = c.value(c.first_parameter());
+            let v0_pt = &output.vertices[edge.vertex_indices[0]].point;
+            let v1_pt = &output.vertices[edge.vertex_indices[1]].point;
+            let d0_start = (v0_pt[0] - p_start.x()).powi(2)
+                + (v0_pt[1] - p_start.y()).powi(2)
+                + (v0_pt[2] - p_start.z()).powi(2);
+            let d1_start = (v1_pt[0] - p_start.x()).powi(2)
+                + (v1_pt[1] - p_start.y()).powi(2)
+                + (v1_pt[2] - p_start.z()).powi(2);
+            let (vi0, vi1) = if d0_start <= d1_start {
+                (edge.vertex_indices[0], edge.vertex_indices[1])
+            } else {
+                (edge.vertex_indices[1], edge.vertex_indices[0])
+            };
             b_rep_builder_api::MakeEdge::new_handlegeomcurve_vertex2(
                 curve,
-                &topo_vertices[edge.vertex_indices[0]],
-                &topo_vertices[edge.vertex_indices[1]],
+                &topo_vertices[vi0],
+                &topo_vertices[vi1],
             )
         } else {
             // Closed-loop edge (no vertex endpoints) — create without vertices
@@ -2084,6 +2386,20 @@ fn construct_shells(
         let n_multi = sewing.nb_multiple_edges();
         let n_contig = sewing.nb_contigous_edges();
         eprintln!("  Sewing stats: {n_free} free edges, {n_multi} multiple edges, {n_contig} contiguous edges");
+        for i in 1..=n_free {
+            let free_edge = sewing.free_edge(i);
+            let mut edge_explorer = top_exp::Explorer::new_shape_shapeenum2(
+                free_edge.as_shape(), top_abs::ShapeEnum::Vertex, top_abs::ShapeEnum::Shape,
+            );
+            let mut pts: Vec<String> = Vec::new();
+            while edge_explorer.more() {
+                let vtx = topo_ds::vertex(edge_explorer.value());
+                let pt = b_rep::Tool::pnt(vtx);
+                pts.push(format!("({:.4},{:.4},{:.4})", pt.x(), pt.y(), pt.z()));
+                edge_explorer.next();
+            }
+            eprintln!("    Free edge {i}: vertices {}", pts.join(" -> "));
+        }
     }
 
     // Extract shells from the sewing result.
