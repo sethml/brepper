@@ -1919,7 +1919,51 @@ fn create_periodic_face(
     Ok((make_face, is_concave))
 }
 
-/// Validate created faces using BRepCheck_Analyzer.
+/// Human-readable description of a BRepCheck_Status value.
+fn brep_check_status_name(status: b_rep_check::Status) -> &'static str {
+    use b_rep_check::Status::*;
+    match status {
+        Noerror => "no error",
+        Invalidpointoncurve => "invalid point on curve",
+        Invalidpointoncurveonsurface => "invalid point on curve-on-surface",
+        Invalidpointonsurface => "invalid point on surface",
+        No3dcurve => "no 3D curve",
+        Multiple3dcurve => "multiple 3D curves",
+        Invalid3dcurve => "invalid 3D curve",
+        Nocurveonsurface => "no curve on surface (missing pcurve)",
+        Invalidcurveonsurface => "invalid curve on surface",
+        Invalidcurveonclosedsurface => "invalid curve on closed surface",
+        Invalidsamerangeflag => "invalid SameRange flag",
+        Invalidsameparameterflag => "invalid SameParameter flag",
+        Invaliddegeneratedflag => "invalid degenerated flag",
+        Freeedge => "free edge",
+        Invalidmulticonnexity => "invalid multi-connexity",
+        Invalidrange => "invalid range",
+        Emptywire => "empty wire",
+        Redundantedge => "redundant edge",
+        Selfintersectingwire => "self-intersecting wire",
+        Nosurface => "no surface",
+        Invalidwire => "invalid wire",
+        Redundantwire => "redundant wire",
+        Intersectingwires => "intersecting wires",
+        Invalidimbricationofwires => "invalid imbrication of wires",
+        Emptyshell => "empty shell",
+        Redundantface => "redundant face",
+        Invalidimbricationofshells => "invalid imbrication of shells",
+        Unorientableshape => "unorientable shape",
+        Notclosed => "not closed",
+        Notconnected => "not connected",
+        Subshapenotinshape => "sub-shape not in shape",
+        Badorientation => "bad orientation",
+        Badorientationofsubshape => "bad orientation of sub-shape",
+        Invalidpolygonontriangulation => "invalid polygon on triangulation",
+        Invalidtolerancevalue => "invalid tolerance value",
+        Enclosedregion => "enclosed region",
+        Checkfail => "check failed",
+    }
+}
+
+/// Validate created faces using BRepCheck_Analyzer, with detailed BRepCheck_Face diagnostics.
 fn validate_faces(output: &Stage3Output, config: &Config) -> Result<(), Stage3Error> {
     let mut invalid_count = 0;
 
@@ -1928,8 +1972,54 @@ fn validate_faces(output: &Stage3Output, config: &Config) -> Result<(), Stage3Er
         let analyzer = b_rep_check::Analyzer::new_shape(face.as_shape());
         if !analyzer.is_valid() {
             invalid_count += 1;
-            if config.verbose {
-                eprintln!("  Face {fi}: BRepCheck_Analyzer reports invalid");
+
+            // Run detailed BRepCheck_Face diagnostics
+            let mut checker = b_rep_check::Face::new_face(face);
+            checker.minimum();
+            let intersect = checker.intersect_wires(false);
+            let classify = checker.classify_wires(false);
+            let orient = checker.orientation_of_wires(false);
+            let unorientable = checker.is_unorientable();
+
+            if !config.quiet {
+                let surface = &output.stage2.selected_surfaces
+                    [output.face_descriptors[fi].selected_surface_idx];
+                let surface_desc = match surface {
+                    SelectedSurface::Planar(_) => "planar",
+                    SelectedSurface::Cylindrical(_) => "cylindrical",
+                    SelectedSurface::Spherical(_) => "spherical",
+                };
+                let mut issues = Vec::new();
+                if intersect != b_rep_check::Status::Noerror {
+                    issues.push(format!(
+                        "intersecting wires ({})",
+                        brep_check_status_name(intersect)
+                    ));
+                }
+                if classify != b_rep_check::Status::Noerror {
+                    issues.push(format!(
+                        "wire classification ({})",
+                        brep_check_status_name(classify)
+                    ));
+                }
+                if orient != b_rep_check::Status::Noerror {
+                    issues.push(format!(
+                        "wire orientation ({})",
+                        brep_check_status_name(orient)
+                    ));
+                }
+                if unorientable {
+                    issues.push("face is unorientable".to_string());
+                }
+                if issues.is_empty() {
+                    issues.push("edge/vertex consistency issue".to_string());
+                }
+                eprintln!(
+                    "  Warning: face {} ({}) failed BRepCheck: {}",
+                    fi,
+                    surface_desc,
+                    issues.join("; ")
+                );
             }
         }
         if config.verbose {
@@ -1956,8 +2046,6 @@ fn validate_faces(output: &Stage3Output, config: &Config) -> Result<(), Stage3Er
 
     Ok(())
 }
-
-/// Compare stage 3.4 faces against reference STEP shape.
 fn compare_faces_to_step(
     output: &Stage3Output,
     config: &Config,
