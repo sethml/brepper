@@ -253,10 +253,23 @@ All node/triangle indices are **1-based** (OCCT convention).
 - **Reorientation is safe for all-closed-loop tangent spheres**: When `has_tangent_closed_loops` is true (all edges are closed loops with no vertices), all tangent cylinder boundaries must share one unique axis. Proof: two tangent great circles from cylinders with different axes would intersect on the sphere in 2 points, creating vertices, which contradicts `all_closed_loops`. So reorienting the sphere to align with the (single) cylinder axis is unambiguous.
 - **Failed alternatives**: (1) Wire-based split-at-poles with `ShapeConstruct_ProjectCurveOnSurface` produced correct face areas but wrong volume (cylinder only) due to BRepCheck edge/vertex consistency issues. (2) UV-bounds on the original sphere with mesh-centroid-derived U range produced 6 free edges because UV-bounds boundaries are iso-parametric meridian arcs, geometrically different from the tangent circles.
 
-## Cylinder-Sphere Boundary: Bogus Cylinder Hypotheses
+## Cylinder-Sphere Boundary: BFS Fragmentation
 
-### Root cause (empirically verified)
-When a cylinder edge meets a sphere corner with the same radius (e.g., rounded cube), cylinder BFS extends from real cylinder faces onto sphere-corner faces because sphere faces near the "equator" genuinely fit the cylinder (a cylinder of radius R locally matches a sphere of radius R along any great-circle band). These mixed hypotheses have larger geometric area than sphere octant patches (~9.42 mm² for a 6mm quarter-cylinder vs ~6.28 mm² for a sphere octant on a 10mm r=2mm rounded cube), so they consistently win the greedy area-based surface selection before spheres, claiming sphere-corner faces. This produces extra fragmented cylinder selections (e.g., 17 instead of 12) and shrunken sphere patches.
+### face_area bug (fixed)
+The `face_area` function in stage 2 only computed area from `vertex_indices[0..2]` — correct for triangles but wrong for quads (`vertex_count == 4`) created by stage 1.3 coplanar fusion. For quads, the second triangle (v0, v2, v3) was ignored, computing roughly half the correct area. Fix: check `vertex_count` and add the second triangle's area when it's 4.
+
+### Cylinder fragmentation mechanism (empirically verified)
+On rounded_cube_10_r2_fine, one of the 12 quarter-cylinder edges is fragmented into 6 small hypotheses (22+12+9+5+5+34 faces) instead of one 36-face hypothesis. Investigation found:
+
+1. **Fragment faces are NOT sphere faces.** All 108 faces within vertex tolerance of the ideal cylinder have `sph_hyp=-1` (no sphere hypothesis) and `max_cyl_err < 2e-6` against the precise ideal cylinder axis.
+
+2. **Fragmentation is caused by barrier faces.** At 3-4 locations along the cylinder strip, individual faces get `cyl_hyp=-1` (no valid seed partner). These faces cannot grow through committed neighbors or form valid seed pairs (cross product < MIN_CROSS_THRESHOLD with cylinder-side neighbors, sphere-side neighbors already committed by bogus equatorial hypotheses). Each barrier splits the BFS growth region.
+
+3. **Bogus equatorial hypotheses contribute indirectly.** They commit sphere faces that are mesh neighbors of boundary cylinder faces. When BFS reaches a barrier face, its sphere-side neighbors are already committed, and its cylinder-side neighbors have nearly parallel normals. No valid seed → `cyl_hyp=-1` → barrier.
+
+4. **The high vtx_err_max (~1.58e-4) in fragment hypotheses is misleading.** It's computed against the fragment's own poorly-fitted cylinder (fitted from a small portion of the full cylinder). Against the ideal cylinder, all face errors are < 2e-6.
+
+5. **Coordinate precision matters.** Using truncated sphere center coordinates (4 decimal places: 21.1219 instead of 21.1218879546) shifts the ideal cylinder axis enough to make all face errors appear ~1e-5, obscuring the true ~1e-6 errors. Always use full f64 precision for distance measurements.
 
 ### Axis drift theory: disproven
 Hypothesis: BFS refitting gradually rotates the cylinder axis when sphere faces are added, causing "drift." Empirical testing across rounded_cube_10_r2_{coarse,fine,medium} and pill_coarse showed **zero significant axis drift** on any successful/committed cylinder hypothesis. All axis_dot(seed, refit) values were ≥ 0.999999996. Drift only occurred on tiny (3-4 face) hypotheses already rejected by existing validation (min face count, angular coverage). The axis stability check described in some versions of the development plan would not have solved the actual problem.
