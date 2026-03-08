@@ -98,6 +98,8 @@ pub struct CylindricalHypothesis {
     pub vertices: Vec<usize>,
     /// Maximum absolute distance from any vertex to the cylinder surface.
     pub error_max: f64,
+    /// Maximum absolute distance from any face centroid to the cylinder surface.
+    pub centroid_error_max: f64,
     /// Sum of absolute vertex-to-surface distances.
     pub error_abs_sum: f64,
 }
@@ -117,6 +119,8 @@ pub struct SphericalHypothesis {
     pub vertices: Vec<usize>,
     /// Maximum absolute distance from any vertex to the sphere surface.
     pub error_max: f64,
+    /// Maximum absolute distance from any face centroid to the sphere surface.
+    pub centroid_error_max: f64,
     /// Sum of absolute vertex-to-surface distances.
     pub error_abs_sum: f64,
 }
@@ -934,6 +938,7 @@ struct CylinderTrialResult {
     radius: f64,
     convex: bool,
     error_max: f64,
+    centroid_error_max: f64,
     error_abs_sum: f64,
 }
 
@@ -1183,13 +1188,15 @@ fn run_cylinder_trial_bfs(
         return None;
     }
 
-    // Validate: centroid check
+    // Validate: centroid check; also compute centroid_error_max
+    let mut centroid_error_max = 0.0_f64;
     for &f in &face_list {
         let c = face_centroid(&mesh.faces[f], &mesh.vertices);
         let d = vertex_to_cylinder_distance(
             &MeshVertex::from_xyz(c[0], c[1], c[2]),
             &current_origin, &current_dir, current_radius,
         ).abs();
+        centroid_error_max = centroid_error_max.max(d);
         if d > surface_tol {
             return None;
         }
@@ -1203,6 +1210,7 @@ fn run_cylinder_trial_bfs(
         radius: current_radius,
         convex,
         error_max,
+        centroid_error_max,
         error_abs_sum,
     })
 }
@@ -1317,6 +1325,7 @@ fn deduce_cylindrical_hypotheses(
                 faces: candidate.faces,
                 vertices: candidate.vertices.into_iter().collect(),
                 error_max: candidate.error_max,
+                centroid_error_max: candidate.centroid_error_max,
                 error_abs_sum: candidate.error_abs_sum,
             });
         } else {
@@ -1961,6 +1970,16 @@ fn deduce_spherical_hypotheses(
             continue;
         }
 
+        // Compute centroid error metrics (after validation to avoid extra work on rejected hypotheses)
+        let mut centroid_error_max = 0.0_f64;
+        for &f in &face_list {
+            let c = face_centroid(&mesh.faces[f], &mesh.vertices);
+            let d = vertex_to_sphere_distance(
+                &MeshVertex::from_xyz(c[0], c[1], c[2]), &current_center, current_radius,
+            ).abs();
+            centroid_error_max = centroid_error_max.max(d);
+        }
+
         hypotheses.push(SphericalHypothesis {
             center: current_center,
             radius: current_radius,
@@ -1968,6 +1987,7 @@ fn deduce_spherical_hypotheses(
             faces: face_list,
             vertices: vertex_set.into_iter().collect(),
             error_max,
+            centroid_error_max,
             error_abs_sum,
         });
     }
@@ -2357,12 +2377,44 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
         if config.verbose {
             for (i, h) in cylindrical_hypotheses.iter().enumerate() {
                 eprintln!(
-                    "  Cylinder {}: {} faces, {} vertices, r={:.4}, {}, axis=[{:.4}, {:.4}, {:.4}], err_max={:.2e}",
+                    "  Cylinder {}: {} faces, {} vertices, r={:.4}, {}, \
+axis_origin=[{:.4}, {:.4}, {:.4}], axis_dir=[{:.4}, {:.4}, {:.4}], \
+vtx_err_max={:.2e}, cen_err_max={:.2e}",
                     i, h.faces.len(), h.vertices.len(), h.radius,
                     if h.convex { "convex" } else { "concave" },
+                    h.axis_origin[0], h.axis_origin[1], h.axis_origin[2],
                     h.axis_direction[0], h.axis_direction[1], h.axis_direction[2],
-                    h.error_max,
+                    h.error_max, h.centroid_error_max,
                 );
+                if config.very_verbose {
+                    for &fi in &h.faces {
+                        let face = &mesh.faces[fi];
+                        let vc = face.vertex_count as usize;
+                        let centroid = face_centroid(face, &mesh.vertices);
+                        let normal = face.normal.unwrap_or([0.0; 3]);
+                        let centroid_err = vertex_to_cylinder_distance(
+                            &MeshVertex::from_xyz(centroid[0], centroid[1], centroid[2]),
+                            &h.axis_origin, &h.axis_direction, h.radius,
+                        ).abs();
+                        let mut vtx_err_max = f64::NEG_INFINITY;
+                        let mut vtx_err_min = f64::INFINITY;
+                        for vi_idx in 0..vc {
+                            let d = vertex_to_cylinder_distance(
+                                &mesh.vertices[face.vertex_indices[vi_idx]],
+                                &h.axis_origin, &h.axis_direction, h.radius,
+                            ).abs();
+                            vtx_err_max = vtx_err_max.max(d);
+                            vtx_err_min = vtx_err_min.min(d);
+                        }
+                        eprintln!(
+                            "    face {fi}: {vc}v centroid=[{:.4},{:.4},{:.4}] \
+normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
+                            centroid[0], centroid[1], centroid[2],
+                            normal[0], normal[1], normal[2],
+                            vtx_err_min, vtx_err_max, centroid_err,
+                        );
+                    }
+                }
             }
         }
     }
@@ -2407,12 +2459,42 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
         if config.verbose {
             for (i, h) in spherical_hypotheses.iter().enumerate() {
                 eprintln!(
-                    "  Sphere {}: {} faces, {} vertices, r={:.4}, {}, center=[{:.4}, {:.4}, {:.4}], err_max={:.2e}",
+                    "  Sphere {}: {} faces, {} vertices, r={:.4}, {}, center=[{:.4}, {:.4}, {:.4}], \
+vtx_err_max={:.2e}, cen_err_max={:.2e}",
                     i, h.faces.len(), h.vertices.len(), h.radius,
                     if h.convex { "convex" } else { "concave" },
                     h.center[0], h.center[1], h.center[2],
-                    h.error_max,
+                    h.error_max, h.centroid_error_max,
                 );
+                if config.very_verbose {
+                    for &fi in &h.faces {
+                        let face = &mesh.faces[fi];
+                        let vc = face.vertex_count as usize;
+                        let centroid = face_centroid(face, &mesh.vertices);
+                        let normal = face.normal.unwrap_or([0.0; 3]);
+                        let centroid_err = vertex_to_sphere_distance(
+                            &MeshVertex::from_xyz(centroid[0], centroid[1], centroid[2]),
+                            &h.center, h.radius,
+                        ).abs();
+                        let mut vtx_err_max = f64::NEG_INFINITY;
+                        let mut vtx_err_min = f64::INFINITY;
+                        for vi_idx in 0..vc {
+                            let d = vertex_to_sphere_distance(
+                                &mesh.vertices[face.vertex_indices[vi_idx]],
+                                &h.center, h.radius,
+                            ).abs();
+                            vtx_err_max = vtx_err_max.max(d);
+                            vtx_err_min = vtx_err_min.min(d);
+                        }
+                        eprintln!(
+                            "    face {fi}: {vc}v centroid=[{:.4},{:.4},{:.4}] \
+normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
+                            centroid[0], centroid[1], centroid[2],
+                            normal[0], normal[1], normal[2],
+                            vtx_err_min, vtx_err_max, centroid_err,
+                        );
+                    }
+                }
             }
         }
     }

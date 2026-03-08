@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::{ArgAction, Parser, ValueEnum};
 use opencascade_sys::{message, step_control, top_abs, top_exp};
 use std::fmt::{Display, Formatter};
 
@@ -151,9 +151,9 @@ struct CliArgs {
     #[arg(long, default_value = "17.5")]
     pub angular_tolerance: f64,
 
-    /// Enable verbose output.
-    #[arg(short = 'v', long)]
-    pub verbose: bool,
+    /// Enable verbose output (-v) or very verbose output (-vv).
+    #[arg(short = 'v', long, action = ArgAction::Count)]
+    pub verbosity: u8,
 
     /// Suppress non-error output.
     #[arg(short = 'q', long)]
@@ -196,6 +196,8 @@ pub struct Config {
     pub angular_tolerance_rad: f64,
     /// Enable verbose output.
     pub verbose: bool,
+    /// Enable very verbose output (implies verbose).
+    pub very_verbose: bool,
     /// Suppress non-error output.
     pub quiet: bool,
     /// Enable debug output and intermediate files.
@@ -217,6 +219,7 @@ impl std::fmt::Debug for Config {
             .field("surface_tolerance_mm", &self.surface_tolerance_mm)
             .field("angular_tolerance_rad", &self.angular_tolerance_rad)
             .field("verbose", &self.verbose)
+            .field("very_verbose", &self.very_verbose)
             .field("quiet", &self.quiet)
             .field("debug", &self.debug)
             .field("stage", &self.stage)
@@ -238,7 +241,8 @@ impl Config {
             vertex_tolerance_mm: args.vertex_tolerance * scale,
             surface_tolerance_mm: args.surface_tolerance * scale,
             angular_tolerance_rad: args.angular_tolerance.to_radians(),
-            verbose: args.verbose,
+            verbose: args.verbosity >= 1,
+            very_verbose: args.verbosity >= 2,
             quiet: args.quiet,
             debug: args.debug,
             stage: args.stage.unwrap_or_default(),
