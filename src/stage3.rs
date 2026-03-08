@@ -1254,6 +1254,142 @@ fn project_point_on_curve(
     }
 }
 
+/// Compute the edge curve for a tangent edge.
+///
+/// For tangent edges, `GeomAPI_IntSS` often fails or produces degenerate results.
+/// Instead, construct the curve analytically based on the surface pair types:
+/// - Plane-cylinder tangent: line parallel to cylinder axis at the tangent point
+/// - Plane-sphere tangent: degenerate (single point) — not expected as an edge
+/// - Cylinder-cylinder tangent: line parallel to shared axis direction
+/// - Sphere-cylinder tangent: circle on the sphere (not yet implemented)
+fn compute_tangent_edge_curve(
+    edge: &mut ReconEdge,
+    face_descriptors: &[FaceDescriptor],
+    vertices: &[BRepVertex],
+    stage2: &Stage2Output,
+    config: &Config,
+) -> Result<(), String> {
+    // Both vertex endpoints must exist for tangent edges
+    if edge.vertex_indices[0] == usize::MAX || edge.vertex_indices[1] == usize::MAX {
+        return Err("tangent edge has no vertex endpoints".to_string());
+    }
+
+    let v0 = &vertices[edge.vertex_indices[0]];
+    let v1 = &vertices[edge.vertex_indices[1]];
+
+    // Determine the curve direction from surface geometry.
+    // For plane-cylinder and cylinder-cylinder tangencies, the tangent curve
+    // is a line whose direction should match the cylinder axis.
+    let [fi0, fi1] = edge.face_indices;
+    let ss0 = &stage2.selected_surfaces[face_descriptors[fi0].selected_surface_idx];
+    let ss1 = &stage2.selected_surfaces[face_descriptors[fi1].selected_surface_idx];
+
+    // Get the line direction from the cylinder axis (if one of the surfaces is cylindrical)
+    let line_dir = match (ss0, ss1) {
+        (SelectedSurface::Cylindrical(idx), SelectedSurface::Planar(_))
+        | (SelectedSurface::Planar(_), SelectedSurface::Cylindrical(idx)) => {
+            let hyp = &stage2.cylindrical_hypotheses[*idx];
+            hyp.axis_direction
+        }
+        (SelectedSurface::Cylindrical(idx), SelectedSurface::Cylindrical(_)) => {
+            // Both cylinders — use the first one's axis
+            let hyp = &stage2.cylindrical_hypotheses[*idx];
+            hyp.axis_direction
+        }
+        _ => {
+            // Fallback: use direction from vertex to vertex
+            let dx = v1.point[0] - v0.point[0];
+            let dy = v1.point[1] - v0.point[1];
+            let dz = v1.point[2] - v0.point[2];
+            let len = (dx * dx + dy * dy + dz * dz).sqrt();
+            if len < 1e-15 {
+                return Err("tangent edge has zero-length vertex span".to_string());
+            }
+            [dx / len, dy / len, dz / len]
+        }
+    };
+
+    // Compute the tangent point analytically for plane-cylinder pairs.
+    // The tangent point lies on the cylinder surface at the point closest to the plane,
+    // i.e., axis_origin + r * radial_dir, where radial_dir is the component of the
+    // plane normal perpendicular to the cylinder axis.
+    let tangent_point = match (ss0, ss1) {
+        (SelectedSurface::Cylindrical(cyl_idx), SelectedSurface::Planar(plane_idx))
+        | (SelectedSurface::Planar(plane_idx), SelectedSurface::Cylindrical(cyl_idx)) => {
+            let cyl = &stage2.cylindrical_hypotheses[*cyl_idx];
+            let plane = &stage2.planar_hypotheses[*plane_idx];
+            let a = cyl.axis_direction;
+            let n = plane.normal;
+            // Component of plane normal perpendicular to cylinder axis
+            let dot = n[0] * a[0] + n[1] * a[1] + n[2] * a[2];
+            let perp = [n[0] - dot * a[0], n[1] - dot * a[1], n[2] - dot * a[2]];
+            let perp_len = (perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2]).sqrt();
+            if perp_len < 1e-12 {
+                // Plane normal parallel to cylinder axis — degenerate
+                return Err("plane normal parallel to cylinder axis".to_string());
+            }
+            let radial_unit = [perp[0] / perp_len, perp[1] / perp_len, perp[2] / perp_len];
+            // Choose sign: for convex cylinder, outward normal = radial direction.
+            // At the tangent point, cylinder outward normal should face the plane.
+            // For a convex cylinder, the tangent point is at axis + r * radial_unit
+            // where radial_unit points toward the plane.
+            let sign = if cyl.convex { 1.0 } else { -1.0 };
+            // Project vertex v0 onto the axis to find the axis-parallel component
+            let v0_minus_o = [
+                v0.point[0] - cyl.axis_origin[0],
+                v0.point[1] - cyl.axis_origin[1],
+                v0.point[2] - cyl.axis_origin[2],
+            ];
+            let t_axis = v0_minus_o[0] * a[0] + v0_minus_o[1] * a[1] + v0_minus_o[2] * a[2];
+            [
+                cyl.axis_origin[0] + t_axis * a[0] + sign * cyl.radius * radial_unit[0],
+                cyl.axis_origin[1] + t_axis * a[1] + sign * cyl.radius * radial_unit[1],
+                cyl.axis_origin[2] + t_axis * a[2] + sign * cyl.radius * radial_unit[2],
+            ]
+        }
+        _ => v0.point, // fallback: use vertex position
+    };
+
+    // Construct Geom_Line passing through the tangent point in the line direction
+    let p0 = gp::Pnt::new_real3(tangent_point[0], tangent_point[1], tangent_point[2]);
+    let dir = gp::Dir::new_real3(line_dir[0], line_dir[1], line_dir[2]);
+    let line = geom::Line::new_pnt_dir(&p0, &dir);
+    let line_handle = geom::Line::to_handle(line).to_handle_curve();
+
+    // Trim to vertex endpoints
+    let t_start = project_point_on_curve(&v0.point, &line_handle)?;
+    let t_end = project_point_on_curve(&v1.point, &line_handle)?;
+    let (t_lo, t_hi) = if t_start < t_end {
+        (t_start, t_end)
+    } else {
+        (t_end, t_start)
+    };
+
+    let trimmed = geom::TrimmedCurve::new_handlegeomcurve_real2(&line_handle, t_lo, t_hi);
+    let trimmed_handle = geom::TrimmedCurve::to_handle(trimmed).to_handle_curve();
+
+    // Validate: check that mesh boundary vertices lie near the constructed curve
+    if config.verbose {
+        let mut max_dist = 0.0_f64;
+        for &vi in &edge.mesh_boundary_vertices {
+            let v = &stage2.mesh.vertices[vi];
+            let pt = gp::Pnt::new_real3(v.x, v.y, v.z);
+            let proj = geom_api::ProjectPointOnCurve::new_pnt_handlegeomcurve(&pt, &line_handle);
+            if proj.nb_points() > 0 {
+                max_dist = max_dist.max(proj.lower_distance());
+            }
+        }
+        if max_dist > config.vertex_tolerance_mm * 100.0 {
+            return Err(format!(
+                "tangent edge curve too far from mesh boundary (max dist {max_dist:.6}mm)"
+            ));
+        }
+    }
+
+    edge.curve_3d = Some(trimmed_handle);
+    Ok(())
+}
+
 /// Compute edge curves for all ReconEdges.
 fn compute_edge_curves_all(
     mut output: Stage3Output,
@@ -1270,11 +1406,38 @@ fn compute_edge_curves_all(
         let _ = before; // suppress unused warning
 
         if edge.tangent {
-            // TODO: Tangent edges need special handling (stage 3.3 tangent case)
-            if config.verbose {
-                eprintln!("  Edge {ei}: skipping tangent edge (not yet implemented)");
+            match compute_tangent_edge_curve(
+                edge,
+                &output.face_descriptors,
+                &output.vertices,
+                &output.stage2,
+                config,
+            ) {
+                Ok(()) => {
+                    success_count += 1;
+                    if config.verbose {
+                        let curve = edge.curve_3d.as_ref().unwrap();
+                        let c = curve.get();
+                        let fp = c.first_parameter();
+                        let lp = c.last_parameter();
+                        let p_start = c.value(fp);
+                        let p_end = c.value(lp);
+                        eprintln!(
+                            "  Edge {ei}: faces [{}, {}], tangent curve [{:.4},{:.4},{:.4}] -> [{:.4},{:.4},{:.4}], t=[{:.4}, {:.4}]",
+                            edge.face_indices[0], edge.face_indices[1],
+                            p_start.x(), p_start.y(), p_start.z(),
+                            p_end.x(), p_end.y(), p_end.z(),
+                            fp, lp,
+                        );
+                    }
+                }
+                Err(msg) => {
+                    if config.verbose {
+                        eprintln!("  Edge {ei}: FAILED tangent edge - {msg}");
+                    }
+                    fail_count += 1;
+                }
             }
-            fail_count += 1;
             continue;
         }
 
@@ -2337,14 +2500,20 @@ fn create_occt_faces_all(
 ) -> Result<Stage3Output, Stage3Error> {
     let num_faces = output.face_descriptors.len();
 
-    // 1. Create shared TopoDS_Vertex for each BRepVertex
+    // 1. Create shared TopoDS_Vertex for each BRepVertex.
+    // Set tolerance to vertex_tolerance_mm so that mesh vertex positions
+    // (which may deviate slightly from fitted analytical surfaces) are accepted
+    // by MakeEdge when projecting vertices onto edge curves.
+    let builder = b_rep::Builder::new();
     let topo_vertices: Vec<OwnedPtr<topo_ds::Vertex>> = output
         .vertices
         .iter()
         .map(|v| {
             let pt = gp::Pnt::new_real3(v.point[0], v.point[1], v.point[2]);
             let mut mv = b_rep_builder_api::MakeVertex::new_pnt(&pt);
-            mv.vertex().to_owned()
+            let vtx = mv.vertex().to_owned();
+            builder.update_vertex_vertex_real(&vtx, config.vertex_tolerance_mm);
+            vtx
         })
         .collect();
 
@@ -2377,10 +2546,18 @@ fn create_occt_faces_all(
             } else {
                 (edge.vertex_indices[1], edge.vertex_indices[0])
             };
-            b_rep_builder_api::MakeEdge::new_handlegeomcurve_vertex2(
+            // Use explicit parameter values to avoid OCCT's vertex-to-curve projection,
+            // which can fail when vertex tolerance exceeds default precision.
+            // vi0 is always the vertex closest to the curve start, vi1 closest to end,
+            // so parameters are always (first_parameter, last_parameter).
+            let fp = c.first_parameter();
+            let lp = c.last_parameter();
+            b_rep_builder_api::MakeEdge::new_handlegeomcurve_vertex2_real2(
                 curve,
                 &topo_vertices[vi0],
                 &topo_vertices[vi1],
+                fp,
+                lp,
             )
         } else {
             // Closed-loop edge (no vertex endpoints) — create without vertices

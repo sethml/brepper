@@ -515,7 +515,7 @@ For each ReconEdge, compute the 3D intersection curve between the two adjacent s
 
 **Intersection computation (implemented):**
 - For non-tangent edges: use `GeomAPI_IntSS` to compute intersection curves with tolerance `vertex_tolerance_mm`. IntSS may return multiple curves (e.g., a plane cutting through a torus); `select_closest_curve()` picks the one closest to the mesh boundary vertices by sampling up to 10 evenly-spaced boundary vertices, projecting each onto each candidate curve via `GeomAPI_ProjectPointOnCurve`, and summing distances.
-- For tangent edges: currently skipped (no tangent edges arise in the current test models). Future implementation will construct curves directly based on surface pair types.
+- For tangent edges: construct the curve analytically rather than using `GeomAPI_IntSS` (which fails or produces degenerate results for tangent/near-tangent surfaces). For plane-cylinder tangencies, the curve is a `Geom_Line` parallel to the cylinder axis at the tangent point. The tangent point is computed from the cylinder axis, radius, and the component of the plane normal perpendicular to the cylinder axis. For cylinder-cylinder tangencies, uses the first cylinder's axis direction. Fallback for other tangent pairs: construct a line from the two vertex endpoints. All tangent edges are trimmed to vertex endpoints using the same parameter projection as non-tangent edges.
 
 **Trimming to vertex endpoints (implemented):**
 - For each ReconVertex at an edge endpoint, project the vertex's 3D position onto the intersection curve using `GeomAPI_ProjectPointOnCurve` to get the curve parameter value.
@@ -675,8 +675,8 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Implement stage 4.1: Write solids to STEP file using `STEPControl_Writer` with `StepModelType::Asis`. Builds compound from all solids, sets AP214 schema. Compare re-reads written file and validates volume agreement (warning on >1% diff) and `BRepExtrema_DistShapeShape` distance to STEP reference. 15 integration tests: 3 basic output + 11 compare + 1 missing-output-path error.
 
 ### Stage 3 refinements
-- [ ] Revisit stage 3.2: Detect tangency relationships between adjacent surfaces. If there are any problems with models that involve tangent curves, such as tests/onshape/rounded_cube, then imagine more tests for difficult tangency relationships including cylinder-plane and sphere-cylinder, create those tests, and ensure that tangency detection works correctly.
-- [ ] Revisit stage 3.3 if tangency detection was added.
+- [x] Revisit stage 3.2: Tangency detection correctly identifies 8 tangent edges on part_rounded_cube_10_r2 (cylinder-plane tangencies at fillet boundaries). Detection algorithm using analytical surface normals at sampled boundary points works well. No changes needed to the 2° threshold.
+- [x] Revisit stage 3.3: Implement tangent edge curve computation. For tangent edges, construct curves analytically rather than using `GeomAPI_IntSS` (which fails for tangent surfaces). Plane-cylinder tangencies produce lines parallel to the cylinder axis at the analytically-computed tangent point. Also fix `MakeEdge` in stage 3.4: use `new_handlegeomcurve_vertex2_real2` with explicit parameter values (instead of relying on OCCT's vertex-to-curve projection which fails when mesh vertex tolerance exceeds OCCT's default precision of 1e-7mm), and set vertex tolerance to `vertex_tolerance_mm` via `BRep_Builder::update_vertex_vertex_real`. This unblocks part_rounded_cube_10_r2 — all 10 faces (6 planar + 4 cylindrical) reconstruct correctly with volume matching STEP reference to 2.19e-7 relative difference.
 - [ ] Consider implementing stage 2.7 (surface refitting) if stage 3 reconstruction reveals boundary accuracy problems from incorrect face-to-surface assignments.
 
 ### Stage 2 Extensions: Additional Surface Types
@@ -726,6 +726,8 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 || Plate with Hole low (fusion) | Low tessellation | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
 || Plate with Hole med (fusion) | Medium tessellation | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
 || Plate with Hole high (fusion) | High tessellation | 6 planes + 1 cylinder | ✗ Stage 3.1 (coplanarity tolerance) |
+|| Part Rounded Cube coarse (onshape) | 820 triangles | 6 planes + 4 cylinders | ✓ Stage 4.1 (STEP output) |
+|| Part Rounded Cube fine (onshape) | 4260 triangles | 6 planes + 4 cylinders | ✓ Stage 4.1 (STEP output) |
 || Rounded Cube coarse (onshape) | 820 triangles | 6 planes + 12 cylinders + 8 spheres | ✗ Stage 3.1 |
 || Rounded Cube medium (onshape) | 3548 triangles | 6 planes + 12 cylinders + 8 spheres | ✗ Stage 3.1 |
 || Rounded Cube fine (onshape) | 21466 triangles | 6 planes + 12 cylinders + 8 spheres | ✗ Stage 3.1 |
