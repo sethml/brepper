@@ -179,6 +179,17 @@ fn manual_cube_stage41_compare() {
     run_stage4(&config);
 }
 
+#[test]
+fn onshape_part_rounded_cube_stage41_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/onshape/part_rounded_cube_10_r2_coarse.stl"),
+        &format!("{dir}/tmp/test_part_rounded_cube_cmp.step"),
+        &format!("{dir}/tests/onshape/part_rounded_cube_10_r2.step"),
+    );
+    run_stage4(&config);
+}
+
 // --- Missing output path test ---
 
 #[test]

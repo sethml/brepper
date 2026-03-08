@@ -407,6 +407,16 @@ fn manual_cube_stage31_compare() {
     run_stage3(&config);
 }
 
+#[test]
+fn onshape_part_rounded_cube_stage31_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/onshape/part_rounded_cube_10_r2_coarse.stl"),
+        &format!("{dir}/tests/onshape/part_rounded_cube_10_r2.step"),
+    );
+    run_stage3(&config);
+}
+
 // ---------------------------------------------------------------------------
 // Tangency detection tests (stage 3.2)
 // ---------------------------------------------------------------------------
@@ -464,6 +474,18 @@ fn hemisphere_no_tangent_edges() {
     for (ei, edge) in output.edges.iter().enumerate() {
         assert!(!edge.tangent, "hemisphere edge {ei} should not be tangent");
     }
+}
+
+/// Part rounded cube: 8 tangent edges where cylinder fillets meet planar faces.
+#[test]
+fn part_rounded_cube_tangent_edges() {
+    let stl = format!("{}/tests/onshape/part_rounded_cube_10_r2_coarse.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let output = run_stage3(&config);
+    let tangent_count = output.edges.iter().filter(|e| e.tangent).count();
+    assert_eq!(tangent_count, 8, "part_rounded_cube should have 8 tangent edges (got {tangent_count})");
+    // All edges should have curves computed (including tangent ones)
+    check_all_edges_have_curves(&output);
 }
 
 // ---------------------------------------------------------------------------
@@ -803,6 +825,16 @@ fn manual_cube_stage34_compare() {
     run_stage3_34(&config);
 }
 
+#[test]
+fn onshape_part_rounded_cube_stage34_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_34(
+        &format!("{dir}/tests/onshape/part_rounded_cube_10_r2_coarse.stl"),
+        &format!("{dir}/tests/onshape/part_rounded_cube_10_r2.step"),
+    );
+    run_stage3_34(&config);
+}
+
 // ===========================================================================
 // Stage 3.5 tests — shell construction via BRepBuilderAPI_Sewing
 // ===========================================================================
@@ -974,6 +1006,16 @@ fn manual_cube_stage35_compare() {
     run_stage3_35(&config);
 }
 
+#[test]
+fn onshape_part_rounded_cube_stage35_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_35(
+        &format!("{dir}/tests/onshape/part_rounded_cube_10_r2_coarse.stl"),
+        &format!("{dir}/tests/onshape/part_rounded_cube_10_r2.step"),
+    );
+    run_stage3_35(&config);
+}
+
 // ---------------------------------------------------------------------------
 // Stage 3.6 helpers
 // ---------------------------------------------------------------------------
@@ -1141,6 +1183,16 @@ fn manual_cube_stage36_compare() {
     let config = config_for_compare_36(
         &format!("{dir}/tests/manual/cube.stl"),
         &format!("{dir}/tests/manual/cube.step"),
+    );
+    run_stage3_36(&config);
+}
+
+#[test]
+fn onshape_part_rounded_cube_stage36_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_36(
+        &format!("{dir}/tests/onshape/part_rounded_cube_10_r2_coarse.stl"),
+        &format!("{dir}/tests/onshape/part_rounded_cube_10_r2.step"),
     );
     run_stage3_36(&config);
 }

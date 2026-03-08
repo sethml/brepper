@@ -165,7 +165,7 @@ All node/triangle indices are **1-based** (OCCT convention).
 - Multi-face planar, cylindrical, and spherical hypotheses are candidates. Single-face planar hypotheses are fallback for unclaimed faces.
 - After selection, hypothesis face/vertex lists are updated in-place to reflect only the faces actually assigned.
 - Replaced the old per-face priority rule (spherical > cylindrical > multi-face planar > single-face planar) which failed when bogus small-area hypotheses of a high-priority type beat correct large-area hypotheses of a lower-priority type.
-- Sphere BFS overgrowth along cylinder fillets was fixed by solid-angle coverage validation in stage 2.3. Vertex-based seeding also helps by providing better initial seeds.
+- Sphere BFS along cylinder fillets is prevented by solid-angle coverage validation in stage 2.3. Vertex-based seeding also helps by providing better initial seeds.
 - Compare tolerance uses `surface_tolerance` for all hypothesis types (stages 2.1-2.3 and 2.6 all use the same tolerance). Previously used `vertex_tolerance` which was too tight for centroid-to-surface distance checks.
 
 
@@ -184,8 +184,7 @@ All node/triangle indices are **1-based** (OCCT convention).
 
 ### Stage 3.2 tangency detection
 - Surface normals at boundary points can be computed analytically for planar/cylindrical/spherical surfaces without needing OCCT UV evaluation. Plane: constant normal. Cylinder: radial direction from axis (negate for concave). Sphere: direction from center (negate for concave).
-- Tangency threshold of 2° (cos ≈ 0.9994) works well. Current test models have no tangent edges since all surface intersections (plane-plane, plane-cylinder, plane-sphere, cylinder-sphere) meet at angles far exceeding 2°.
-- Tangent edges will arise from fillets and blends (e.g., cylinder tangent to plane at a fillet edge).
+- Tangency threshold of 2° (cos ≈ 0.9994) works well. Tangent edges arise from fillets (e.g., cylinder tangent to plane at a fillet edge). part_rounded_cube_10_r2 has 8 tangent edges (4 cylinders × 2 touching planes each).
 
 ### Stage 3.3 edge curve computation
 - `GeomAPI_IntSS::new_handlegeomsurface2_real(S1, S2, Tol)` computes surface-surface intersection curves. Returns 1-indexed curves via `.nb_lines()` and `.line(i)` which returns `&HandleGeomCurve`.
@@ -194,8 +193,8 @@ All node/triangle indices are **1-based** (OCCT convention).
 - `Geom_TrimmedCurve::new_handlegeomcurve_real2(curve, U1, U2)` trims a curve to a parameter range. Convert to handle via `Geom_TrimmedCurve::to_handle(owned).to_handle_curve()`.
 - For closed-loop edges (no vertex endpoints, e.g., full circle on a cylinder cap), use the curve's full parameter range `[first_parameter, last_parameter]`.
 - `ReconEdge.curve_3d` stores `Option<OwnedPtr<geom::HandleGeomCurve>>`. `OwnedPtr` does not implement `Debug`, so `ReconEdge` needs a manual `Debug` impl.
-- All current test models compute 100% of edge curves successfully via IntSS (cube 12/12, cylinder 2/2, hemisphere 1/1, ball_on_cylinder 2/2, block_with_hole 15/15, pipe 4/4, spherical_pocket 13/13, chamfered_cube 48/48).
-- Tangent edges will arise from fillets and blends (e.g., cylinder tangent to plane at a fillet edge).
+- All current non-tangent edges compute 100% of edge curves successfully via IntSS (cube 12/12, cylinder 2/2, hemisphere 1/1, ball_on_cylinder 2/2, block_with_hole 15/15, pipe 4/4, spherical_pocket 13/13, chamfered_cube 48/48, part_rounded_cube 16/16).
+- **Tangent edge curves**: `GeomAPI_IntSS` fails for tangent surfaces (returns no curves). Instead, construct tangent edge curves analytically. For plane-cylinder tangencies: compute the radial direction from the component of the plane normal perpendicular to the cylinder axis, find the tangent point at `axis_origin + r * radial_unit`, construct a `Geom_Line` through that point along the cylinder axis direction, and trim to the vertex endpoint parameters. Validate that boundary vertices lie within tolerance of the constructed curve.
 
 ### Stage 3.4 face creation
 - **Planar faces**: Create `TopoDS_Edge` from trimmed curve using `BRepBuilderAPI_MakeEdge::new_handlegeomcurve(curve)`. Group edges into wire loops by `BRepVertex` vertex connectivity (union-find style). Build `MakeWire` from edges, `MakeFace` from surface + outer wire + hole wires.
@@ -206,7 +205,7 @@ All node/triangle indices are **1-based** (OCCT convention).
 - `MakeEdge::edge()` takes `&mut self`, not `&self`. Need `&mut` references when accessing edges.
 - `BRepCheck_Analyzer::new_shape_bool(shape, true)` validates faces. `.is_valid()` returns bool.
 - The base `geom::Surface` type does NOT have `bounds()` or `first_u_parameter()` etc. in the Rust bindings. These are available on specific subtypes (CylindricalSurface, SphericalSurface, Plane, etc.). For UV bounds, compute them from geometry (mesh vertices, hypothesis parameters) rather than trying to query the surface.
-- **Shared vertices**: Create `TopoDS_Vertex` objects from `BRepVertex` positions (`MakeVertex::new_pnt(pt)` then `.vertex().to_owned()`), then use `MakeEdge::new_handlegeomcurve_vertex2(curve, &v1, &v2)` instead of `MakeEdge::new_handlegeomcurve(curve)`. This ensures edges explicitly share vertex objects, making sewing topology-aware rather than proximity-based.
+- **Shared vertices**: Create `TopoDS_Vertex` objects from `BRepVertex` positions (`MakeVertex::new_pnt(pt)` then `.vertex().to_owned()`), then set vertex tolerance to `vertex_tolerance_mm` via `BRep_Builder::update_vertex_vertex_real()` (OCCT default tolerance ~1e-7 is too tight for mesh vertices). Use `MakeEdge::new_handlegeomcurve_vertex2_real2(curve, &v1, &v2, fp, lp)` with explicit parameter values to avoid OCCT's vertex-to-curve projection (which fails with `Pointprojectionfailed` when vertex is slightly off the curve). Parameters are always `(first_parameter, last_parameter)` since V1 is always ordered to be the vertex closest to the curve's start point.
 - **Pcurves on periodic faces**: For partial-revolution periodic faces, pcurves must be pre-set on IntSS edges using `BRep_Builder::update_edge_edge_handlegeom2dcurve_handlegeomsurface_location_real()` BEFORE creating the MakeFace. Without pre-set pcurves, MakeFace may compute incorrect pcurves that select the wrong arc of the periodic surface.
 - **CRITICAL: MakeEdge vertex order for periodic curves**: `BRepBuilderAPI_MakeEdge` strips `TrimmedCurve` wrappers and uses the base curve. For periodic curves (circles), `ElCLib::AdjustPeriodic` forces p1 < p2, always selecting the forward (CCW) arc from V1 to V2. If V1/V2 are in the wrong order relative to the curve parameterization, MakeEdge creates an edge spanning the complementary arc (e.g., 270° instead of 90°). Fix: when creating MakeEdge, ensure V1 is closest to the curve's `first_parameter()` point and V2 to the `last_parameter()` point.
 - **BRepCheck_Face diagnostics**: `b_rep_check::Face::new_face(face)` creates a face checker. Call `.minimum()` first to compute all checks, then query `.intersect_wires(false)`, `.classify_wires(false)`, `.orientation_of_wires(false)` (each returns `b_rep_check::Status`), and `.is_unorientable()` (bool).
