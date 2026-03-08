@@ -232,3 +232,11 @@ All node/triangle indices are **1-based** (OCCT convention).
 - Volume was historically wrong for models with periodic faces (cylinders/spheres) due to pcurve and vertex ordering issues. These are now resolved — all test models produce volumes matching STEP references to within ~1e-7 relative difference.
 - Face orientation is handled correctly by the combination of `ShapeFix_Shell::Perform()` (edge consistency + pcurve repair) and `ShapeFix_Solid::SolidFromShell()` (global orientation via `BRepClass3d_SolidClassifier::PerformInfinitePoint`). Do NOT post-process individual face orientations — flipping individual faces breaks edge consistency, which causes both `BRepGProp::VolumeProperties` and `SolidFromShell` to give wrong results. This was extensively tested: 6/8 models produce perfect volume without any post-processing, vs. various failures when individual faces were flipped.
 - `b_rep_check::Analyzer::new_shape_bool(shape, true)` + `.is_valid()` validates a solid.
+
+### Stage 4.1 STEP output
+- `step_control::Writer::new()` creates a writer. `writer.transfer_shape_stepmodeltype_bool_progressrange(shape, mode, compgraph, &progress)` transfers shapes. `writer.write(path)` writes the file.
+- `step_control::StepModelType::Asis` preserves the exact geometry (no conversion to manifold/faceted form).
+- `if_select::ReturnStatus::Retdone` indicates success for both transfer and write.
+- `interface::Static::set_c_val(name, val)` sets STEP header metadata. Key parameters: `"write.step.schema"` (e.g., "AP214"), `"write.step.product.name"`.
+- OCCT prints transfer statistics to stdout during `transfer_shape`, which cannot be suppressed via the Rust API. This is cosmetic noise in tests.
+- For compare validation, re-read the written STEP via `step_control::Reader` to validate the full round-trip (write + read), not just the in-memory shapes.
