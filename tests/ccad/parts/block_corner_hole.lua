@@ -5,7 +5,7 @@
 -- Expected: 6 trimmed planar faces + 1 concave quarter-cylindrical face.
 --
 -- Analytical values:
---   Volume = 18000 - 180*pi ≈ 17434.60 mm^3
+--   Volume = 18000 - 180*pi ≈ 17434.51 mm^3
 --   Surface area = 3960 + 42*pi ≈ 4091.95 mm^2
 --
 -- Note: box(w,d,h) places a corner at the origin. cylinder(d,h) is centered in x/y.

@@ -6,8 +6,8 @@
 -- Expected: 1 convex cylindrical surface (r=5) + 1 convex spherical surface (r=8) + 1 planar face (bottom cap).
 --
 -- Analytical values (intersection at z = 20 - sqrt(39)):
---   Volume = pi * [25*(20-sqrt(39)) + (8+sqrt(39))^2*(16-sqrt(39))/3] ≈ 3153 mm^3
---   Surface area = pi * [25 + 10*(20-sqrt(39)) + 16*(8+sqrt(39))] ≈ 1226 mm^2
+--   Volume ≈ 3153.23 mm^3
+--   Surface area ≈ 1226.70 mm^2
 
 local stalk = cylinder(10, 20)   -- diameter 10, height 20, z=0 to z=20
 local ball = translate(sphere(16), 0, 0, 20)  -- diameter 16, center at (0,0,20)
