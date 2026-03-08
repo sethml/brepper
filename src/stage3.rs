@@ -1259,9 +1259,10 @@ fn project_point_on_curve(
 /// For tangent edges, `GeomAPI_IntSS` often fails or produces degenerate results.
 /// Instead, construct the curve analytically based on the surface pair types:
 /// - Plane-cylinder tangent: line parallel to cylinder axis at the tangent point
-/// - Plane-sphere tangent: degenerate (single point) — not expected as an edge
+/// - Sphere-cylinder tangent: circle arc on the sphere, in a plane perpendicular
+///   to the cylinder axis through the sphere center's projection on the axis
 /// - Cylinder-cylinder tangent: line parallel to shared axis direction
-/// - Sphere-cylinder tangent: circle on the sphere (not yet implemented)
+/// - Plane-sphere tangent: degenerate (single point) — construct line from vertices
 fn compute_tangent_edge_curve(
     edge: &mut ReconEdge,
     face_descriptors: &[FaceDescriptor],
@@ -1277,13 +1278,37 @@ fn compute_tangent_edge_curve(
     let v0 = &vertices[edge.vertex_indices[0]];
     let v1 = &vertices[edge.vertex_indices[1]];
 
-    // Determine the curve direction from surface geometry.
-    // For plane-cylinder and cylinder-cylinder tangencies, the tangent curve
-    // is a line whose direction should match the cylinder axis.
     let [fi0, fi1] = edge.face_indices;
     let ss0 = &stage2.selected_surfaces[face_descriptors[fi0].selected_surface_idx];
     let ss1 = &stage2.selected_surfaces[face_descriptors[fi1].selected_surface_idx];
 
+    // Determine which surface types we have
+    let has_sphere_cylinder = matches!(
+        (ss0, ss1),
+        (SelectedSurface::Spherical(_), SelectedSurface::Cylindrical(_))
+            | (SelectedSurface::Cylindrical(_), SelectedSurface::Spherical(_))
+    );
+
+    if has_sphere_cylinder {
+        return compute_tangent_edge_curve_sphere_cylinder(
+            edge, v0, v1, ss0, ss1, stage2, config,
+        );
+    }
+
+    // For plane-cylinder, cylinder-cylinder, and fallback cases: construct a line
+    compute_tangent_edge_curve_line(edge, v0, v1, ss0, ss1, stage2, config)
+}
+
+/// Construct a line-based tangent edge curve (plane-cylinder, cylinder-cylinder, fallback).
+fn compute_tangent_edge_curve_line(
+    edge: &mut ReconEdge,
+    v0: &BRepVertex,
+    v1: &BRepVertex,
+    ss0: &SelectedSurface,
+    ss1: &SelectedSurface,
+    stage2: &Stage2Output,
+    config: &Config,
+) -> Result<(), String> {
     // Get the line direction from the cylinder axis (if one of the surfaces is cylindrical)
     let line_dir = match (ss0, ss1) {
         (SelectedSurface::Cylindrical(idx), SelectedSurface::Planar(_))
@@ -1292,7 +1317,6 @@ fn compute_tangent_edge_curve(
             hyp.axis_direction
         }
         (SelectedSurface::Cylindrical(idx), SelectedSurface::Cylindrical(_)) => {
-            // Both cylinders — use the first one's axis
             let hyp = &stage2.cylindrical_hypotheses[*idx];
             hyp.axis_direction
         }
@@ -1310,9 +1334,6 @@ fn compute_tangent_edge_curve(
     };
 
     // Compute the tangent point analytically for plane-cylinder pairs.
-    // The tangent point lies on the cylinder surface at the point closest to the plane,
-    // i.e., axis_origin + r * radial_dir, where radial_dir is the component of the
-    // plane normal perpendicular to the cylinder axis.
     let tangent_point = match (ss0, ss1) {
         (SelectedSurface::Cylindrical(cyl_idx), SelectedSurface::Planar(plane_idx))
         | (SelectedSurface::Planar(plane_idx), SelectedSurface::Cylindrical(cyl_idx)) => {
@@ -1325,16 +1346,10 @@ fn compute_tangent_edge_curve(
             let perp = [n[0] - dot * a[0], n[1] - dot * a[1], n[2] - dot * a[2]];
             let perp_len = (perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2]).sqrt();
             if perp_len < 1e-12 {
-                // Plane normal parallel to cylinder axis — degenerate
                 return Err("plane normal parallel to cylinder axis".to_string());
             }
             let radial_unit = [perp[0] / perp_len, perp[1] / perp_len, perp[2] / perp_len];
-            // Choose sign: for convex cylinder, outward normal = radial direction.
-            // At the tangent point, cylinder outward normal should face the plane.
-            // For a convex cylinder, the tangent point is at axis + r * radial_unit
-            // where radial_unit points toward the plane.
             let sign = if cyl.convex { 1.0 } else { -1.0 };
-            // Project vertex v0 onto the axis to find the axis-parallel component
             let v0_minus_o = [
                 v0.point[0] - cyl.axis_origin[0],
                 v0.point[1] - cyl.axis_origin[1],
@@ -1368,25 +1383,188 @@ fn compute_tangent_edge_curve(
     let trimmed = geom::TrimmedCurve::new_handlegeomcurve_real2(&line_handle, t_lo, t_hi);
     let trimmed_handle = geom::TrimmedCurve::to_handle(trimmed).to_handle_curve();
 
-    // Validate: check that mesh boundary vertices lie near the constructed curve
-    if config.verbose {
-        let mut max_dist = 0.0_f64;
-        for &vi in &edge.mesh_boundary_vertices {
-            let v = &stage2.mesh.vertices[vi];
-            let pt = gp::Pnt::new_real3(v.x, v.y, v.z);
-            let proj = geom_api::ProjectPointOnCurve::new_pnt_handlegeomcurve(&pt, &line_handle);
-            if proj.nb_points() > 0 {
-                max_dist = max_dist.max(proj.lower_distance());
-            }
+    validate_tangent_curve(edge, &trimmed_handle, stage2, config)?;
+    edge.curve_3d = Some(trimmed_handle);
+    Ok(())
+}
+
+/// Construct a circle-arc tangent edge curve for sphere-cylinder tangencies.
+///
+/// For a sphere tangent to a cylinder (e.g., at fillet corners of a rounded cube),
+/// the tangent curve is a great circle arc on the sphere. Rather than using the
+/// cylinder's (potentially imprecise) axis parameters, construct the circle from
+/// the sphere geometry and vertex positions:
+/// - Center = sphere center
+/// - Radius = sphere radius
+/// - The plane of the circle is determined by the sphere center and both vertices
+fn compute_tangent_edge_curve_sphere_cylinder(
+    edge: &mut ReconEdge,
+    v0: &BRepVertex,
+    v1: &BRepVertex,
+    ss0: &SelectedSurface,
+    ss1: &SelectedSurface,
+    stage2: &Stage2Output,
+    config: &Config,
+) -> Result<(), String> {
+    // Extract sphere hypothesis
+    let sph_idx = match (ss0, ss1) {
+        (SelectedSurface::Spherical(s), SelectedSurface::Cylindrical(_)) => *s,
+        (SelectedSurface::Cylindrical(_), SelectedSurface::Spherical(s)) => *s,
+        _ => return Err("not a sphere-cylinder pair".to_string()),
+    };
+    let sph = &stage2.spherical_hypotheses[sph_idx];
+    let center = sph.center;
+    let radius = sph.radius;
+
+    // Compute the plane normal for the great circle arc.
+    // The plane passes through the sphere center and both vertex endpoints.
+    // Normal = normalize(cross(v0 - center, v1 - center))
+    let cv0 = [
+        v0.point[0] - center[0],
+        v0.point[1] - center[1],
+        v0.point[2] - center[2],
+    ];
+    let cv1 = [
+        v1.point[0] - center[0],
+        v1.point[1] - center[1],
+        v1.point[2] - center[2],
+    ];
+    let cross = [
+        cv0[1] * cv1[2] - cv0[2] * cv1[1],
+        cv0[2] * cv1[0] - cv0[0] * cv1[2],
+        cv0[0] * cv1[1] - cv0[1] * cv1[0],
+    ];
+    let cross_len = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+    if cross_len < 1e-12 {
+        // Vertices are collinear with center — degenerate, fall back to line
+        return Err("sphere-cylinder tangent: vertices collinear with sphere center".to_string());
+    }
+    let normal = [cross[0] / cross_len, cross[1] / cross_len, cross[2] / cross_len];
+
+    // Build the circle in 3D
+    let center_pnt = gp::Pnt::new_real3(center[0], center[1], center[2]);
+    let normal_dir = gp::Dir::new_real3(normal[0], normal[1], normal[2]);
+    let ax2 = gp::Ax2::new_pnt_dir(&center_pnt, &normal_dir);
+    let circle = geom::Circle::new_ax2_real(&ax2, radius);
+    let circle_handle = geom::Circle::to_handle(circle).to_handle_curve();
+
+    // Project vertex endpoints onto the circle curve to get parameters
+    let t0 = project_point_on_curve(&v0.point, &circle_handle)?;
+    let t1 = project_point_on_curve(&v1.point, &circle_handle)?;
+
+    // For a circle (periodic curve with period 2π), we need to select the correct arc.
+    // Sample mesh boundary vertices to determine which arc they lie on.
+    let (t_lo, t_hi) = select_arc_parameters(
+        t0,
+        t1,
+        &edge.mesh_boundary_vertices,
+        &circle_handle,
+        &stage2.mesh,
+    );
+
+    let trimmed = geom::TrimmedCurve::new_handlegeomcurve_real2(&circle_handle, t_lo, t_hi);
+    let trimmed_handle = geom::TrimmedCurve::to_handle(trimmed).to_handle_curve();
+
+    validate_tangent_curve(edge, &trimmed_handle, stage2, config)?;
+    edge.curve_3d = Some(trimmed_handle);
+    Ok(())
+}
+
+/// Select the correct arc on a periodic curve by sampling mesh boundary vertices.
+/// Returns (t_lo, t_hi) such that the arc from t_lo to t_hi contains the boundary vertices.
+fn select_arc_parameters(
+    t0: f64,
+    t1: f64,
+    mesh_boundary_vertices: &[usize],
+    curve_handle: &geom::HandleGeomCurve,
+    mesh: &crate::stage1::ConnectedMesh,
+) -> (f64, f64) {
+    let period = std::f64::consts::TAU; // 2π for circle
+
+    // Normalize t0 and t1 to [0, 2π)
+    let t0n = ((t0 % period) + period) % period;
+    let t1n = ((t1 % period) + period) % period;
+
+    // The two possible arcs are t0n->t1n (forward) and t1n->t0n (reverse via wrap).
+    // Sample mesh boundary vertices, project onto curve, and count which arc they support.
+    let mut forward_count = 0;
+    let mut reverse_count = 0;
+
+    // Forward arc span: from t0n going forward to t1n
+    let forward_span = if t1n > t0n {
+        t1n - t0n
+    } else {
+        t1n + period - t0n
+    };
+
+    let step = mesh_boundary_vertices.len().max(1);
+    let sample_count = mesh_boundary_vertices.len().min(20);
+    let sample_step = if sample_count > 0 {
+        step / sample_count
+    } else {
+        1
+    };
+
+    for (i, &vi) in mesh_boundary_vertices.iter().enumerate() {
+        if sample_step > 1 && i % sample_step != 0 {
+            continue;
         }
-        if max_dist > config.vertex_tolerance_mm * 100.0 {
-            return Err(format!(
-                "tangent edge curve too far from mesh boundary (max dist {max_dist:.6}mm)"
-            ));
+        let v = &mesh.vertices[vi];
+        let pt = gp::Pnt::new_real3(v.x, v.y, v.z);
+        let proj = geom_api::ProjectPointOnCurve::new_pnt_handlegeomcurve(&pt, curve_handle);
+        if proj.nb_points() == 0 {
+            continue;
+        }
+        let tp = proj.lower_distance_parameter();
+        let tpn = ((tp % period) + period) % period;
+
+        // Check if this point's parameter falls in the forward arc
+        let delta = if tpn >= t0n {
+            tpn - t0n
+        } else {
+            tpn + period - t0n
+        };
+        if delta <= forward_span {
+            forward_count += 1;
+        } else {
+            reverse_count += 1;
         }
     }
 
-    edge.curve_3d = Some(trimmed_handle);
+    if forward_count >= reverse_count {
+        // Forward arc: t0n to t0n + forward_span
+        (t0n, t0n + forward_span)
+    } else {
+        // Reverse arc: t1n to t1n + (2π - forward_span)
+        (t1n, t1n + (period - forward_span))
+    }
+}
+
+/// Validate that mesh boundary vertices lie reasonably close to a tangent curve.
+fn validate_tangent_curve(
+    edge: &ReconEdge,
+    curve_handle: &geom::HandleGeomCurve,
+    stage2: &Stage2Output,
+    config: &Config,
+) -> Result<(), String> {
+    let mut max_dist = 0.0_f64;
+    for &vi in &edge.mesh_boundary_vertices {
+        let v = &stage2.mesh.vertices[vi];
+        let pt = gp::Pnt::new_real3(v.x, v.y, v.z);
+        let proj = geom_api::ProjectPointOnCurve::new_pnt_handlegeomcurve(&pt, curve_handle);
+        if proj.nb_points() > 0 {
+            max_dist = max_dist.max(proj.lower_distance());
+        }
+    }
+    // For models with imperfect surface assignments, mesh boundary vertices may be
+    // slightly off the analytical tangent curve due to tessellation sagitta.
+    // Use surface_tolerance as the threshold (typically 0.4mm) rather than
+    // vertex_tolerance (1e-5mm) since the sagitta of curved surfaces can be significant.
+    if max_dist > config.surface_tolerance_mm {
+        return Err(format!(
+            "tangent edge curve too far from mesh boundary (max dist {max_dist:.6}mm)"
+        ));
+    }
     Ok(())
 }
 
@@ -2552,6 +2730,28 @@ fn create_occt_faces_all(
             // so parameters are always (first_parameter, last_parameter).
             let fp = c.first_parameter();
             let lp = c.last_parameter();
+
+            // Update vertex tolerances to accommodate curve-vertex distance.
+            // Imprecisely-fitted surfaces produce intersection curves that may not
+            // pass exactly through mesh vertex positions.
+            let p_fp = c.value(fp);
+            let p_lp = c.value(lp);
+            let v0_pt = &output.vertices[vi0].point;
+            let v1_pt = &output.vertices[vi1].point;
+            let d0 = ((v0_pt[0] - p_fp.x()).powi(2)
+                + (v0_pt[1] - p_fp.y()).powi(2)
+                + (v0_pt[2] - p_fp.z()).powi(2))
+            .sqrt();
+            let d1 = ((v1_pt[0] - p_lp.x()).powi(2)
+                + (v1_pt[1] - p_lp.y()).powi(2)
+                + (v1_pt[2] - p_lp.z()).powi(2))
+            .sqrt();
+            let min_tol = config.vertex_tolerance_mm;
+            let tol0 = d0.max(min_tol) * 1.01; // 1% margin
+            let tol1 = d1.max(min_tol) * 1.01;
+            builder.update_vertex_vertex_real(&topo_vertices[vi0], tol0);
+            builder.update_vertex_vertex_real(&topo_vertices[vi1], tol1);
+
             b_rep_builder_api::MakeEdge::new_handlegeomcurve_vertex2_real2(
                 curve,
                 &topo_vertices[vi0],
