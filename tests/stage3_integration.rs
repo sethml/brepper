@@ -392,7 +392,7 @@ fn onshape_chamfered_cube_stage31_compare() {
     let dir = manifest_dir();
     let config = config_for_compare(
         &format!("{dir}/tests/onshape/chamfered_cube_10_c1_medium.stl"),
-        &format!("{dir}/tests/onshape/chamfered_cube_10_c1_medium.step"),
+        &format!("{dir}/tests/onshape/chamfered_cube_10_c1.step"),
     );
     run_stage3(&config);
 }
@@ -788,7 +788,7 @@ fn onshape_chamfered_cube_stage34_compare() {
     let dir = manifest_dir();
     let config = config_for_compare_34(
         &format!("{dir}/tests/onshape/chamfered_cube_10_c1_medium.stl"),
-        &format!("{dir}/tests/onshape/chamfered_cube_10_c1_medium.step"),
+        &format!("{dir}/tests/onshape/chamfered_cube_10_c1.step"),
     );
     run_stage3_34(&config);
 }
@@ -959,7 +959,7 @@ fn onshape_chamfered_cube_stage35_compare() {
     let dir = manifest_dir();
     let config = config_for_compare_35(
         &format!("{dir}/tests/onshape/chamfered_cube_10_c1_medium.stl"),
-        &format!("{dir}/tests/onshape/chamfered_cube_10_c1_medium.step"),
+        &format!("{dir}/tests/onshape/chamfered_cube_10_c1.step"),
     );
     run_stage3_35(&config);
 }
@@ -1130,7 +1130,7 @@ fn onshape_chamfered_cube_stage36_compare() {
     let dir = manifest_dir();
     let config = config_for_compare_36(
         &format!("{dir}/tests/onshape/chamfered_cube_10_c1_medium.stl"),
-        &format!("{dir}/tests/onshape/chamfered_cube_10_c1_medium.step"),
+        &format!("{dir}/tests/onshape/chamfered_cube_10_c1.step"),
     );
     run_stage3_36(&config);
 }

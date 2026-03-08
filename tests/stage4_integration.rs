@@ -163,7 +163,7 @@ fn onshape_chamfered_cube_stage41_compare() {
     let config = config_for_compare(
         &format!("{dir}/tests/onshape/chamfered_cube_10_c1_medium.stl"),
         &format!("{dir}/tmp/test_chamfered_cube_cmp.step"),
-        &format!("{dir}/tests/onshape/chamfered_cube_10_c1_medium.step"),
+        &format!("{dir}/tests/onshape/chamfered_cube_10_c1.step"),
     );
     run_stage4(&config);
 }

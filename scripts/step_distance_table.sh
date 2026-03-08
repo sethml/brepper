@@ -105,6 +105,10 @@ print_header
 
 for stl_file in "${stl_files[@]}"; do
     step_file="${stl_file%.stl}.step"
+    if [ ! -f "$step_file" ]; then
+        # Try stripping quality suffixes (_fine, _medium, _coarse, _low, _high)
+        step_file=$(echo "${stl_file%.stl}" | sed -E 's/_(fine|medium|coarse|low|high)$//').step
+    fi
     [ -f "$step_file" ] || continue
 
     rel_path="${stl_file#${PROJECT_DIR}/tests/}"
