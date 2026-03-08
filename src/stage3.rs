@@ -12,8 +12,8 @@ use crate::stage1::{ConnectedMesh, MeshVertex};
 use crate::stage2::{SelectedSurface, Stage2Output};
 use crate::stage1;
 use opencascade_sys::{
-    b_rep_builder_api, b_rep_check, b_rep_extrema, b_rep_g_prop, extrema, g_prop,
-    geom, geom_api, gp, message, shape_analysis, shape_fix,
+    b_rep_builder_api, b_rep_check, b_rep_extrema, b_rep_g_prop, extrema,
+    geom, geom_api, g_prop, gp, message, shape_analysis, shape_fix,
     top_abs, top_exp, topo_ds, OwnedPtr,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -108,6 +108,8 @@ pub struct Stage3Output {
     /// OCCT face objects created in stage 3.4 (one per face descriptor).
     /// Each MakeFace owns the resulting TopoDS_Face; access via `.face()`.
     pub make_faces: Vec<OwnedPtr<b_rep_builder_api::MakeFace>>,
+    /// Indices of faces that are concave (require reversed orientation).
+    pub concave_faces: Vec<bool>,
     /// OCCT shell(s) created in stage 3.5 by sewing faces.
     pub shells: Vec<OwnedPtr<topo_ds::Shell>>,
     /// OCCT solid(s) created in stage 3.6.
@@ -849,6 +851,7 @@ fn build_surfaces_and_adjacency(
         edges: recon_edges,
         vertices: brep_vertices,
         make_faces: Vec::new(), // populated in stage 3.4
+        concave_faces: Vec::new(), // populated in stage 3.4
         shells: Vec::new(), // populated in stage 3.5
         solids: Vec::new(), // populated in stage 3.6
     })}
@@ -1515,7 +1518,7 @@ fn create_periodic_face(
     output: &Stage3Output,
     topo_edges: &mut [OwnedPtr<b_rep_builder_api::MakeEdge>],
     config: &Config,
-) -> Result<OwnedPtr<b_rep_builder_api::MakeFace>, Stage3Error> {
+) -> Result<(OwnedPtr<b_rep_builder_api::MakeFace>, bool), Stage3Error> {
     let fd = &output.face_descriptors[fi];
     let surface = &output.stage2.selected_surfaces[fd.selected_surface_idx];
 
@@ -1531,7 +1534,7 @@ fn create_periodic_face(
                 make_face.error(),
             )));
         }
-        return Ok(make_face);
+        return Ok((make_face, false)); // Full spheres are always convex
     }
 
     // Build faces from wires (same approach as planar faces)
@@ -1594,7 +1597,43 @@ fn create_periodic_face(
         }
     }
 
-    Ok(make_face)
+    // Fix pcurves on edges of the periodic face.
+    // MakeFace::Add(wire) does NOT compute pcurves for edges on non-planar surfaces.
+    // Without pcurves, BRepGProp cannot integrate over the face, producing zero
+    // area/volume. We use ShapeFix_Edge to project each 3D edge curve onto the
+    // surface's UV space, creating the required Geom2d_Curve pcurves.
+    {
+        let face = make_face.face();
+        let mut edge_fixer = shape_fix::Edge::new();
+        let mut edge_explorer = top_exp::Explorer::new_shape_shapeenum2(
+            face.as_shape(),
+            top_abs::ShapeEnum::Edge,
+            top_abs::ShapeEnum::Shape,
+        );
+        while edge_explorer.more() {
+            let edge = topo_ds::edge(edge_explorer.value());
+            edge_fixer.fix_add_p_curve_edge_face_bool_real(
+                edge, face, false, config.vertex_tolerance_mm,
+            );
+            edge_fixer.fix_same_parameter_edge_face_real(
+                edge, face, config.vertex_tolerance_mm,
+            );
+            edge_explorer.next();
+        }
+    }
+
+    // Set face orientation based on surface convexity.
+    // OCCT surface normals always point outward (away from axis for cylinders,
+    // away from center for spheres). For concave surfaces (holes, pockets),
+    // the face normal should point inward (toward the solid interior), so
+    // we reverse the face orientation.
+    let is_concave = match surface {
+        SelectedSurface::Cylindrical(idx) => !output.stage2.cylindrical_hypotheses[*idx].convex,
+        SelectedSurface::Spherical(idx) => !output.stage2.spherical_hypotheses[*idx].convex,
+        _ => false,
+    };
+
+    Ok((make_face, is_concave))
 }
 
 /// Validate created faces using BRepCheck_Analyzer.
@@ -1609,6 +1648,19 @@ fn validate_faces(output: &Stage3Output, config: &Config) -> Result<(), Stage3Er
             if config.verbose {
                 eprintln!("  Face {fi}: BRepCheck_Analyzer reports invalid");
             }
+        }
+        if config.verbose {
+            // Report face area and orientation for diagnostics
+            let mut gprops = g_prop::GProps::new();
+            b_rep_g_prop::surface_properties_shape_gprops_bool2(
+                face.as_shape(),
+                &mut gprops,
+                false, // UseTriangulation
+                false, // SkipShared
+            );
+            let area = gprops.mass();
+            let orient = face.as_shape().orientation();
+            eprintln!("  Face {fi}: area = {area:.4} mm², orientation = {orient:?}");
         }
     }
 
@@ -1740,19 +1792,21 @@ fn create_occt_faces_all(
 
     // 2. Create OCCT face for each face descriptor
     let mut make_faces: Vec<OwnedPtr<b_rep_builder_api::MakeFace>> = Vec::with_capacity(num_faces);
+    let mut concave_faces: Vec<bool> = vec![false; num_faces];
 
-    for fi in 0..num_faces {
+    for (fi, concave_flag) in concave_faces.iter_mut().enumerate() {
         let surface_type = &output.stage2.selected_surfaces[output.face_descriptors[fi].selected_surface_idx];
         let is_periodic = matches!(
             surface_type,
             SelectedSurface::Cylindrical(_) | SelectedSurface::Spherical(_)
         );
 
-        let make_face = if is_periodic {
+        let (make_face, is_concave) = if is_periodic {
             create_periodic_face(fi, &output, &mut topo_edges, config)?
         } else {
-            create_planar_face(fi, &output, &mut topo_edges, config)?
+            (create_planar_face(fi, &output, &mut topo_edges, config)?, false)
         };
+        *concave_flag = is_concave;
 
         if config.verbose {
             let stype = match surface_type {
@@ -1778,6 +1832,7 @@ fn create_occt_faces_all(
     }
 
     output.make_faces = make_faces;
+    output.concave_faces = concave_faces;
 
     // 3. Validate faces
     validate_faces(&output, config)?;
@@ -1812,7 +1867,7 @@ fn construct_shells(
     let sewing_tol = config.vertex_tolerance_mm;
     let mut sewing = b_rep_builder_api::Sewing::new_real(sewing_tol);
 
-    // Add all faces
+    // Add all faces to the sewing operator.
     for mf in output.make_faces.iter() {
         sewing.add(mf.face().as_shape());
     }
@@ -1890,7 +1945,11 @@ fn construct_shells(
         ));
     }
 
-    // Fix shell orientation using ShapeFix_Shell
+    // Apply ShapeFix_Shell to fix pcurves and face orientations.
+    // ShapeFix_Shell::Perform() calls ShapeFix_Face::Perform() on each face,
+    // re-adding pcurves that sewing may have discarded when merging edges.
+    // FixFaceOrientation establishes edge consistency, and SolidFromShell
+    // (in stage 3.6) handles the global orientation via PerformInfinitePoint.
     let progress2 = message::ProgressRange::new();
     for shell in shells.iter_mut() {
         let mut fixer = shape_fix::Shell::new_shell(shell);
