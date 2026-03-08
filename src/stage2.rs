@@ -228,7 +228,18 @@ fn face_area(face: &MeshFace, vertices: &[MeshVertex]) -> f64 {
     let cx = ay * bz - az * by;
     let cy = az * bx - ax * bz;
     let cz = ax * by - ay * bx;
-    0.5 * (cx * cx + cy * cy + cz * cz).sqrt()
+    let mut area = 0.5 * (cx * cx + cy * cy + cz * cz).sqrt();
+    if face.vertex_count == 4 {
+        let v3 = &vertices[face.vertex_indices[3]];
+        let dx = v3.x - v0.x;
+        let dy = v3.y - v0.y;
+        let dz = v3.z - v0.z;
+        let ex = by * dz - bz * dy;
+        let ey = bz * dx - bx * dz;
+        let ez = bx * dy - by * dx;
+        area += 0.5 * (ex * ex + ey * ey + ez * ez).sqrt();
+    }
+    area
 }
 
 /// Fit a plane to a set of faces using area-weighted normal averaging and
@@ -1333,7 +1344,6 @@ fn deduce_cylindrical_hypotheses(
             mesh.faces[fi].cylindrical_hypothesis = NO_HYPOTHESIS;
         }
     }
-
     hypotheses
 }
 
@@ -2135,7 +2145,6 @@ fn select_surfaces(
         }
 
         let Some(ci) = best_ci else { break };
-
 
         // Collect still-unassigned faces for the winning candidate.
         let sel_faces: Vec<usize> = candidates[ci].faces.iter()
