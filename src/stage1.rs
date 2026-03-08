@@ -108,6 +108,7 @@ pub enum MeshValidationError {
     DegenerateFaces { face_indices: Vec<usize> },
     NonManifoldEdges { edge_count: usize },
     InconsistentOrientation { edge_count: usize },
+    InvertedNormals { shell_index: usize, signed_volume: f64 },
 }
 
 impl Display for MeshValidationError {
@@ -125,6 +126,9 @@ impl Display for MeshValidationError {
             ),
             MeshValidationError::InconsistentOrientation { edge_count } => {
                 write!(f, "mesh contains {edge_count} edge(s) with flipped orientation")
+            }
+            MeshValidationError::InvertedNormals { shell_index, signed_volume } => {
+                write!(f, "shell {shell_index} has inverted face normals (signed volume {signed_volume:.6e}; expected positive)")
             }
         }
     }
@@ -449,10 +453,52 @@ impl ConnectedMesh {
                 }
             }
         }
-        self.stats.solids = component_closed.into_iter().filter(|closed| *closed).count();
+        self.stats.solids = component_closed.iter().filter(|closed| **closed).count();
 
         // Self-intersection checks are intentionally deferred to a later stage where we have
         // richer geometric predicates and can avoid expensive O(N^2) triangle checks here.
+
+        // Check face orientation via signed volume for each closed shell.
+        // A positive signed volume means face normals point outward (correct).
+        // A negative signed volume means face normals point inward (inverted).
+        for (comp, is_closed) in component_closed.iter().enumerate() {
+            if !is_closed {
+                continue; // Only check closed shells
+            }
+            let mut signed_volume = 0.0_f64;
+            for (fi, &comp_id) in face_component.iter().enumerate() {
+                if comp_id != comp {
+                    continue;
+                }
+                let face = &self.faces[fi];
+                let vc = face.vertex_count as usize;
+                // Signed volume contribution: sum of signed tetrahedra with origin.
+                // For triangles: V += (v0 · (v1 × v2)) / 6
+                // For quads: split into two triangles (v0,v1,v2) and (v0,v2,v3)
+                let v0 = &self.vertices[face.vertex_indices[0]];
+                let v1 = &self.vertices[face.vertex_indices[1]];
+                let v2 = &self.vertices[face.vertex_indices[2]];
+                // v1 × v2
+                let cross_x = v1.y * v2.z - v1.z * v2.y;
+                let cross_y = v1.z * v2.x - v1.x * v2.z;
+                let cross_z = v1.x * v2.y - v1.y * v2.x;
+                signed_volume += v0.x * cross_x + v0.y * cross_y + v0.z * cross_z;
+                if vc == 4 {
+                    let v3 = &self.vertices[face.vertex_indices[3]];
+                    let cross_x = v2.y * v3.z - v2.z * v3.y;
+                    let cross_y = v2.z * v3.x - v2.x * v3.z;
+                    let cross_z = v2.x * v3.y - v2.y * v3.x;
+                    signed_volume += v0.x * cross_x + v0.y * cross_y + v0.z * cross_z;
+                }
+            }
+            signed_volume /= 6.0;
+            if signed_volume < 0.0 {
+                return Err(MeshValidationError::InvertedNormals {
+                    shell_index: comp,
+                    signed_volume,
+                });
+            }
+        }
 
         if !degenerate_faces.is_empty() {
             return Err(MeshValidationError::DegenerateFaces {
@@ -940,6 +986,37 @@ mod tests {
                 assert!(face.neighbors[edge_idx] >= 0);
             }
         }
+    }
+
+    #[test]
+    fn detects_inverted_normals() {
+        // Tetrahedron vertices: 0=(0,0,0), 1=(1,0,0), 2=(0,1,0), 3=(0,0,1)
+        // Correct outward winding: (0,2,1), (0,1,3), (0,3,2), (1,2,3)
+        // Inverted (swap two vertices per face to flip normals inward):
+        let mut mesh = ConnectedMesh {
+            vertices: vec![
+                MeshVertex::from_xyz(0.0, 0.0, 0.0),
+                MeshVertex::from_xyz(1.0, 0.0, 0.0),
+                MeshVertex::from_xyz(0.0, 1.0, 0.0),
+                MeshVertex::from_xyz(0.0, 0.0, 1.0),
+            ],
+            faces: vec![
+                make_triangle_face(0, 1, 2), // inverted bottom
+                make_triangle_face(0, 3, 1), // inverted front
+                make_triangle_face(1, 3, 2), // inverted hypotenuse
+                make_triangle_face(0, 2, 3), // inverted left
+            ],
+            ..ConnectedMesh::default()
+        };
+
+        let err = mesh
+            .validate_and_populate_topology()
+            .expect_err("inverted tetrahedron should fail validation");
+
+        assert!(matches!(
+            err,
+            MeshValidationError::InvertedNormals { shell_index: 0, .. }
+        ));
     }
 
     #[test]
