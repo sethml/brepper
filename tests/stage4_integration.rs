@@ -200,6 +200,28 @@ fn onshape_part_rounded_cube_stage41_compare() {
     run_stage4(&config);
 }
 
+#[test]
+fn onshape_pill_coarse_stage41_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/onshape/pill_coarse.stl"),
+        &format!("{dir}/tmp/test_pill_coarse_cmp.step"),
+        &format!("{dir}/tests/onshape/pill.step"),
+    );
+    run_stage4(&config);
+}
+
+#[test]
+fn onshape_pill_fine_stage41_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/onshape/pill_fine.stl"),
+        &format!("{dir}/tmp/test_pill_fine_cmp.step"),
+        &format!("{dir}/tests/onshape/pill.step"),
+    );
+    run_stage4(&config);
+}
+
 // --- Missing output path test ---
 
 #[test]
