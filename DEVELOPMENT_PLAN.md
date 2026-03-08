@@ -603,16 +603,15 @@ Convert closed shells into `TopoDS_Solid` objects.
 #### 4.1 Output objects
 Write constructed solid(s) to a STEP file.
 
-**Algorithm:**
-- Create a `STEPControl_Writer`.
-- Add each solid (or compound of solids) using `Transfer` with `STEPControl_AsIs` mode to preserve exact geometry.
-- Write the output file.
-- Optionally write BREP format (OCCT native) for debugging with `BRepTools::Write`.
+**Algorithm (implemented):**
+- Build a `topo_ds::Compound` containing all solids from stage 3.6.
+- Set STEP metadata: AP214 schema, product name "brepper" via `Interface_Static::set_c_val`.
+- Create a `STEPControl_Writer`, transfer the compound with `StepModelType::Asis` mode to preserve exact geometry.
+- Write the output file. Report error if transfer or write returns non-Done status.
 - With the `--compare` flag:
-    - Load the reference STEP file.
-    - Compare volumes of the output solid vs reference solid using `BRepGProp`.
-    - Compute maximum distance between output and reference surfaces using `BRepExtrema_DistShapeShape`.
-    - Report pass/fail against `--surface-tolerance`.
+    - Re-read the written STEP file via `STEPControl_Reader` to validate the round-trip.
+    - Compare volumes of the output shape vs reference shape using `BRepGProp::VolumeProperties`. Warn on >1% relative difference.
+    - Compute maximum distance between output and reference using `BRepExtrema_DistShapeShape`. Hard error if exceeds `--surface-tolerance`.
 
 ---
 
@@ -672,7 +671,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Implement stage 3.6: Construct solids from shells using `ShapeFix_Solid::SolidFromShell`. Validates with `BRepCheck_Analyzer`, computes volume via `BRepGProp::VolumeProperties`. Compare checks volume agreement (warning on >1% diff) and `BRepExtrema_DistShapeShape` distance to STEP reference.
 
 ### Stage 4: Output
-- [ ] Implement stage 4.1: Write solids to STEP file, validate against reference with --compare.
+- [x] Implement stage 4.1: Write solids to STEP file using `STEPControl_Writer` with `StepModelType::Asis`. Builds compound from all solids, sets AP214 schema. Compare re-reads written file and validates volume agreement (warning on >1% diff) and `BRepExtrema_DistShapeShape` distance to STEP reference. 15 integration tests: 3 basic output + 11 compare + 1 missing-output-path error.
 
 ### Stage 3 refinements
 - [ ] Revisit stage 3.2: Detect tangency relationships between adjacent surfaces. If there are any problems with models that involve tangent curves, such as tests/onshape/chamfered_cube, then imagine more tests for difficult tangency relationships including cylinder-plane and sphere-cylinder, create those tests, and ensure that tangency detection works correctly.
@@ -702,23 +701,23 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 
 | Test Case | Input | Expected Output | Status |
 |-----------|-------|-----------------|--------|
-| Cube | 12 triangles | 6 planes, 1 solid | ✓ Stage 3.6 (1 solid) |
-| Wedge | 12 triangles | 6 planes (incl. angled) | ✓ Stage 3.6 (1 solid) |
+| Cube | 12 triangles | 6 planes, 1 solid | ✓ Stage 4.1 (STEP output) |
+| Wedge | 12 triangles | 6 planes (incl. angled) | ✓ Stage 4.1 (STEP output) |
 | T-Shape | 28 triangles | 10 planes | ✓ Stage 2.1 |
 | Staircase | 48 triangles | 12 planes | ✓ Stage 2.1 |
-|| Chamfered Cube (onshape) | 44 triangles | 26 planes | ✓ Stage 3.6 (1 solid) |
+|| Chamfered Cube (onshape) | 44 triangles | 26 planes | ✓ Stage 4.1 (STEP output) |
 | Stepped Block | Complex planar | Multiple planes | ✓ Stage 2.1 |
 | L Bracket | Complex planar | Multiple planes | ✓ Stage 2.1 |
 | Cylinder | Tessellated cylinder | 1 cylinder + 2 planes | ✓ Stage 1 |
-|| Simple Cylinder (ccad) | 124 triangles | 1 cylinder + 2 planes | ✓ Stage 3.6 (1 solid) |
-|| Block with Hole (ccad) | 44 triangles | 6 planes + 1 concave cylinder | ✓ Stage 3.6 (1 solid, volume warning) |
-|| Pipe (ccad) | 244 triangles | 2 cylinders (in/out) + 2 annular planes | ✓ Stage 3.6 (1 solid) |
+|| Simple Cylinder (ccad) | 124 triangles | 1 cylinder + 2 planes | ✓ Stage 4.1 (STEP output) |
+|| Block with Hole (ccad) | 44 triangles | 6 planes + 1 concave cylinder | ✓ Stage 4.1 (STEP output, volume warning) |
+|| Pipe (ccad) | 244 triangles | 2 cylinders (in/out) + 2 annular planes | ✓ Stage 4.1 (STEP output) |
 || Stepped Cylinder (ccad) | 240 triangles | 2 cylinders + 3 planes | ✓ Stage 2.2 |
 || Two Holes (ccad) | 244 triangles | 6 planes + 2 concave cylinders | ✓ Stage 2.2 |
-|| Simple Sphere (ccad) | 974 triangles | 1 sphere | ✓ Stage 3.6 (1 solid) |
-|| Hemisphere (ccad) | 518 triangles | 1 sphere + 1 plane | ✓ Stage 3.6 (1 solid) |
-|| Spherical Pocket (ccad) | 486 triangles | 6 planes + 1 concave sphere | ✓ Stage 3.6 (1 solid) |
-|| Ball on Cylinder (ccad) | 764 triangles | 1 sphere + 1 cylinder + 1 plane | ✓ Stage 3.6 (1 solid, volume warning) |
+|| Simple Sphere (ccad) | 974 triangles | 1 sphere | ✓ Stage 4.1 (STEP output) |
+|| Hemisphere (ccad) | 518 triangles | 1 sphere + 1 plane | ✓ Stage 4.1 (STEP output) |
+|| Spherical Pocket (ccad) | 486 triangles | 6 planes + 1 concave sphere | ✓ Stage 4.1 (STEP output) |
+|| Ball on Cylinder (ccad) | 764 triangles | 1 sphere + 1 cylinder + 1 plane | ✓ Stage 4.1 (STEP output, volume warning) |
 || Sphere | Tessellated sphere | 1 sphere | ✓ Stage 2.3 |
 | Cone | Tessellated cone | 1 cone + 1 plane | ✓ Stage 1 |
 | Fillet | Blended edge | Planes + fillet surface | |

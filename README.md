@@ -166,7 +166,10 @@ Integration tests in `tests/stage3_integration.rs` verify that:
 - Face creation (stage 3.4) successfully creates OCCT `TopoDS_Face` objects for all test models: planar faces built from wire loops, cylindrical/spherical faces from UV parameter bounds. All STL/STEP pairs pass `--compare` validation at stage 3.4
 - Shell construction (stage 3.5) stitches faces via `BRepBuilderAPI_Sewing` and produces correctly oriented shells. All STL/STEP pairs pass `--compare` validation
 - Solid construction (stage 3.6) creates solids from shells via `ShapeFix_Solid::SolidFromShell`. Volume comparison against STEP reference and `BRepExtrema_DistShapeShape` distance checks pass for all test models
-
+Integration tests in `tests/stage4_integration.rs` verify that:
+- STEP output files are written successfully for cube, cylinder, and sphere models
+- All STL/STEP pairs pass `--compare` validation at stage 4.1, verifying volume agreement and `BRepExtrema_DistShapeShape` distance between written output and reference STEP
+- Missing output path produces the expected error
 
 
 Bad test STL files can be regenerated with `python3 scripts/generate_bad_tests.py`.
