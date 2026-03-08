@@ -140,6 +140,10 @@ fn load_step(path: &std::path::Path, lin_deflection: f64, ang_deflection: f64) -
         let reversed = face.orientation() == top_abs::Orientation::Reversed;
         let mut location = top_loc::Location::new();
         let tri_handle = b_rep::Tool::triangulation(face, &mut location, 0);
+        if tri_handle.is_null() {
+            explorer.next();
+            continue;
+        }
         let tri = tri_handle.get();
 
         if tri.nb_nodes() == 0 {
