@@ -971,6 +971,7 @@ fn run_cylinder_trial_bfs(
     let (mut current_origin, mut current_dir, mut current_radius) =
         fit_cylinder(&face_list, &vertex_set, &mesh.faces, &mesh.vertices)?;
 
+
     // Verify seed: all vertices within tolerance
     if !all_vertices_within_cylinder_tolerance(
         &vertex_set, &current_origin, &current_dir, current_radius,
@@ -2135,6 +2136,7 @@ fn select_surfaces(
 
         let Some(ci) = best_ci else { break };
 
+
         // Collect still-unassigned faces for the winning candidate.
         let sel_faces: Vec<usize> = candidates[ci].faces.iter()
             .filter(|fi| !assigned[**fi])
@@ -2738,7 +2740,7 @@ mod tests {
     #[test]
     fn cube_angular_tolerance_rejects_cylinder() {
         let mut mesh = load_stage1("manual/cube.stl");
-        let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
+        let _planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
         // 17.5° angular tolerance: cube faces meet at 90°, so no cylinders
         let cyls = deduce_cylindrical_hypotheses(
             &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(),
@@ -2777,7 +2779,7 @@ mod tests {
     #[test]
     fn cylinder_detected_at_default_angular_tolerance() {
         let mut mesh = load_stage1("ccad/generated/simple_cylinder.stl");
-        let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
+        let _planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
         let cyls = deduce_cylindrical_hypotheses(
             &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(),
         );
