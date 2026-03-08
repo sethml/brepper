@@ -1213,7 +1213,6 @@ fn run_cylinder_trial_bfs(
 /// keeps the best trial (most faces), validates with angular coverage, and commits.
 fn deduce_cylindrical_hypotheses(
     mesh: &mut ConnectedMesh,
-    planar_hypotheses: &[PlanarHypothesis],
     vertex_tol: f64,
     surface_tol: f64,
     angular_tol: f64,
@@ -1226,12 +1225,6 @@ fn deduce_cylindrical_hypotheses(
             continue;
         }
 
-        // Skip multi-face planar faces as seeds — they are likely genuinely flat.
-        // Leave them UNDEDUCED so BFS can absorb them into nearby cylinder hypotheses.
-        let ph = mesh.faces[fi].planar_hypothesis;
-        if ph >= 0 && planar_hypotheses[ph as usize].faces.len() > 1 {
-            continue;
-        }
 
         let fi_normal = match mesh.faces[fi].normal {
             Some(n) => n,
@@ -1256,11 +1249,6 @@ fn deduce_cylindrical_hypotheses(
                 continue;
             }
 
-            // Skip multi-face planar neighbors as seed partners
-            let ni_ph = mesh.faces[ni].planar_hypothesis;
-            if ni_ph >= 0 && planar_hypotheses[ni_ph as usize].faces.len() > 1 {
-                continue;
-            }
 
             let ni_normal = match mesh.faces[ni].normal {
                 Some(n) => n,
@@ -2351,7 +2339,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
 
     // Stage 2.2: Deduce cylindrical hypotheses
     let mut cylindrical_hypotheses = deduce_cylindrical_hypotheses(
-        &mut mesh, &planar_hypotheses, config.vertex_tolerance_mm,
+        &mut mesh, config.vertex_tolerance_mm,
         config.surface_tolerance_mm, config.angular_tolerance_rad,
     );
 
@@ -2671,7 +2659,7 @@ mod tests {
         let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
         // 17.5° angular tolerance: cube faces meet at 90°, so no cylinders
         let cyls = deduce_cylindrical_hypotheses(
-            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(),
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(),
         );
         assert_eq!(cyls.len(), 0, "cube should produce 0 cylinders at 17.5° angular tolerance");
     }
@@ -2681,7 +2669,7 @@ mod tests {
         let mut mesh = load_stage1("manual/cube.stl");
         let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
         let _ = deduce_cylindrical_hypotheses(
-            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(),
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(),
         );
         // 17.5° angular tolerance: cube faces meet at 90°, so no spheres
         let sphs = deduce_spherical_hypotheses(
@@ -2695,7 +2683,7 @@ mod tests {
         let mut mesh = load_stage1("manual/cube.stl");
         let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
         let _ = deduce_cylindrical_hypotheses(
-            &mut mesh, &planar, 1e-5, 0.4, 91.0_f64.to_radians(),
+            &mut mesh, 1e-5, 0.4, 91.0_f64.to_radians(),
         );
         // 91° angular tolerance: exceeds 90° dihedral angle of cube
         let sphs = deduce_spherical_hypotheses(
@@ -2709,7 +2697,7 @@ mod tests {
         let mut mesh = load_stage1("ccad/generated/simple_cylinder.stl");
         let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
         let cyls = deduce_cylindrical_hypotheses(
-            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(),
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(),
         );
         assert_eq!(cyls.len(), 1, "simple cylinder should produce 1 cylinder hypothesis");
         assert!(cyls[0].convex);
@@ -2721,7 +2709,7 @@ mod tests {
         let mut mesh = load_stage1("ccad/generated/simple_sphere.stl");
         let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
         let _ = deduce_cylindrical_hypotheses(
-            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(),
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(),
         );
         let sphs = deduce_spherical_hypotheses(
             &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 1000.0,
