@@ -16,7 +16,7 @@ cargo build --release --bin step-measure-tolerance --manifest-path "$PROJECT_DIR
 ROW_FMT="%-40s %12s %12s %12s %12s %10s %10s %10s %8s %8s %10s %10s %10s %10s\n"
 
 print_header() {
-    printf "$ROW_FMT" "Test Case" "Vtx Max mm" "Vtx Avg mm" "Ctr Max mm" "Ctr Avg mm" "Max Dim" "Ang Max \u00b0" "Ang Avg \u00b0" "Nodes" "Faces" "STEP Area" "STEP Vol" "STL Area" "STL Vol"
+    printf "$ROW_FMT" "Test Case" "Vtx Max mm" "Vtx Avg mm" "Ctr Max mm" "Ctr Avg mm" "Max Dim" "Ang Max °" "Ang Avg °" "Nodes" "Faces" "STEP Area" "STL Area" "STEP Vol" "STL Vol"
     print_sep
 }
 
@@ -161,7 +161,7 @@ for stl_file in "${stl_files[@]}"; do
     la=$(fmt_ctr "$stl_area_raw")
     lv=$(fmt_ctr "$stl_vol_raw")
 
-    printf "$ROW_FMT" "$base" "$vm" "$va" "$cm" "$ca" "$max_dim" "$am" "$aa" "$nodes" "$faces" "$sa" "$sv" "$la" "$lv"
+    printf "$ROW_FMT" "$base" "$vm" "$va" "$cm" "$ca" "$max_dim" "$am" "$aa" "$nodes" "$faces" "$sa" "$la" "$sv" "$lv"
 
     update_group_max "$group" "$vtx_max_raw" "$vtx_avg_raw" "$ctr_max_raw" "$ctr_avg_raw" "$ang_max_raw" "$ang_avg_raw"
 
