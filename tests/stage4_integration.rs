@@ -55,6 +55,16 @@ fn simple_sphere_step_output() {
     run_stage4(&config);
     assert!(std::path::Path::new(&out).exists());
 }
+#[test]
+fn rounded_cube_step_output() {
+    let dir = manifest_dir();
+    let stl = format!("{dir}/tests/onshape/rounded_cube_10_r2_coarse.stl");
+    let out = format!("{dir}/tmp/test_rounded_cube_output.step");
+    let config = config_for_output(&stl, &out);
+    run_stage4(&config);
+    assert!(std::path::Path::new(&out).exists());
+}
+
 
 // --- Stage 4.1 compare tests ---
 

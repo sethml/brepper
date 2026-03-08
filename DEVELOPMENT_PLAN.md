@@ -504,7 +504,7 @@ For each ReconEdge, determine whether the two adjacent surfaces are tangent alon
 
 **Decision: do not modify surfaces to enforce tangency.** Modifying analytic surfaces would change the geometry. Instead, tangent edges get special handling in edge curve computation (3.3): construct the edge curve directly rather than relying on surface-surface intersection.
 
-For the current test models (planar + cylindrical + spherical intersections), no edges are tangent — tangent edges arise from fillets and blends, which will be addressed when those test models are added.
+Tangent edges arise from fillets and blends: part_rounded_cube_10_r2 has 8 plane-cylinder tangent edges, and rounded_cube_10_r2 has 46 tangent edges (plane-cylinder + sphere-cylinder).
 
 - With the `--compare` flag:
     - For each ReconEdge marked as tangent, verify that the corresponding edge in the reference STEP file is also tangent (i.e., the two adjacent STEP surfaces have matching normals along the STEP edge). Report a warning if tangency is detected in the mesh but not in the STEP reference, or vice versa.
@@ -515,7 +515,12 @@ For each ReconEdge, compute the 3D intersection curve between the two adjacent s
 
 **Intersection computation (implemented):**
 - For non-tangent edges: use `GeomAPI_IntSS` to compute intersection curves with tolerance `vertex_tolerance_mm`. IntSS may return multiple curves (e.g., a plane cutting through a torus); `select_closest_curve()` picks the one closest to the mesh boundary vertices by sampling up to 10 evenly-spaced boundary vertices, projecting each onto each candidate curve via `GeomAPI_ProjectPointOnCurve`, and summing distances.
-- For tangent edges: construct the curve analytically rather than using `GeomAPI_IntSS` (which fails or produces degenerate results for tangent/near-tangent surfaces). For plane-cylinder tangencies, the curve is a `Geom_Line` parallel to the cylinder axis at the tangent point. The tangent point is computed from the cylinder axis, radius, and the component of the plane normal perpendicular to the cylinder axis. For cylinder-cylinder tangencies, uses the first cylinder's axis direction. Fallback for other tangent pairs: construct a line from the two vertex endpoints. All tangent edges are trimmed to vertex endpoints using the same parameter projection as non-tangent edges.
+- For tangent edges: construct the curve analytically rather than using `GeomAPI_IntSS` (which fails or produces degenerate results for tangent/near-tangent surfaces). Dispatches by surface pair type:
+  - **Plane-cylinder**: `Geom_Line` parallel to the cylinder axis at the tangent point, computed from the cylinder axis, radius, and the plane normal component perpendicular to the axis.
+  - **Cylinder-cylinder**: `Geom_Line` along the first cylinder's axis direction.
+  - **Sphere-cylinder**: `Geom_Circle` (great circle arc on the sphere). Center and radius come from the sphere hypothesis (which is accurately fitted, unlike cylinders which may have limited mesh data). The circle plane normal is `normalize(cross(v0 - center, v1 - center))`. Arc selection samples mesh boundary vertices to determine forward vs. reverse arc on the periodic circle.
+  - **Fallback**: Construct a line from the two vertex endpoints.
+  All tangent edges are trimmed to vertex endpoints using the same parameter projection as non-tangent edges. A `validate_tangent_curve` step checks that boundary vertices lie within `surface_tolerance_mm` of the constructed curve.
 
 **Trimming to vertex endpoints (implemented):**
 - For each ReconVertex at an edge endpoint, project the vertex's 3D position onto the intersection curve using `GeomAPI_ProjectPointOnCurve` to get the curve parameter value.
@@ -546,6 +551,7 @@ For each ReconFace, construct a `TopoDS_Face` from the surface and bounding wire
 
 *Stage 1: Create TopoDS_Edge for each ReconEdge.*
 - For each `ReconEdge`, create a `BRepBuilderAPI_MakeEdge` using the trimmed 3D curve and shared `TopoDS_Vertex` endpoints from stage 3.3. For periodic curves (circles from cylinder/sphere intersections), vertex order is matched to the curve parameterization direction: V1 corresponds to `first_parameter()` and V2 to `last_parameter()`. This is critical because `MakeEdge` strips `TrimmedCurve` wrappers and uses `ElCLib::AdjustPeriodic` on the base periodic curve, which always selects the forward (CCW) arc from V1 to V2.
+- **Adaptive vertex tolerance**: Before each `MakeEdge`, the distance between each vertex position and its curve endpoint is computed. The OCCT vertex tolerance is updated to at least that distance (with 1% margin), accommodating imprecisely-fitted surface intersection curves that don't pass exactly through mesh vertex positions. This replaces the earlier fixed `vertex_tolerance_mm` approach.
 
 *Stage 2: Create OCCT faces.*
 - **Planar faces** use wire-based construction:
@@ -677,6 +683,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 ### Stage 3 refinements
 - [x] Revisit stage 3.2: Tangency detection correctly identifies 8 tangent edges on part_rounded_cube_10_r2 (cylinder-plane tangencies at fillet boundaries). Detection algorithm using analytical surface normals at sampled boundary points works well. No changes needed to the 2° threshold.
 - [x] Revisit stage 3.3: Implement tangent edge curve computation. For tangent edges, construct curves analytically rather than using `GeomAPI_IntSS` (which fails for tangent surfaces). Plane-cylinder tangencies produce lines parallel to the cylinder axis at the analytically-computed tangent point. Also fix `MakeEdge` in stage 3.4: use `new_handlegeomcurve_vertex2_real2` with explicit parameter values (instead of relying on OCCT's vertex-to-curve projection which fails when mesh vertex tolerance exceeds OCCT's default precision of 1e-7mm), and set vertex tolerance to `vertex_tolerance_mm` via `BRep_Builder::update_vertex_vertex_real`. This unblocks part_rounded_cube_10_r2 — all 10 faces (6 planar + 4 cylindrical) reconstruct correctly with volume matching STEP reference to 2.19e-7 relative difference.
+- [x] Implement sphere-cylinder tangent edge curves: great circle arcs on the sphere surface, using sphere center/radius (not cylinder parameters, which may be imprecise). Adaptive per-vertex tolerance in MakeEdge accommodates surface fit imprecision. Unblocks rounded_cube_10_r2_coarse full pipeline — STEP file exports with all 94 faces (76 planar + 10 cylindrical + 8 spherical), though many faces have BRepCheck warnings due to imprecise cylinder fits.
 - [ ] Consider implementing stage 2.7 (surface refitting) if stage 3 reconstruction reveals boundary accuracy problems from incorrect face-to-surface assignments.
 
 ### Stage 2 Extensions: Additional Surface Types
