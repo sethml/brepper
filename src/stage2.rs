@@ -704,6 +704,18 @@ fn fit_cylinder(
         ys.push(vx * w[0] + vy * w[1] + vz * w[2]);
     }
 
+    // Center the 2D data to improve numerical conditioning.
+    // Without centering, the normal equations matrix becomes ill-conditioned
+    // when absolute coordinates are large relative to the arc span (e.g.,
+    // 6 vertices spanning 2.5° of a r=2mm cylinder at position (15, 12.5)).
+    let nf = n as f64;
+    let mean_x = xs.iter().sum::<f64>() / nf;
+    let mean_y = ys.iter().sum::<f64>() / nf;
+    for i in 0..n {
+        xs[i] -= mean_x;
+        ys[i] -= mean_y;
+    }
+
     // Algebraic circle fit: x² + y² + Dx + Ey + F = 0
     // Least squares: minimize Σ(x² + y² + Dx + Ey + F)²
     // Normal equations: [Σx²  Σxy  Σx ] [D]   [-Σx(x²+y²)]
@@ -733,7 +745,6 @@ fn fit_cylinder(
         sxy2 += x * y * y;
     }
 
-    let nf = n as f64;
     // RHS
     let rhs0 = -(sx3 + sxy2);
     let rhs1 = -(sx2y + sy3);
@@ -772,11 +783,13 @@ fn fit_cylinder(
     }
     let radius = r_sq.sqrt();
 
-    // Convert 2D center back to 3D
+    // Convert 2D center back to 3D (undo centering offset)
+    let abs_center_x = center_x + mean_x;
+    let abs_center_y = center_y + mean_y;
     let axis_origin = [
-        center_x * u[0] + center_y * w[0],
-        center_x * u[1] + center_y * w[1],
-        center_x * u[2] + center_y * w[2],
+        abs_center_x * u[0] + abs_center_y * w[0],
+        abs_center_x * u[1] + abs_center_y * w[1],
+        abs_center_x * u[2] + abs_center_y * w[2],
     ];
 
     Some((axis_origin, axis_dir, radius))

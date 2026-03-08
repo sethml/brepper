@@ -271,7 +271,7 @@ The fitting proceeds in two steps:
 
 1. **Axis direction estimation from face normals.** On a cylinder, every face normal is perpendicular to the axis: `n · a = 0`. So the axis direction `a` minimizes $\sum w_i (n_i \cdot a)^2$ subject to $\|a\| = 1$, where $w_i$ is the area of face $i$. This is the eigenvector corresponding to the *smallest* eigenvalue of the 3×3 weighted covariance matrix $M = \sum w_i \, n_i \, n_i^T$. For the two-face seed, this simplifies to `a = normalize(n_fi × n_ni)`.
 
-2. **Axis position and radius via 2D circle fitting.** Given the axis direction `a`, choose two orthogonal unit vectors `u`, `w` perpendicular to `a`. Project each vertex onto the 2D plane: `(x_i, y_i) = (v_i · u, v_i · w)`. Fit a circle to the 2D points using the algebraic least-squares method: fit the linear model $x^2 + y^2 + Dx + Ey + F = 0$ via least squares, then `center = (-D/2, -E/2)` and `radius = sqrt(center_x² + center_y² - F)`. The axis origin in 3D is `center_x * u + center_y * w` (the component along `a` is arbitrary).
+2. **Axis position and radius via 2D circle fitting.** Given the axis direction `a`, choose two orthogonal unit vectors `u`, `w` perpendicular to `a`. Project each vertex onto the 2D plane: `(x_i, y_i) = (v_i · u, v_i · w)`. **Center the 2D coordinates** by subtracting the mean: `x_i' = x_i - mean_x`, `y_i' = y_i - mean_y`. Fit a circle to the centered 2D points using the algebraic least-squares method: fit the linear model $x^2 + y^2 + Dx + Ey + F = 0$ via least squares, then `center' = (-D/2, -E/2)` and `radius = sqrt(center_x'² + center_y'² - F)`. The axis origin in 3D is `(center_x' + mean_x) * u + (center_y' + mean_y) * w` (the component along `a` is arbitrary). Centering is essential for numerical stability: without it, the normal equations matrix becomes ill-conditioned when absolute vertex coordinates are large relative to the arc span (e.g., vertices at (15mm, 12.5mm) spanning 2.5° of a r=2mm cylinder produce sums-of-squares ~1350 that dwarf the r=2 signal, causing wildly wrong radii).
 
 The normal covariance matrix `M` can be maintained incrementally during BFS (add $w_i \, n_i \, n_i^T$ when accepting a face), but the eigenvector solve and circle fit must be recomputed from scratch when re-fitting, since a change in axis direction invalidates the 2D projection. This is O(n) in vertices but involves only simple arithmetic — no iterative optimization.
 
@@ -675,7 +675,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Implement stage 4.1: Write solids to STEP file using `STEPControl_Writer` with `StepModelType::Asis`. Builds compound from all solids, sets AP214 schema. Compare re-reads written file and validates volume agreement (warning on >1% diff) and `BRepExtrema_DistShapeShape` distance to STEP reference. 15 integration tests: 3 basic output + 11 compare + 1 missing-output-path error.
 
 ### Stage 3 refinements
-- [ ] Revisit stage 3.2: Detect tangency relationships between adjacent surfaces. If there are any problems with models that involve tangent curves, such as tests/onshape/chamfered_cube, then imagine more tests for difficult tangency relationships including cylinder-plane and sphere-cylinder, create those tests, and ensure that tangency detection works correctly.
+- [ ] Revisit stage 3.2: Detect tangency relationships between adjacent surfaces. If there are any problems with models that involve tangent curves, such as tests/onshape/rounded_cube, then imagine more tests for difficult tangency relationships including cylinder-plane and sphere-cylinder, create those tests, and ensure that tangency detection works correctly.
 - [ ] Revisit stage 3.3 if tangency detection was added.
 - [ ] Consider implementing stage 2.7 (surface refitting) if stage 3 reconstruction reveals boundary accuracy problems from incorrect face-to-surface assignments.
 
@@ -726,9 +726,9 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 || Plate with Hole low (fusion) | Low tessellation | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
 || Plate with Hole med (fusion) | Medium tessellation | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
 || Plate with Hole high (fusion) | High tessellation | 6 planes + 1 cylinder | ✗ Stage 3.1 (coplanarity tolerance) |
-|| Rounded Cube coarse (onshape) | 820 triangles | 6 planes + 12 cylinders + 8 spheres | ✗ Stage 3.1 (sphere overgrowth into cylinder regions) |
-|| Rounded Cube medium (onshape) | 3548 triangles | 6 planes + 12 cylinders + 8 spheres | ✗ Stage 3.1 (sphere overgrowth + cylinder fragmentation) |
-|| Rounded Cube fine (onshape) | 21466 triangles | 6 planes + 12 cylinders + 8 spheres | ✗ Stage 3.1 (sphere overgrowth + cylinder fragmentation + coplanarity) |
+|| Rounded Cube coarse (onshape) | 820 triangles | 6 planes + 12 cylinders + 8 spheres | ✗ Stage 3.1 |
+|| Rounded Cube medium (onshape) | 3548 triangles | 6 planes + 12 cylinders + 8 spheres | ✗ Stage 3.1 |
+|| Rounded Cube fine (onshape) | 21466 triangles | 6 planes + 12 cylinders + 8 spheres | ✗ Stage 3.1 |
 || Pipe Elbow (onshape) | Fine tessellation | Cylinders + torus | ✗ Stage 3.1 (missing torus surface type) |
 | Cone | Tessellated cone | 1 cone + 1 plane | ✗ Stage 3.1 (missing cone surface type) |
 | Fillet | Blended edge | Planes + fillet surface | |
