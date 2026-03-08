@@ -102,6 +102,8 @@ pub struct CylindricalHypothesis {
     pub centroid_error_max: f64,
     /// Sum of absolute vertex-to-surface distances.
     pub error_abs_sum: f64,
+    /// Total mesh face area of this hypothesis (for area-based replacement comparisons).
+    pub total_area: f64,
 }
 
 /// A spherical surface hypothesis fitted to a set of mesh faces.
@@ -214,7 +216,7 @@ fn vertex_to_plane_distance(v: &MeshVertex, normal: &[f64; 3], distance: f64) ->
     normal[0] * v.x + normal[1] * v.y + normal[2] * v.z - distance
 }
 
-/// Compute the area of a triangular mesh face.
+/// Compute the area of a mesh face (triangle or quad).
 fn face_area(face: &MeshFace, vertices: &[MeshVertex]) -> f64 {
     let v0 = &vertices[face.vertex_indices[0]];
     let v1 = &vertices[face.vertex_indices[1]];
@@ -943,7 +945,6 @@ fn angular_coverage_valid(
 /// Result of a trial BFS for cylindrical hypothesis evaluation.
 struct CylinderTrialResult {
     faces: Vec<usize>,
-    vertices: HashSet<usize>,
     axis_origin: [f64; 3],
     axis_direction: [f64; 3],
     radius: f64,
@@ -951,11 +952,16 @@ struct CylinderTrialResult {
     error_max: f64,
     centroid_error_max: f64,
     error_abs_sum: f64,
+    total_area: f64,
 }
 
 /// Run a trial BFS for a cylindrical hypothesis starting from a seed pair,
 /// using temporary data structures (not mutating mesh face assignments).
 /// Returns `None` if the trial fails validation (min faces, centroid check).
+/// `existing_hypothesis` is the already-committed hypothesis for the seed face (if any),
+/// used for early termination of redundant trials.
+/// `hypotheses` is the list of all committed hypotheses, used to check axis compatibility
+/// when BFS grows through faces that already have an assigned hypothesis.
 #[allow(clippy::too_many_arguments)]
 fn run_cylinder_trial_bfs(
     seed_fi: usize,
@@ -965,6 +971,8 @@ fn run_cylinder_trial_bfs(
     surface_tol: f64,
     angular_tol: f64,
     best_candidate: Option<&CylinderTrialResult>,
+    existing_hypothesis: Option<&CylindricalHypothesis>,
+    hypotheses: &[CylindricalHypothesis],
 ) -> Option<CylinderTrialResult> {
     let fi_vc = mesh.faces[seed_fi].vertex_count as usize;
     let ni_vc = mesh.faces[seed_ni].vertex_count as usize;
@@ -1016,12 +1024,30 @@ fn run_cylinder_trial_bfs(
             }
             let cni = cni as usize;
 
-            // Skip if already committed to a real hypothesis or claimed by this trial
-            if mesh.faces[cni].cylindrical_hypothesis != UNDEDUCED_CYLINDRICAL_HYPOTHESIS {
-                continue;
-            }
+            // Skip if claimed by this trial
             if trial_claimed.contains(&cni) {
                 continue;
+            }
+
+            // Skip faces with NO_HYPOTHESIS (-1): these were already evaluated
+            // and determined to not be on any cylinder (e.g., sphere faces, plane
+            // transition faces). BFS grows through unprocessed faces (-2) freely.
+            // For faces with existing hypotheses (>= 0), only grow through them
+            // if the existing hypothesis has a compatible axis direction — this
+            // prevents BFS from merging different quarter-cylinders that share
+            // the same radius but have orthogonal axes.
+            let cni_hyp = mesh.faces[cni].cylindrical_hypothesis;
+            if cni_hyp == NO_HYPOTHESIS {
+                continue;
+            }
+            if cni_hyp >= 0 {
+                let existing = &hypotheses[cni_hyp as usize];
+                let cross = cross3(&current_dir, &existing.axis_direction);
+                let cross_mag = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+                // If axes are not approximately parallel, skip this face
+                if cross_mag > angular_tol.sin() {
+                    continue;
+                }
             }
 
             // Convexity check
@@ -1148,28 +1174,33 @@ fn run_cylinder_trial_bfs(
         }
 
         // Early termination: if we have 3+ faces and are rediscovering the
-        // same cylinder as the current best candidate, abandon.
+        // same cylinder as the current best candidate or existing hypothesis, abandon.
         if face_list.len() >= 3 {
-            if let Some(best) = best_candidate {
-                let axis_dot = dot3(&current_dir, &best.axis_direction).abs();
-                if axis_dot > 1.0 - 1e-6
-                    && (current_radius - best.radius).abs() < vertex_tol
-                {
-                    // Check axis-to-axis distance
-                    let d = [
-                        current_origin[0] - best.axis_origin[0],
-                        current_origin[1] - best.axis_origin[1],
-                        current_origin[2] - best.axis_origin[2],
-                    ];
-                    let t = dot3(&d, &current_dir);
-                    let perp_sq = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] - t * t;
-                    let perp_dist = if perp_sq > 0.0 { perp_sq.sqrt() } else { 0.0 };
+            let is_rediscovery = |axis_o: &[f64; 3], axis_d: &[f64; 3], r: f64, ref_faces: &[usize]| -> bool {
+                let axis_dot = dot3(&current_dir, axis_d).abs();
+                if axis_dot <= 1.0 - 1e-6 || (current_radius - r).abs() >= vertex_tol {
+                    return false;
+                }
+                let d = [
+                    current_origin[0] - axis_o[0],
+                    current_origin[1] - axis_o[1],
+                    current_origin[2] - axis_o[2],
+                ];
+                let t = dot3(&d, &current_dir);
+                let perp_sq = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] - t * t;
+                let perp_dist = if perp_sq > 0.0 { perp_sq.sqrt() } else { 0.0 };
+                perp_dist < vertex_tol
+                    && face_list.iter().all(|f| ref_faces.contains(f))
+            };
 
-                    if perp_dist < vertex_tol
-                        && face_list.iter().all(|f| best.faces.contains(f))
-                    {
-                        return None; // Redundant trial
-                    }
+            if let Some(best) = best_candidate {
+                if is_rediscovery(&best.axis_origin, &best.axis_direction, best.radius, &best.faces) {
+                    return None;
+                }
+            }
+            if let Some(existing) = existing_hypothesis {
+                if is_rediscovery(&existing.axis_origin, &existing.axis_direction, existing.radius, &existing.faces) {
+                    return None;
                 }
             }
         }
@@ -1214,9 +1245,13 @@ fn run_cylinder_trial_bfs(
         }
     }
 
+    // Compute total area
+    let total_area: f64 = face_list.iter()
+        .map(|&f| face_area(&mesh.faces[f], &mesh.vertices))
+        .sum();
+
     Some(CylinderTrialResult {
         faces: face_list,
-        vertices: vertex_set,
         axis_origin: current_origin,
         axis_direction: current_dir,
         radius: current_radius,
@@ -1224,13 +1259,16 @@ fn run_cylinder_trial_bfs(
         error_max,
         centroid_error_max,
         error_abs_sum,
+        total_area,
     })
 }
 
 /// Deduce cylindrical hypotheses from the mesh using multi-seed BFS evaluation.
 ///
-/// For each face, collects all valid seed partners, runs a trial BFS for each,
-/// keeps the best trial (most faces), validates with angular coverage, and commits.
+/// For each face (including already-assigned faces), collects all valid seed partners,
+/// runs a trial BFS for each, keeps the best trial (most faces), validates with angular
+/// coverage, and commits with area-based replacement (new hypothesis only claims a face
+/// if its total area exceeds the face's existing hypothesis area).
 fn deduce_cylindrical_hypotheses(
     mesh: &mut ConnectedMesh,
     vertex_tol: f64,
@@ -1241,10 +1279,13 @@ fn deduce_cylindrical_hypotheses(
     let mut hypotheses: Vec<CylindricalHypothesis> = Vec::new();
 
     for fi in 0..num_faces {
+        // Only seed from undeduced (-2) faces.
+        // BFS will grow through already-assigned (>= 0) faces, allowing it to
+        // route around barrier (-1) faces, but seeding from all faces creates
+        // too many redundant trials on fine meshes.
         if mesh.faces[fi].cylindrical_hypothesis != UNDEDUCED_CYLINDRICAL_HYPOTHESIS {
             continue;
         }
-
 
         let fi_normal = match mesh.faces[fi].normal {
             Some(n) => n,
@@ -1254,7 +1295,7 @@ fn deduce_cylindrical_hypotheses(
             }
         };
 
-        // Collect ALL valid seed partners
+        // Collect ALL valid seed partners (no restriction on partner's hypothesis)
         let fi_vc = mesh.faces[fi].vertex_count as usize;
         let fi_neighbors = mesh.faces[fi].neighbors;
         let mut seed_partners: Vec<usize> = Vec::new();
@@ -1264,11 +1305,6 @@ fn deduce_cylindrical_hypotheses(
                 continue;
             }
             let ni = ni as usize;
-
-            if mesh.faces[ni].cylindrical_hypothesis != UNDEDUCED_CYLINDRICAL_HYPOTHESIS {
-                continue;
-            }
-
 
             let ni_normal = match mesh.faces[ni].normal {
                 Some(n) => n,
@@ -1296,6 +1332,9 @@ fn deduce_cylindrical_hypotheses(
             continue;
         }
 
+        // Seed is always undeduced (-2), so no existing hypothesis
+        let existing_hyp: Option<&CylindricalHypothesis> = None;
+
         // Multi-seed evaluation: try each seed partner, keep best
         let mut best_candidate: Option<CylinderTrialResult> = None;
 
@@ -1304,6 +1343,8 @@ fn deduce_cylindrical_hypotheses(
                 fi, ni, mesh,
                 vertex_tol, surface_tol, angular_tol,
                 best_candidate.as_ref(),
+                existing_hyp,
+                &hypotheses,
             );
 
             if let Some(trial) = trial {
@@ -1323,27 +1364,74 @@ fn deduce_cylindrical_hypotheses(
                 continue;
             }
 
-            // Commit: assign all faces to this hypothesis
+            // Area-based replacement: only reassign faces where the new hypothesis
+            // has greater total area than the face's existing hypothesis.
+            let new_area = candidate.total_area;
             let hi = hypotheses.len() as i32;
+
+            let mut committed_faces: Vec<usize> = Vec::new();
+            let mut committed_vertices: HashSet<usize> = HashSet::new();
+
             for &f in &candidate.faces {
-                mesh.faces[f].cylindrical_hypothesis = hi;
+                let old_hi = mesh.faces[f].cylindrical_hypothesis;
+                let should_reassign = if old_hi < 0 {
+                    // Unassigned or no-hypothesis: always take
+                    true
+                } else {
+                    // Compare areas: new hypothesis must have strictly greater area
+                    new_area > hypotheses[old_hi as usize].total_area
+                };
+
+                if should_reassign {
+                    // Remove face from old hypothesis if it had one
+                    if old_hi >= 0 {
+                        let old_hyp = &mut hypotheses[old_hi as usize];
+                        old_hyp.faces.retain(|&x| x != f);
+                        // Recompute old hypothesis area after removing face
+                        old_hyp.total_area = old_hyp.faces.iter()
+                            .map(|&ff| face_area(&mesh.faces[ff], &mesh.vertices))
+                            .sum();
+                        // Note: we don't recompute old_hyp.vertices here --
+                        // stage 2.6 select_surfaces rebuilds vertex lists anyway
+                    }
+                    mesh.faces[f].cylindrical_hypothesis = hi;
+                    committed_faces.push(f);
+                    let fvc = mesh.faces[f].vertex_count as usize;
+                    for &vi in &mesh.faces[f].vertex_indices[..fvc] {
+                        committed_vertices.insert(vi);
+                    }
+                }
             }
 
-            hypotheses.push(CylindricalHypothesis {
-                axis_origin: candidate.axis_origin,
-                axis_direction: candidate.axis_direction,
-                radius: candidate.radius,
-                convex: candidate.convex,
-                faces: candidate.faces,
-                vertices: candidate.vertices.into_iter().collect(),
-                error_max: candidate.error_max,
-                centroid_error_max: candidate.centroid_error_max,
-                error_abs_sum: candidate.error_abs_sum,
-            });
+            // Only create the hypothesis if we actually committed faces
+            if committed_faces.len() >= MIN_CYLINDER_FACES {
+                let committed_area: f64 = committed_faces.iter()
+                    .map(|&f| face_area(&mesh.faces[f], &mesh.vertices))
+                    .sum();
+                hypotheses.push(CylindricalHypothesis {
+                    axis_origin: candidate.axis_origin,
+                    axis_direction: candidate.axis_direction,
+                    radius: candidate.radius,
+                    convex: candidate.convex,
+                    faces: committed_faces,
+                    vertices: committed_vertices.into_iter().collect(),
+                    error_max: candidate.error_max,
+                    centroid_error_max: candidate.centroid_error_max,
+                    error_abs_sum: candidate.error_abs_sum,
+                    total_area: committed_area,
+                });
+            } else {
+                // Not enough faces committed; revert assignments
+                for &f in &committed_faces {
+                    mesh.faces[f].cylindrical_hypothesis = UNDEDUCED_CYLINDRICAL_HYPOTHESIS;
+                }
+                mesh.faces[fi].cylindrical_hypothesis = NO_HYPOTHESIS;
+            }
         } else {
             mesh.faces[fi].cylindrical_hypothesis = NO_HYPOTHESIS;
         }
     }
+
     hypotheses
 }
 
@@ -2145,6 +2233,7 @@ fn select_surfaces(
         }
 
         let Some(ci) = best_ci else { break };
+
 
         // Collect still-unassigned faces for the winning candidate.
         let sel_faces: Vec<usize> = candidates[ci].faces.iter()

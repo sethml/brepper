@@ -271,5 +271,15 @@ On rounded_cube_10_r2_fine, one of the 12 quarter-cylinder edges is fragmented i
 
 5. **Coordinate precision matters.** Using truncated sphere center coordinates (4 decimal places: 21.1219 instead of 21.1218879546) shifts the ideal cylinder axis enough to make all face errors appear ~1e-5, obscuring the true ~1e-6 errors. Always use full f64 precision for distance measurements.
 
+### BFS routing through committed faces: approach and limitations
+- **BFS through >=0 with axis compatibility check**: BFS can grow through faces already assigned to a cylinder hypothesis (cyl_hyp >= 0) if their existing hypothesis axis is approximately parallel to the current trial's axis. This prevents merging different quarter-cylinders (e.g., X-axis and Y-axis cylinders sharing r=2mm) while allowing BFS to route around barrier (-1) faces through the existing cylinder mesh.
+- **Axis check implementation**: Compare cross product magnitude of trial axis vs. existing hypothesis axis against `angular_tol.sin()`. If axes are not parallel, block growth.
+- **Coarse mesh over-merging**: Without the axis check, BFS through >=0 merged 10 quarter-cylinders into 6 on rounded_cube_10_r2_coarse (same radius, adjacent at sphere corners). The axis check prevents this.
+- **Fine mesh: no improvement for fragmented cylinder**: The 287 fragment hypotheses on the 12th quarter-cylinder have WRONG axis directions (axis ≈ [0, 0, 1] instead of expected [0, -1, 0]). BFS axis compatibility blocks growth between fragments with incompatible wrong axes. Root cause: seed pairs on fine meshes produce biased axis estimates.
+- **Seeding from all faces causes explosion**: On the fine mesh, seeding from already-assigned (>=0) faces in addition to undeduced (-2) faces increased hypotheses from 608→3975 without improving selection. Keep seeding from -2 only.
+- **Vertex revalidation after final refit is too aggressive**: Re-checking all vertices against the fitted cylinder after the final refit (with vertex_tol=1e-5mm) rejected valid hypotheses. On coarse mesh, reduced cylinders from 10→6. The progressive BFS already validates at each step; minor axis drift from refitting causes vertices at the tolerance boundary to fail. Removed the revalidation.
+
+### git stash risks with concurrent edits
+- `git stash pop` with auto-merge can silently drop changes. During this session, stash/checkout/pop operations accidentally removed the quad face area handling from `face_area()`, reverting a critical bug fix. Always verify file contents after stash operations.
 ### Axis drift theory: disproven
 Hypothesis: BFS refitting gradually rotates the cylinder axis when sphere faces are added, causing "drift." Empirical testing across rounded_cube_10_r2_{coarse,fine,medium} and pill_coarse showed **zero significant axis drift** on any successful/committed cylinder hypothesis. All axis_dot(seed, refit) values were ≥ 0.999999996. Drift only occurred on tiny (3-4 face) hypotheses already rejected by existing validation (min face count, angular coverage). The axis stability check described in some versions of the development plan would not have solved the actual problem.
