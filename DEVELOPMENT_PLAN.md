@@ -560,7 +560,7 @@ For each ReconFace, construct a `TopoDS_Face` from the surface and bounding wire
   - Full spheres (no edges) use `MakeFace::new_handlegeomsurface_real(surface, tolerance)` with natural bounds.
 
 *Stage 3: Validate and compare.*
-- Validate each face with `BRepCheck_Analyzer` and report invalid faces as warnings.
+- Validate each face with `BRepCheck_Analyzer`. For invalid faces, run detailed `BRepCheck_Face` diagnostics (intersect_wires, classify_wires, orientation_of_wires, is_unorientable) and report human-readable warnings with the surface type and specific issue. Most BRepCheck warnings on current models are wire orientation issues on planar faces with holes (inner wire wound the wrong way) — these are cosmetic and get fixed by `ShapeFix_Shell` during sewing.
 - With `--compare`: for each face, sample a representative mesh face centroid from the surface's mesh faces and compute distance to the reference STEP shape using `BRepExtrema_DistShapeShape`. Report face count comparison. Error if max distance exceeds `--surface-tolerance`.
 
 #### 3.5 Construct shells
@@ -703,23 +703,31 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 |-----------|-------|-----------------|--------|
 | Cube | 12 triangles | 6 planes, 1 solid | ✓ Stage 4.1 (STEP output) |
 | Wedge | 12 triangles | 6 planes (incl. angled) | ✓ Stage 4.1 (STEP output) |
-| T-Shape | 28 triangles | 10 planes | ✓ Stage 2.1 |
-| Staircase | 48 triangles | 12 planes | ✓ Stage 2.1 |
+| T-Shape | 28 triangles | 10 planes | ✓ Stage 4.1 (STEP output) |
+| Staircase | 48 triangles | 12 planes | ✓ Stage 4.1 (STEP output) |
 || Chamfered Cube (onshape) | 44 triangles | 26 planes | ✓ Stage 4.1 (STEP output) |
-| Stepped Block | Complex planar | Multiple planes | ✓ Stage 2.1 |
-| L Bracket | Complex planar | Multiple planes | ✓ Stage 2.1 |
+| Stepped Block | Complex planar | Multiple planes | ✓ Stage 4.1 (STEP output) |
+| L Bracket | Complex planar | Multiple planes | ✓ Stage 4.1 (STEP output) |
 | Cylinder | Tessellated cylinder | 1 cylinder + 2 planes | ✓ Stage 1 |
 || Simple Cylinder (ccad) | 124 triangles | 1 cylinder + 2 planes | ✓ Stage 4.1 (STEP output) |
-|| Block with Hole (ccad) | 44 triangles | 6 planes + 1 concave cylinder | ✓ Stage 4.1 (STEP output, volume warning) |
+|| Block with Hole (ccad) | 44 triangles | 6 planes + 1 concave cylinder | ✓ Stage 4.1 (STEP output) |
 || Pipe (ccad) | 244 triangles | 2 cylinders (in/out) + 2 annular planes | ✓ Stage 4.1 (STEP output) |
-|| Stepped Cylinder (ccad) | 240 triangles | 2 cylinders + 3 planes | ✓ Stage 2.2 |
-|| Two Holes (ccad) | 244 triangles | 6 planes + 2 concave cylinders | ✓ Stage 2.2 |
+|| Stepped Cylinder (ccad) | 240 triangles | 2 cylinders + 3 planes | ✓ Stage 4.1 (STEP output) |
+|| Two Holes (ccad) | 244 triangles | 6 planes + 2 concave cylinders | ✓ Stage 4.1 (STEP output) |
+|| Block Corner Hole (ccad) | 188 triangles | 6 planes + 1 concave cylinder | ✓ Stage 4.1 (STEP output) |
 || Simple Sphere (ccad) | 974 triangles | 1 sphere | ✓ Stage 4.1 (STEP output) |
 || Hemisphere (ccad) | 518 triangles | 1 sphere + 1 plane | ✓ Stage 4.1 (STEP output) |
 || Spherical Pocket (ccad) | 486 triangles | 6 planes + 1 concave sphere | ✓ Stage 4.1 (STEP output) |
-|| Ball on Cylinder (ccad) | 764 triangles | 1 sphere + 1 cylinder + 1 plane | ✓ Stage 4.1 (STEP output, volume warning) |
-|| Sphere | Tessellated sphere | 1 sphere | ✓ Stage 2.3 |
-| Cone | Tessellated cone | 1 cone + 1 plane | ✓ Stage 1 |
+|| Ball on Cylinder (ccad) | 764 triangles | 1 sphere + 1 cylinder + 1 plane | ✓ Stage 4.1 (STEP output) |
+|| Sphere (onshape) | Tessellated sphere | 1 sphere | ✓ Stage 4.1 (STEP output) |
+|| Dome Hemisphere (onshape) | Fine tessellation | 1 sphere + 1 plane | ✗ Stage 3.5 (sewing failure) |
+|| Plate with Hole (onshape) | 128 triangles | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
+|| Plate with Hole low (fusion) | Low tessellation | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
+|| Plate with Hole med (fusion) | Medium tessellation | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
+|| Plate with Hole high (fusion) | High tessellation | 6 planes + 1 cylinder | ✗ Stage 3.1 (coplanarity tolerance) |
+|| Rounded Cube (onshape) | Fine tessellation | Planes + torus fillets | ✗ Stage 3.1 (missing torus surface type) |
+|| Pipe Elbow (onshape) | Fine tessellation | Cylinders + torus | ✗ Stage 3.1 (missing torus surface type) |
+| Cone | Tessellated cone | 1 cone + 1 plane | ✗ Stage 3.1 (missing cone surface type) |
 | Fillet | Blended edge | Planes + fillet surface | |
 | Complex part | Real CAD export | Matching topology | |
 
