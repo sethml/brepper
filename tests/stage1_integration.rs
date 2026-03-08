@@ -104,8 +104,16 @@ test_stl_stage1!(
     "tests/onshape/plate_with_hole_100x50_coarse.stl"
 );
 test_stl_stage1!(
-    onshape_rounded_cube_stage1,
+    onshape_rounded_cube_fine_stage1,
     "tests/onshape/rounded_cube_10_r2_fine.stl"
+);
+test_stl_stage1!(
+    onshape_rounded_cube_medium_stage1,
+    "tests/onshape/rounded_cube_10_r2_medium.stl"
+);
+test_stl_stage1!(
+    onshape_rounded_cube_coarse_stage1,
+    "tests/onshape/rounded_cube_10_r2_coarse.stl"
 );
 test_stl_stage1!(
     onshape_sphere_stage1,
@@ -212,69 +220,79 @@ test_stl_step_compare!(
 test_stl_step_compare!(
     onshape_chamfered_cube_compare,
     "tests/onshape/chamfered_cube_10_c1_medium.stl",
-    "tests/onshape/chamfered_cube_10_c1_medium.step"
+    "tests/onshape/chamfered_cube_10_c1.step"
 );
 test_stl_step_compare!(
     onshape_cone_compare,
     "tests/onshape/cone_15x20_medium.stl",
-    "tests/onshape/cone_15x20_medium.step"
+    "tests/onshape/cone_15x20.step"
 );
 test_stl_step_compare!(
     onshape_cylinder_compare,
     "tests/onshape/cylinder_10x30_medium.stl",
-    "tests/onshape/cylinder_10x30_medium.step"
+    "tests/onshape/cylinder_10x30.step"
 );
 test_stl_step_compare!(
     onshape_dome_hemisphere_compare,
     "tests/onshape/dome_hemisphere_20_fine.stl",
-    "tests/onshape/dome_hemisphere_20_fine.step"
+    "tests/onshape/dome_hemisphere_20.step"
 );
 test_stl_step_compare!(
     onshape_l_bracket_compare,
     "tests/onshape/l_bracket_simple_medium.stl",
-    "tests/onshape/l_bracket_simple_medium.step"
+    "tests/onshape/l_bracket_simple.step"
 );
 test_stl_step_compare!(
     onshape_pipe_elbow_compare,
     "tests/onshape/pipe_elbow_10_fine.stl",
-    "tests/onshape/pipe_elbow_10_fine.step"
+    "tests/onshape/pipe_elbow_10.step"
 );
 test_stl_step_compare!(
     onshape_plate_with_hole_compare,
     "tests/onshape/plate_with_hole_100x50_coarse.stl",
-    "tests/onshape/plate_with_hole_100x50_coarse.step"
+    "tests/onshape/plate_with_hole_100x50.step"
 );
 test_stl_step_compare!(
-    onshape_rounded_cube_compare,
+    onshape_rounded_cube_fine_compare,
     "tests/onshape/rounded_cube_10_r2_fine.stl",
-    "tests/onshape/rounded_cube_10_r2_fine.step"
+    "tests/onshape/rounded_cube_10_r2.step"
+);
+test_stl_step_compare!(
+    onshape_rounded_cube_medium_compare,
+    "tests/onshape/rounded_cube_10_r2_medium.stl",
+    "tests/onshape/rounded_cube_10_r2.step"
+);
+test_stl_step_compare!(
+    onshape_rounded_cube_coarse_compare,
+    "tests/onshape/rounded_cube_10_r2_coarse.stl",
+    "tests/onshape/rounded_cube_10_r2.step"
 );
 test_stl_step_compare!(
     onshape_sphere_compare,
     "tests/onshape/sphere_25_fine.stl",
-    "tests/onshape/sphere_25_fine.step"
+    "tests/onshape/sphere_25.step"
 );
 test_stl_step_compare!(
     onshape_stepped_block_compare,
     "tests/onshape/stepped_block_coarse.stl",
-    "tests/onshape/stepped_block_coarse.step"
+    "tests/onshape/stepped_block.step"
 );
 
 // --- tests/fusion/ ---
 test_stl_step_compare!(
     fusion_plate_high_compare,
     "tests/fusion/plate_with_hole_100x50_high.stl",
-    "tests/fusion/plate_with_hole_100x50_high.step"
+    "tests/fusion/plate_with_hole_100x50.step"
 );
 test_stl_step_compare!(
     fusion_plate_low_compare,
     "tests/fusion/plate_with_hole_100x50_low.stl",
-    "tests/fusion/plate_with_hole_100x50_low.step"
+    "tests/fusion/plate_with_hole_100x50.step"
 );
 test_stl_step_compare!(
     fusion_plate_medium_compare,
     "tests/fusion/plate_with_hole_100x50_medium.stl",
-    "tests/fusion/plate_with_hole_100x50_medium.step"
+    "tests/fusion/plate_with_hole_100x50.step"
 );
 
 // ===========================================================================

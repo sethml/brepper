@@ -726,7 +726,9 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 || Plate with Hole low (fusion) | Low tessellation | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
 || Plate with Hole med (fusion) | Medium tessellation | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
 || Plate with Hole high (fusion) | High tessellation | 6 planes + 1 cylinder | ✗ Stage 3.1 (coplanarity tolerance) |
-|| Rounded Cube (onshape) | Fine tessellation | Planes + torus fillets | ✗ Stage 3.1 (missing torus surface type) |
+|| Rounded Cube coarse (onshape) | 820 triangles | 6 planes + 12 cylinders + 8 spheres | ✗ Stage 3.1 (sphere overgrowth into cylinder regions) |
+|| Rounded Cube medium (onshape) | 3548 triangles | 6 planes + 12 cylinders + 8 spheres | ✗ Stage 3.1 (sphere overgrowth + cylinder fragmentation) |
+|| Rounded Cube fine (onshape) | 21466 triangles | 6 planes + 12 cylinders + 8 spheres | ✗ Stage 3.1 (sphere overgrowth + cylinder fragmentation + coplanarity) |
 || Pipe Elbow (onshape) | Fine tessellation | Cylinders + torus | ✗ Stage 3.1 (missing torus surface type) |
 | Cone | Tessellated cone | 1 cone + 1 plane | ✗ Stage 3.1 (missing cone surface type) |
 | Fillet | Blended edge | Planes + fillet surface | |
