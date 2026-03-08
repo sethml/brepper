@@ -6,7 +6,7 @@
 -- Expected: 6 planar faces (including annular top face) + 1 concave spherical face (radius 8).
 --
 -- Analytical values:
---   Volume = 18000 - 1024*pi/3 ≈ 16928.05 mm^3
+--   Volume = 18000 - 1024*pi/3 ≈ 16927.67 mm^3
 --   Surface area = 4200 + 64*pi ≈ 4401.06 mm^2
 
 local block = box(30, 30, 20)

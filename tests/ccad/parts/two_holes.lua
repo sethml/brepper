@@ -4,7 +4,7 @@
 -- Expected: 6 planar faces + 2 concave cylindrical faces (r=5 and r=3).
 --
 -- Analytical values:
---   Volume = 16000 - 680*pi ≈ 13863.89 mm^3
+--   Volume = 16000 - 680*pi ≈ 13863.72 mm^3
 --   Surface area = 4000 + 252*pi ≈ 4791.68 mm^2
 --
 -- box() places corner at origin; cylinder() is centered in x/y. We translate

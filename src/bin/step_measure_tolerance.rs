@@ -11,8 +11,8 @@
 /// file units (typically meters for Onshape exports) to mm internally.
 /// STL files have no unit metadata; coordinates are assumed to be in mm.
 use opencascade_sys::{
-    b_rep, b_rep_builder_api, b_rep_extrema, extrema, gp, message, rw_stl, step_control, top_abs,
-    top_exp, topo_ds,
+    b_rep, b_rep_builder_api, b_rep_extrema, b_rep_g_prop, extrema, g_prop, gp, message, rw_stl,
+    step_control, top_abs, top_exp, topo_ds,
 };
 use std::collections::HashMap;
 use std::env;
@@ -70,6 +70,28 @@ fn main() {
         process::exit(1);
     }
 
+    // Compute STEP surface area and volume
+    let mut step_area_props = g_prop::GProps::new();
+    b_rep_g_prop::surface_properties_shape_gprops_bool2(
+        &step_shape,
+        &mut step_area_props,
+        false,
+        false,
+    );
+    let step_area = step_area_props.mass();
+
+    let mut step_vol_props = g_prop::GProps::new();
+    b_rep_g_prop::volume_properties_shape_gprops_bool3(
+        &step_shape,
+        &mut step_vol_props,
+        true,
+        false,
+        false,
+    );
+    let step_volume = step_vol_props.mass();
+
+    eprintln!("STEP area: {:.6} mm²  volume: {:.6} mm³", step_area, step_volume);
+
     // Compute STL bounding box and max dimension
     let mut bb_min = [f64::MAX; 3];
     let mut bb_max = [f64::MIN; 3];
@@ -89,6 +111,39 @@ fn main() {
     let max_dimension = extents[0].max(extents[1]).max(extents[2]);
     eprintln!("Bounding box: {:.6} x {:.6} x {:.6}", extents[0], extents[1], extents[2]);
     eprintln!("Max dimension: {:.6}", max_dimension);
+
+    // Compute STL surface area and volume
+    // Volume via signed tetrahedra method (each triangle forms a tet with the origin)
+    let mut stl_area = 0.0_f64;
+    let mut stl_volume = 0.0_f64;
+
+    for i in 1..=num_triangles {
+        let triangle = tri.triangle(i);
+        let mut n1 = 0_i32;
+        let mut n2 = 0_i32;
+        let mut n3 = 0_i32;
+        triangle.get(&mut n1, &mut n2, &mut n3);
+        let p1 = tri.node(n1);
+        let p2 = tri.node(n2);
+        let p3 = tri.node(n3);
+
+        // Triangle area = 0.5 * |cross(p2-p1, p3-p1)|
+        let e1 = [p2.x() - p1.x(), p2.y() - p1.y(), p2.z() - p1.z()];
+        let e2 = [p3.x() - p1.x(), p3.y() - p1.y(), p3.z() - p1.z()];
+        let cx = e1[1] * e2[2] - e1[2] * e2[1];
+        let cy = e1[2] * e2[0] - e1[0] * e2[2];
+        let cz = e1[0] * e2[1] - e1[1] * e2[0];
+        stl_area += (cx * cx + cy * cy + cz * cz).sqrt() * 0.5;
+
+        // Signed volume contribution = (1/6) * p1 . (p2 x p3)
+        let cross_x = p2.y() * p3.z() - p2.z() * p3.y();
+        let cross_y = p2.z() * p3.x() - p2.x() * p3.z();
+        let cross_z = p2.x() * p3.y() - p2.y() * p3.x();
+        stl_volume += (p1.x() * cross_x + p1.y() * cross_y + p1.z() * cross_z) / 6.0;
+    }
+    stl_volume = stl_volume.abs();
+
+    eprintln!("STL  area: {:.6} mm\u{00b2}  volume: {:.6} mm\u{00b3}", stl_area, stl_volume);
 
     let min_distance_to_step = |pt: &gp::Pnt| -> f64 {
         let mut vertex = b_rep_builder_api::MakeVertex::new_pnt(pt);
@@ -271,9 +326,10 @@ fn main() {
     );
 
     // Print tab-separated values to stdout for scripting:
-    // vtx_max  vtx_avg  ctr_max  ctr_avg  max_dimension  ang_max  ang_avg
+    // vtx_max  vtx_avg  ctr_max  ctr_avg  max_dimension  ang_max  ang_avg  step_area  step_vol  stl_area  stl_vol
     println!(
-        "{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6}\t{:.4}\t{:.4}",
-        vtx_max_dist, vtx_avg_dist, ctr_max_dist, ctr_avg_dist, max_dimension, ang_max, ang_avg
+        "{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}",
+        vtx_max_dist, vtx_avg_dist, ctr_max_dist, ctr_avg_dist, max_dimension, ang_max, ang_avg,
+        step_area, step_volume, stl_area, stl_volume
     );
 }

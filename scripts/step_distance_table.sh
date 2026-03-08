@@ -13,10 +13,10 @@ BINARY="$PROJECT_DIR/target/release/step-measure-tolerance"
 echo "Building step-measure-tolerance (release)..." >&2
 cargo build --release --bin step-measure-tolerance --manifest-path "$PROJECT_DIR/Cargo.toml" 2>&1 | tail -1 >&2
 
-ROW_FMT="%-40s %12s %12s %12s %12s %10s %10s %10s %8s %8s\n"
+ROW_FMT="%-40s %12s %12s %12s %12s %10s %10s %10s %8s %8s %10s %10s %10s %10s\n"
 
 print_header() {
-    printf "$ROW_FMT" "Test Case" "Vtx Max mm" "Vtx Avg mm" "Ctr Max mm" "Ctr Avg mm" "Max Dim" "Ang Max °" "Ang Avg °" "Nodes" "Faces"
+    printf "$ROW_FMT" "Test Case" "Vtx Max mm" "Vtx Avg mm" "Ctr Max mm" "Ctr Avg mm" "Max Dim" "Ang Max \u00b0" "Ang Avg \u00b0" "Nodes" "Faces" "STEP Area" "STEP Vol" "STL Area" "STL Vol"
     print_sep
 }
 
@@ -31,7 +31,11 @@ print_sep() {
         "$(printf '%0.s-' {1..10})" \
         "$(printf '%0.s-' {1..10})" \
         "$(printf '%0.s-' {1..8})" \
-        "$(printf '%0.s-' {1..8})"
+        "$(printf '%0.s-' {1..8})" \
+        "$(printf '%0.s-' {1..10})" \
+        "$(printf '%0.s-' {1..10})" \
+        "$(printf '%0.s-' {1..10})" \
+        "$(printf '%0.s-' {1..10})"
 }
 
 # Format vertex distance (mm, 6 decimal places)
@@ -65,7 +69,7 @@ flush_groups() {
             local cm=$(fmt_ctr "${group_ctr_max[$g]}")
             local am=$(fmt_ang "${group_ang_max[$g]}")
             local aa=$(fmt_ang "${group_ang_avg[$g]}")
-            printf "$ROW_FMT" "  ** MAX ($g) **" "$vm" "$va" "$cm" "$ca" "" "$am" "$aa" "" ""
+            printf "$ROW_FMT" "  ** MAX ($g) **" "$vm" "$va" "$cm" "$ca" "" "$am" "$aa" "" "" "" "" "" ""
         done
     fi
     group_vtx_max=()
@@ -121,12 +125,13 @@ for stl_file in "${stl_files[@]}"; do
     # Run tool, capture both stdout and stderr
     diag_file=$(mktemp)
     output=$("$BINARY" "$stl_file" "$step_file" 2>"$diag_file") || {
-        printf "$ROW_FMT" "$base" "ERROR" "" "" "" "" "" "" "" ""
+        printf "$ROW_FMT" "$base" "ERROR" "" "" "" "" "" "" "" "" "" "" "" ""
+
         rm -f "$diag_file"
         continue
     }
 
-    # Parse tab-separated stdout: vtx_max vtx_avg ctr_max ctr_avg max_dim ang_max ang_avg
+    # Parse tab-separated stdout: vtx_max vtx_avg ctr_max ctr_avg max_dim ang_max ang_avg step_area step_vol stl_area stl_vol
     vtx_max_raw=$(echo "$output" | cut -f1)
     vtx_avg_raw=$(echo "$output" | cut -f2)
     ctr_max_raw=$(echo "$output" | cut -f3)
@@ -134,6 +139,10 @@ for stl_file in "${stl_files[@]}"; do
     max_dim=$(echo "$output" | cut -f5)
     ang_max_raw=$(echo "$output" | cut -f6)
     ang_avg_raw=$(echo "$output" | cut -f7)
+    step_area_raw=$(echo "$output" | cut -f8)
+    step_vol_raw=$(echo "$output" | cut -f9)
+    stl_area_raw=$(echo "$output" | cut -f10)
+    stl_vol_raw=$(echo "$output" | cut -f11)
 
     # Parse stderr for node/face counts
     nodes=$(grep "^STL:" "$diag_file" | sed 's/STL: \([0-9]*\) nodes.*/\1/')
@@ -147,10 +156,15 @@ for stl_file in "${stl_files[@]}"; do
     ca=$(fmt_ctr "$ctr_avg_raw")
     am=$(fmt_ang "$ang_max_raw")
     aa=$(fmt_ang "$ang_avg_raw")
+    sa=$(fmt_ctr "$step_area_raw")
+    sv=$(fmt_ctr "$step_vol_raw")
+    la=$(fmt_ctr "$stl_area_raw")
+    lv=$(fmt_ctr "$stl_vol_raw")
 
-    printf "$ROW_FMT" "$base" "$vm" "$va" "$cm" "$ca" "$max_dim" "$am" "$aa" "$nodes" "$faces"
+    printf "$ROW_FMT" "$base" "$vm" "$va" "$cm" "$ca" "$max_dim" "$am" "$aa" "$nodes" "$faces" "$sa" "$sv" "$la" "$lv"
 
     update_group_max "$group" "$vtx_max_raw" "$vtx_avg_raw" "$ctr_max_raw" "$ctr_avg_raw" "$ang_max_raw" "$ang_avg_raw"
+
 done
 
 # Print final group summaries
