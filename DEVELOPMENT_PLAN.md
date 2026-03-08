@@ -559,8 +559,9 @@ For each ReconFace, construct a `TopoDS_Face` from the surface and bounding wire
   - Identify the outer wire as the group with the most edges (heuristic).
   - Create `BRepBuilderAPI_MakeFace` with the surface handle and outer wire, then add inner wires as holes.
 
-- **Cylindrical and spherical faces** use two approaches:
+- **Cylindrical and spherical faces** use three approaches:
   - **Full revolution** (all boundary edges are closed loops): UV-bounds construction via `MakeFace::new_handlegeomsurface_real5(surface, umin, umax, vmin, vmax, tol)`. UV bounds are computed from edge projections using a circular gap algorithm that handles periodicity. This automatically creates seam edges for proper B-Rep topology.
+  - **Spherical faces with tangent closed-loop edges** (e.g., pill/capsule hemispheres): The boundary circles may pass through or near the sphere's UV singularities (poles at V=±π/2 where U is undefined). When any tangent boundary circle passes within 45° of either pole (detected via `ProjectPointOnCurve` + chord-length formula), the sphere surface is recreated with its Z-axis aligned to the cylinder axis. This is safe because the `has_tangent_closed_loops` invariant guarantees all tangent edges share one unique cylinder axis — two tangent circles from different cylinder axes would intersect on the sphere, creating vertices and making `all_closed_loops` false. The hemisphere is selected by projecting a mesh face centroid onto the oriented surface and checking the V-sign. UV-bounds [0,2π] × [0,π/2] or [0,2π] × [-π/2,0] then work correctly since the boundary circle becomes an iso-V curve.
   - **Partial revolution** (open edges with vertices): Wire-based construction with pre-set pcurves. Before building the wire, `BRep_Builder::update_edge` sets `Geom2d_Line` pcurves on each IntSS edge for the periodic surface, mapping the edge's 3D parameter range to (u(t), v(t)) in surface UV space. This ensures MakeFace selects the correct arc and shares edges with adjacent planar faces for sewing.
   - Full spheres (no edges) use `MakeFace::new_handlegeomsurface_real(surface, tolerance)` with natural bounds.
 
@@ -683,6 +684,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Revisit stage 3.2: Tangency detection correctly identifies 8 tangent edges on part_rounded_cube_10_r2 (cylinder-plane tangencies at fillet boundaries). Detection algorithm using analytical surface normals at sampled boundary points works well. No changes needed to the 2° threshold.
 - [x] Revisit stage 3.3: Implement tangent edge curve computation. For tangent edges, construct curves analytically rather than using `GeomAPI_IntSS` (which fails for tangent surfaces). Plane-cylinder tangencies produce lines parallel to the cylinder axis at the analytically-computed tangent point. Also fix `MakeEdge` in stage 3.4: use `new_handlegeomcurve_vertex2_real2` with explicit parameter values (instead of relying on OCCT's vertex-to-curve projection which fails when mesh vertex tolerance exceeds OCCT's default precision of 1e-7mm), and set vertex tolerance to `vertex_tolerance_mm` via `BRep_Builder::update_vertex_vertex_real`. This unblocks part_rounded_cube_10_r2 — all 10 faces (6 planar + 4 cylindrical) reconstruct correctly with volume matching STEP reference to 2.19e-7 relative difference.
 - [x] Implement sphere-cylinder tangent edge curves: great circle arcs on the sphere surface, using sphere center/radius (not cylinder parameters, which may be imprecise). Adaptive per-vertex tolerance in MakeEdge accommodates surface fit imprecision. Unblocks rounded_cube_10_r2_coarse full pipeline — STEP file exports with all 94 faces (76 planar + 10 cylindrical + 8 spherical), though many faces have BRepCheck warnings due to imprecise cylinder fits.
+- [x] Implement closed-loop sphere-cylinder tangent edge curves and pole-safe hemisphere face construction for pill/capsule shapes. Closed-loop tangent circles are constructed as full `Geom_Circle` curves. When boundary circles pass within 45° of a sphere pole, the sphere surface is reoriented to align with the cylinder axis, making UV-bounds construction work correctly. Unblocks pill_coarse.stl and pill_fine.stl — STEP output matches reference to <1e-7 relative volume difference.
 - [ ] Consider implementing stage 2.7 (surface refitting) if stage 3 reconstruction reveals boundary accuracy problems from incorrect face-to-surface assignments.
 
 ### Stage 2 Extensions: Additional Surface Types
@@ -728,6 +730,8 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 || Ball on Cylinder (ccad) | 764 triangles | 1 sphere + 1 cylinder + 1 plane | ✓ Stage 4.1 (STEP output) |
 || Sphere (onshape) | Tessellated sphere | 1 sphere | ✓ Stage 4.1 (STEP output) |
 || Dome Hemisphere (onshape) | Fine tessellation | 1 sphere + 1 plane | ✗ Stage 3.5 (sewing failure) |
+|| Pill coarse (onshape) | Capsule (coarse) | 1 cylinder + 2 spheres | ✓ Stage 4.1 (STEP output) |
+|| Pill fine (onshape) | Capsule (fine) | 1 cylinder + 2 spheres | ✓ Stage 4.1 (STEP output) |
 || Plate with Hole (onshape) | 128 triangles | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
 || Plate with Hole low (fusion) | Low tessellation | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
 || Plate with Hole med (fusion) | Medium tessellation | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |

@@ -137,6 +137,7 @@ impl std::fmt::Debug for Stage3Output {
 pub enum Stage3Error {
     NotImplemented(String),
     AdjacencyError(String),
+    EdgeCurveError(String),
     Compare(Stage3CompareError),
 }
 
@@ -145,6 +146,7 @@ impl Display for Stage3Error {
         match self {
             Stage3Error::NotImplemented(stage) => write!(f, "stage {stage} not yet implemented"),
             Stage3Error::AdjacencyError(msg) => write!(f, "stage 3.1 adjacency error: {msg}"),
+            Stage3Error::EdgeCurveError(msg) => write!(f, "stage 3.3 edge curve error: {msg}"),
             Stage3Error::Compare(e) => write!(f, "stage 3.{} compare: {e}", e.substage),
         }
     }
@@ -1270,14 +1272,6 @@ fn compute_tangent_edge_curve(
     stage2: &Stage2Output,
     config: &Config,
 ) -> Result<(), String> {
-    // Both vertex endpoints must exist for tangent edges
-    if edge.vertex_indices[0] == usize::MAX || edge.vertex_indices[1] == usize::MAX {
-        return Err("tangent edge has no vertex endpoints".to_string());
-    }
-
-    let v0 = &vertices[edge.vertex_indices[0]];
-    let v1 = &vertices[edge.vertex_indices[1]];
-
     let [fi0, fi1] = edge.face_indices;
     let ss0 = &stage2.selected_surfaces[face_descriptors[fi0].selected_surface_idx];
     let ss1 = &stage2.selected_surfaces[face_descriptors[fi1].selected_surface_idx];
@@ -1289,11 +1283,27 @@ fn compute_tangent_edge_curve(
             | (SelectedSurface::Cylindrical(_), SelectedSurface::Spherical(_))
     );
 
+    let is_closed_loop = edge.vertex_indices[0] == usize::MAX || edge.vertex_indices[1] == usize::MAX;
+
     if has_sphere_cylinder {
+        if is_closed_loop {
+            return compute_tangent_edge_curve_sphere_cylinder_closed(
+                edge, ss0, ss1, stage2, config,
+            );
+        }
+        let v0 = &vertices[edge.vertex_indices[0]];
+        let v1 = &vertices[edge.vertex_indices[1]];
         return compute_tangent_edge_curve_sphere_cylinder(
             edge, v0, v1, ss0, ss1, stage2, config,
         );
     }
+
+    // Non-sphere-cylinder tangent edges require vertex endpoints
+    if is_closed_loop {
+        return Err("tangent edge has no vertex endpoints".to_string());
+    }
+    let v0 = &vertices[edge.vertex_indices[0]];
+    let v1 = &vertices[edge.vertex_indices[1]];
 
     // For plane-cylinder, cylinder-cylinder, and fallback cases: construct a line
     compute_tangent_edge_curve_line(edge, v0, v1, ss0, ss1, stage2, config)
@@ -1381,6 +1391,55 @@ fn compute_tangent_edge_curve_line(
     };
 
     let trimmed = geom::TrimmedCurve::new_handlegeomcurve_real2(&line_handle, t_lo, t_hi);
+    let trimmed_handle = geom::TrimmedCurve::to_handle(trimmed).to_handle_curve();
+
+    validate_tangent_curve(edge, &trimmed_handle, stage2, config)?;
+    edge.curve_3d = Some(trimmed_handle);
+    Ok(())
+}
+
+
+/// Construct a full-circle tangent edge curve for a closed-loop sphere-cylinder tangency.
+///
+/// This handles the case where a sphere meets a cylinder with no corner vertices
+/// (e.g., a pill/capsule shape where hemispherical caps meet a cylinder body).
+/// The tangent curve is a full circle perpendicular to the cylinder axis,
+/// centered at the sphere center, with the sphere's radius.
+fn compute_tangent_edge_curve_sphere_cylinder_closed(
+    edge: &mut ReconEdge,
+    ss0: &SelectedSurface,
+    ss1: &SelectedSurface,
+    stage2: &Stage2Output,
+    config: &Config,
+) -> Result<(), String> {
+    // Extract sphere and cylinder hypotheses
+    let (sph_idx, cyl_idx) = match (ss0, ss1) {
+        (SelectedSurface::Spherical(s), SelectedSurface::Cylindrical(c)) => (*s, *c),
+        (SelectedSurface::Cylindrical(c), SelectedSurface::Spherical(s)) => (*s, *c),
+        _ => return Err("not a sphere-cylinder pair".to_string()),
+    };
+    let sph = &stage2.spherical_hypotheses[sph_idx];
+    let cyl = &stage2.cylindrical_hypotheses[cyl_idx];
+    let center = sph.center;
+    let radius = sph.radius;
+
+    // The circle plane normal is the cylinder axis direction.
+    // For a tangent closed loop, the circle lies in a plane perpendicular
+    // to the cylinder axis at the sphere center.
+    let normal = cyl.axis_direction;
+
+    let center_pnt = gp::Pnt::new_real3(center[0], center[1], center[2]);
+    let normal_dir = gp::Dir::new_real3(normal[0], normal[1], normal[2]);
+    let ax2 = gp::Ax2::new_pnt_dir(&center_pnt, &normal_dir);
+    let circle = geom::Circle::new_ax2_real(&ax2, radius);
+    let circle_handle = geom::Circle::to_handle(circle).to_handle_curve();
+
+    // For a closed loop, use the full circle parameter range
+    let curve = circle_handle.get();
+    let fp = curve.first_parameter();
+    let lp = curve.last_parameter();
+
+    let trimmed = geom::TrimmedCurve::new_handlegeomcurve_real2(&circle_handle, fp, lp);
     let trimmed_handle = geom::TrimmedCurve::to_handle(trimmed).to_handle_curve();
 
     validate_tangent_curve(edge, &trimmed_handle, stage2, config)?;
@@ -1660,7 +1719,7 @@ fn compute_edge_curves_all(
     }
 
     if fail_count > 0 {
-        return Err(Stage3Error::AdjacencyError(format!(
+        return Err(Stage3Error::EdgeCurveError(format!(
             "{fail_count} edge curves failed to compute"
         )));
     }
@@ -2089,7 +2148,164 @@ fn create_periodic_face(
         e.vertex_indices[0] == usize::MAX && e.vertex_indices[1] == usize::MAX
     });
 
-    let make_face = if all_closed_loops && !fd.edge_indices.is_empty() {
+    // For spherical faces with tangent closed-loop edges, the boundary circles
+    // may pass through the sphere's UV singularities (poles). UV-bounds construction
+    // won't work. Instead, project the 3D curves onto the surface to get proper
+    // pcurves, then use wire-based construction.
+    let has_tangent_closed_loops = matches!(surface, SelectedSurface::Spherical(_))
+        && all_closed_loops
+        && !fd.edge_indices.is_empty()
+        && fd.edge_indices.iter().any(|&ei| output.edges[ei].tangent);
+
+    let make_face = if has_tangent_closed_loops {
+        // Tangent sphere with all-closed-loop edges (e.g., pill/capsule).
+        // The boundary circles may pass through or near the sphere's UV
+        // singularities (poles). When within 45°, UV-bounds on the original
+        // sphere creates wrong face regions (boundaries are meridians, not
+        // the tangent circles).
+        //
+        // It's safe to reorient the sphere to align with the cylinder axis
+        // here because `has_tangent_closed_loops` requires ALL edges to be
+        // closed loops. Two tangent circles from cylinders with different
+        // axes would intersect on the sphere (creating vertices), making
+        // `all_closed_loops` = False. So all tangent edges here share one
+        // unique cylinder axis.
+        let sph_idx = match surface {
+            SelectedSurface::Spherical(i) => *i,
+            _ => unreachable!(),
+        };
+        let sph = &output.stage2.spherical_hypotheses[sph_idx];
+        let sphere_z = [0.0_f64, 0.0, 1.0]; // sphere axis is always Z-up
+        let cos_45 = std::f64::consts::FRAC_PI_4.cos(); // cos(45°) ≈ 0.707
+
+        // Check if any tangent edge circle comes within 45° of a pole
+        let mut near_pole = false;
+        for &ei in &fd.edge_indices {
+            let edge = &output.edges[ei];
+            if !edge.tangent { continue; }
+            let curve_handle = edge.curve_3d.as_ref().unwrap();
+            for pole_sign in &[1.0_f64, -1.0] {
+                let pole = gp::Pnt::new_real3(
+                    sph.center[0] + sph.radius * pole_sign * sphere_z[0],
+                    sph.center[1] + sph.radius * pole_sign * sphere_z[1],
+                    sph.center[2] + sph.radius * pole_sign * sphere_z[2],
+                );
+                let proj = geom_api::ProjectPointOnCurve::new_pnt_handlegeomcurve(
+                    &pole, curve_handle,
+                );
+                if proj.nb_points() > 0 {
+                    let dist = proj.lower_distance();
+                    let cos_angle = 1.0 - dist * dist / (2.0 * sph.radius * sph.radius);
+                    if cos_angle > cos_45 {
+                        near_pole = true;
+                    }
+                }
+            }
+        }
+
+        if !near_pole {
+            // Circle doesn't pass near poles — UV-bounds with full U range works
+            let mf = b_rep_builder_api::MakeFace::new_handlegeomsurface_real5(
+                &fd.surface, umin, umax, vmin, vmax, config.vertex_tolerance_mm,
+            );
+            if !mf.is_done() {
+                return Err(Stage3Error::AdjacencyError(format!(
+                    "MakeFace (UV bounds) failed for tangent sphere face {fi}: {:?}",
+                    mf.error(),
+                )));
+            }
+            if config.verbose {
+                let area = compute_face_area(&mf);
+                eprintln!("  Face {fi}: tangent sphere UV-bounds (no pole split), area={area:.4} mm\u{b2}");
+            }
+            mf
+        } else {
+            // Circle passes within 45° of a pole. Reorient the sphere surface
+            // so its Z-axis aligns with the cylinder axis. This makes the
+            // boundary circles into iso-V curves, allowing UV-bounds
+            // construction to work correctly.
+            let cyl_axis = {
+                let mut axis = None;
+                for &ei in &fd.edge_indices {
+                    let edge = &output.edges[ei];
+                    if !edge.tangent { continue; }
+                    for &adj_fi in &edge.face_indices {
+                        if adj_fi == fi { continue; }
+                        let adj_fd = &output.face_descriptors[adj_fi];
+                        let adj_ss = &output.stage2.selected_surfaces[adj_fd.selected_surface_idx];
+                        if let SelectedSurface::Cylindrical(idx) = adj_ss {
+                            axis = Some(output.stage2.cylindrical_hypotheses[*idx].axis_direction);
+                            break;
+                        }
+                    }
+                    if axis.is_some() { break; }
+                }
+                axis.ok_or_else(|| Stage3Error::AdjacencyError(format!(
+                    "tangent sphere face {fi} has no adjacent cylinder"
+                )))?
+            };
+
+            // Recreate the sphere surface with its axis aligned to the cylinder axis
+            let origin = gp::Pnt::new_real3(sph.center[0], sph.center[1], sph.center[2]);
+            let dir = gp::Dir::new_real3(cyl_axis[0], cyl_axis[1], cyl_axis[2]);
+            let ax3 = gp::Ax3::new_pnt_dir(&origin, &dir);
+            let oriented_sphere = geom::SphericalSurface::new_ax3_real(&ax3, sph.radius);
+            let oriented_surface = geom::SphericalSurface::to_handle(oriented_sphere).to_handle_surface();
+
+            // Determine which hemisphere the face occupies by projecting a mesh
+            // centroid onto the oriented surface and checking the V sign.
+            let sample_face = &output.stage2.mesh.faces[sph.faces[0]];
+            let sv0 = &output.stage2.mesh.vertices[sample_face.vertex_indices[0]];
+            let sv1 = &output.stage2.mesh.vertices[sample_face.vertex_indices[1]];
+            let sv2 = &output.stage2.mesh.vertices[sample_face.vertex_indices[2]];
+            let sc = gp::Pnt::new_real3(
+                (sv0.x + sv1.x + sv2.x) / 3.0,
+                (sv0.y + sv1.y + sv2.y) / 3.0,
+                (sv0.z + sv1.z + sv2.z) / 3.0,
+            );
+            let sample_proj = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
+                &sc, &oriented_surface, extrema::ExtAlgo::Grad,
+            );
+            let v_side = if sample_proj.nb_points() > 0 {
+                let mut _u = 0.0;
+                let mut v = 0.0;
+                sample_proj.lower_distance_parameters(&mut _u, &mut v);
+                v
+            } else {
+                1.0 // default to positive hemisphere
+            };
+
+            let half_pi = std::f64::consts::FRAC_PI_2;
+            let two_pi = 2.0 * std::f64::consts::PI;
+            let (v_lo, v_hi) = if v_side > 0.0 {
+                (0.0, half_pi)
+            } else {
+                (-half_pi, 0.0)
+            };
+
+            // Use UV-bounds construction on the oriented surface
+            let mf = b_rep_builder_api::MakeFace::new_handlegeomsurface_real5(
+                &oriented_surface,
+                0.0,
+                two_pi,
+                v_lo,
+                v_hi,
+                config.vertex_tolerance_mm,
+            );
+            if !mf.is_done() {
+                return Err(Stage3Error::AdjacencyError(format!(
+                    "MakeFace (UV bounds) failed for oriented sphere face {fi}: {:?}",
+                    mf.error(),
+                )));
+            }
+
+            if config.verbose {
+                let area = compute_face_area(&mf);
+                eprintln!("  Face {fi}: oriented sphere UV-bounds, u=[0.0000, {two_pi:.4}], v=[{v_lo:.4}, {v_hi:.4}], area={area:.4} mm\u{b2}");
+            }
+            mf
+        }
+    } else if all_closed_loops && !fd.edge_indices.is_empty() {
         // Full-revolution periodic face: use UV-bounds construction.
         // This automatically creates seam edges needed for proper pcurves.
         let mf = b_rep_builder_api::MakeFace::new_handlegeomsurface_real5(
@@ -3248,6 +3464,7 @@ pub fn stage3(config: &Config, input: Stage2Output) -> Result<Stage3Output, Stag
 
     // Stage 3.2: Detect tangency relationships along edges
     let output = detect_tangency(output, config);
+
 
     if !config.stage.at_least(3, 3) {
         return Ok(output);
