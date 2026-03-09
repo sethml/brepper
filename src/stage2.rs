@@ -300,6 +300,7 @@ fn all_vertices_within_tolerance(
 fn deduce_planar_hypotheses(
     mesh: &mut ConnectedMesh,
     vertex_tol: f64,
+    verbosity: u8,
 ) -> Vec<PlanarHypothesis> {
     let num_faces = mesh.faces.len();
     let mut hypotheses: Vec<PlanarHypothesis> = Vec::new();
@@ -333,6 +334,21 @@ fn deduce_planar_hypotheses(
 
         mesh.faces[fi].planar_hypothesis = hi;
 
+        // Level-3 trace: print seed face info
+        if verbosity >= 3 {
+            eprintln!(
+                "[BFS-plane hi={}] Seed fi={}: normal=[{:.4},{:.4},{:.4}], d={:.4}",
+                hi, fi,
+                current_normal[0], current_normal[1], current_normal[2],
+                current_distance,
+            );
+            for vi_idx in 0..vc {
+                let vi = mesh.faces[fi].vertex_indices[vi_idx];
+                let v = &mesh.vertices[vi];
+                eprintln!("  seed vertex vi={}: [{:.4},{:.4},{:.4}]", vi, v.x, v.y, v.z);
+            }
+        }
+
         // BFS expansion
         let mut queue = VecDeque::new();
         queue.push_back(fi);
@@ -355,6 +371,7 @@ fn deduce_planar_hypotheses(
                 let nvi = mesh.faces[ni].vertex_indices;
                 let mut all_ok = true;
                 let mut any_far = false;
+                let mut vtx_err_max = 0.0_f64;
                 for &vi in &nvi[..nvc] {
                     let d = vertex_to_plane_distance(
                         &mesh.vertices[vi],
@@ -362,6 +379,7 @@ fn deduce_planar_hypotheses(
                         current_distance,
                     );
                     let abs_d = d.abs();
+                    vtx_err_max = vtx_err_max.max(abs_d);
                     if abs_d > vertex_tol {
                         all_ok = false;
                         if abs_d > REFIT_SKIP_MULTIPLIER * vertex_tol {
@@ -373,6 +391,12 @@ fn deduce_planar_hypotheses(
 
                 // Skip if any vertex is too far for re-fitting to help
                 if any_far {
+                    if verbosity >= 3 {
+                        eprintln!(
+                            "  [BFS-plane] from fi={} try ni={}: vtx_err_max={:.2e} > REFIT_SKIP*tol={:.2e} → REJECT(too far)",
+                            current_fi, ni, vtx_err_max, REFIT_SKIP_MULTIPLIER * vertex_tol,
+                        );
+                    }
                     continue;
                 }
 
@@ -400,12 +424,31 @@ fn deduce_planar_hypotheses(
                         vertex_tol,
                         &mesh.vertices,
                     ) {
+                        if verbosity >= 3 {
+                            eprintln!(
+                                "  [BFS-plane] from fi={} try ni={}: vtx_err_max={:.2e} (needs refit) → REJECT(refit failed)",
+                                current_fi, ni, vtx_err_max,
+                            );
+                        }
                         continue;
+                    }
+
+                    if verbosity >= 3 {
+                        eprintln!(
+                            "  [BFS-plane] from fi={} try ni={}: vtx_err_max={:.2e} (refit ok, new_normal=[{:.4},{:.4},{:.4}] d={:.4}) → ACCEPT[refit]",
+                            current_fi, ni, vtx_err_max,
+                            new_normal[0], new_normal[1], new_normal[2], new_distance,
+                        );
                     }
 
                     // Accept re-fit
                     current_normal = new_normal;
                     current_distance = new_distance;
+                } else if verbosity >= 3 {
+                    eprintln!(
+                        "  [BFS-plane] from fi={} try ni={}: vtx_err_max={:.2e} ≤ tol={:.2e} → ACCEPT",
+                        current_fi, ni, vtx_err_max, vertex_tol,
+                    );
                 }
 
                 // Accept this face into the hypothesis
@@ -965,6 +1008,7 @@ fn run_cylinder_trial_bfs(
     surface_tol: f64,
     angular_tol: f64,
     best_candidate: Option<&CylinderTrialResult>,
+    verbosity: u8,
 ) -> Option<CylinderTrialResult> {
     let fi_vc = mesh.faces[seed_fi].vertex_count as usize;
     let ni_vc = mesh.faces[seed_ni].vertex_count as usize;
@@ -995,6 +1039,39 @@ fn run_cylinder_trial_bfs(
     let convex = determine_convexity(
         &mesh.faces[seed_fi], &mesh.vertices, &current_origin, &current_dir,
     );
+
+    // Level-3 trace: print seed pair info
+    if verbosity >= 3 {
+        let print_seed_face = |label: &str, sfi: usize| {
+            let svc = mesh.faces[sfi].vertex_count as usize;
+            let vis: Vec<usize> = mesh.faces[sfi].vertex_indices[..svc].to_vec();
+            let coords: Vec<String> = vis.iter().map(|&vi| {
+                let v = &mesh.vertices[vi];
+                format!("vi={}:[{:.4},{:.4},{:.4}]", vi, v.x, v.y, v.z)
+            }).collect();
+            let centroid = face_centroid(&mesh.faces[sfi], &mesh.vertices);
+            let cen_err = vertex_to_cylinder_distance(
+                &MeshVertex::from_xyz(centroid[0], centroid[1], centroid[2]),
+                &current_origin, &current_dir, current_radius,
+            ).abs();
+            eprintln!(
+                "  {} fi={}: {}v centroid=[{:.4},{:.4},{:.4}] cen_err={:.2e}  vertices: {}",
+                label, sfi, svc,
+                centroid[0], centroid[1], centroid[2], cen_err,
+                coords.join(" "),
+            );
+        };
+        eprintln!(
+            "[BFS-cyl] Trial seed=({},{}) → r={:.6}, origin=[{:.4},{:.4},{:.4}], dir=[{:.4},{:.4},{:.4}], {}",
+            seed_fi, seed_ni,
+            current_radius,
+            current_origin[0], current_origin[1], current_origin[2],
+            current_dir[0], current_dir[1], current_dir[2],
+            if convex { "convex" } else { "concave" },
+        );
+        print_seed_face("seed_fi", seed_fi);
+        print_seed_face("seed_ni", seed_ni);
+    }
 
     // Track claimed faces in this trial (using a HashSet, not mesh mutation)
     let mut trial_claimed: HashSet<usize> = HashSet::new();
@@ -1029,6 +1106,14 @@ fn run_cylinder_trial_bfs(
                 &mesh.faces[cni], &mesh.vertices, &current_origin, &current_dir,
             );
             if cni_convex != convex {
+                if verbosity >= 3 {
+                    eprintln!(
+                        "  [BFS-cyl] from fi={} try cni={}: convexity mismatch ({} vs {}) → REJECT(convexity)",
+                        current_fi, cni,
+                        if cni_convex { "convex" } else { "concave" },
+                        if convex { "convex" } else { "concave" },
+                    );
+                }
                 continue;
             }
 
@@ -1038,6 +1123,8 @@ fn run_cylinder_trial_bfs(
                 let cni_vc2 = mesh.faces[cni].vertex_count as usize;
                 let cni_neighbors = mesh.faces[cni].neighbors;
                 let mut angular_reject = false;
+                let mut worst_angle_deg = 0.0_f64;
+                let mut worst_adj = usize::MAX;
                 for &adj in &cni_neighbors[..cni_vc2] {
                     if adj < 0 { continue; }
                     let adj = adj as usize;
@@ -1046,13 +1133,26 @@ fn run_cylinder_trial_bfs(
                     if !trial_claimed.contains(&adj) { continue; }
                     if let Some(n_adj) = mesh.faces[adj].normal {
                         let cos_a = dot3(&n_adj, &n_cni).clamp(-1.0, 1.0);
-                        if cos_a.acos() > angular_tol {
+                        let angle = cos_a.acos();
+                        if angle > worst_angle_deg.to_radians() {
+                            worst_angle_deg = angle.to_degrees();
+                            worst_adj = adj;
+                        }
+                        if angle > angular_tol {
                             angular_reject = true;
                             break;
                         }
                     }
                 }
-                if angular_reject { continue; }
+                if angular_reject {
+                    if verbosity >= 3 {
+                        eprintln!(
+                            "  [BFS-cyl] from fi={} try cni={}: angular {:.2}° > tol {:.2}° (adj fi={}) → REJECT(angular)",
+                            current_fi, cni, worst_angle_deg, angular_tol.to_degrees(), worst_adj,
+                        );
+                    }
+                    continue;
+                }
             }
 
             // Vertex distance check
@@ -1060,6 +1160,7 @@ fn run_cylinder_trial_bfs(
             let cni_vi = mesh.faces[cni].vertex_indices;
             let mut all_ok = true;
             let mut any_far = false;
+            let mut vtx_err_max = 0.0_f64;
             for &vi in &cni_vi[..cni_vc] {
                 let d = vertex_to_cylinder_distance(
                     &mesh.vertices[vi],
@@ -1067,6 +1168,7 @@ fn run_cylinder_trial_bfs(
                     &current_dir,
                     current_radius,
                 ).abs();
+                vtx_err_max = vtx_err_max.max(d);
                 if d > vertex_tol {
                     all_ok = false;
                     if d > REFIT_SKIP_MULTIPLIER * vertex_tol {
@@ -1077,6 +1179,12 @@ fn run_cylinder_trial_bfs(
             }
 
             if any_far {
+                if verbosity >= 3 {
+                    eprintln!(
+                        "  [BFS-cyl] from fi={} try cni={}: vtx_err_max={:.2e} > REFIT_SKIP*tol={:.2e} → REJECT(too far)",
+                        current_fi, cni, vtx_err_max, REFIT_SKIP_MULTIPLIER * vertex_tol,
+                    );
+                }
                 continue;
             }
 
@@ -1087,6 +1195,12 @@ fn run_cylinder_trial_bfs(
                 &current_origin, &current_dir, current_radius,
             ).abs();
             if centroid_dist > REFIT_SKIP_MULTIPLIER * surface_tol {
+                if verbosity >= 3 {
+                    eprintln!(
+                        "  [BFS-cyl] from fi={} try cni={}: cen_err={:.2e} > REFIT_SKIP*stol={:.2e} → REJECT(centroid far)",
+                        current_fi, cni, centroid_dist, REFIT_SKIP_MULTIPLIER * surface_tol,
+                    );
+                }
                 continue;
             }
             let needs_refit = !all_ok || centroid_dist > surface_tol;
@@ -1105,13 +1219,27 @@ fn run_cylinder_trial_bfs(
                 );
                 let (new_origin, new_dir, new_radius) = match refit {
                     Some(params) => params,
-                    None => continue,
+                    None => {
+                        if verbosity >= 3 {
+                            eprintln!(
+                                "  [BFS-cyl] from fi={} try cni={}: vtx_err_max={:.2e} cen_err={:.2e} (refit degenerate) → REJECT(refit failed)",
+                                current_fi, cni, vtx_err_max, centroid_dist,
+                            );
+                        }
+                        continue;
+                    }
                 };
 
                 if !all_vertices_within_cylinder_tolerance(
                     &trial_vertices, &new_origin, &new_dir, new_radius,
                     vertex_tol, &mesh.vertices,
                 ) {
+                    if verbosity >= 3 {
+                        eprintln!(
+                            "  [BFS-cyl] from fi={} try cni={}: vtx_err_max={:.2e} cen_err={:.2e} (refit vertex check failed) → REJECT(refit tol)",
+                            current_fi, cni, vtx_err_max, centroid_dist,
+                        );
+                    }
                     continue;
                 }
 
@@ -1129,13 +1257,32 @@ fn run_cylinder_trial_bfs(
                     }
                 }
                 if !centroids_ok {
+                    if verbosity >= 3 {
+                        eprintln!(
+                            "  [BFS-cyl] from fi={} try cni={}: vtx_err_max={:.2e} cen_err={:.2e} (refit centroid check failed) → REJECT(refit centroid)",
+                            current_fi, cni, vtx_err_max, centroid_dist,
+                        );
+                    }
                     continue;
+                }
+
+                if verbosity >= 3 {
+                    eprintln!(
+                        "  [BFS-cyl] from fi={} try cni={}: vtx_err_max={:.2e} cen_err={:.2e} (refit ok → r={:.6} origin=[{:.4},{:.4},{:.4}]) → ACCEPT[refit]",
+                        current_fi, cni, vtx_err_max, centroid_dist,
+                        new_radius, new_origin[0], new_origin[1], new_origin[2],
+                    );
                 }
 
                 // Accept re-fit
                 current_origin = new_origin;
                 current_dir = new_dir;
                 current_radius = new_radius;
+            } else if verbosity >= 3 {
+                eprintln!(
+                    "  [BFS-cyl] from fi={} try cni={}: vtx_err_max={:.2e} cen_err={:.2e} → ACCEPT",
+                    current_fi, cni, vtx_err_max, centroid_dist,
+                );
             }
 
             // Accept this face
@@ -1236,6 +1383,7 @@ fn deduce_cylindrical_hypotheses(
     vertex_tol: f64,
     surface_tol: f64,
     angular_tol: f64,
+    verbosity: u8,
 ) -> Vec<CylindricalHypothesis> {
     let num_faces = mesh.faces.len();
     let mut hypotheses: Vec<CylindricalHypothesis> = Vec::new();
@@ -1304,6 +1452,7 @@ fn deduce_cylindrical_hypotheses(
                 fi, ni, mesh,
                 vertex_tol, surface_tol, angular_tol,
                 best_candidate.as_ref(),
+                verbosity,
             );
 
             if let Some(trial) = trial {
@@ -1690,6 +1839,7 @@ fn deduce_spherical_hypotheses(
     surface_tol: f64,
     angular_tol: f64,
     max_sphere_radius: f64,
+    verbosity: u8,
 ) -> Vec<SphericalHypothesis> {
     let mut hypotheses: Vec<SphericalHypothesis> = Vec::new();
 
@@ -1816,6 +1966,34 @@ fn deduce_spherical_hypotheses(
 
         let mut queue: VecDeque<usize> = surrounding.iter().copied().collect();
 
+        // Level-3 trace: print seed info
+        if verbosity >= 3 {
+            eprintln!(
+                "[BFS-sph hi={}] Seed: {} faces, center=[{:.4},{:.4},{:.4}], r={:.6}, {}",
+                hi, surrounding.len(),
+                center[0], center[1], center[2], radius,
+                if convex { "convex" } else { "concave" },
+            );
+            for &fi in &surrounding {
+                let vc = mesh.faces[fi].vertex_count as usize;
+                let vis: Vec<usize> = mesh.faces[fi].vertex_indices[..vc].to_vec();
+                let centroid = face_centroid(&mesh.faces[fi], &mesh.vertices);
+                let cen_err = vertex_to_sphere_distance(
+                    &MeshVertex::from_xyz(centroid[0], centroid[1], centroid[2]),
+                    &center, radius,
+                ).abs();
+                let coords: Vec<String> = vis.iter().map(|&vi| {
+                    let v = &mesh.vertices[vi];
+                    format!("vi={}:[{:.4},{:.4},{:.4}]", vi, v.x, v.y, v.z)
+                }).collect();
+                eprintln!(
+                    "  seed fi={}: {}v centroid=[{:.4},{:.4},{:.4}] cen_err={:.2e}  vertices: {}",
+                    fi, vc, centroid[0], centroid[1], centroid[2], cen_err,
+                    coords.join(" "),
+                );
+            }
+        }
+
         // BFS expansion
         while let Some(current_fi) = queue.pop_front() {
             let vc = mesh.faces[current_fi].vertex_count as usize;
@@ -1834,6 +2012,14 @@ fn deduce_spherical_hypotheses(
                     &mesh.faces[cni], &mesh.vertices, &current_center,
                 );
                 if cni_convex != convex {
+                    if verbosity >= 3 {
+                        eprintln!(
+                            "  [BFS-sph] from fi={} try cni={}: convexity mismatch ({} vs {}) → REJECT(convexity)",
+                            current_fi, cni,
+                            if cni_convex { "convex" } else { "concave" },
+                            if convex { "convex" } else { "concave" },
+                        );
+                    }
                     continue;
                 }
 
@@ -1843,19 +2029,34 @@ fn deduce_spherical_hypotheses(
                     let cni_vc2 = mesh.faces[cni].vertex_count as usize;
                     let cni_neighbors = mesh.faces[cni].neighbors;
                     let mut ang_reject = false;
+                    let mut worst_angle_deg = 0.0_f64;
+                    let mut worst_adj = usize::MAX;
                     for &adj in &cni_neighbors[..cni_vc2] {
                         if adj < 0 { continue; }
                         let adj = adj as usize;
                         if mesh.faces[adj].spherical_hypothesis != hi { continue; }
                         if let Some(n_adj) = mesh.faces[adj].normal {
                             let cos_a = dot3(&n_adj, &n_cni).clamp(-1.0, 1.0);
-                            if cos_a.acos() > angular_tol {
+                            let angle = cos_a.acos();
+                            if angle > worst_angle_deg.to_radians() {
+                                worst_angle_deg = angle.to_degrees();
+                                worst_adj = adj;
+                            }
+                            if angle > angular_tol {
                                 ang_reject = true;
                                 break;
                             }
                         }
                     }
-                    if ang_reject { continue; }
+                    if ang_reject {
+                        if verbosity >= 3 {
+                            eprintln!(
+                                "  [BFS-sph] from fi={} try cni={}: angular {:.2}° > tol {:.2}° (adj fi={}) → REJECT(angular)",
+                                current_fi, cni, worst_angle_deg, angular_tol.to_degrees(), worst_adj,
+                            );
+                        }
+                        continue;
+                    }
                 }
 
                 // Vertex distance check
@@ -1863,12 +2064,14 @@ fn deduce_spherical_hypotheses(
                 let cni_vi = mesh.faces[cni].vertex_indices;
                 let mut all_ok = true;
                 let mut any_far = false;
+                let mut vtx_err_max = 0.0_f64;
                 for &v in &cni_vi[..cni_vc] {
                     let d = vertex_to_sphere_distance(
                         &mesh.vertices[v],
                         &current_center,
                         current_radius,
                     ).abs();
+                    vtx_err_max = vtx_err_max.max(d);
                     if d > vertex_tol {
                         all_ok = false;
                         if d > REFIT_SKIP_MULTIPLIER * vertex_tol {
@@ -1877,7 +2080,15 @@ fn deduce_spherical_hypotheses(
                         }
                     }
                 }
-                if any_far { continue; }
+                if any_far {
+                    if verbosity >= 3 {
+                        eprintln!(
+                            "  [BFS-sph] from fi={} try cni={}: vtx_err_max={:.2e} > REFIT_SKIP*tol={:.2e} → REJECT(too far)",
+                            current_fi, cni, vtx_err_max, REFIT_SKIP_MULTIPLIER * vertex_tol,
+                        );
+                    }
+                    continue;
+                }
 
                 // Centroid validation (surface_tol check during BFS)
                 let centroid = face_centroid(&mesh.faces[cni], &mesh.vertices);
@@ -1886,6 +2097,12 @@ fn deduce_spherical_hypotheses(
                     &current_center, current_radius,
                 ).abs();
                 if centroid_dist > REFIT_SKIP_MULTIPLIER * surface_tol {
+                    if verbosity >= 3 {
+                        eprintln!(
+                            "  [BFS-sph] from fi={} try cni={}: vtx_err_max={:.2e} cen_err={:.2e} > REFIT_SKIP*stol={:.2e} → REJECT(centroid far)",
+                            current_fi, cni, vtx_err_max, centroid_dist, REFIT_SKIP_MULTIPLIER * surface_tol,
+                        );
+                    }
                     continue;
                 }
                 let needs_refit = !all_ok || centroid_dist > surface_tol;
@@ -1901,10 +2118,24 @@ fn deduce_spherical_hypotheses(
                         &trial_vertices, &mesh.vertices,
                     ) {
                         Some(params) => params,
-                        None => continue,
+                        None => {
+                            if verbosity >= 3 {
+                                eprintln!(
+                                    "  [BFS-sph] from fi={} try cni={}: vtx_err_max={:.2e} cen_err={:.2e} (refit degenerate) → REJECT(refit failed)",
+                                    current_fi, cni, vtx_err_max, centroid_dist,
+                                );
+                            }
+                            continue;
+                        }
                     };
 
                     if new_radius > max_sphere_radius {
+                        if verbosity >= 3 {
+                            eprintln!(
+                                "  [BFS-sph] from fi={} try cni={}: vtx_err_max={:.2e} cen_err={:.2e} (refit r={:.4} > max) → REJECT(radius)",
+                                current_fi, cni, vtx_err_max, centroid_dist, new_radius,
+                            );
+                        }
                         continue;
                     }
 
@@ -1912,6 +2143,12 @@ fn deduce_spherical_hypotheses(
                         &trial_vertices, &new_center, new_radius,
                         vertex_tol, &mesh.vertices,
                     ) {
+                        if verbosity >= 3 {
+                            eprintln!(
+                                "  [BFS-sph] from fi={} try cni={}: vtx_err_max={:.2e} cen_err={:.2e} (refit vertex check failed) → REJECT(refit tol)",
+                                current_fi, cni, vtx_err_max, centroid_dist,
+                            );
+                        }
                         continue;
                     }
 
@@ -1929,12 +2166,31 @@ fn deduce_spherical_hypotheses(
                         }
                     }
                     if !refit_centroid_ok {
+                        if verbosity >= 3 {
+                            eprintln!(
+                                "  [BFS-sph] from fi={} try cni={}: vtx_err_max={:.2e} cen_err={:.2e} (refit existing centroid failed) → REJECT(refit centroid)",
+                                current_fi, cni, vtx_err_max, centroid_dist,
+                            );
+                        }
                         continue;
+                    }
+
+                    if verbosity >= 3 {
+                        eprintln!(
+                            "  [BFS-sph] from fi={} try cni={}: vtx_err_max={:.2e} cen_err={:.2e} (refit ok → r={:.6} center=[{:.4},{:.4},{:.4}]) → ACCEPT[refit]",
+                            current_fi, cni, vtx_err_max, centroid_dist,
+                            new_radius, new_center[0], new_center[1], new_center[2],
+                        );
                     }
 
                     // Accept re-fit
                     current_center = new_center;
                     current_radius = new_radius;
+                } else if verbosity >= 3 {
+                    eprintln!(
+                        "  [BFS-sph] from fi={} try cni={}: vtx_err_max={:.2e} cen_err={:.2e} → ACCEPT",
+                        current_fi, cni, vtx_err_max, centroid_dist,
+                    );
                 }
 
                 // Accept this face
@@ -2322,7 +2578,7 @@ fn compare_selected_surfaces(
 /// Run stage 2: fit surface hypotheses to mesh faces and select surfaces.
 pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, Stage2Error> {
     // Stage 2.1: Deduce planar hypotheses
-    let mut planar_hypotheses = deduce_planar_hypotheses(&mut mesh, config.vertex_tolerance_mm);
+    let mut planar_hypotheses = deduce_planar_hypotheses(&mut mesh, config.vertex_tolerance_mm, config.verbosity);
 
     if !config.quiet {
         let multi_face_count = planar_hypotheses.iter().filter(|h| h.faces.len() > 1).count();
@@ -2372,6 +2628,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
     let mut cylindrical_hypotheses = deduce_cylindrical_hypotheses(
         &mut mesh, config.vertex_tolerance_mm,
         config.surface_tolerance_mm, config.angular_tolerance_rad,
+        config.verbosity,
     );
 
     if !config.quiet {
@@ -2397,7 +2654,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
                     h.axis_direction[0], h.axis_direction[1], h.axis_direction[2],
                     h.error_max, h.centroid_error_max,
                 );
-                if config.very_verbose {
+                if config.verbosity >= 2 {
                     for &fi in &h.faces {
                         let face = &mesh.faces[fi];
                         let vc = face.vertex_count as usize;
@@ -2419,7 +2676,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
                         }
                         eprintln!(
                             "    face {fi}: {vc}v centroid=[{:.4},{:.4},{:.4}] \
-normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
+Normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
                             centroid[0], centroid[1], centroid[2],
                             normal[0], normal[1], normal[2],
                             vtx_err_min, vtx_err_max, centroid_err,
@@ -2454,6 +2711,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
     let mut spherical_hypotheses = deduce_spherical_hypotheses(
         &mut mesh, &planar_hypotheses, config.vertex_tolerance_mm,
         config.surface_tolerance_mm, config.angular_tolerance_rad, max_sphere_radius,
+        config.verbosity,
     );
 
     if !config.quiet {
@@ -2477,7 +2735,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
                     h.center[0], h.center[1], h.center[2],
                     h.error_max, h.centroid_error_max,
                 );
-                if config.very_verbose {
+                if config.verbosity >= 2 {
                     for &fi in &h.faces {
                         let face = &mesh.faces[fi];
                         let vc = face.vertex_count as usize;
@@ -2648,7 +2906,7 @@ mod tests {
                 .expect("should load");
         mesh.validate_and_populate_topology().expect("should validate");
 
-        let hypotheses = deduce_planar_hypotheses(&mut mesh, 1e-5);
+        let hypotheses = deduce_planar_hypotheses(&mut mesh, 1e-5, 0);
 
         // A cube has 6 faces, each with 2 triangles
         assert_eq!(mesh.faces.len(), 12);
@@ -2702,7 +2960,7 @@ mod tests {
         ];
         let mesh = build_mesh(verts, vec![[0, 1, 2], [0, 3, 1]]);
         let mut mesh = mesh;
-        let hypotheses = deduce_planar_hypotheses(&mut mesh, 1e-5);
+        let hypotheses = deduce_planar_hypotheses(&mut mesh, 1e-5, 0);
 
         assert_eq!(
             hypotheses.len(),
@@ -2722,7 +2980,7 @@ mod tests {
         ];
         let mesh = build_mesh(verts, vec![[0, 1, 2], [0, 2, 3]]);
         let mut mesh = mesh;
-        let hypotheses = deduce_planar_hypotheses(&mut mesh, 1e-5);
+        let hypotheses = deduce_planar_hypotheses(&mut mesh, 1e-5, 0);
 
         assert_eq!(
             hypotheses.len(),
@@ -2749,10 +3007,10 @@ mod tests {
     #[test]
     fn cube_angular_tolerance_rejects_cylinder() {
         let mut mesh = load_stage1("manual/cube.stl");
-        let _planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
+        let _planar = deduce_planar_hypotheses(&mut mesh, 1e-5, 0);
         // 17.5° angular tolerance: cube faces meet at 90°, so no cylinders
         let cyls = deduce_cylindrical_hypotheses(
-            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(),
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0
         );
         assert_eq!(cyls.len(), 0, "cube should produce 0 cylinders at 17.5° angular tolerance");
     }
@@ -2760,13 +3018,13 @@ mod tests {
     #[test]
     fn cube_angular_tolerance_rejects_sphere() {
         let mut mesh = load_stage1("manual/cube.stl");
-        let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
+        let planar = deduce_planar_hypotheses(&mut mesh, 1e-5, 0);
         let _ = deduce_cylindrical_hypotheses(
-            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(),
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0
         );
         // 17.5° angular tolerance: cube faces meet at 90°, so no spheres
         let sphs = deduce_spherical_hypotheses(
-            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 100.0,
+            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 100.0, 0,
         );
         assert_eq!(sphs.len(), 0, "cube should produce 0 spheres at 17.5° angular tolerance");
     }
@@ -2774,13 +3032,13 @@ mod tests {
     #[test]
     fn cube_high_angular_tolerance_allows_sphere() {
         let mut mesh = load_stage1("manual/cube.stl");
-        let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
+        let planar = deduce_planar_hypotheses(&mut mesh, 1e-5, 0);
         let _ = deduce_cylindrical_hypotheses(
-            &mut mesh, 1e-5, 0.4, 91.0_f64.to_radians(),
+            &mut mesh, 1e-5, 0.4, 91.0_f64.to_radians(), 0
         );
         // 91° angular tolerance: exceeds 90° dihedral angle of cube
         let sphs = deduce_spherical_hypotheses(
-            &mut mesh, &planar, 1e-5, 0.4, 91.0_f64.to_radians(), 100.0,
+            &mut mesh, &planar, 1e-5, 0.4, 91.0_f64.to_radians(), 100.0, 0,
         );
         assert!(!sphs.is_empty(), "cube should produce spheres at 91° angular tolerance");
     }
@@ -2788,9 +3046,9 @@ mod tests {
     #[test]
     fn cylinder_detected_at_default_angular_tolerance() {
         let mut mesh = load_stage1("ccad/generated/simple_cylinder.stl");
-        let _planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
+        let _planar = deduce_planar_hypotheses(&mut mesh, 1e-5, 0);
         let cyls = deduce_cylindrical_hypotheses(
-            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(),
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0
         );
         assert_eq!(cyls.len(), 1, "simple cylinder should produce 1 cylinder hypothesis");
         assert!(cyls[0].convex);
@@ -2800,12 +3058,12 @@ mod tests {
     #[test]
     fn sphere_detected_at_default_angular_tolerance() {
         let mut mesh = load_stage1("ccad/generated/simple_sphere.stl");
-        let planar = deduce_planar_hypotheses(&mut mesh, 1e-5);
+        let planar = deduce_planar_hypotheses(&mut mesh, 1e-5, 0);
         let _ = deduce_cylindrical_hypotheses(
-            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(),
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0
         );
         let sphs = deduce_spherical_hypotheses(
-            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 1000.0,
+            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 1000.0, 0,
         );
         assert_eq!(sphs.len(), 1, "simple sphere should produce 1 sphere hypothesis");
         assert!(sphs[0].convex);

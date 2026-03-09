@@ -21,7 +21,7 @@ GENERAL OPTIONS:
     --vertex-tolerance=<value>  Fitting tolerance in STL units (default: 1e-5)
     --surface-tolerance=<value> Surface-to-face offset tolerance in STL units (default: 0.4)
     --angular-tolerance=<deg>   Max dihedral angle between adjacent triangles on the same surface (default: 17.5)
-    -v, --verbose            Enable verbose output
+    -v, --verbose[=LEVEL]    Verbosity level: 1 (or bare -v) = summaries, -vv or --verbose=2 = per-face details, -vvv or --verbose=3 = full BFS trace
     -q, --quiet              Suppress non-error output
     --debug                  Enable debug output and intermediate files
     --stage=<stage>          Stop after stage, e.g. 2.2 (default: 4.1). --stage=2 stops after all of stage2

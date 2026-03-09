@@ -151,9 +151,15 @@ struct CliArgs {
     #[arg(long, default_value = "17.5")]
     pub angular_tolerance: f64,
 
-    /// Enable verbose output (-v) or very verbose output (-vv).
-    #[arg(short = 'v', long, action = ArgAction::Count)]
-    pub verbosity: u8,
+    /// Increment verbosity by 1 per flag (-v = 1, -vv = 2, -vvv = 3).
+    #[arg(short = 'v', action = ArgAction::Count)]
+    pub verbose_short: u8,
+
+    /// Set verbosity to an explicit level: --verbose=1 (summaries),
+    /// --verbose=2 (per-face details), --verbose=3 (full BFS trace).
+    /// Bare --verbose sets level 1.
+    #[arg(long = "verbose", value_name = "LEVEL", default_missing_value = "1", num_args = 0..=1)]
+    pub verbose_level: Option<u8>,
 
     /// Suppress non-error output.
     #[arg(short = 'q', long)]
@@ -194,10 +200,10 @@ pub struct Config {
     pub surface_tolerance_mm: f64,
     /// Max dihedral angle (radians) between adjacent triangles on the same surface.
     pub angular_tolerance_rad: f64,
-    /// Enable verbose output.
+    /// Verbosity level (0 = quiet-ish, 1 = verbose, 2 = very verbose, 3 = BFS trace).
+    pub verbosity: u8,
+    /// Convenience: verbosity >= 1.
     pub verbose: bool,
-    /// Enable very verbose output (implies verbose).
-    pub very_verbose: bool,
     /// Suppress non-error output.
     pub quiet: bool,
     /// Enable debug output and intermediate files.
@@ -218,8 +224,8 @@ impl std::fmt::Debug for Config {
             .field("vertex_tolerance_mm", &self.vertex_tolerance_mm)
             .field("surface_tolerance_mm", &self.surface_tolerance_mm)
             .field("angular_tolerance_rad", &self.angular_tolerance_rad)
+            .field("verbosity", &self.verbosity)
             .field("verbose", &self.verbose)
-            .field("very_verbose", &self.very_verbose)
             .field("quiet", &self.quiet)
             .field("debug", &self.debug)
             .field("stage", &self.stage)
@@ -241,8 +247,8 @@ impl Config {
             vertex_tolerance_mm: args.vertex_tolerance * scale,
             surface_tolerance_mm: args.surface_tolerance * scale,
             angular_tolerance_rad: args.angular_tolerance.to_radians(),
-            verbose: args.verbosity >= 1,
-            very_verbose: args.verbosity >= 2,
+            verbosity: args.verbose_level.unwrap_or(0).max(args.verbose_short),
+            verbose: args.verbose_level.unwrap_or(0).max(args.verbose_short) >= 1,
             quiet: args.quiet,
             debug: args.debug,
             stage: args.stage.unwrap_or_default(),
