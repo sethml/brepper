@@ -484,7 +484,7 @@ fn part_rounded_cube_tangent_edges() {
     let config = config_for_stl(&stl);
     let output = run_stage3(&config);
     let tangent_count = output.edges.iter().filter(|e| e.tangent).count();
-    assert_eq!(tangent_count, 4, "part_rounded_cube should have 4 tangent edges (got {tangent_count})");
+    assert_eq!(tangent_count, 8, "part_rounded_cube should have 8 tangent edges (got {tangent_count})");
     // All edges should have curves computed (including tangent ones)
     check_all_edges_have_curves(&output);
 }
@@ -497,7 +497,7 @@ fn rounded_cube_tangent_edges() {
     let config = config_for_stl(&stl);
     let output = run_stage3(&config);
     let tangent_count = output.edges.iter().filter(|e| e.tangent).count();
-    assert_eq!(tangent_count, 40, "rounded_cube should have 40 tangent edges (got {tangent_count})");
+    assert_eq!(tangent_count, 48, "rounded_cube should have 48 tangent edges (got {tangent_count})");
     // All edges should have curves computed (including sphere-cylinder tangent ones)
     check_all_edges_have_curves(&output);
 }

@@ -245,12 +245,12 @@ A face or set of faces is cylinder fit qualified if:
             - If faces fi, n1, and n2 are cylinder fit qualified, accept this set of faces as a valid seed and perform BFS expansion on them using temporary data structures (a local face list and vertex set — do not mutate `mesh.faces[].cylindrical_hypothesis` during trials). The initial BFS queue should contain fi, n1, and n2, so we explore all of their neighbors. Each trial produces a candidate hypothesis with a face count and fitted parameters. After each trial completes with acceptance, compare against the **current best candidate** for this starting face; keep whichever has more area covered. This avoids storing all trial results.
     - If no valid (fi, n1, n2) triple was found, skip fi (leave as `UNDEDUCED` — it may be absorbed by a later face's BFS, or will remain unassigned at the end).
 - Accept the **best candidate** as a cylindrical hypothesis: create a cylindrical hypothesis, and for every face in the hypothesis, assign the face's cylindrical hypothesis field.
+- Apply **angular coverage validation** (see below) to each trial. If it fails, discard the trial.
+- Accept the **best candidate** as a cylindrical hypothesis: create a cylindrical hypothesis, and for every face in the hypothesis, assign the face's cylindrical hypothesis field.
 - After all faces have been processed, set any remaining `UNDEDUCED` faces to `NO_HYPOTHESIS`.
 
 Future work (not currently implemented - in the future we'll evaluate whether these optimizations help):
     - **Early termination** of redundant trials: during a trial BFS, if a best candidate already exists, check whether the trial is rediscovering the same cylinder. After the trial adds a face, compare its fitted cylinder parameters against the best candidate's: axis directions nearly parallel (`|a_trial · a_best| > 1 - 1e-6`), radii within `--vertex-tolerance`, and axis-to-axis distance within `--vertex-tolerance`. If parameters match AND every face accepted so far is already in the best candidate's face set, abandon the trial — it can only produce a subset of the existing best. This is the dominant optimization: on a 20-face fillet cylinder with ~3 valid seeds per face, most of the ~60 trials terminate after 2–3 faces instead of exploring all 20.
-    - Apply **angular coverage validation** (see below) to the best candidate. If it fails, discard and try the next face.
-    - If it passes, **commit** the hypothesis: write assignments to `mesh.faces[].cylindrical_hypothesis` for all member faces, and append to the hypotheses vector.
 
 **BFS expansion** (run once per trial seed):
 - Repeatedly pop a face fi from the queue and examine each neighbor ni:
@@ -262,7 +262,7 @@ Future work (not currently implemented - in the future we'll evaluate whether th
     - If accepted: add ni to the trial's face list and vertex set, push ni onto the BFS queue.
 - After BFS completes: do a final re-fit from all accumulated faces and vertices. Compute error metrics.
 
-Future work: **Angular coverage validation** (applied to the best trial for each starting face):
+**Angular coverage validation** (applied to each trial):
 
 The problem: any two non-coplanar faces fit *some* cylinder. A bogus seed that doesn't span the cylinder's circumference can grow into a small hypothesis via BFS, consuming faces that should belong to a correct hypothesis from a better seed. The angular coverage check ensures the hypothesis has genuine circumferential support — faces distributed around the cylinder, not clustered on one side.
 

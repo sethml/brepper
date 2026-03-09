@@ -1178,7 +1178,6 @@ fn perpendicular_basis(d: &[f64; 3]) -> ([f64; 3], [f64; 3]) {
 /// - Sort θ values and compute all N inter-face gaps plus the wraparound gap.
 /// - The largest gap defines the "empty arc"; span = 2π − largest_gap.
 /// - The second-largest gap must be ≤ span / 3.
-#[allow(dead_code)] // Future work per DEVELOPMENT_PLAN.md
 fn angular_coverage_valid(
     face_list: &[usize],
     axis_origin: &[f64; 3],
@@ -1283,15 +1282,32 @@ fn run_cylinder_trial_bfs(
     let mut face_list: Vec<usize> = seed_faces.to_vec();
 
     // Fit cylinder to seed faces
-    let (mut current_origin, mut current_dir, mut current_radius) =
-        fit_cylinder(&face_list, &vertex_set, &mesh.faces, &mesh.vertices)?;
-
+    let (mut current_origin, mut current_dir, mut current_radius) = match
+        fit_cylinder(&face_list, &vertex_set, &mesh.faces, &mesh.vertices)
+    {
+        Some(v) => v,
+        None => {
+            if verbosity >= 3 {
+                let seed_str: Vec<String> = seed_faces.iter().map(|f| f.to_string()).collect();
+                eprintln!("  [BFS-cyl] seed=({}) fit_cylinder returned None (degenerate geometry)", seed_str.join(","));
+            }
+            return None;
+        }
+    };
 
     // Verify seed: all vertices within tolerance
     if !all_vertices_within_cylinder_tolerance(
         &vertex_set, &current_origin, &current_dir, current_radius,
         vertex_tol, &mesh.vertices,
     ) {
+        if verbosity >= 3 {
+            let seed_str: Vec<String> = seed_faces.iter().map(|f| f.to_string()).collect();
+            let worst_dist = vertex_set.iter().map(|&vi| {
+                vertex_to_cylinder_distance(&mesh.vertices[vi], &current_origin, &current_dir, current_radius).abs()
+            }).fold(0.0_f64, f64::max);
+            eprintln!("  [BFS-cyl] seed=({}) vertex tolerance failed: worst_dist={:.2e} > tol={:.2e}, r={:.6}",
+                seed_str.join(","), worst_dist, vertex_tol, current_radius);
+        }
         return None;
     }
 
@@ -1303,6 +1319,12 @@ fn run_cylinder_trial_bfs(
     // Verify convexity consistency across all seed faces
     for &sfi in &seed_faces[1..] {
         if determine_convexity(&mesh.faces[sfi], &mesh.vertices, &current_origin, &current_dir) != convex {
+            if verbosity >= 3 {
+                let seed_str: Vec<String> = seed_faces.iter().map(|f| f.to_string()).collect();
+                eprintln!("  [BFS-cyl] seed=({}) convexity inconsistency: face {} is {} but face {} is {}",
+                    seed_str.join(","), seed_faces[0], if convex { "convex" } else { "concave" },
+                    sfi, if convex { "concave" } else { "convex" });
+            }
             return None;
         }
     }
@@ -1315,6 +1337,11 @@ fn run_cylinder_trial_bfs(
             &current_origin, &current_dir, current_radius,
         ).abs();
         if cen_dist > surface_tol {
+            if verbosity >= 3 {
+                let seed_str: Vec<String> = seed_faces.iter().map(|f| f.to_string()).collect();
+                eprintln!("  [BFS-cyl] seed=({}) centroid tolerance failed: face {} cen_dist={:.2e} > tol={:.2e}",
+                    seed_str.join(","), sfi, cen_dist, surface_tol);
+            }
             return None;
         }
     }
@@ -1739,10 +1766,10 @@ fn is_pairwise_qualified(
     };
     let cross = cross3(&fi_normal, &ni_normal);
     let cross_mag = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+    let cos_angle = dot3(&fi_normal, &ni_normal).clamp(-1.0, 1.0);
     if cross_mag < MIN_CROSS_THRESHOLD {
         return false;
     }
-    let cos_angle = dot3(&fi_normal, &ni_normal).clamp(-1.0, 1.0);
     cos_angle.acos() <= angular_tol
 }
 
@@ -1808,7 +1835,7 @@ fn deduce_cylindrical_hypotheses(
                 if neighbor_sets[fi].contains(&n2) { continue; }
                 // n2 must be pairwise qualified with n1
                 if !is_pairwise_qualified(n1, n2, mesh, angular_tol) { continue; }
-
+                
                 let trial = run_cylinder_trial_bfs(
                     &[fi, n1, n2], mesh,
                     vertex_tol, surface_tol, angular_tol,
@@ -1816,7 +1843,19 @@ fn deduce_cylindrical_hypotheses(
                     viz, &viz_quit,
                 );
 
-                // reject trial here if angular coverage validation fails
+                // Reject trial if angular coverage validation fails
+                if let Some(ref trial) = trial {
+                    if !angular_coverage_valid(
+                        &trial.faces, &trial.axis_origin, &trial.axis_direction,
+                        &mesh.faces, &mesh.vertices,
+                    ) {
+                        if verbosity >= 3 {
+                            eprintln!("  [BFS-cyl] trial ({},{},{}) angular coverage failed: {} faces",
+                                fi, n1, n2, trial.faces.len());
+                        }
+                        continue;
+                    }
+                }
 
                 if viz_quit.get() {
                     return (hypotheses, true);
@@ -1831,7 +1870,6 @@ fn deduce_cylindrical_hypotheses(
         }
 
         if let Some(candidate) = best_candidate {
-            // Angular coverage validation disabled (future work per DEVELOPMENT_PLAN.md)
 
             // Viz: post-BFS pause — show accepted hypothesis
             if !viz_quit.get() {
