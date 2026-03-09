@@ -470,8 +470,10 @@ pub struct VizOverlay {
     pub cylinders: Vec<CylinderOverlay>,
     pub spheres: Vec<SphereOverlay>,
     pub status_text: String,
-    /// If set, the camera will smoothly rotate to center on this point.
+    /// If set, the camera will smoothly move to center on this point.
     pub focus_point: Option<[f32; 3]>,
+    /// If set (alongside focus_point), the camera will rotate to look along this face normal.
+    pub focus_normal: Option<[f32; 3]>,
 }
 
 impl Default for VizOverlay {
@@ -488,6 +490,7 @@ impl VizOverlay {
             spheres: Vec::new(),
             status_text: String::new(),
             focus_point: None,
+            focus_normal: None,
         }
     }
 }
@@ -856,6 +859,7 @@ where
     let mut anim_start_pos: Option<Vector3<f32>> = None;
     let mut anim_start_target: Option<Vector3<f32>> = None;
     let mut anim_end_target: Option<Vector3<f32>> = None;
+    let mut anim_end_pos: Option<Vector3<f32>> = None;
     let mut anim_t: f32 = 1.0; // 1.0 = no animation
 
     window.render_loop(move |frame_input| {
@@ -867,20 +871,24 @@ where
 
         camera.set_viewport(frame_input.viewport);
 
-        // Camera animation: smoothly rotate to focus point
+        // Camera animation: smoothly rotate to face normal direction
         if anim_t < 1.0 {
             anim_t = (anim_t + 0.08).min(1.0); // ~12 frames to complete
             let t = smooth_step(anim_t);
-            if let (Some(start_pos), Some(start_tgt), Some(end_tgt)) =
-                (anim_start_pos, anim_start_target, anim_end_target)
+            if let (Some(start_pos), Some(start_tgt), Some(end_tgt), Some(end_p)) =
+                (anim_start_pos, anim_start_target, anim_end_target, anim_end_pos)
             {
-                // Rotate camera around the new target at the same distance
-                let dist = start_pos.distance(start_tgt);
-                let start_dir = (start_pos - start_tgt).normalize();
-                let end_dir = start_dir; // Keep same viewing angle
                 let new_target = start_tgt * (1.0 - t) + end_tgt * t;
-                let new_pos = new_target + end_dir * dist;
-                camera.set_view(new_pos, new_target, up);
+                let new_pos = start_pos * (1.0 - t) + end_p * t;
+                // Pick an up vector that won't be parallel to the view direction
+                let view_dir = (new_target - new_pos).normalize();
+                let world_z = vec3(0.0f32, 0.0, 1.0);
+                let anim_up = if view_dir.dot(world_z).abs() > 0.9 {
+                    vec3(0.0f32, 1.0, 0.0)
+                } else {
+                    world_z
+                };
+                camera.set_view(new_pos, new_target, anim_up);
             }
         }
         // Check for new overlay from pipeline thread (non-blocking)
@@ -918,9 +926,26 @@ where
                     if auto_center {
                         if let Some(fp) = overlay.focus_point {
                             let target = vec3(fp[0], fp[1], fp[2]);
-                            anim_start_pos = Some(*camera.position());
-                            anim_start_target = Some(*camera.target());
+                            let start_pos = *camera.position();
+                            let start_tgt = *camera.target();
+                            let dist = start_pos.distance(start_tgt);
+                            // Compute end camera position: along face normal if available
+                            let end_p = if let Some(fn_) = overlay.focus_normal {
+                                let n = vec3(fn_[0], fn_[1], fn_[2]);
+                                let n_len = n.magnitude();
+                                if n_len > 1e-6 {
+                                    target + (n / n_len) * dist
+                                } else {
+                                    target + (start_pos - start_tgt).normalize() * dist
+                                }
+                            } else {
+                                // No normal: pan to new target, keep viewing direction
+                                target + (start_pos - start_tgt).normalize() * dist
+                            };
+                            anim_start_pos = Some(start_pos);
+                            anim_start_target = Some(start_tgt);
                             anim_end_target = Some(target);
+                            anim_end_pos = Some(end_p);
                             anim_t = 0.0;
                         }
                     }

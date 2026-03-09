@@ -313,6 +313,11 @@ fn viz_face_centroid(face_idx: usize, mesh: &ConnectedMesh) -> [f32; 3] {
     [cx as f32 / vc as f32, cy as f32 / vc as f32, cz as f32 / vc as f32]
 }
 
+/// Return the normal of a mesh face as f32 (for viz camera orientation).
+fn viz_face_normal(face_idx: usize, mesh: &ConnectedMesh) -> Option<[f32; 3]> {
+    mesh.faces[face_idx].normal.map(|n| [n[0] as f32, n[1] as f32, n[2] as f32])
+}
+
 /// Send a BFS step visualization overlay and return the user's action.
 /// `seed_faces`: faces shown in green (seed), `hyp_faces`: faces shown in blue
 /// (hypothesis so far), `explored_face`: face shown in yellow (being evaluated),
@@ -362,6 +367,7 @@ fn viz_bfs_step(
     overlay.cylinders = cylinders;
     overlay.spheres = spheres;
     overlay.focus_point = Some(viz_face_centroid(explored_face, mesh));
+    overlay.focus_normal = viz_face_normal(explored_face, mesh);
     Some(viz_sender.show_and_wait(overlay))
 }
 
@@ -394,6 +400,7 @@ fn viz_bfs_seed(
     // Focus on first seed face
     if !seed_faces.is_empty() {
         overlay.focus_point = Some(viz_face_centroid(seed_faces[0], mesh));
+        overlay.focus_normal = viz_face_normal(seed_faces[0], mesh);
     }
     Some(viz_sender.show_and_wait(overlay))
 }
@@ -406,6 +413,7 @@ fn viz_custom(
     cylinders: Vec<viz::CylinderOverlay>,
     spheres: Vec<viz::SphereOverlay>,
     focus_point: Option<[f32; 3]>,
+    focus_normal: Option<[f32; 3]>,
 ) -> Option<VizAction> {
     let viz_sender = viz?;
     let mut overlay = viz::VizOverlay::new();
@@ -414,6 +422,7 @@ fn viz_custom(
     overlay.cylinders = cylinders;
     overlay.spheres = spheres;
     overlay.focus_point = focus_point;
+    overlay.focus_normal = focus_normal;
     Some(viz_sender.show_and_wait(overlay))
 }
 
@@ -699,6 +708,7 @@ fn deduce_planar_hypotheses(
                 &format!("BFS-plane hi={hi}: ACCEPTED ({} faces) [space=next]", face_list.len()),
                 Vec::new(), Vec::new(),
                 Some(viz_face_centroid(fi, mesh)),
+                viz_face_normal(fi, mesh),
             ) {
                 if matches!(action, VizAction::Quit) { return (hypotheses, true); }
             }
@@ -1344,6 +1354,7 @@ fn run_cylinder_trial_bfs(
                 [0.2, 0.4, 1.0, 0.3],
             )], Vec::new(),
             Some(viz_face_centroid(seed_faces[0], mesh)),
+            viz_face_normal(seed_faces[0], mesh),
         ) {
             match action {
                 VizAction::Quit => { viz_quit.set(true); return None; }
@@ -1613,6 +1624,7 @@ fn run_cylinder_trial_bfs(
                         [0.2, 0.4, 1.0, 0.3],
                     )], Vec::new(),
                     Some(viz_face_centroid(cni, mesh)),
+                    viz_face_normal(cni, mesh),
                 ) {
                     match action {
                         VizAction::Quit => { viz_quit.set(true); return None; }
@@ -1780,6 +1792,8 @@ fn deduce_cylindrical_hypotheses(
                     viz, &viz_quit,
                 );
 
+                // reject trial here if angular coverage validation fails
+
                 if viz_quit.get() {
                     return (hypotheses, true);
                 }
@@ -1822,6 +1836,7 @@ fn deduce_cylindrical_hypotheses(
                             [0.0, 0.8, 0.0, 0.3],
                         )], Vec::new(),
                         Some(viz_face_centroid(candidate.faces[0], mesh)),
+                        viz_face_normal(candidate.faces[0], mesh),
                     ) {
                         match action {
                             VizAction::Quit => { return (hypotheses, true); }
@@ -1861,6 +1876,7 @@ fn deduce_cylindrical_hypotheses(
                         &format!("BFS-cyl result: REJECTED fi={fi} [space=next]"),
                         Vec::new(), Vec::new(),
                         Some(viz_face_centroid(fi, mesh)),
+                        viz_face_normal(fi, mesh),
                     ) {
                         match action {
                             VizAction::Quit => { return (hypotheses, true); }
@@ -2693,6 +2709,7 @@ fn deduce_spherical_hypotheses(
                             color: [1.0, 0.0, 0.0, 0.3],
                         }],
                         Some(viz_face_centroid(surrounding[0], mesh)),
+                        viz_face_normal(surrounding[0], mesh),
                     ) {
                         match action {
                             VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
@@ -2741,6 +2758,7 @@ fn deduce_spherical_hypotheses(
                         color: [0.0, 0.8, 0.0, 0.3],
                     }],
                     Some(viz_face_centroid(face_list[0], mesh)),
+                    viz_face_normal(face_list[0], mesh),
                 ) {
                     match action {
                         VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
