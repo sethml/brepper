@@ -97,6 +97,66 @@ pub fn extract_feature_edges(
     (sharp, soft)
 }
 
+/// Extract feature edges using face definitions (quad-aware).
+/// Quad internal diagonals are excluded, only face boundary edges are considered.
+pub fn extract_feature_edges_from_faces(
+    positions: &[Vector3<f32>],
+    face_indices: &[[usize; 4]],
+    face_vertex_counts: &[u8],
+) -> (Vec<Vector3<f32>>, Vec<Vector3<f32>>) {
+    // Build edge → face normals map using actual face edges (not triangulated)
+    let mut edge_faces: HashMap<(usize, usize), Vec<Vector3<f32>>> = HashMap::new();
+
+    for (fi, vis) in face_indices.iter().enumerate() {
+        let vc = face_vertex_counts[fi] as usize;
+        if vc < 3 {
+            continue;
+        }
+        // Compute face normal via Newell's method
+        let v0 = positions[vis[0]];
+        let v1 = positions[vis[1]];
+        let v2 = positions[vis[2]];
+        let normal = (v1 - v0).cross(v2 - v0);
+        let len = normal.magnitude();
+        let normal = if len > 1e-10 { normal / len } else { normal };
+
+        for j in 0..vc {
+            let a = vis[j];
+            let b = vis[(j + 1) % vc];
+            let key = if a < b { (a, b) } else { (b, a) };
+            edge_faces.entry(key).or_default().push(normal);
+        }
+    }
+
+    let mut sharp = Vec::new();
+    let mut soft = Vec::new();
+    let cos_threshold = 0.7_f32; // ~45 deg dihedral
+
+    for ((a, b), normals) in &edge_faces {
+        let p0 = positions[*a];
+        let p1 = positions[*b];
+        if normals.len() == 1 {
+            sharp.push(p0);
+            sharp.push(p1);
+        } else {
+            let cos_angle = normals[0].dot(normals[1]);
+            if cos_angle < cos_threshold {
+                sharp.push(p0);
+                sharp.push(p1);
+            } else {
+                soft.push(p0);
+                soft.push(p1);
+            }
+        }
+    }
+    (sharp, soft)
+}
+
+/// Smooth step interpolation (ease in/out).
+fn smooth_step(t: f32) -> f32 {
+    t * t * (3.0 - 2.0 * t)
+}
+
 // ---------------------------------------------------------------------------
 // Bounding box
 // ---------------------------------------------------------------------------
@@ -410,6 +470,8 @@ pub struct VizOverlay {
     pub cylinders: Vec<CylinderOverlay>,
     pub spheres: Vec<SphereOverlay>,
     pub status_text: String,
+    /// If set, the camera will smoothly rotate to center on this point.
+    pub focus_point: Option<[f32; 3]>,
 }
 
 impl Default for VizOverlay {
@@ -425,6 +487,7 @@ impl VizOverlay {
             cylinders: Vec::new(),
             spheres: Vec::new(),
             status_text: String::new(),
+            focus_point: None,
         }
     }
 }
@@ -780,6 +843,7 @@ where
     let mut hide_edges = true;
     let mut show_soft_edges = true;
     let mut perspective = true;
+    let mut auto_center = true;
     let up = vec3(0.0f32, 0.0, 1.0);
 
     // Current overlay GPU objects
@@ -788,6 +852,11 @@ where
     let mut sphere_meshes: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
     let mut waiting_for_input = false;
 
+    // Camera animation state
+    let mut anim_start_pos: Option<Vector3<f32>> = None;
+    let mut anim_start_target: Option<Vector3<f32>> = None;
+    let mut anim_end_target: Option<Vector3<f32>> = None;
+    let mut anim_t: f32 = 1.0; // 1.0 = no animation
 
     window.render_loop(move |frame_input| {
         // Clear stale GL errors
@@ -798,6 +867,22 @@ where
 
         camera.set_viewport(frame_input.viewport);
 
+        // Camera animation: smoothly rotate to focus point
+        if anim_t < 1.0 {
+            anim_t = (anim_t + 0.08).min(1.0); // ~12 frames to complete
+            let t = smooth_step(anim_t);
+            if let (Some(start_pos), Some(start_tgt), Some(end_tgt)) =
+                (anim_start_pos, anim_start_target, anim_end_target)
+            {
+                // Rotate camera around the new target at the same distance
+                let dist = start_pos.distance(start_tgt);
+                let start_dir = (start_pos - start_tgt).normalize();
+                let end_dir = start_dir; // Keep same viewing angle
+                let new_target = start_tgt * (1.0 - t) + end_tgt * t;
+                let new_pos = new_target + end_dir * dist;
+                camera.set_view(new_pos, new_target, up);
+            }
+        }
         // Check for new overlay from pipeline thread (non-blocking)
         if !waiting_for_input {
             match receiver.overlay_rx.try_recv() {
@@ -828,6 +913,17 @@ where
                         .map(|s| build_sphere_overlay_mesh(&context, s))
                         .collect();
                     waiting_for_input = true;
+
+                    // Start camera animation if focus_point is set and auto-center is on
+                    if auto_center {
+                        if let Some(fp) = overlay.focus_point {
+                            let target = vec3(fp[0], fp[1], fp[2]);
+                            anim_start_pos = Some(*camera.position());
+                            anim_start_target = Some(*camera.target());
+                            anim_end_target = Some(target);
+                            anim_t = 0.0;
+                        }
+                    }
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -879,6 +975,7 @@ where
                     }
                     Key::S => show_solid = !show_solid,
                     Key::H => hide_edges = !hide_edges,
+                    Key::C => auto_center = !auto_center,
                     _ => {}
                 },
                 Event::MouseMotion {
@@ -1325,7 +1422,8 @@ pub fn meshdata_from_connected_mesh(
         }
     }
 
-    let (edge_positions, soft_edge_positions) = extract_feature_edges(&positions, &indices);
+    let (edge_positions, soft_edge_positions) =
+        extract_feature_edges_from_faces(&positions, &face_indices_arr, &face_vc_arr);
 
     let meshdata = MeshData {
         positions,

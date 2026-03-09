@@ -297,11 +297,28 @@ fn all_vertices_within_tolerance(
 // BFS visualization helper
 // ---------------------------------------------------------------------------
 
+/// Compute the centroid of a mesh face (as f32 for viz).
+fn viz_face_centroid(face_idx: usize, mesh: &ConnectedMesh) -> [f32; 3] {
+    let face = &mesh.faces[face_idx];
+    let vc = face.vertex_count as usize;
+    let mut cx = 0.0f64;
+    let mut cy = 0.0f64;
+    let mut cz = 0.0f64;
+    for i in 0..vc {
+        let v = &mesh.vertices[face.vertex_indices[i]];
+        cx += v.x;
+        cy += v.y;
+        cz += v.z;
+    }
+    [cx as f32 / vc as f32, cy as f32 / vc as f32, cz as f32 / vc as f32]
+}
+
 /// Send a BFS step visualization overlay and return the user's action.
 /// `seed_faces`: faces shown in green (seed), `hyp_faces`: faces shown in blue
 /// (hypothesis so far), `explored_face`: face shown in yellow (being evaluated),
 /// `status`: text shown in the status bar.
 /// Returns None if viz is inactive, otherwise the user's VizAction.
+#[allow(clippy::too_many_arguments)]
 fn viz_bfs_step(
     viz: Option<&VizSender>,
     seed_faces: &[usize],
@@ -310,10 +327,19 @@ fn viz_bfs_step(
     status: &str,
     cylinders: Vec<viz::CylinderOverlay>,
     spheres: Vec<viz::SphereOverlay>,
+    background_faces: &[usize],
+    mesh: &ConnectedMesh,
 ) -> Option<VizAction> {
     let viz_sender = viz?;
     let mut overlay = viz::VizOverlay::new();
     overlay.status_text = status.to_string();
+    // Background (already-hypothesized) faces in gray
+    if !background_faces.is_empty() {
+        overlay.face_highlights.push(viz::FaceHighlight {
+            face_indices: background_faces.to_vec(),
+            color: [0.5, 0.5, 0.5, 1.0],
+        });
+    }
     // Seed faces in green
     if !seed_faces.is_empty() {
         overlay.face_highlights.push(viz::FaceHighlight {
@@ -335,6 +361,7 @@ fn viz_bfs_step(
     });
     overlay.cylinders = cylinders;
     overlay.spheres = spheres;
+    overlay.focus_point = Some(viz_face_centroid(explored_face, mesh));
     Some(viz_sender.show_and_wait(overlay))
 }
 
@@ -345,17 +372,80 @@ fn viz_bfs_seed(
     status: &str,
     cylinders: Vec<viz::CylinderOverlay>,
     spheres: Vec<viz::SphereOverlay>,
+    background_faces: &[usize],
+    mesh: &ConnectedMesh,
 ) -> Option<VizAction> {
     let viz_sender = viz?;
     let mut overlay = viz::VizOverlay::new();
     overlay.status_text = status.to_string();
+    // Background faces in gray
+    if !background_faces.is_empty() {
+        overlay.face_highlights.push(viz::FaceHighlight {
+            face_indices: background_faces.to_vec(),
+            color: [0.5, 0.5, 0.5, 1.0],
+        });
+    }
     overlay.face_highlights.push(viz::FaceHighlight {
         face_indices: seed_faces.to_vec(),
         color: [0.0, 0.8, 0.0, 1.0],
     });
     overlay.cylinders = cylinders;
     overlay.spheres = spheres;
+    // Focus on first seed face
+    if !seed_faces.is_empty() {
+        overlay.focus_point = Some(viz_face_centroid(seed_faces[0], mesh));
+    }
     Some(viz_sender.show_and_wait(overlay))
+}
+
+/// Send a custom viz overlay with full control over highlights.
+fn viz_custom(
+    viz: Option<&VizSender>,
+    highlights: Vec<viz::FaceHighlight>,
+    status: &str,
+    cylinders: Vec<viz::CylinderOverlay>,
+    spheres: Vec<viz::SphereOverlay>,
+    focus_point: Option<[f32; 3]>,
+) -> Option<VizAction> {
+    let viz_sender = viz?;
+    let mut overlay = viz::VizOverlay::new();
+    overlay.status_text = status.to_string();
+    overlay.face_highlights = highlights;
+    overlay.cylinders = cylinders;
+    overlay.spheres = spheres;
+    overlay.focus_point = focus_point;
+    Some(viz_sender.show_and_wait(overlay))
+}
+
+/// Create a CylinderOverlay centered on the axial extent of the given faces.
+fn centered_cylinder_overlay(
+    origin: [f64; 3], direction: [f64; 3], radius: f64,
+    face_list: &[usize], mesh: &ConnectedMesh,
+    color: [f32; 4],
+) -> viz::CylinderOverlay {
+    let mut t_min = f64::INFINITY;
+    let mut t_max = f64::NEG_INFINITY;
+    for &fi in face_list {
+        let c = face_centroid(&mesh.faces[fi], &mesh.vertices);
+        let d = [c[0] - origin[0], c[1] - origin[1], c[2] - origin[2]];
+        let t = dot3(&d, &direction);
+        t_min = t_min.min(t);
+        t_max = t_max.max(t);
+    }
+    let t_mid = (t_min + t_max) * 0.5;
+    let half_len = ((t_max - t_min) * 0.5 + radius).max(radius);
+    let centered_origin = [
+        origin[0] + direction[0] * t_mid,
+        origin[1] + direction[1] * t_mid,
+        origin[2] + direction[2] * t_mid,
+    ];
+    viz::CylinderOverlay {
+        origin: centered_origin,
+        direction,
+        radius,
+        half_length: half_len,
+        color,
+    }
 }
 
 /// Deduce planar hypotheses from the mesh using BFS region growing.
@@ -417,13 +507,21 @@ fn deduce_planar_hypotheses(
             }
         }
 
+        // Collect background faces for viz: faces assigned to multi-face planar hypotheses
+        let bg_faces: Vec<usize> = if viz.is_some() {
+            (0..num_faces).filter(|&f| {
+                let ph = mesh.faces[f].planar_hypothesis;
+                ph >= 0 && hypotheses.get(ph as usize).is_some_and(|h| h.faces.len() > 1)
+            }).collect()
+        } else { Vec::new() };
+
         // Viz: show seed face
         let mut skip_viz = false;
         if let Some(action) = viz_bfs_seed(
             viz,
             &[fi],
             &format!("BFS-plane hi={hi}: seed fi={fi} [space=step, shift+space=skip]"),
-            Vec::new(), Vec::new(),
+            Vec::new(), Vec::new(), &bg_faces, mesh,
         ) {
             match action {
                 VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
@@ -447,6 +545,9 @@ fn deduce_planar_hypotheses(
                 let ni = ni as usize;
 
                 if mesh.faces[ni].planar_hypothesis != UNDEDUCED_PLANAR_HYPOTHESIS {
+                    if verbosity >= 4 {
+                        eprintln!("  [BFS-plane] fi={ni}: already assigned hyp={} → skip", mesh.faces[ni].planar_hypothesis);
+                    }
                     continue;
                 }
                 // Vertex distance check
@@ -547,7 +648,7 @@ fn deduce_planar_hypotheses(
                     if let Some(action) = viz_bfs_step(
                         viz, &[fi], &face_list, ni,
                         &format!("BFS-plane hi={hi}: accepted fi={ni} ({} faces) [space=step, shift+space=skip]", face_list.len()),
-                        Vec::new(), Vec::new(),
+                        Vec::new(), Vec::new(), &bg_faces, mesh,
                     ) {
                         match action {
                             VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
@@ -572,6 +673,35 @@ fn deduce_planar_hypotheses(
             error_max = error_max.max(d);
             error_min = error_min.min(d);
             error_abs_sum += d.abs();
+        }
+
+        if verbosity >= 2 {
+            eprintln!(
+                "[BFS-plane] hi={hi}: ACCEPTED ({} faces) err_max={:.2e} err_min={:.2e}",
+                face_list.len(), error_max, error_min,
+            );
+        }
+
+        // Viz: post-BFS pause showing accepted hypothesis in green
+        if !skip_viz && face_list.len() > 1 {
+            let non_seed: Vec<usize> = face_list.iter()
+                .filter(|&&f| f != fi)
+                .copied().collect();
+            let mut highlights = vec![
+                viz::FaceHighlight { face_indices: bg_faces.clone(), color: [0.5, 0.5, 0.5, 1.0] },
+                viz::FaceHighlight { face_indices: vec![fi], color: [0.0, 0.8, 0.0, 1.0] },
+            ];
+            if !non_seed.is_empty() {
+                highlights.push(viz::FaceHighlight { face_indices: non_seed, color: [0.0, 0.8, 0.0, 1.0] });
+            }
+            if let Some(action) = viz_custom(
+                viz, highlights,
+                &format!("BFS-plane hi={hi}: ACCEPTED ({} faces) [space=next]", face_list.len()),
+                Vec::new(), Vec::new(),
+                Some(viz_face_centroid(fi, mesh)),
+            ) {
+                if matches!(action, VizAction::Quit) { return (hypotheses, true); }
+            }
         }
 
         hypotheses.push(PlanarHypothesis {
@@ -1194,26 +1324,33 @@ fn run_cylinder_trial_bfs(
         }
     }
 
-    // Viz: show seed faces
+    // Viz: show seed faces (first face=orange, others=light orange)
     let mut skip_viz = false;
     {
         let seed_str: Vec<String> = seed_faces.iter().map(|f| f.to_string()).collect();
-        if let Some(action) = viz_bfs_seed(
-            viz, seed_faces,
+        let mut highlights = vec![
+            viz::FaceHighlight { face_indices: vec![seed_faces[0]], color: [1.0, 0.6, 0.0, 1.0] },
+        ];
+        if seed_faces.len() > 1 {
+            highlights.push(viz::FaceHighlight { face_indices: seed_faces[1..].to_vec(), color: [1.0, 0.8, 0.4, 1.0] });
+        }
+        if let Some(action) = viz_custom(
+            viz, highlights,
             &format!("BFS-cyl: seed=({}) r={:.4} {} [space=step, shift+space=skip]",
                 seed_str.join(","), current_radius, if convex { "convex" } else { "concave" }),
-            vec![viz::CylinderOverlay {
-                origin: current_origin, direction: current_dir, radius: current_radius,
-                half_length: current_radius * 2.0,
-                color: [0.2, 0.4, 1.0, 0.3],
-            }], Vec::new(),
-    ) {
-        match action {
-            VizAction::Quit => { viz_quit.set(true); return None; }
-            VizAction::NextSeed => { skip_viz = true; }
-            VizAction::NextStep => {}
+            vec![centered_cylinder_overlay(
+                current_origin, current_dir, current_radius,
+                seed_faces, mesh,
+                [0.2, 0.4, 1.0, 0.3],
+            )], Vec::new(),
+            Some(viz_face_centroid(seed_faces[0], mesh)),
+        ) {
+            match action {
+                VizAction::Quit => { viz_quit.set(true); return None; }
+                VizAction::NextSeed => { skip_viz = true; }
+                VizAction::NextStep => {}
+            }
         }
-    }
     }
 
     // Track claimed faces in this trial (using a HashSet, not mesh mutation)
@@ -1240,6 +1377,9 @@ fn run_cylinder_trial_bfs(
 
             // Skip if already committed to a real hypothesis or claimed by this trial
             if mesh.faces[cni].cylindrical_hypothesis != UNDEDUCED_CYLINDRICAL_HYPOTHESIS {
+                if verbosity >= 4 {
+                    eprintln!("  [BFS-cyl] from fi={} try cni={}: already assigned (hyp={}) → SKIP", current_fi, cni, mesh.faces[cni].cylindrical_hypothesis);
+                }
                 continue;
             }
             if trial_claimed.contains(&cni) {
@@ -1438,16 +1578,41 @@ fn run_cylinder_trial_bfs(
             }
             queue.push_back(cni);
 
-            // Viz: show accepted face
+            // Viz: show accepted face with custom colors
             if !skip_viz {
-                if let Some(action) = viz_bfs_step(
-                    viz, seed_faces, &face_list, cni,
+                let queue_faces: Vec<usize> = queue.iter().copied().collect();
+                let accepted_nonseed: Vec<usize> = face_list.iter()
+                    .filter(|f| !seed_faces.contains(f) && **f != cni)
+                    .copied().collect();
+                let mut highlights = vec![
+                    viz::FaceHighlight { face_indices: vec![seed_faces[0]], color: [1.0, 0.6, 0.0, 1.0] },
+                ];
+                if seed_faces.len() > 1 {
+                    highlights.push(viz::FaceHighlight { face_indices: seed_faces[1..].to_vec(), color: [1.0, 0.8, 0.4, 1.0] });
+                }
+                if !accepted_nonseed.is_empty() {
+                    highlights.push(viz::FaceHighlight { face_indices: accepted_nonseed, color: [0.2, 0.4, 1.0, 1.0] });
+                }
+                highlights.push(viz::FaceHighlight { face_indices: vec![cni], color: [0.1, 0.2, 0.7, 1.0] });
+                if !queue_faces.is_empty() {
+                    highlights.push(viz::FaceHighlight { face_indices: queue_faces, color: [1.0, 0.5, 0.7, 1.0] });
+                }
+                // Add gray background for faces with existing cylindrical hypotheses
+                let bg_faces: Vec<usize> = (0..mesh.faces.len())
+                    .filter(|f| mesh.faces[*f].cylindrical_hypothesis >= 0 && !face_list.contains(f))
+                    .collect();
+                if !bg_faces.is_empty() {
+                    highlights.push(viz::FaceHighlight { face_indices: bg_faces, color: [0.5, 0.5, 0.5, 1.0] });
+                }
+                if let Some(action) = viz_custom(
+                    viz, highlights,
                     &format!("BFS-cyl: accepted fi={cni} ({} faces) r={:.4} [space=step, shift+space=skip]", face_list.len(), current_radius),
-                    vec![viz::CylinderOverlay {
-                        origin: current_origin, direction: current_dir, radius: current_radius,
-                        half_length: current_radius * 2.0,
-                        color: [0.2, 0.4, 1.0, 0.3],
-                    }], Vec::new(),
+                    vec![centered_cylinder_overlay(
+                        current_origin, current_dir, current_radius,
+                        &face_list, mesh,
+                        [0.2, 0.4, 1.0, 0.3],
+                    )], Vec::new(),
+                    Some(viz_face_centroid(cni, mesh)),
                 ) {
                     match action {
                         VizAction::Quit => { viz_quit.set(true); return None; }
@@ -1630,6 +1795,42 @@ fn deduce_cylindrical_hypotheses(
         if let Some(candidate) = best_candidate {
             // Angular coverage validation disabled (future work per DEVELOPMENT_PLAN.md)
 
+            // Viz: post-BFS pause — show accepted hypothesis
+            if !viz_quit.get() {
+                if let Some(viz) = viz {
+                    if verbosity >= 2 {
+                        eprintln!("  [BFS-cyl] ACCEPTED: {} faces, r={:.6}, err_max={:.2e}",
+                            candidate.faces.len(), candidate.radius, candidate.error_max);
+                    }
+                    let mut highlights = vec![
+                        viz::FaceHighlight { face_indices: candidate.faces.clone(), color: [0.0, 0.8, 0.0, 1.0] },
+                    ];
+                    // Gray background for already-committed cylindrical faces
+                    let bg_faces: Vec<usize> = (0..mesh.faces.len())
+                        .filter(|f| mesh.faces[*f].cylindrical_hypothesis >= 0 && !candidate.faces.contains(f))
+                        .collect();
+                    if !bg_faces.is_empty() {
+                        highlights.push(viz::FaceHighlight { face_indices: bg_faces, color: [0.5, 0.5, 0.5, 1.0] });
+                    }
+                    if let Some(action) = viz_custom(
+                        Some(viz), highlights,
+                        &format!("BFS-cyl result: ACCEPTED {} faces r={:.4} [space=next]",
+                            candidate.faces.len(), candidate.radius),
+                        vec![centered_cylinder_overlay(
+                            candidate.axis_origin, candidate.axis_direction, candidate.radius,
+                            &candidate.faces, mesh,
+                            [0.0, 0.8, 0.0, 0.3],
+                        )], Vec::new(),
+                        Some(viz_face_centroid(candidate.faces[0], mesh)),
+                    ) {
+                        match action {
+                            VizAction::Quit => { return (hypotheses, true); }
+                            VizAction::NextSeed | VizAction::NextStep => {}
+                        }
+                    }
+                }
+            }
+
             // Commit: assign all faces to this hypothesis
             let hi = hypotheses.len() as i32;
             for &f in &candidate.faces {
@@ -1647,6 +1848,27 @@ fn deduce_cylindrical_hypotheses(
                 centroid_error_max: candidate.centroid_error_max,
                 error_abs_sum: candidate.error_abs_sum,
             });
+        } else {
+            // Viz: post-BFS pause — no accepted hypothesis for this seed face
+            if !viz_quit.get() {
+                if let Some(viz) = viz {
+                    if verbosity >= 2 {
+                        eprintln!("  [BFS-cyl] REJECTED: fi={} — no valid cylinder found", fi);
+                    }
+                    if let Some(action) = viz_custom(
+                        Some(viz),
+                        vec![viz::FaceHighlight { face_indices: vec![fi], color: [1.0, 0.0, 0.0, 1.0] }],
+                        &format!("BFS-cyl result: REJECTED fi={fi} [space=next]"),
+                        Vec::new(), Vec::new(),
+                        Some(viz_face_centroid(fi, mesh)),
+                    ) {
+                        match action {
+                            VizAction::Quit => { return (hypotheses, true); }
+                            VizAction::NextSeed | VizAction::NextStep => {}
+                        }
+                    }
+                }
+            }
         }
         // If no valid triple found, leave fi as UNDEDUCED (may be absorbed by
         // a later face's BFS). Do NOT set NO_HYPOTHESIS yet.
@@ -2165,6 +2387,9 @@ fn deduce_spherical_hypotheses(
 
         // Viz: show seed faces
         let mut skip_viz = false;
+        let bg_faces: Vec<usize> = (0..mesh.faces.len())
+            .filter(|f| mesh.faces[*f].spherical_hypothesis >= 0)
+            .collect();
         if let Some(action) = viz_bfs_seed(
             viz, &surrounding,
             &format!("BFS-sph hi={hi}: {} seed faces, r={:.4} {} [space=step, shift+space=skip]",
@@ -2175,6 +2400,7 @@ fn deduce_spherical_hypotheses(
                 radius: current_radius,
                 color: [0.2, 0.4, 1.0, 0.3],
             }],
+            &bg_faces, mesh,
         ) {
             match action {
                 VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
@@ -2194,6 +2420,9 @@ fn deduce_spherical_hypotheses(
                 let cni = cni as usize;
 
                 if mesh.faces[cni].spherical_hypothesis != UNDEDUCED_SPHERICAL_HYPOTHESIS {
+                    if verbosity >= 4 {
+                        eprintln!("  [BFS-sph] from fi={} try cni={}: already assigned (hyp={}) → SKIP", current_fi, cni, mesh.faces[cni].spherical_hypothesis);
+                    }
                     continue;
                 }
 
@@ -2402,6 +2631,7 @@ fn deduce_spherical_hypotheses(
                             radius: current_radius,
                             color: [0.2, 0.4, 1.0, 0.3],
                         }],
+                        &bg_faces, mesh,
                     ) {
                         match action {
                             VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
@@ -2440,6 +2670,37 @@ fn deduce_spherical_hypotheses(
         );
 
         if !min_faces_ok || !radius_ok || !coverage_ok {
+            // Viz: post-BFS pause — rejected
+            if !user_quit {
+                if let Some(viz) = viz {
+                    if verbosity >= 2 {
+                        eprintln!("  [BFS-sph] REJECTED hi={hi}: {} faces, r={:.6} (min_faces={} radius={} coverage={})",
+                            face_list.len(), current_radius, min_faces_ok, radius_ok, coverage_ok);
+                    }
+                    let mut highlights = vec![
+                        viz::FaceHighlight { face_indices: surrounding.clone(), color: [1.0, 0.0, 0.0, 1.0] },
+                    ];
+                    if !bg_faces.is_empty() {
+                        highlights.push(viz::FaceHighlight { face_indices: bg_faces.clone(), color: [0.5, 0.5, 0.5, 1.0] });
+                    }
+                    if let Some(action) = viz_custom(
+                        Some(viz), highlights,
+                        &format!("BFS-sph result: REJECTED hi={hi} {} faces r={:.4} [space=next]",
+                            face_list.len(), current_radius),
+                        Vec::new(),
+                        vec![viz::SphereOverlay {
+                            center: current_center, radius: current_radius,
+                            color: [1.0, 0.0, 0.0, 0.3],
+                        }],
+                        Some(viz_face_centroid(surrounding[0], mesh)),
+                    ) {
+                        match action {
+                            VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
+                            VizAction::NextSeed | VizAction::NextStep => {}
+                        }
+                    }
+                }
+            }
             // Undo assignments
             for &f in &face_list {
                 mesh.faces[f].spherical_hypothesis = UNDEDUCED_SPHERICAL_HYPOTHESIS;
@@ -2455,6 +2716,38 @@ fn deduce_spherical_hypotheses(
                 &MeshVertex::from_xyz(c[0], c[1], c[2]), &current_center, current_radius,
             ).abs();
             centroid_error_max = centroid_error_max.max(d);
+        }
+
+        // Viz: post-BFS pause — accepted
+        if !user_quit {
+            if let Some(viz) = viz {
+                if verbosity >= 2 {
+                    eprintln!("  [BFS-sph] ACCEPTED hi={hi}: {} faces, r={:.6}, err_max={:.2e}",
+                        face_list.len(), current_radius, error_max);
+                }
+                let mut highlights = vec![
+                    viz::FaceHighlight { face_indices: face_list.clone(), color: [0.0, 0.8, 0.0, 1.0] },
+                ];
+                if !bg_faces.is_empty() {
+                    highlights.push(viz::FaceHighlight { face_indices: bg_faces, color: [0.5, 0.5, 0.5, 1.0] });
+                }
+                if let Some(action) = viz_custom(
+                    Some(viz), highlights,
+                    &format!("BFS-sph result: ACCEPTED hi={hi} {} faces r={:.4} [space=next]",
+                        face_list.len(), current_radius),
+                    Vec::new(),
+                    vec![viz::SphereOverlay {
+                        center: current_center, radius: current_radius,
+                        color: [0.0, 0.8, 0.0, 0.3],
+                    }],
+                    Some(viz_face_centroid(face_list[0], mesh)),
+                ) {
+                    match action {
+                        VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
+                        VizAction::NextSeed | VizAction::NextStep => {}
+                    }
+                }
+            }
         }
 
         hypotheses.push(SphericalHypothesis {
