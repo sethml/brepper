@@ -62,10 +62,6 @@ fn parse_stage(s: &str) -> Result<Stage, String> {
     }
 }
 
-fn parse_viz_stages(s: &str) -> Result<Vec<Stage>, String> {
-    s.split(',').map(|part| parse_stage(part.trim())).collect()
-}
-
 // ---------------------------------------------------------------------------
 // Units
 // ---------------------------------------------------------------------------
@@ -178,7 +174,7 @@ struct CliArgs {
     pub stage: Option<Stage>,
 
     /// Comma-separated list of stages for interactive visualization (e.g. "2.2,3.1").
-    #[arg(long = "viz-stages", value_parser = parse_viz_stages)]
+    #[arg(long = "viz-stages", value_parser = parse_stage, value_delimiter = ',')]
     pub viz_stages: Option<Vec<Stage>>,
 }
 
