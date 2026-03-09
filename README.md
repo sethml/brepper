@@ -135,7 +135,7 @@ Rendering uses PBR shading with ambient and two directional lights. Sharp featur
 
 ### Interactive Debugging Visualization
 
-Use `--viz-stages` to open a 3D window and pause execution at specific pipeline stages to visualize hypothesis deduction step by step:
+Use `--viz-stages` to open a 3D window and step through BFS hypothesis deduction interactively:
 
 ```bash
 # Visualize planar and cylindrical hypothesis stages
@@ -145,12 +145,12 @@ brepper input.stl --viz-stages=2.1,2.2
 brepper input.stl --compare reference.step --viz-stages=2.1,2.2,2.3
 ```
 
-At each specified stage, the window shows the STL mesh with highlighted faces for each hypothesis. Cylindrical and spherical hypotheses also display translucent geometry overlays. When `--compare` is provided, the STEP surface is shown at 35% opacity for reference.
+At each BFS step, the window shows the STL mesh with highlighted faces: seed faces in green, accepted hypothesis faces in blue, and the face being evaluated in yellow. Cylindrical and spherical hypotheses also display translucent geometry overlays. When `--compare` is provided, the STEP surface is shown at 35% opacity for reference.
 
 | Action | Control |
 |--------|:--------|
-| Next hypothesis | `Space` |
-| Skip to next seed/stage | `Shift+Space` |
+| Next BFS step | `Space` |
+| Skip to next seed/hypothesis | `Shift+Space` |
 | Quit visualization | `Q` |
 
 Supported stages: `2.1` (planar), `2.2` (cylindrical), `2.3` (spherical).

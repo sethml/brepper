@@ -9,6 +9,7 @@
 
 use crate::config::Config;
 use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_PLANAR_HYPOTHESIS, UNDEDUCED_CYLINDRICAL_HYPOTHESIS, UNDEDUCED_SPHERICAL_HYPOTHESIS, NO_HYPOTHESIS};
+use crate::viz::{self, VizAction, VizSender};
 use opencascade_sys::gp;
 use std::collections::{HashSet, VecDeque};
 use std::error::Error;
@@ -292,6 +293,71 @@ fn all_vertices_within_tolerance(
     true
 }
 
+// ---------------------------------------------------------------------------
+// BFS visualization helper
+// ---------------------------------------------------------------------------
+
+/// Send a BFS step visualization overlay and return the user's action.
+/// `seed_faces`: faces shown in green (seed), `hyp_faces`: faces shown in blue
+/// (hypothesis so far), `explored_face`: face shown in yellow (being evaluated),
+/// `status`: text shown in the status bar.
+/// Returns None if viz is inactive, otherwise the user's VizAction.
+fn viz_bfs_step(
+    viz: Option<&VizSender>,
+    seed_faces: &[usize],
+    hyp_faces: &[usize],
+    explored_face: usize,
+    status: &str,
+    cylinders: Vec<viz::CylinderOverlay>,
+    spheres: Vec<viz::SphereOverlay>,
+) -> Option<VizAction> {
+    let viz_sender = viz?;
+    let mut overlay = viz::VizOverlay::new();
+    overlay.status_text = status.to_string();
+    // Seed faces in green
+    if !seed_faces.is_empty() {
+        overlay.face_highlights.push(viz::FaceHighlight {
+            face_indices: seed_faces.to_vec(),
+            color: [0.0, 0.8, 0.0, 1.0],
+        });
+    }
+    // Hypothesis faces (accepted so far) in blue
+    if !hyp_faces.is_empty() {
+        overlay.face_highlights.push(viz::FaceHighlight {
+            face_indices: hyp_faces.to_vec(),
+            color: [0.2, 0.4, 1.0, 1.0],
+        });
+    }
+    // Face being explored in yellow
+    overlay.face_highlights.push(viz::FaceHighlight {
+        face_indices: vec![explored_face],
+        color: [1.0, 0.9, 0.0, 1.0],
+    });
+    overlay.cylinders = cylinders;
+    overlay.spheres = spheres;
+    Some(viz_sender.show_and_wait(overlay))
+}
+
+/// Send a BFS seed visualization (before expansion starts).
+fn viz_bfs_seed(
+    viz: Option<&VizSender>,
+    seed_faces: &[usize],
+    status: &str,
+    cylinders: Vec<viz::CylinderOverlay>,
+    spheres: Vec<viz::SphereOverlay>,
+) -> Option<VizAction> {
+    let viz_sender = viz?;
+    let mut overlay = viz::VizOverlay::new();
+    overlay.status_text = status.to_string();
+    overlay.face_highlights.push(viz::FaceHighlight {
+        face_indices: seed_faces.to_vec(),
+        color: [0.0, 0.8, 0.0, 1.0],
+    });
+    overlay.cylinders = cylinders;
+    overlay.spheres = spheres;
+    Some(viz_sender.show_and_wait(overlay))
+}
+
 /// Deduce planar hypotheses from the mesh using BFS region growing.
 ///
 /// For each unassigned face, creates a new planar hypothesis seeded from that
@@ -301,9 +367,11 @@ fn deduce_planar_hypotheses(
     mesh: &mut ConnectedMesh,
     vertex_tol: f64,
     verbosity: u8,
-) -> Vec<PlanarHypothesis> {
+    viz: Option<&VizSender>,
+) -> (Vec<PlanarHypothesis>, bool) {
     let num_faces = mesh.faces.len();
     let mut hypotheses: Vec<PlanarHypothesis> = Vec::new();
+    let mut user_quit = false;
 
     for face in &mut mesh.faces {
         face.planar_hypothesis = UNDEDUCED_PLANAR_HYPOTHESIS;
@@ -346,6 +414,21 @@ fn deduce_planar_hypotheses(
                 let vi = mesh.faces[fi].vertex_indices[vi_idx];
                 let v = &mesh.vertices[vi];
                 eprintln!("  seed vertex vi={}: [{:.4},{:.4},{:.4}]", vi, v.x, v.y, v.z);
+            }
+        }
+
+        // Viz: show seed face
+        let mut skip_viz = false;
+        if let Some(action) = viz_bfs_seed(
+            viz,
+            &[fi],
+            &format!("BFS-plane hi={hi}: seed fi={fi} [space=step, shift+space=skip]"),
+            Vec::new(), Vec::new(),
+        ) {
+            match action {
+                VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
+                VizAction::NextSeed => { skip_viz = true; }
+                VizAction::NextStep => {}
             }
         }
 
@@ -458,6 +541,21 @@ fn deduce_planar_hypotheses(
                     vertex_set.insert(vi);
                 }
                 queue.push_back(ni);
+
+                // Viz: show accepted face
+                if !skip_viz {
+                    if let Some(action) = viz_bfs_step(
+                        viz, &[fi], &face_list, ni,
+                        &format!("BFS-plane hi={hi}: accepted fi={ni} ({} faces) [space=step, shift+space=skip]", face_list.len()),
+                        Vec::new(), Vec::new(),
+                    ) {
+                        match action {
+                            VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
+                            VizAction::NextSeed => { skip_viz = true; }
+                            VizAction::NextStep => {}
+                        }
+                    }
+                }
             }
         }
 
@@ -487,7 +585,7 @@ fn deduce_planar_hypotheses(
         });
     }
 
-    hypotheses
+    (hypotheses, user_quit)
 }
 
 // ---------------------------------------------------------------------------
@@ -999,6 +1097,7 @@ struct CylinderTrialResult {
 /// Run a trial BFS for a cylindrical hypothesis starting from a seed pair,
 /// using temporary data structures (not mutating mesh face assignments).
 /// Returns `None` if the trial fails validation (min faces, centroid check).
+/// Sets `viz_quit` if the user quits from viz.
 #[allow(clippy::too_many_arguments)]
 fn run_cylinder_trial_bfs(
     seed_fi: usize,
@@ -1009,6 +1108,8 @@ fn run_cylinder_trial_bfs(
     angular_tol: f64,
     best_candidate: Option<&CylinderTrialResult>,
     verbosity: u8,
+    viz: Option<&VizSender>,
+    viz_quit: &std::cell::Cell<bool>,
 ) -> Option<CylinderTrialResult> {
     let fi_vc = mesh.faces[seed_fi].vertex_count as usize;
     let ni_vc = mesh.faces[seed_ni].vertex_count as usize;
@@ -1071,6 +1172,25 @@ fn run_cylinder_trial_bfs(
         );
         print_seed_face("seed_fi", seed_fi);
         print_seed_face("seed_ni", seed_ni);
+    }
+
+    // Viz: show seed pair
+    let mut skip_viz = false;
+    if let Some(action) = viz_bfs_seed(
+        viz, &[seed_fi, seed_ni],
+        &format!("BFS-cyl: seed=({seed_fi},{seed_ni}) r={:.4} {} [space=step, shift+space=skip]",
+            current_radius, if convex { "convex" } else { "concave" }),
+        vec![viz::CylinderOverlay {
+            origin: current_origin, direction: current_dir, radius: current_radius,
+            half_length: current_radius * 2.0,
+            color: [0.2, 0.4, 1.0, 0.3],
+        }], Vec::new(),
+    ) {
+        match action {
+            VizAction::Quit => { viz_quit.set(true); return None; }
+            VizAction::NextSeed => { skip_viz = true; }
+            VizAction::NextStep => {}
+        }
     }
 
     // Track claimed faces in this trial (using a HashSet, not mesh mutation)
@@ -1292,6 +1412,25 @@ fn run_cylinder_trial_bfs(
                 vertex_set.insert(vi);
             }
             queue.push_back(cni);
+
+            // Viz: show accepted face
+            if !skip_viz {
+                if let Some(action) = viz_bfs_step(
+                    viz, &[seed_fi, seed_ni], &face_list, cni,
+                    &format!("BFS-cyl: accepted fi={cni} ({} faces) r={:.4} [space=step, shift+space=skip]", face_list.len(), current_radius),
+                    vec![viz::CylinderOverlay {
+                        origin: current_origin, direction: current_dir, radius: current_radius,
+                        half_length: current_radius * 2.0,
+                        color: [0.2, 0.4, 1.0, 0.3],
+                    }], Vec::new(),
+                ) {
+                    match action {
+                        VizAction::Quit => { viz_quit.set(true); return None; }
+                        VizAction::NextSeed => { skip_viz = true; }
+                        VizAction::NextStep => {}
+                    }
+                }
+            }
         }
 
         // Early termination: if we have 3+ faces and are rediscovering the
@@ -1384,9 +1523,11 @@ fn deduce_cylindrical_hypotheses(
     surface_tol: f64,
     angular_tol: f64,
     verbosity: u8,
-) -> Vec<CylindricalHypothesis> {
+    viz: Option<&VizSender>,
+) -> (Vec<CylindricalHypothesis>, bool) {
     let num_faces = mesh.faces.len();
     let mut hypotheses: Vec<CylindricalHypothesis> = Vec::new();
+    let viz_quit = std::cell::Cell::new(false);
 
     for fi in 0..num_faces {
         if mesh.faces[fi].cylindrical_hypothesis != UNDEDUCED_CYLINDRICAL_HYPOTHESIS {
@@ -1453,7 +1594,12 @@ fn deduce_cylindrical_hypotheses(
                 vertex_tol, surface_tol, angular_tol,
                 best_candidate.as_ref(),
                 verbosity,
+                viz, &viz_quit,
             );
+
+            if viz_quit.get() {
+                return (hypotheses, true);
+            }
 
             if let Some(trial) = trial {
                 if best_candidate.as_ref().is_none_or(|b| trial.faces.len() > b.faces.len()) {
@@ -1493,7 +1639,7 @@ fn deduce_cylindrical_hypotheses(
             mesh.faces[fi].cylindrical_hypothesis = NO_HYPOTHESIS;
         }
     }
-    hypotheses
+    (hypotheses, false)
 }
 
 /// Validate fitted cylindrical hypotheses against a reference STEP shape.
@@ -1832,6 +1978,7 @@ fn build_vertex_to_faces_map(mesh: &ConnectedMesh) -> Vec<Vec<usize>> {
 /// For each mesh vertex, collect the surrounding faces and fit a sphere to their
 /// vertices. If the fit is good, seed a BFS to grow the hypothesis. After BFS,
 /// validate solid-angle coverage to reject fillet-strip growth.
+#[allow(clippy::too_many_arguments)]
 fn deduce_spherical_hypotheses(
     mesh: &mut ConnectedMesh,
     planar_hypotheses: &[PlanarHypothesis],
@@ -1840,8 +1987,10 @@ fn deduce_spherical_hypotheses(
     angular_tol: f64,
     max_sphere_radius: f64,
     verbosity: u8,
-) -> Vec<SphericalHypothesis> {
+    viz: Option<&VizSender>,
+) -> (Vec<SphericalHypothesis>, bool) {
     let mut hypotheses: Vec<SphericalHypothesis> = Vec::new();
+    let mut user_quit = false;
 
     // Build vertex-to-faces map for vertex-neighborhood seeding
     let vtf = build_vertex_to_faces_map(mesh);
@@ -1993,6 +2142,27 @@ fn deduce_spherical_hypotheses(
                 );
             }
         }
+
+        // Viz: show seed faces
+        let mut skip_viz = false;
+        if let Some(action) = viz_bfs_seed(
+            viz, &surrounding,
+            &format!("BFS-sph hi={hi}: {} seed faces, r={:.4} {} [space=step, shift+space=skip]",
+                surrounding.len(), current_radius, if convex { "convex" } else { "concave" }),
+            Vec::new(),
+            vec![viz::SphereOverlay {
+                center: current_center,
+                radius: current_radius,
+                color: [0.2, 0.4, 1.0, 0.3],
+            }],
+        ) {
+            match action {
+                VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
+                VizAction::NextSeed => { skip_viz = true; }
+                VizAction::NextStep => {}
+            }
+        }
+
 
         // BFS expansion
         while let Some(current_fi) = queue.pop_front() {
@@ -2200,6 +2370,26 @@ fn deduce_spherical_hypotheses(
                     vertex_set.insert(v);
                 }
                 queue.push_back(cni);
+
+                // Viz: show accepted face
+                if !skip_viz {
+                    if let Some(action) = viz_bfs_step(
+                        viz, &surrounding, &face_list, cni,
+                        &format!("BFS-sph hi={hi}: accepted fi={cni} ({} faces) r={:.4} [space=step, shift+space=skip]", face_list.len(), current_radius),
+                        Vec::new(),
+                        vec![viz::SphereOverlay {
+                            center: current_center,
+                            radius: current_radius,
+                            color: [0.2, 0.4, 1.0, 0.3],
+                        }],
+                    ) {
+                        match action {
+                            VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
+                            VizAction::NextSeed => { skip_viz = true; }
+                            VizAction::NextStep => {}
+                        }
+                    }
+                }
             }
         }
 
@@ -2266,7 +2456,7 @@ fn deduce_spherical_hypotheses(
         }
     }
 
-    hypotheses
+    (hypotheses, user_quit)
 }
 
 /// Validate fitted spherical hypotheses against a reference STEP shape.
@@ -2578,7 +2768,7 @@ fn compare_selected_surfaces(
 /// Run stage 2: fit surface hypotheses to mesh faces and select surfaces.
 pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz::VizSender>) -> Result<Stage2Output, Stage2Error> {
     // Stage 2.1: Deduce planar hypotheses
-    let mut planar_hypotheses = deduce_planar_hypotheses(&mut mesh, config.vertex_tolerance_mm, config.verbosity);
+    let (mut planar_hypotheses, planar_quit) = deduce_planar_hypotheses(&mut mesh, config.vertex_tolerance_mm, config.verbosity, viz);
 
     if !config.quiet {
         let multi_face_count = planar_hypotheses.iter().filter(|h| h.faces.len() > 1).count();
@@ -2614,41 +2804,16 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
         }
     }
 
-    // Viz: show planar hypotheses
-    if let Some(viz_sender) = viz {
-        if config.viz_active(2, 1) {
-            use crate::viz;
-            let palette = viz::PALETTE;
-            for (hi, hyp) in planar_hypotheses.iter().enumerate() {
-                if hyp.faces.len() <= 1 {
-                    continue;
-                }
-                let (cr, cg, cb) = palette[hi % palette.len()];
-                let mut overlay = viz::VizOverlay::new();
-                overlay.status_text = format!(
-                    "Stage 2.1: Plane {} — {} faces, normal=[{:.3},{:.3},{:.3}] [space=next, shift+space=skip]",
-                    hi, hyp.faces.len(), hyp.normal[0], hyp.normal[1], hyp.normal[2],
-                );
-                overlay.face_highlights.push(viz::FaceHighlight {
-                    face_indices: hyp.faces.clone(),
-                    color: [cr, cg, cb, 1.0],
-                });
-                match viz_sender.show_and_wait(overlay) {
-                    viz::VizAction::Quit => {
-                        return Ok(Stage2Output {
-                            mesh,
-                            planar_hypotheses,
-                            cylindrical_hypotheses: Vec::new(),
-                            spherical_hypotheses: Vec::new(),
-                            selected_surfaces: Vec::new(),
-                        });
-                    }
-                    viz::VizAction::NextSeed => break,
-                    viz::VizAction::NextStep => {}
-                }
-            }
-        }
+    if planar_quit {
+        return Ok(Stage2Output {
+            mesh,
+            planar_hypotheses,
+            cylindrical_hypotheses: Vec::new(),
+            spherical_hypotheses: Vec::new(),
+            selected_surfaces: Vec::new(),
+        });
     }
+
 
 
     if !config.stage.at_least(2, 2) {
@@ -2662,10 +2827,11 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
     }
 
     // Stage 2.2: Deduce cylindrical hypotheses
-    let mut cylindrical_hypotheses = deduce_cylindrical_hypotheses(
+    let (mut cylindrical_hypotheses, cylindrical_quit) = deduce_cylindrical_hypotheses(
         &mut mesh, config.vertex_tolerance_mm,
         config.surface_tolerance_mm, config.angular_tolerance_rad,
         config.verbosity,
+        viz,
     );
 
     if !config.quiet {
@@ -2732,60 +2898,16 @@ Normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
         }
     }
 
-    // Viz: show cylindrical hypotheses
-    if let Some(viz_sender) = viz {
-        if config.viz_active(2, 2) {
-            use crate::viz;
-            let palette = viz::PALETTE;
-            for (hi, hyp) in cylindrical_hypotheses.iter().enumerate() {
-                let (cr, cg, cb) = palette[hi % palette.len()];
-                let half_len = {
-                    let mut min_t = f64::MAX;
-                    let mut max_t = f64::MIN;
-                    for &fi in &hyp.faces {
-                        let face = &mesh.faces[fi];
-                        let centroid = face_centroid(face, &mesh.vertices);
-                        let t = (centroid[0] - hyp.axis_origin[0]) * hyp.axis_direction[0]
-                            + (centroid[1] - hyp.axis_origin[1]) * hyp.axis_direction[1]
-                            + (centroid[2] - hyp.axis_origin[2]) * hyp.axis_direction[2];
-                        min_t = min_t.min(t);
-                        max_t = max_t.max(t);
-                    }
-                    ((max_t - min_t) * 0.5 + hyp.radius * 0.3).max(hyp.radius * 0.5)
-                };
-                let mut overlay = viz::VizOverlay::new();
-                overlay.status_text = format!(
-                    "Stage 2.2: Cylinder {} — {} faces, r={:.4}, {} [space=next, shift+space=skip]",
-                    hi, hyp.faces.len(), hyp.radius,
-                    if hyp.convex { "convex" } else { "concave" },
-                );
-                overlay.face_highlights.push(viz::FaceHighlight {
-                    face_indices: hyp.faces.clone(),
-                    color: [cr, cg, cb, 1.0],
-                });
-                overlay.cylinders.push(viz::CylinderOverlay {
-                    origin: hyp.axis_origin,
-                    direction: hyp.axis_direction,
-                    radius: hyp.radius,
-                    half_length: half_len,
-                    color: [cr, cg, cb, 0.3],
-                });
-                match viz_sender.show_and_wait(overlay) {
-                    viz::VizAction::Quit => {
-                        return Ok(Stage2Output {
-                            mesh,
-                            planar_hypotheses,
-                            cylindrical_hypotheses,
-                            spherical_hypotheses: Vec::new(),
-                            selected_surfaces: Vec::new(),
-                        });
-                    }
-                    viz::VizAction::NextSeed => break,
-                    viz::VizAction::NextStep => {}
-                }
-            }
-        }
+    if cylindrical_quit {
+        return Ok(Stage2Output {
+            mesh,
+            planar_hypotheses,
+            cylindrical_hypotheses,
+            spherical_hypotheses: Vec::new(),
+            selected_surfaces: Vec::new(),
+        });
     }
+
 
 
     if !config.stage.at_least(2, 3) {
@@ -2801,10 +2923,11 @@ Normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
     // Stage 2.3: Deduce spherical hypotheses
     let bb_diag = bounding_box_diagonal(&mesh.vertices);
     let max_sphere_radius = bb_diag * MAX_SPHERE_RADIUS_FACTOR;
-    let mut spherical_hypotheses = deduce_spherical_hypotheses(
+    let (mut spherical_hypotheses, spherical_quit) = deduce_spherical_hypotheses(
         &mut mesh, &planar_hypotheses, config.vertex_tolerance_mm,
         config.surface_tolerance_mm, config.angular_tolerance_rad, max_sphere_radius,
         config.verbosity,
+        viz,
     );
 
     if !config.quiet {
@@ -2869,45 +2992,16 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
         }
     }
 
-    // Viz: show spherical hypotheses
-    if let Some(viz_sender) = viz {
-        if config.viz_active(2, 3) {
-            use crate::viz;
-            let palette = viz::PALETTE;
-            for (hi, hyp) in spherical_hypotheses.iter().enumerate() {
-                let (cr, cg, cb) = palette[hi % palette.len()];
-                let mut overlay = viz::VizOverlay::new();
-                overlay.status_text = format!(
-                    "Stage 2.3: Sphere {} — {} faces, r={:.4}, center=[{:.3},{:.3},{:.3}], {} [space=next, shift+space=skip]",
-                    hi, hyp.faces.len(), hyp.radius,
-                    hyp.center[0], hyp.center[1], hyp.center[2],
-                    if hyp.convex { "convex" } else { "concave" },
-                );
-                overlay.face_highlights.push(viz::FaceHighlight {
-                    face_indices: hyp.faces.clone(),
-                    color: [cr, cg, cb, 1.0],
-                });
-                overlay.spheres.push(viz::SphereOverlay {
-                    center: hyp.center,
-                    radius: hyp.radius,
-                    color: [cr, cg, cb, 0.3],
-                });
-                match viz_sender.show_and_wait(overlay) {
-                    viz::VizAction::Quit => {
-                        return Ok(Stage2Output {
-                            mesh,
-                            planar_hypotheses,
-                            cylindrical_hypotheses,
-                            spherical_hypotheses,
-                            selected_surfaces: Vec::new(),
-                        });
-                    }
-                    viz::VizAction::NextSeed => break,
-                    viz::VizAction::NextStep => {}
-                }
-            }
-        }
+    if spherical_quit {
+        return Ok(Stage2Output {
+            mesh,
+            planar_hypotheses,
+            cylindrical_hypotheses,
+            spherical_hypotheses,
+            selected_surfaces: Vec::new(),
+        });
     }
+
 
 
     if !config.stage.at_least(2, 4) {
@@ -3040,7 +3134,7 @@ mod tests {
                 .expect("should load");
         mesh.validate_and_populate_topology().expect("should validate");
 
-        let hypotheses = deduce_planar_hypotheses(&mut mesh, 1e-5, 0);
+        let (hypotheses, _) = deduce_planar_hypotheses(&mut mesh, 1e-5, 0, None);
 
         // A cube has 6 faces, each with 2 triangles
         assert_eq!(mesh.faces.len(), 12);
@@ -3094,7 +3188,7 @@ mod tests {
         ];
         let mesh = build_mesh(verts, vec![[0, 1, 2], [0, 3, 1]]);
         let mut mesh = mesh;
-        let hypotheses = deduce_planar_hypotheses(&mut mesh, 1e-5, 0);
+        let (hypotheses, _) = deduce_planar_hypotheses(&mut mesh, 1e-5, 0, None);
 
         assert_eq!(
             hypotheses.len(),
@@ -3114,7 +3208,7 @@ mod tests {
         ];
         let mesh = build_mesh(verts, vec![[0, 1, 2], [0, 2, 3]]);
         let mut mesh = mesh;
-        let hypotheses = deduce_planar_hypotheses(&mut mesh, 1e-5, 0);
+        let (hypotheses, _) = deduce_planar_hypotheses(&mut mesh, 1e-5, 0, None);
 
         assert_eq!(
             hypotheses.len(),
@@ -3141,10 +3235,10 @@ mod tests {
     #[test]
     fn cube_angular_tolerance_rejects_cylinder() {
         let mut mesh = load_stage1("manual/cube.stl");
-        let _planar = deduce_planar_hypotheses(&mut mesh, 1e-5, 0);
+        let (_planar, _) = deduce_planar_hypotheses(&mut mesh, 1e-5, 0, None);
         // 17.5° angular tolerance: cube faces meet at 90°, so no cylinders
-        let cyls = deduce_cylindrical_hypotheses(
-            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0
+        let (cyls, _) = deduce_cylindrical_hypotheses(
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0, None
         );
         assert_eq!(cyls.len(), 0, "cube should produce 0 cylinders at 17.5° angular tolerance");
     }
@@ -3152,13 +3246,13 @@ mod tests {
     #[test]
     fn cube_angular_tolerance_rejects_sphere() {
         let mut mesh = load_stage1("manual/cube.stl");
-        let planar = deduce_planar_hypotheses(&mut mesh, 1e-5, 0);
+        let (planar, _) = deduce_planar_hypotheses(&mut mesh, 1e-5, 0, None);
         let _ = deduce_cylindrical_hypotheses(
-            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0, None
         );
         // 17.5° angular tolerance: cube faces meet at 90°, so no spheres
-        let sphs = deduce_spherical_hypotheses(
-            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 100.0, 0,
+        let (sphs, _) = deduce_spherical_hypotheses(
+            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 100.0, 0, None,
         );
         assert_eq!(sphs.len(), 0, "cube should produce 0 spheres at 17.5° angular tolerance");
     }
@@ -3166,13 +3260,13 @@ mod tests {
     #[test]
     fn cube_high_angular_tolerance_allows_sphere() {
         let mut mesh = load_stage1("manual/cube.stl");
-        let planar = deduce_planar_hypotheses(&mut mesh, 1e-5, 0);
+        let (planar, _) = deduce_planar_hypotheses(&mut mesh, 1e-5, 0, None);
         let _ = deduce_cylindrical_hypotheses(
-            &mut mesh, 1e-5, 0.4, 91.0_f64.to_radians(), 0
+            &mut mesh, 1e-5, 0.4, 91.0_f64.to_radians(), 0, None
         );
         // 91° angular tolerance: exceeds 90° dihedral angle of cube
-        let sphs = deduce_spherical_hypotheses(
-            &mut mesh, &planar, 1e-5, 0.4, 91.0_f64.to_radians(), 100.0, 0,
+        let (sphs, _) = deduce_spherical_hypotheses(
+            &mut mesh, &planar, 1e-5, 0.4, 91.0_f64.to_radians(), 100.0, 0, None,
         );
         assert!(!sphs.is_empty(), "cube should produce spheres at 91° angular tolerance");
     }
@@ -3180,9 +3274,9 @@ mod tests {
     #[test]
     fn cylinder_detected_at_default_angular_tolerance() {
         let mut mesh = load_stage1("ccad/generated/simple_cylinder.stl");
-        let _planar = deduce_planar_hypotheses(&mut mesh, 1e-5, 0);
-        let cyls = deduce_cylindrical_hypotheses(
-            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0
+        let (_planar, _) = deduce_planar_hypotheses(&mut mesh, 1e-5, 0, None);
+        let (cyls, _) = deduce_cylindrical_hypotheses(
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0, None
         );
         assert_eq!(cyls.len(), 1, "simple cylinder should produce 1 cylinder hypothesis");
         assert!(cyls[0].convex);
@@ -3192,12 +3286,12 @@ mod tests {
     #[test]
     fn sphere_detected_at_default_angular_tolerance() {
         let mut mesh = load_stage1("ccad/generated/simple_sphere.stl");
-        let planar = deduce_planar_hypotheses(&mut mesh, 1e-5, 0);
+        let (planar, _) = deduce_planar_hypotheses(&mut mesh, 1e-5, 0, None);
         let _ = deduce_cylindrical_hypotheses(
-            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0, None
         );
-        let sphs = deduce_spherical_hypotheses(
-            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 1000.0, 0,
+        let (sphs, _) = deduce_spherical_hypotheses(
+            &mut mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 1000.0, 0, None,
         );
         assert_eq!(sphs.len(), 1, "simple sphere should produce 1 sphere hypothesis");
         assert!(sphs[0].convex);
