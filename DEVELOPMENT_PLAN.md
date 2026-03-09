@@ -223,29 +223,44 @@ Fit cylindrical hypotheses to connected sets of faces that lie on a common cylin
 
 The algorithm uses BFS region growing, analogous to stage 2.1 but seeded from pairs of adjacent faces (since a single triangle is always planar and cannot determine curvature). A key challenge is that **any two non-coplanar faces define some cylinder** — the cross product of their normals gives an axis, and a circle fit always produces a radius. The previous algorithm took the first valid seed and committed to it, which meant a bogus 3-face cylinder from an unfortunate seed pair could permanently consume faces that should belong to a correct 20-face cylinder seeded from a different pair. The fix is multi-seed evaluation with angular coverage validation:
 
+**Pairwise qualification:**
+Two faces fi and ni are pairwise qualified to participate in a cylindrical hypothesis if:
+- fi and ni are neighbors.
+- fi and ni are unassigned (`cylindrical_hypothesis == -2`).
+- fi and ni have a sufficiently different normal (cross product magnitude exceeds `MIN_CROSS_THRESHOLD`, e.g. 0.01).
+- The dihedral angle between fi and ni does not exceed `--angular-tolerance` (default 17.5°).
+
+**Cylinder fit qualification:**
+A face or set of faces is cylinder fit qualified if:
+- All vertices are within `--vertex-tolerance` of the cylinder.
+- All face centroids are within `--surface-tolerance` of the cylinder.
+- **Convexity check**: compute the vector from the axis to the face's centroid. Check that the face's normal agrees with the hypothesis convexity (dot product with radial vector has the expected sign). Reject if inconsistent — this prevents merging the inner and outer surfaces of a thin-walled cylinder.
+
 **Multi-seed evaluation:**
 - Initialize all `cylindrical_hypothesis` to `UNDEDUCED` (-2).
 - For each face fi where `cylindrical_hypothesis == -2`:
-    - Collect **all** valid seed partners: for each neighbor ni of fi, check that ni is also unassigned (`cylindrical_hypothesis == -2`), has a sufficiently different normal (cross product magnitude exceeds `MIN_CROSS_THRESHOLD`, e.g. 0.01), and the dihedral angle between fi and ni does not exceed `--angular-tolerance` (default 17.5°). Additionally, the cylinder fit from the seed pair must succeed and all seed vertices must be within `--vertex-tolerance`. Collect all neighbors that pass these checks.
-    - If no valid seed partner found: set `cylindrical_hypothesis = -1`, skip. (This face will be considered for spherical or other hypotheses in later stages.)
-    - For each valid seed partner, run a **trial BFS** (see BFS expansion below) using temporary data structures (a local face list and vertex set — do not mutate `mesh.faces[].cylindrical_hypothesis` during trials). Each trial produces a candidate hypothesis with a face count and fitted parameters. After each trial completes (and passes centroid validation + minimum face count), compare against the **current best candidate** for this starting face; keep whichever has more faces. This avoids storing all trial results.
-    - **Early termination** of redundant trials: during a trial BFS, if a best candidate already exists, check whether the trial is rediscovering the same cylinder. After the trial has accumulated 3+ faces, compare its fitted cylinder parameters against the best candidate's: axis directions nearly parallel (`|a_trial · a_best| > 1 - 1e-6`), radii within `--vertex-tolerance`, and axis-to-axis distance within `--vertex-tolerance`. If parameters match AND every face accepted so far is already in the best candidate's face set, abandon the trial — it can only produce a subset of the existing best. This is the dominant optimization: on a 20-face fillet cylinder with ~3 valid seeds per face, most of the ~60 trials terminate after 2–3 faces instead of exploring all 20.
+    - For each neighbor n1 of fi where n1 is pairwise qualified with fi:
+        - For each neighbor n2 of n1 where n2 is not a neighbor of fi and n2 is pairwise qualified with n1:
+            - Produce a cylinder fit to the set of vertices belonging to fi, n1, and n2.
+            - If faces fi, n1, and n2 are cylinder fit qualified, accept this set of faces as a valid seed and perform BFS expansion on them using temporary data structures (a local face list and vertex set — do not mutate `mesh.faces[].cylindrical_hypothesis` during trials). The initial BFS queue should contain fi, n1, and n2, so we explore all of their neighbors. Each trial produces a candidate hypothesis with a face count and fitted parameters. After each trial completes with acceptance, compare against the **current best candidate** for this starting face; keep whichever has more area covered. This avoids storing all trial results.
+- Accept the **best candidate** as a cylindrical hypothesis: create a cylindrical hypothesis, and for every face in the hypothesis, assign the face's cylindrical hypothesis field.
+
+Future work (not currently implemented - in the future we'll evaluate whether these optimizations help):
+    - **Early termination** of redundant trials: during a trial BFS, if a best candidate already exists, check whether the trial is rediscovering the same cylinder. After the trial adds a face, compare its fitted cylinder parameters against the best candidate's: axis directions nearly parallel (`|a_trial · a_best| > 1 - 1e-6`), radii within `--vertex-tolerance`, and axis-to-axis distance within `--vertex-tolerance`. If parameters match AND every face accepted so far is already in the best candidate's face set, abandon the trial — it can only produce a subset of the existing best. This is the dominant optimization: on a 20-face fillet cylinder with ~3 valid seeds per face, most of the ~60 trials terminate after 2–3 faces instead of exploring all 20.
     - Apply **angular coverage validation** (see below) to the best candidate. If it fails, discard and try the next face.
     - If it passes, **commit** the hypothesis: write assignments to `mesh.faces[].cylindrical_hypothesis` for all member faces, and append to the hypotheses vector.
 
-**BFS expansion** (run once per trial seed, using temporary assignment tracking):
-- Pop faces from the queue and examine each neighbor ni:
+**BFS expansion** (run once per trial seed):
+- Repeatedly pop a face fi from the queue and examine each neighbor ni:
     - If ni is already assigned a cylindrical hypothesis (in the mesh) or claimed by this trial, skip.
-    - **Vertex distance check**: for each vertex of ni, compute `| ||v - axis_closest|| - radius |`. If all are within `--vertex-tolerance`, proceed to remaining checks (no re-fit needed yet). If any exceeds `2 * vertex_tolerance`, skip immediately (re-fitting cannot help, same reasoning as for planar hypotheses). If between 1x and 2x, flag for re-fit.
-    - **Centroid validation**: compute the distance from ni's centroid to the fitted cylinder. If beyond `2 * surface_tolerance`, skip. If beyond `surface_tolerance`, flag for re-fit (even if all vertices were within tolerance).
-    - **Convexity check**: compute the vector from the axis to ni's centroid. Check that ni's face normal agrees with the hypothesis convexity (dot product with radial vector has the expected sign). Reject if inconsistent — this prevents merging the inner and outer surfaces of a thin-walled cylinder.
-    - **Angular tolerance check**: for each of ni's mesh neighbors that is already assigned to this hypothesis, compute the dihedral angle between ni and that neighbor. If any exceeds `--angular-tolerance`, reject. Checking all assigned neighbors (not just the BFS parent) provides defense-in-depth against creased NURBS surfaces where BFS might approach a face from a low-angle direction while a high-angle assigned neighbor exists on a different axis.
-    - **Re-fit attempt**: if vertex distance or centroid validation flagged a re-fit, re-fit the cylinder from all current faces plus ni (see Cylinder Fitting below). Check that **all** vertices (existing and new) are within tolerance of the re-fitted cylinder and **all** face centroids lie within `--surface-tolerance` of the fitted cylinder surface. If so, accept the re-fit; otherwise skip ni.
+    - If ni is not pairwise qualified with all of its neighbor faces which are assigned in this trial already, skip. Checking all assigned neighbors (not just the BFS parent) provides defense-in-depth against creased NURBS surfaces where BFS might approach a face from a low-angle direction while a high-angle assigned neighbor exists on a different axis.
+    - If ni fails cylinder fit qualification:
+        - If any vertex of ni is further than `2 * vertex_tolerance` from the cylinder or ni's centroid is further than `2 * surface_tolerance` from the cylinder, skip ni. Otherwise, do a re-fit attempt:
+        - **Re-fit attempt**: re-fit the cylinder from all current faces plus ni (see Cylinder Fitting below). Check that **all** faces (existing and new) are cylinder fit qualified with the re-fit. If so, accept the re-fit; otherwise reject the re-fit cylinder parameters and skip ni.
     - If accepted: add ni to the trial's face list and vertex set, push ni onto the BFS queue.
-- After BFS completes: final re-fit from all accumulated faces and vertices. Compute error metrics.
-- **Minimum face count**: Require at least 3 faces in a cylindrical hypothesis. This is technically redundant with angular coverage validation (which inherently requires 3+ angular clusters, hence 3+ faces), but serves as a cheap O(1) early rejection before the more expensive angular coverage computation.
+- After BFS completes: do a final re-fit from all accumulated faces and vertices. Compute error metrics.
 
-**Angular coverage validation** (applied to the best trial for each starting face):
+Future work: **Angular coverage validation** (applied to the best trial for each starting face):
 
 The problem: any two non-coplanar faces fit *some* cylinder. A bogus seed that doesn't span the cylinder's circumference can grow into a small hypothesis via BFS, consuming faces that should belong to a correct hypothesis from a better seed. The angular coverage check ensures the hypothesis has genuine circumferential support — faces distributed around the cylinder, not clustered on one side.
 
@@ -262,7 +277,7 @@ This ensures the hypothesis has at least 3 distinct angular clusters of faces ar
 
 *Note: For partial cylinders (arcs less than 360°), this check still works — it requires 3+ angular clusters within whatever arc is covered, which is the minimum for a reliable cylinder fit. A 90° cylindrical arc with 6 evenly-spaced faces has internal gaps of ~18° and span of ~90°, so second_largest_gap (18°) ≤ span/3 (30°) — passes correctly.*
 
-**Computational cost**: For each starting face with K valid seed partners, up to K trial BFS runs are performed, but early termination (see above) typically reduces this to 1–2 full runs plus several near-instant abandonments. Typical K is 2–4 (most faces have 3–4 neighbors, of which 1–2 are valid seeds). Without early termination, total work would be proportional to `sum over faces of (K_i × region_size_i)`. With it, most trials on faces belonging to already-discovered cylinders terminate after 3 face acceptances, reducing effective cost to roughly `sum over faces of (K_i × min(3, region_size_i))`. The temporary data structures (HashSet for claimed faces, Vec for face list) are lightweight.
+**Computational cost**: UPDATE ME For each starting face with K valid seed partners, up to K trial BFS runs are performed, but early termination (see above) typically reduces this to 1–2 full runs plus several near-instant abandonments. Typical K is 2–4 (most faces have 3–4 neighbors, of which 1–2 are valid seeds). Without early termination, total work would be proportional to `sum over faces of (K_i × region_size_i)`. With it, most trials on faces belonging to already-discovered cylinders terminate after 3 face acceptances, reducing effective cost to roughly `sum over faces of (K_i × min(3, region_size_i))`. The temporary data structures (HashSet for claimed faces, Vec for face list) are lightweight.
 
 **Cylinder fitting** (used for seeding and re-fitting):
 
