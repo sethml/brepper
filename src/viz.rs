@@ -448,6 +448,12 @@ pub struct FaceHighlight {
     pub color: [f32; 4],
 }
 
+/// Edge outline overlay: edges of specified faces drawn as thick colored lines.
+pub struct EdgeHighlight {
+    pub face_indices: Vec<usize>,
+    pub color: [f32; 4],
+}
+
 /// A translucent cylinder overlay for visualization.
 pub struct CylinderOverlay {
     pub origin: [f64; 3],
@@ -467,6 +473,7 @@ pub struct SphereOverlay {
 /// A visualization step: overlay to display while waiting for user input.
 pub struct VizOverlay {
     pub face_highlights: Vec<FaceHighlight>,
+    pub edge_highlights: Vec<EdgeHighlight>,
     pub cylinders: Vec<CylinderOverlay>,
     pub spheres: Vec<SphereOverlay>,
     pub status_text: String,
@@ -486,6 +493,7 @@ impl VizOverlay {
     pub fn new() -> Self {
         Self {
             face_highlights: Vec::new(),
+            edge_highlights: Vec::new(),
             cylinders: Vec::new(),
             spheres: Vec::new(),
             status_text: String::new(),
@@ -566,6 +574,26 @@ pub struct VizSetup {
 // ---------------------------------------------------------------------------
 // Free functions for building overlay GPU objects
 // ---------------------------------------------------------------------------
+
+fn build_face_edge_wireframe(
+    ctx: &Context,
+    face_idxs: &[usize],
+    stl_positions: &[Vector3<f32>],
+    face_indices_arr: &[[usize; 4]],
+    face_vc_arr: &[u8],
+) -> WireframeRenderer {
+    let mut positions = Vec::new();
+    for &fi in face_idxs {
+        let vc = face_vc_arr[fi] as usize;
+        let vis = &face_indices_arr[fi];
+        for j in 0..vc {
+            let j_next = (j + 1) % vc;
+            positions.push(stl_positions[vis[j]]);
+            positions.push(stl_positions[vis[j_next]]);
+        }
+    }
+    WireframeRenderer::new(ctx, &positions)
+}
 
 fn build_face_highlight_mesh(
     ctx: &Context,
@@ -851,6 +879,7 @@ where
 
     // Current overlay GPU objects
     let mut highlight_meshes: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
+    let mut edge_highlight_renderers: Vec<(WireframeRenderer, [f32; 4])> = Vec::new();
     let mut cylinder_meshes: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
     let mut sphere_meshes: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
     let mut waiting_for_input = false;
@@ -908,6 +937,20 @@ where
                                 &face_indices_arr,
                                 &face_vc_arr,
                             )
+                        })
+                        .collect();
+                    edge_highlight_renderers = overlay
+                        .edge_highlights
+                        .iter()
+                        .map(|e| {
+                            let wf = build_face_edge_wireframe(
+                                &context,
+                                &e.face_indices,
+                                &stl_positions,
+                                &face_indices_arr,
+                                &face_vc_arr,
+                            );
+                            (wf, e.color)
                         })
                         .collect();
                     cylinder_meshes = overlay
@@ -1183,6 +1226,11 @@ where
                 use context::HasContext;
                 context.disable(context::BLEND);
             }
+        }
+
+        // Edge highlight overlays (thick colored outlines on specific faces)
+        for (wf, color) in &edge_highlight_renderers {
+            wf.render(&context, &camera, *color, true);
         }
 
         FrameOutput::default()

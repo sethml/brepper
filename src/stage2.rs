@@ -406,9 +406,11 @@ fn viz_bfs_seed(
 }
 
 /// Send a custom viz overlay with full control over highlights.
+#[allow(clippy::too_many_arguments)]
 fn viz_custom(
     viz: Option<&VizSender>,
     highlights: Vec<viz::FaceHighlight>,
+    edge_highlights: Vec<viz::EdgeHighlight>,
     status: &str,
     cylinders: Vec<viz::CylinderOverlay>,
     spheres: Vec<viz::SphereOverlay>,
@@ -419,6 +421,7 @@ fn viz_custom(
     let mut overlay = viz::VizOverlay::new();
     overlay.status_text = status.to_string();
     overlay.face_highlights = highlights;
+    overlay.edge_highlights = edge_highlights;
     overlay.cylinders = cylinders;
     overlay.spheres = spheres;
     overlay.focus_point = focus_point;
@@ -432,6 +435,22 @@ fn centered_cylinder_overlay(
     face_list: &[usize], mesh: &ConnectedMesh,
     color: [f32; 4],
 ) -> viz::CylinderOverlay {
+    // Compute full mesh bounding box extent for cylinder length
+    let mut bb_min = [f64::INFINITY; 3];
+    let mut bb_max = [f64::NEG_INFINITY; 3];
+    for v in &mesh.vertices {
+        let coords = [v.x, v.y, v.z];
+        for i in 0..3 {
+            bb_min[i] = bb_min[i].min(coords[i]);
+            bb_max[i] = bb_max[i].max(coords[i]);
+        }
+    }
+    let extent = ((bb_max[0] - bb_min[0]).powi(2)
+        + (bb_max[1] - bb_min[1]).powi(2)
+        + (bb_max[2] - bb_min[2]).powi(2))
+    .sqrt();
+
+    // Center on face list's axial extent
     let mut t_min = f64::INFINITY;
     let mut t_max = f64::NEG_INFINITY;
     for &fi in face_list {
@@ -442,7 +461,7 @@ fn centered_cylinder_overlay(
         t_max = t_max.max(t);
     }
     let t_mid = (t_min + t_max) * 0.5;
-    let half_len = ((t_max - t_min) * 0.5 + radius).max(radius);
+    let half_len = extent;
     let centered_origin = [
         origin[0] + direction[0] * t_mid,
         origin[1] + direction[1] * t_mid,
@@ -705,6 +724,7 @@ fn deduce_planar_hypotheses(
             }
             if let Some(action) = viz_custom(
                 viz, highlights,
+                Vec::new(),
                 &format!("BFS-plane hi={hi}: ACCEPTED ({} faces) [space=next]", face_list.len()),
                 Vec::new(), Vec::new(),
                 Some(viz_face_centroid(fi, mesh)),
@@ -1346,6 +1366,7 @@ fn run_cylinder_trial_bfs(
         }
         if let Some(action) = viz_custom(
             viz, highlights,
+            Vec::new(),
             &format!("BFS-cyl: seed=({}) r={:.4} {} [space=step, shift+space=skip]",
                 seed_str.join(","), current_radius, if convex { "convex" } else { "concave" }),
             vec![centered_cylinder_overlay(
@@ -1605,9 +1626,11 @@ fn run_cylinder_trial_bfs(
                     highlights.push(viz::FaceHighlight { face_indices: accepted_nonseed, color: [0.2, 0.4, 1.0, 1.0] });
                 }
                 highlights.push(viz::FaceHighlight { face_indices: vec![cni], color: [0.1, 0.2, 0.7, 1.0] });
-                if !queue_faces.is_empty() {
-                    highlights.push(viz::FaceHighlight { face_indices: queue_faces, color: [1.0, 0.5, 0.7, 1.0] });
-                }
+                let edge_highlights = if !queue_faces.is_empty() {
+                    vec![viz::EdgeHighlight { face_indices: queue_faces, color: [1.0, 0.0, 0.0, 1.0] }]
+                } else {
+                    Vec::new()
+                };
                 // Add gray background for faces with existing cylindrical hypotheses
                 let bg_faces: Vec<usize> = (0..mesh.faces.len())
                     .filter(|f| mesh.faces[*f].cylindrical_hypothesis >= 0 && !face_list.contains(f))
@@ -1617,6 +1640,7 @@ fn run_cylinder_trial_bfs(
                 }
                 if let Some(action) = viz_custom(
                     viz, highlights,
+                    edge_highlights,
                     &format!("BFS-cyl: accepted fi={cni} ({} faces) r={:.4} [space=step, shift+space=skip]", face_list.len(), current_radius),
                     vec![centered_cylinder_overlay(
                         current_origin, current_dir, current_radius,
@@ -1828,6 +1852,7 @@ fn deduce_cylindrical_hypotheses(
                     }
                     if let Some(action) = viz_custom(
                         Some(viz), highlights,
+                        Vec::new(),
                         &format!("BFS-cyl result: ACCEPTED {} faces r={:.4} [space=next]",
                             candidate.faces.len(), candidate.radius),
                         vec![centered_cylinder_overlay(
@@ -1873,6 +1898,7 @@ fn deduce_cylindrical_hypotheses(
                     if let Some(action) = viz_custom(
                         Some(viz),
                         vec![viz::FaceHighlight { face_indices: vec![fi], color: [1.0, 0.0, 0.0, 1.0] }],
+                        Vec::new(),
                         &format!("BFS-cyl result: REJECTED fi={fi} [space=next]"),
                         Vec::new(), Vec::new(),
                         Some(viz_face_centroid(fi, mesh)),
@@ -2701,6 +2727,7 @@ fn deduce_spherical_hypotheses(
                     }
                     if let Some(action) = viz_custom(
                         Some(viz), highlights,
+                        Vec::new(),
                         &format!("BFS-sph result: REJECTED hi={hi} {} faces r={:.4} [space=next]",
                             face_list.len(), current_radius),
                         Vec::new(),
@@ -2750,6 +2777,7 @@ fn deduce_spherical_hypotheses(
                 }
                 if let Some(action) = viz_custom(
                     Some(viz), highlights,
+                    Vec::new(),
                     &format!("BFS-sph result: ACCEPTED hi={hi} {} faces r={:.4} [space=next]",
                         face_list.len(), current_radius),
                     Vec::new(),
