@@ -273,3 +273,12 @@ On rounded_cube_10_r2_fine, one of the 12 quarter-cylinder edges is fragmented i
 
 ### Axis drift theory: disproven
 Hypothesis: BFS refitting gradually rotates the cylinder axis when sphere faces are added, causing "drift." Empirical testing across rounded_cube_10_r2_{coarse,fine,medium} and pill_coarse showed **zero significant axis drift** on any successful/committed cylinder hypothesis. All axis_dot(seed, refit) values were ≥ 0.999999996. Drift only occurred on tiny (3-4 face) hypotheses already rejected by existing validation (min face count, angular coverage). The axis stability check described in some versions of the development plan would not have solved the actual problem.
+
+
+### Interactive visualization (viz.rs) architecture
+- `three_d::Window::render_loop(self, callback)` consumes `self` — the render loop must own the Window and run on the main thread.
+- Channel-based architecture: main thread owns the render loop, pipeline runs in a background thread communicating via `mpsc::sync_channel(0)` for synchronous handoff.
+- `VizSender` (pipeline side) calls `show_and_wait()` which blocks until the user presses Space/Shift+Space/Q.
+- `VizReceiver` (render side) receives overlays and sends back `VizAction` responses.
+- Closures inside `render_loop` must be `'static` — extract helper logic to free functions rather than using closures that capture outer scope references.
+- Config has `OwnedPtr<Shape>` which is not Clone — must move Config into the pipeline thread closure, not clone it.

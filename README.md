@@ -25,6 +25,7 @@ GENERAL OPTIONS:
     -q, --quiet              Suppress non-error output
     --debug                  Enable debug output and intermediate files
     --stage=<stage>          Stop after stage, e.g. 2.2 (default: 4.1). --stage=2 stops after all of stage2
+    --viz-stages=<stages>    Open interactive 3D visualization at specified stages (e.g. 2.1,2.2,2.3)
 ```
 
 ### Examples
@@ -131,6 +132,28 @@ Multiple files can be loaded simultaneously; each is rendered in a distinct colo
 | Toggle hidden-edge removal | `h` |
 
 Rendering uses PBR shading with ambient and two directional lights. Sharp feature edges (boundary edges and edges where the dihedral angle exceeds ~45°) are drawn as a solid wireframe overlay. Softer mesh edges (dihedral angle below ~45°) are drawn at 50% opacity and can be toggled independently with `Shift+E`. Zooming targets the point under the mouse cursor.
+
+### Interactive Debugging Visualization
+
+Use `--viz-stages` to open a 3D window and pause execution at specific pipeline stages to visualize hypothesis deduction step by step:
+
+```bash
+# Visualize planar and cylindrical hypothesis stages
+brepper input.stl --viz-stages=2.1,2.2
+
+# Visualize all stage 2 hypothesis types with STEP comparison overlay
+brepper input.stl --compare reference.step --viz-stages=2.1,2.2,2.3
+```
+
+At each specified stage, the window shows the STL mesh with highlighted faces for each hypothesis. Cylindrical and spherical hypotheses also display translucent geometry overlays. When `--compare` is provided, the STEP surface is shown at 35% opacity for reference.
+
+| Action | Control |
+|--------|:--------|
+| Next hypothesis | `Space` |
+| Skip to next seed/stage | `Shift+Space` |
+| Quit visualization | `Q` |
+
+Supported stages: `2.1` (planar), `2.2` (cylindrical), `2.3` (spherical).
 
 ### Running Tests
 

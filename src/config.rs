@@ -24,7 +24,7 @@ impl Stage {
     }
 
     /// Normalize: if minor is 0, expand to last sub-stage of that major.
-    fn normalized(self) -> (u8, u8) {
+    pub fn normalized(self) -> (u8, u8) {
         if self.1 == 0 {
             (self.0, Self::last_minor(self.0))
         } else {
@@ -60,6 +60,10 @@ fn parse_stage(s: &str) -> Result<Stage, String> {
         }
         Ok(Stage(major, 0))
     }
+}
+
+fn parse_viz_stages(s: &str) -> Result<Vec<Stage>, String> {
+    s.split(',').map(|part| parse_stage(part.trim())).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +176,10 @@ struct CliArgs {
     /// Stop after this stage (e.g. "2.2" or "2"). Default: run all stages.
     #[arg(long, value_parser = parse_stage)]
     pub stage: Option<Stage>,
+
+    /// Comma-separated list of stages for interactive visualization (e.g. "2.2,3.1").
+    #[arg(long = "viz-stages", value_parser = parse_viz_stages)]
+    pub viz_stages: Option<Vec<Stage>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +218,8 @@ pub struct Config {
     pub debug: bool,
     /// Stop after this stage.
     pub stage: Stage,
+    /// Stages to visualize interactively.
+    pub viz_stages: Vec<Stage>,
 }
 
 impl std::fmt::Debug for Config {
@@ -229,6 +239,7 @@ impl std::fmt::Debug for Config {
             .field("quiet", &self.quiet)
             .field("debug", &self.debug)
             .field("stage", &self.stage)
+            .field("viz_stages", &self.viz_stages)
             .finish()
     }
 }
@@ -252,7 +263,16 @@ impl Config {
             quiet: args.quiet,
             debug: args.debug,
             stage: args.stage.unwrap_or_default(),
+            viz_stages: args.viz_stages.unwrap_or_default(),
         }
+    }
+
+    /// Check if a specific stage should be visualized.
+    pub fn viz_active(&self, major: u8, minor: u8) -> bool {
+        self.viz_stages.iter().any(|s| {
+            let (sm, ss) = s.normalized();
+            sm == major && ss == minor
+        })
     }
 
     /// If --compare was specified, load the STEP file shape for bounded distance comparison.

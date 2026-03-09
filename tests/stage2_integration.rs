@@ -41,7 +41,7 @@ fn config_for_compare_stage22(stl_path: &str, step_path: &str) -> config::Config
 /// Run stages 1 and 2.1, returning the Stage2Output.
 fn run_stage2(config: &config::Config) -> stage2::Stage2Output {
     let mesh = stage1::stage1(config).expect("stage1 should pass");
-    stage2::stage2(config, mesh).expect("stage2 should pass")
+    stage2::stage2(config, mesh, None).expect("stage2 should pass")
 }
 
 /// Compute the centroid of a mesh face.

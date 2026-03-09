@@ -2576,7 +2576,7 @@ fn compare_selected_surfaces(
 // ---------------------------------------------------------------------------
 
 /// Run stage 2: fit surface hypotheses to mesh faces and select surfaces.
-pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, Stage2Error> {
+pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz::VizSender>) -> Result<Stage2Output, Stage2Error> {
     // Stage 2.1: Deduce planar hypotheses
     let mut planar_hypotheses = deduce_planar_hypotheses(&mut mesh, config.vertex_tolerance_mm, config.verbosity);
 
@@ -2613,6 +2613,43 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh) -> Result<Stage2Output, 
             eprintln!("  Compare: all planar hypothesis centroids within tolerance");
         }
     }
+
+    // Viz: show planar hypotheses
+    if let Some(viz_sender) = viz {
+        if config.viz_active(2, 1) {
+            use crate::viz;
+            let palette = viz::PALETTE;
+            for (hi, hyp) in planar_hypotheses.iter().enumerate() {
+                if hyp.faces.len() <= 1 {
+                    continue;
+                }
+                let (cr, cg, cb) = palette[hi % palette.len()];
+                let mut overlay = viz::VizOverlay::new();
+                overlay.status_text = format!(
+                    "Stage 2.1: Plane {} — {} faces, normal=[{:.3},{:.3},{:.3}] [space=next, shift+space=skip]",
+                    hi, hyp.faces.len(), hyp.normal[0], hyp.normal[1], hyp.normal[2],
+                );
+                overlay.face_highlights.push(viz::FaceHighlight {
+                    face_indices: hyp.faces.clone(),
+                    color: [cr, cg, cb, 1.0],
+                });
+                match viz_sender.show_and_wait(overlay) {
+                    viz::VizAction::Quit => {
+                        return Ok(Stage2Output {
+                            mesh,
+                            planar_hypotheses,
+                            cylindrical_hypotheses: Vec::new(),
+                            spherical_hypotheses: Vec::new(),
+                            selected_surfaces: Vec::new(),
+                        });
+                    }
+                    viz::VizAction::NextSeed => break,
+                    viz::VizAction::NextStep => {}
+                }
+            }
+        }
+    }
+
 
     if !config.stage.at_least(2, 2) {
         return Ok(Stage2Output {
@@ -2695,6 +2732,62 @@ Normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
         }
     }
 
+    // Viz: show cylindrical hypotheses
+    if let Some(viz_sender) = viz {
+        if config.viz_active(2, 2) {
+            use crate::viz;
+            let palette = viz::PALETTE;
+            for (hi, hyp) in cylindrical_hypotheses.iter().enumerate() {
+                let (cr, cg, cb) = palette[hi % palette.len()];
+                let half_len = {
+                    let mut min_t = f64::MAX;
+                    let mut max_t = f64::MIN;
+                    for &fi in &hyp.faces {
+                        let face = &mesh.faces[fi];
+                        let centroid = face_centroid(face, &mesh.vertices);
+                        let t = (centroid[0] - hyp.axis_origin[0]) * hyp.axis_direction[0]
+                            + (centroid[1] - hyp.axis_origin[1]) * hyp.axis_direction[1]
+                            + (centroid[2] - hyp.axis_origin[2]) * hyp.axis_direction[2];
+                        min_t = min_t.min(t);
+                        max_t = max_t.max(t);
+                    }
+                    ((max_t - min_t) * 0.5 + hyp.radius * 0.3).max(hyp.radius * 0.5)
+                };
+                let mut overlay = viz::VizOverlay::new();
+                overlay.status_text = format!(
+                    "Stage 2.2: Cylinder {} — {} faces, r={:.4}, {} [space=next, shift+space=skip]",
+                    hi, hyp.faces.len(), hyp.radius,
+                    if hyp.convex { "convex" } else { "concave" },
+                );
+                overlay.face_highlights.push(viz::FaceHighlight {
+                    face_indices: hyp.faces.clone(),
+                    color: [cr, cg, cb, 1.0],
+                });
+                overlay.cylinders.push(viz::CylinderOverlay {
+                    origin: hyp.axis_origin,
+                    direction: hyp.axis_direction,
+                    radius: hyp.radius,
+                    half_length: half_len,
+                    color: [cr, cg, cb, 0.3],
+                });
+                match viz_sender.show_and_wait(overlay) {
+                    viz::VizAction::Quit => {
+                        return Ok(Stage2Output {
+                            mesh,
+                            planar_hypotheses,
+                            cylindrical_hypotheses,
+                            spherical_hypotheses: Vec::new(),
+                            selected_surfaces: Vec::new(),
+                        });
+                    }
+                    viz::VizAction::NextSeed => break,
+                    viz::VizAction::NextStep => {}
+                }
+            }
+        }
+    }
+
+
     if !config.stage.at_least(2, 3) {
         return Ok(Stage2Output {
             mesh,
@@ -2775,6 +2868,47 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             eprintln!("  Compare: all spherical hypothesis centroids within tolerance");
         }
     }
+
+    // Viz: show spherical hypotheses
+    if let Some(viz_sender) = viz {
+        if config.viz_active(2, 3) {
+            use crate::viz;
+            let palette = viz::PALETTE;
+            for (hi, hyp) in spherical_hypotheses.iter().enumerate() {
+                let (cr, cg, cb) = palette[hi % palette.len()];
+                let mut overlay = viz::VizOverlay::new();
+                overlay.status_text = format!(
+                    "Stage 2.3: Sphere {} — {} faces, r={:.4}, center=[{:.3},{:.3},{:.3}], {} [space=next, shift+space=skip]",
+                    hi, hyp.faces.len(), hyp.radius,
+                    hyp.center[0], hyp.center[1], hyp.center[2],
+                    if hyp.convex { "convex" } else { "concave" },
+                );
+                overlay.face_highlights.push(viz::FaceHighlight {
+                    face_indices: hyp.faces.clone(),
+                    color: [cr, cg, cb, 1.0],
+                });
+                overlay.spheres.push(viz::SphereOverlay {
+                    center: hyp.center,
+                    radius: hyp.radius,
+                    color: [cr, cg, cb, 0.3],
+                });
+                match viz_sender.show_and_wait(overlay) {
+                    viz::VizAction::Quit => {
+                        return Ok(Stage2Output {
+                            mesh,
+                            planar_hypotheses,
+                            cylindrical_hypotheses,
+                            spherical_hypotheses,
+                            selected_surfaces: Vec::new(),
+                        });
+                    }
+                    viz::VizAction::NextSeed => break,
+                    viz::VizAction::NextStep => {}
+                }
+            }
+        }
+    }
+
 
     if !config.stage.at_least(2, 4) {
         return Ok(Stage2Output {

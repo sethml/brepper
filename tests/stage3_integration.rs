@@ -29,7 +29,7 @@ fn config_for_compare(stl_path: &str, step_path: &str) -> config::Config {
 /// Run stages 1, 2, and 3 (through current max substage), returning the Stage3Output.
 fn run_stage3(config: &config::Config) -> stage3::Stage3Output {
     let mesh = stage1::stage1(config).expect("stage1 should pass");
-    let surfaces = stage2::stage2(config, mesh).expect("stage2 should pass");
+    let surfaces = stage2::stage2(config, mesh, None).expect("stage2 should pass");
     stage3::stage3(config, surfaces).expect("stage3 should pass")
 }
 
@@ -602,7 +602,7 @@ fn config_for_compare_34(stl_path: &str, step_path: &str) -> config::Config {
 
 fn run_stage3_34(config: &config::Config) -> stage3::Stage3Output {
     let mesh = stage1::stage1(config).expect("stage1 should pass");
-    let surfaces = stage2::stage2(config, mesh).expect("stage2 should pass");
+    let surfaces = stage2::stage2(config, mesh, None).expect("stage2 should pass");
     stage3::stage3(config, surfaces).expect("stage3 should pass")
 }
 
@@ -867,7 +867,7 @@ fn config_for_compare_35(stl_path: &str, step_path: &str) -> config::Config {
 
 fn run_stage3_35(config: &config::Config) -> stage3::Stage3Output {
     let mesh = stage1::stage1(config).expect("stage1 should pass");
-    let surfaces = stage2::stage2(config, mesh).expect("stage2 should pass");
+    let surfaces = stage2::stage2(config, mesh, None).expect("stage2 should pass");
     stage3::stage3(config, surfaces).expect("stage3 should pass")
 }
 
@@ -1048,7 +1048,7 @@ fn config_for_compare_36(stl_path: &str, step_path: &str) -> config::Config {
 
 fn run_stage3_36(config: &config::Config) -> stage3::Stage3Output {
     let mesh = stage1::stage1(config).expect("stage1 should pass");
-    let surfaces = stage2::stage2(config, mesh).expect("stage2 should pass");
+    let surfaces = stage2::stage2(config, mesh, None).expect("stage2 should pass");
     stage3::stage3(config, surfaces).expect("stage3 should pass")
 }
 
