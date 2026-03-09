@@ -2768,7 +2768,8 @@ fn compare_selected_surfaces(
 /// Run stage 2: fit surface hypotheses to mesh faces and select surfaces.
 pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz::VizSender>) -> Result<Stage2Output, Stage2Error> {
     // Stage 2.1: Deduce planar hypotheses
-    let (mut planar_hypotheses, planar_quit) = deduce_planar_hypotheses(&mut mesh, config.vertex_tolerance_mm, config.verbosity, viz);
+    let viz_21 = if config.viz_active(2, 1) { viz } else { None };
+    let (mut planar_hypotheses, planar_quit) = deduce_planar_hypotheses(&mut mesh, config.vertex_tolerance_mm, config.verbosity, viz_21);
 
     if !config.quiet {
         let multi_face_count = planar_hypotheses.iter().filter(|h| h.faces.len() > 1).count();
@@ -2827,11 +2828,12 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
     }
 
     // Stage 2.2: Deduce cylindrical hypotheses
+    let viz_22 = if config.viz_active(2, 2) { viz } else { None };
     let (mut cylindrical_hypotheses, cylindrical_quit) = deduce_cylindrical_hypotheses(
         &mut mesh, config.vertex_tolerance_mm,
         config.surface_tolerance_mm, config.angular_tolerance_rad,
         config.verbosity,
-        viz,
+        viz_22,
     );
 
     if !config.quiet {
@@ -2923,11 +2925,12 @@ Normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
     // Stage 2.3: Deduce spherical hypotheses
     let bb_diag = bounding_box_diagonal(&mesh.vertices);
     let max_sphere_radius = bb_diag * MAX_SPHERE_RADIUS_FACTOR;
+    let viz_23 = if config.viz_active(2, 3) { viz } else { None };
     let (mut spherical_hypotheses, spherical_quit) = deduce_spherical_hypotheses(
         &mut mesh, &planar_hypotheses, config.vertex_tolerance_mm,
         config.surface_tolerance_mm, config.angular_tolerance_rad, max_sphere_radius,
         config.verbosity,
-        viz,
+        viz_23,
     );
 
     if !config.quiet {
