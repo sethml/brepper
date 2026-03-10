@@ -225,6 +225,17 @@ fn onshape_pill_fine_stage41_compare() {
     run_stage4(&config);
 }
 
+#[test]
+fn onshape_dome_hemisphere_stage41_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/onshape/dome_hemisphere_20_fine.stl"),
+        &format!("{dir}/tmp/test_dome_hemisphere_cmp.step"),
+        &format!("{dir}/tests/onshape/dome_hemisphere_20.step"),
+    );
+    run_stage4(&config);
+}
+
 // --- Missing output path test ---
 
 #[test]

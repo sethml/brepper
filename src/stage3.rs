@@ -1096,9 +1096,52 @@ fn compute_edge_curve(
         None
     };
 
-    let curve_handle = match fallback_curve.as_ref() {
+    let initial_curve_handle = match fallback_curve.as_ref() {
         Some(h) => &**h,
         None => int_ss.line(best_line_idx),
+    };
+
+    // For closed-loop edges, IntSS may return partial arcs (e.g., semicircles)
+    // when the intersection circle passes through the sphere's UV poles (the
+    // intersection plane contains the sphere axis). In UV space, such a circle
+    // splits into two disconnected arcs, which IntSS returns separately.
+    // Detect this and reconstruct the full circle from sampled curve points.
+    let full_circle_curve: Option<OwnedPtr<geom::HandleGeomCurve>> =
+        if edge.vertex_indices[0] == usize::MAX && edge.vertex_indices[1] == usize::MAX {
+            let c = initial_curve_handle.get();
+            let span = c.last_parameter() - c.first_parameter();
+            if (span - 2.0 * std::f64::consts::PI).abs() > 0.1 {
+                // Partial arc — reconstruct full circle from 3 sampled points
+                let fp = c.first_parameter();
+                let p0 = c.value(fp);
+                let p1 = c.value(fp + span * 0.25);
+                let p2 = c.value(fp + span * 0.75);
+
+                match reconstruct_full_circle(&p0, &p1, &p2) {
+                    Some(circle_handle) => {
+                        if config.verbose {
+                            let cc = circle_handle.get();
+                            let r = cc.value(0.0);
+                            eprintln!(
+                                "    Edge (f{fi0},f{fi1}): IntSS returned partial arc \
+                                 (span={span:.4}), reconstructed full circle"
+                            );
+                            let _ = r; // suppress unused
+                        }
+                        Some(circle_handle)
+                    }
+                    None => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+    let curve_handle: &geom::HandleGeomCurve = match full_circle_curve.as_ref() {
+        Some(h) => h,
+        None => initial_curve_handle,
     };
 
     // Trim the curve to vertex endpoint parameters
@@ -1240,6 +1283,62 @@ fn select_closest_curve(
 }
 
 /// Project a 3D point onto a curve and return the curve parameter.
+/// Reconstruct a full Geom_Circle from 3 points on a circular arc.
+///
+/// Used when IntSS returns a partial arc (e.g., semicircle) for a closed-loop
+/// edge. This happens when the intersection plane contains the sphere axis,
+/// causing the circle to pass through the sphere's UV poles. IntSS splits such
+/// circles into two arcs in UV space.
+///
+/// Returns a Handle(Geom_Curve) for a full circle [0, 2π], or None if the
+/// points are nearly collinear.
+fn reconstruct_full_circle(
+    p0: &gp::Pnt,
+    p1: &gp::Pnt,
+    p2: &gp::Pnt,
+) -> Option<OwnedPtr<geom::HandleGeomCurve>> {
+    // Vectors from p0 to p1 and p2
+    let a = [p1.x() - p0.x(), p1.y() - p0.y(), p1.z() - p0.z()];
+    let b = [p2.x() - p0.x(), p2.y() - p0.y(), p2.z() - p0.z()];
+
+    // Normal = cross(a, b)
+    let n = [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ];
+    let n2 = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+    if n2 < 1e-30 {
+        return None; // points are collinear
+    }
+
+    // Circumcenter = p0 + (|b|²*(n×a) + |a|²*(b×n)) / (2*|n|²)
+    let a2 = a[0] * a[0] + a[1] * a[1] + a[2] * a[2];
+    let b2 = b[0] * b[0] + b[1] * b[1] + b[2] * b[2];
+    let nxa = [
+        n[1] * a[2] - n[2] * a[1],
+        n[2] * a[0] - n[0] * a[2],
+        n[0] * a[1] - n[1] * a[0],
+    ];
+    let bxn = [
+        b[1] * n[2] - b[2] * n[1],
+        b[2] * n[0] - b[0] * n[2],
+        b[0] * n[1] - b[1] * n[0],
+    ];
+    let denom = 2.0 * n2;
+    let cx = p0.x() + (b2 * nxa[0] + a2 * bxn[0]) / denom;
+    let cy = p0.y() + (b2 * nxa[1] + a2 * bxn[1]) / denom;
+    let cz = p0.z() + (b2 * nxa[2] + a2 * bxn[2]) / denom;
+    let radius = ((cx - p0.x()).powi(2) + (cy - p0.y()).powi(2) + (cz - p0.z()).powi(2)).sqrt();
+
+    let n_len = n2.sqrt();
+    let center = gp::Pnt::new_real3(cx, cy, cz);
+    let normal = gp::Dir::new_real3(n[0] / n_len, n[1] / n_len, n[2] / n_len);
+    let ax2 = gp::Ax2::new_pnt_dir(&center, &normal);
+    let circle = geom::Circle::new_ax2_real(&ax2, radius);
+    Some(geom::Circle::to_handle(circle).to_handle_curve())
+}
+
 fn project_point_on_curve(
     point: &[f64; 3],
     curve: &geom::HandleGeomCurve,
@@ -2318,28 +2417,25 @@ fn create_periodic_face(
         e.vertex_indices[0] == usize::MAX && e.vertex_indices[1] == usize::MAX
     });
 
-    // For spherical faces with tangent closed-loop edges, the boundary circles
-    // may pass through the sphere's UV singularities (poles). UV-bounds construction
-    // won't work. Instead, project the 3D curves onto the surface to get proper
-    // pcurves, then use wire-based construction.
-    let has_tangent_closed_loops = matches!(surface, SelectedSurface::Spherical(_))
+    // For spherical faces with all-closed-loop edges, the boundary circles
+    // may pass through the sphere's UV singularities (poles). This happens when
+    // the intersection plane contains the sphere axis (e.g., a hemisphere cut by
+    // a meridional plane, or a pill/capsule shape). UV-bounds on the original
+    // sphere creates wrong face regions. Detect this and reorient the sphere.
+    let has_closed_loop_sphere = matches!(surface, SelectedSurface::Spherical(_))
         && all_closed_loops
-        && !fd.edge_indices.is_empty()
-        && fd.edge_indices.iter().any(|&ei| output.edges[ei].tangent);
+        && !fd.edge_indices.is_empty();
 
-    let make_face = if has_tangent_closed_loops {
-        // Tangent sphere with all-closed-loop edges (e.g., pill/capsule).
+    let make_face = if has_closed_loop_sphere {
+        // Sphere with all-closed-loop edges.
         // The boundary circles may pass through or near the sphere's UV
         // singularities (poles). When within 45°, UV-bounds on the original
         // sphere creates wrong face regions (boundaries are meridians, not
-        // the tangent circles).
+        // circles at constant V).
         //
-        // It's safe to reorient the sphere to align with the cylinder axis
-        // here because `has_tangent_closed_loops` requires ALL edges to be
-        // closed loops. Two tangent circles from cylinders with different
-        // axes would intersect on the sphere (creating vertices), making
-        // `all_closed_loops` = False. So all tangent edges here share one
-        // unique cylinder axis.
+        // For tangent edges (cylinder-sphere): reorient to align with cylinder axis.
+        // For non-tangent edges (plane-sphere): reorient to align with the
+        // boundary circle's normal (= plane normal for sphere-plane intersections).
         let sph_idx = match surface {
             SelectedSurface::Spherical(i) => *i,
             _ => unreachable!(),
@@ -2348,11 +2444,10 @@ fn create_periodic_face(
         let sphere_z = [0.0_f64, 0.0, 1.0]; // sphere axis is always Z-up
         let cos_45 = std::f64::consts::FRAC_PI_4.cos(); // cos(45°) ≈ 0.707
 
-        // Check if any tangent edge circle comes within 45° of a pole
+        // Check if any boundary edge circle comes within 45° of a pole
         let mut near_pole = false;
         for &ei in &fd.edge_indices {
             let edge = &output.edges[ei];
-            if !edge.tangent { continue; }
             let curve_handle = edge.curve_3d.as_ref().unwrap();
             for pole_sign in &[1.0_f64, -1.0] {
                 let pole = gp::Pnt::new_real3(
@@ -2380,22 +2475,29 @@ fn create_periodic_face(
             );
             if !mf.is_done() {
                 return Err(Stage3Error::AdjacencyError(format!(
-                    "MakeFace (UV bounds) failed for tangent sphere face {fi}: {:?}",
+                    "MakeFace (UV bounds) failed for sphere face {fi}: {:?}",
                     mf.error(),
                 )));
             }
             if config.verbose {
                 let area = compute_face_area(&mf);
-                eprintln!("  Face {fi}: tangent sphere UV-bounds (no pole split), area={area:.4} mm\u{b2}");
+                eprintln!("  Face {fi}: sphere UV-bounds (no pole issue), area={area:.4} mm\u{b2}");
             }
             mf
         } else {
             // Circle passes within 45° of a pole. Reorient the sphere surface
-            // so its Z-axis aligns with the cylinder axis. This makes the
-            // boundary circles into iso-V curves, allowing UV-bounds
+            // so its Z-axis aligns with the boundary circle normal. This makes
+            // the boundary circles into iso-V curves, allowing UV-bounds
             // construction to work correctly.
-            let cyl_axis = {
-                let mut axis = None;
+            //
+            // Determine the reorientation axis:
+            // - For tangent edges: use the adjacent cylinder's axis direction
+            // - For non-tangent edges: use the boundary circle's normal
+            //   (derived from the edge curve, which is a Geom_Circle)
+            let reorient_axis = {
+                let mut axis: Option<[f64; 3]> = None;
+
+                // Try cylinder axis from tangent edges first
                 for &ei in &fd.edge_indices {
                     let edge = &output.edges[ei];
                     if !edge.tangent { continue; }
@@ -2410,14 +2512,42 @@ fn create_periodic_face(
                     }
                     if axis.is_some() { break; }
                 }
+
+                // Fall back to boundary circle normal (for non-tangent edges)
+                if axis.is_none() {
+                    for &ei in &fd.edge_indices {
+                        let edge = &output.edges[ei];
+                        let curve = edge.curve_3d.as_ref().unwrap().get();
+                        let fp = curve.first_parameter();
+                        let lp = curve.last_parameter();
+                        let span = lp - fp;
+                        // Sample 3 points on the curve to determine circle normal
+                        let p0 = curve.value(fp);
+                        let p1 = curve.value(fp + span * 0.25);
+                        let p2 = curve.value(fp + span * 0.75);
+                        let a = [p1.x() - p0.x(), p1.y() - p0.y(), p1.z() - p0.z()];
+                        let b = [p2.x() - p0.x(), p2.y() - p0.y(), p2.z() - p0.z()];
+                        let n = [
+                            a[1] * b[2] - a[2] * b[1],
+                            a[2] * b[0] - a[0] * b[2],
+                            a[0] * b[1] - a[1] * b[0],
+                        ];
+                        let n_len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                        if n_len > 1e-10 {
+                            axis = Some([n[0] / n_len, n[1] / n_len, n[2] / n_len]);
+                            break;
+                        }
+                    }
+                }
+
                 axis.ok_or_else(|| Stage3Error::AdjacencyError(format!(
-                    "tangent sphere face {fi} has no adjacent cylinder"
+                    "sphere face {fi} near pole: could not determine reorientation axis"
                 )))?
             };
 
-            // Recreate the sphere surface with its axis aligned to the cylinder axis
+            // Recreate the sphere surface with its axis aligned to the reorientation axis
             let origin = gp::Pnt::new_real3(sph.center[0], sph.center[1], sph.center[2]);
-            let dir = gp::Dir::new_real3(cyl_axis[0], cyl_axis[1], cyl_axis[2]);
+            let dir = gp::Dir::new_real3(reorient_axis[0], reorient_axis[1], reorient_axis[2]);
             let ax3 = gp::Ax3::new_pnt_dir(&origin, &dir);
             let oriented_sphere = geom::SphericalSurface::new_ax3_real(&ax3, sph.radius);
             let oriented_surface = geom::SphericalSurface::to_handle(oriented_sphere).to_handle_surface();
