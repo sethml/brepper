@@ -734,34 +734,34 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 | T-Shape | 28 triangles | 10 planes | ✓ Stage 4.1 (STEP output) |
 | Staircase | 48 triangles | 12 planes | ✓ Stage 4.1 (STEP output) |
 || Chamfered Cube (onshape) | 44 triangles | 26 planes | ✓ Stage 4.1 (STEP output) |
-| Stepped Block | Complex planar | Multiple planes | ✓ Stage 4.1 (STEP output) |
-| L Bracket | Complex planar | Multiple planes | ✓ Stage 4.1 (STEP output) |
-| Cylinder | Tessellated cylinder | 1 cylinder + 2 planes | ✓ Stage 1 |
+|| Stepped Block (onshape) | 52 triangles | 16 planes | ✓ Stage 4.1 (STEP output) |
+|| L Bracket (onshape) | 492 triangles | 10 planes | ✓ Stage 4.1 (STEP output) |
+|| Cylinder (onshape) | 232 triangles | 1 cylinder + 2 planes | ✓ Stage 4.1 (STEP output) |
 || Simple Cylinder (ccad) | 124 triangles | 1 cylinder + 2 planes | ✓ Stage 4.1 (STEP output) |
-|| Block with Hole (ccad) | 44 triangles | 6 planes + 1 concave cylinder | ✓ Stage 4.1 (STEP output) |
+|| Block with Hole (ccad) | 132 triangles | 6 planes + 1 concave cylinder | ✓ Stage 4.1 (STEP output) |
 || Pipe (ccad) | 244 triangles | 2 cylinders (in/out) + 2 annular planes | ✓ Stage 4.1 (STEP output) |
 || Stepped Cylinder (ccad) | 240 triangles | 2 cylinders + 3 planes | ✓ Stage 4.1 (STEP output) |
-|| Two Holes (ccad) | 244 triangles | 6 planes + 2 concave cylinders | ✓ Stage 4.1 (STEP output) |
-|| Block Corner Hole (ccad) | 188 triangles | 6 planes + 1 concave cylinder | ✓ Stage 4.1 (STEP output) |
+|| Two Holes (ccad) | 252 triangles | 6 planes + 2 concave cylinders | ✓ Stage 4.1 (STEP output) |
+|| Block Corner Hole (ccad) | 44 triangles | 6 planes + 1 concave cylinder | ✓ Stage 4.1 (STEP output) |
 || Simple Sphere (ccad) | 974 triangles | 1 sphere | ✓ Stage 4.1 (STEP output) |
 || Hemisphere (ccad) | 518 triangles | 1 sphere + 1 plane | ✓ Stage 4.1 (STEP output) |
 || Spherical Pocket (ccad) | 486 triangles | 6 planes + 1 concave sphere | ✓ Stage 4.1 (STEP output) |
 || Ball on Cylinder (ccad) | 764 triangles | 1 sphere + 1 cylinder + 1 plane | ✓ Stage 4.1 (STEP output) |
-|| Sphere (onshape) | Tessellated sphere | 1 sphere | ✓ Stage 4.1 (STEP output) |
-|| Dome Hemisphere (onshape) | Fine tessellation | 1 sphere + 1 plane | ✗ Stage 3.5 (sewing failure) |
-|| Pill coarse (onshape) | Capsule (coarse) | 1 cylinder + 2 spheres | ✓ Stage 4.1 (STEP output) |
-|| Pill fine (onshape) | Capsule (fine) | 1 cylinder + 2 spheres | ✓ Stage 4.1 (STEP output) |
-|| Plate with Hole (onshape) | 128 triangles | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
-|| Plate with Hole low (fusion) | Low tessellation | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
-|| Plate with Hole med (fusion) | Medium tessellation | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
-|| Plate with Hole high (fusion) | High tessellation | 6 planes + 1 cylinder | ✗ Stage 3.1 (coplanarity tolerance) |
-|| Part Rounded Cube coarse (onshape) | 820 triangles | 6 planes + 4 cylinders | ✓ Stage 4.1 (STEP output) |
-|| Part Rounded Cube fine (onshape) | 4260 triangles | 6 planes + 4 cylinders | ✓ Stage 4.1 (STEP output) |
-|| Rounded Cube coarse (onshape) | 820 triangles | 6 planes + 12 cylinders + 8 spheres | ✗ Stage 3.1 |
-|| Rounded Cube medium (onshape) | 3548 triangles | 6 planes + 12 cylinders + 8 spheres | ✗ Stage 3.1 |
-|| Rounded Cube fine (onshape) | 21466 triangles | 6 planes + 12 cylinders + 8 spheres | ✗ Stage 3.1 |
-|| Pipe Elbow (onshape) | Fine tessellation | Cylinders + torus | ✗ Stage 3.1 (missing torus surface type) |
-| Cone | Tessellated cone | 1 cone + 1 plane | ✗ Stage 3.1 (missing cone surface type) |
+|| Sphere (onshape) | 20448 triangles | 1 sphere | ✓ Stage 4.1 (STEP output) |
+|| Dome Hemisphere (onshape) | 10368 triangles | 1 sphere + 1 plane | ✗ Stage 3.5 (sewing failure) |
+|| Pill coarse (onshape) | 752 triangles | 1 cylinder + 2 spheres | ✓ Stage 4.1 (STEP output) |
+|| Pill fine (onshape) | 20736 triangles | 1 cylinder + 2 spheres | ✓ Stage 4.1 (STEP output) |
+|| Plate with Hole (onshape) | 136 triangles | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
+|| Plate with Hole low (fusion) | 112 triangles | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
+|| Plate with Hole med (fusion) | 168 triangles | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
+|| Plate with Hole high (fusion) | 284 triangles | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
+|| Part Rounded Cube coarse (onshape) | 140 triangles | 6 planes + 4 cylinders | ✓ Stage 4.1 (STEP output) |
+|| Part Rounded Cube fine (onshape) | 588 triangles | 6 planes + 4 cylinders | ✓ Stage 4.1 (STEP output) |
+|| Rounded Cube coarse (onshape) | 820 triangles | 6 planes + 12 cylinders + 8 spheres | ✓ Stage 4.1 (needs --angular-tolerance 20) |
+|| Rounded Cube medium (onshape) | 3548 triangles | 6 planes + 12 cylinders + 8 spheres | ✓ Stage 4.1 (STEP output) |
+|| Rounded Cube fine (onshape) | 21466 triangles | 6 planes + 12 cylinders + 8 spheres | ✓ Stage 4.1 (STEP output) |
+|| Pipe Elbow (onshape) | 11232 triangles | Cylinders + torus | ✗ Stage 3.1 (missing torus surface type) |
+|| Cone (onshape) | 116 triangles | 1 cone + 1 plane | ✗ Stage 3.1 (missing cone surface type) |
 | Fillet | Blended edge | Planes + fillet surface | |
 | Complex part | Real CAD export | Matching topology | |
 
