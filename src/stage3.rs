@@ -1627,6 +1627,80 @@ fn validate_tangent_curve(
     Ok(())
 }
 
+
+/// Compute the outward surface normal at a point for viz camera orientation.
+fn viz_surface_normal_at_point(
+    fi: usize,
+    point: [f64; 3],
+    face_descriptors: &[FaceDescriptor],
+    stage2: &Stage2Output,
+) -> [f32; 3] {
+    let ss_idx = face_descriptors[fi].selected_surface_idx;
+    match &stage2.selected_surfaces[ss_idx] {
+        SelectedSurface::Planar(i) => {
+            let n = stage2.planar_hypotheses[*i].normal;
+            [n[0] as f32, n[1] as f32, n[2] as f32]
+        }
+        SelectedSurface::Cylindrical(i) => {
+            let hyp = &stage2.cylindrical_hypotheses[*i];
+            let ao = hyp.axis_origin;
+            let ad = hyp.axis_direction;
+            let v = [point[0] - ao[0], point[1] - ao[1], point[2] - ao[2]];
+            let proj = v[0] * ad[0] + v[1] * ad[1] + v[2] * ad[2];
+            let r = [v[0] - proj * ad[0], v[1] - proj * ad[1], v[2] - proj * ad[2]];
+            let len = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt();
+            if len < 1e-10 {
+                return [0.0_f32, 0.0, 1.0];
+            }
+            let sign: f64 = if hyp.convex { 1.0 } else { -1.0 };
+            [(sign * r[0] / len) as f32, (sign * r[1] / len) as f32, (sign * r[2] / len) as f32]
+        }
+        SelectedSurface::Spherical(i) => {
+            let hyp = &stage2.spherical_hypotheses[*i];
+            let v = [
+                point[0] - hyp.center[0],
+                point[1] - hyp.center[1],
+                point[2] - hyp.center[2],
+            ];
+            let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            if len < 1e-10 {
+                return [0.0_f32, 0.0, 1.0];
+            }
+            let sign: f64 = if hyp.convex { 1.0 } else { -1.0 };
+            [(sign * v[0] / len) as f32, (sign * v[1] / len) as f32, (sign * v[2] / len) as f32]
+        }
+    }
+}
+
+/// Compute the vertex centroid of a selected surface for viz camera positioning.
+fn viz_selected_surface_centroid(
+    fi: usize,
+    face_descriptors: &[FaceDescriptor],
+    stage2: &Stage2Output,
+) -> [f64; 3] {
+    let ss_idx = face_descriptors[fi].selected_surface_idx;
+    let vertex_indices: &[usize] = match &stage2.selected_surfaces[ss_idx] {
+        SelectedSurface::Planar(i) => &stage2.planar_hypotheses[*i].vertices,
+        SelectedSurface::Cylindrical(i) => &stage2.cylindrical_hypotheses[*i].vertices,
+        SelectedSurface::Spherical(i) => &stage2.spherical_hypotheses[*i].vertices,
+    };
+    let mut cx = 0.0_f64;
+    let mut cy = 0.0_f64;
+    let mut cz = 0.0_f64;
+    for &vi in vertex_indices {
+        let v = &stage2.mesh.vertices[vi];
+        cx += v.x;
+        cy += v.y;
+        cz += v.z;
+    }
+    let n = vertex_indices.len() as f64;
+    if n > 0.0 {
+        [cx / n, cy / n, cz / n]
+    } else {
+        [0.0, 0.0, 0.0]
+    }
+}
+
 /// Compute edge curves for all ReconEdges.
 fn compute_edge_curves_all(
     mut output: Stage3Output,
@@ -1698,6 +1772,16 @@ fn compute_edge_curves_all(
                         overlay.status_text = format!(
                             "Stage 3.3: Edge {ei}/{total}: faces [{fi0}, {fi1}] (tangent)"
                         );
+                        let mid_pt = {
+                            let c = curve.get();
+                            let mid = (c.first_parameter() + c.last_parameter()) / 2.0;
+                            let p = c.value(mid);
+                            [p.x(), p.y(), p.z()]
+                        };
+                        overlay.focus_point = Some([mid_pt[0] as f32, mid_pt[1] as f32, mid_pt[2] as f32]);
+                        overlay.focus_normal = Some(viz_surface_normal_at_point(
+                            fi0, mid_pt, &output.face_descriptors, &output.stage2,
+                        ));
                         viz_sender.show_and_wait(overlay);
                     }
                 }
@@ -1765,6 +1849,16 @@ fn compute_edge_curves_all(
                         overlay.status_text = format!(
                             "Stage 3.3: Edge {ei}/{total}: faces [{fi0}, {fi1}]"
                         );
+                        let mid_pt = {
+                            let c = curve.get();
+                            let mid = (c.first_parameter() + c.last_parameter()) / 2.0;
+                            let p = c.value(mid);
+                            [p.x(), p.y(), p.z()]
+                        };
+                        overlay.focus_point = Some([mid_pt[0] as f32, mid_pt[1] as f32, mid_pt[2] as f32]);
+                        overlay.focus_normal = Some(viz_surface_normal_at_point(
+                            fi0, mid_pt, &output.face_descriptors, &output.stage2,
+                        ));
                         viz_sender.show_and_wait(overlay);
                     }
             }
@@ -3110,6 +3204,11 @@ fn create_occt_faces_all(
                 "Stage 3.4: Face {fi}/{num_faces}: {stype} ({} edges)",
                 output.face_descriptors[fi].edge_indices.len(),
             );
+            let centroid = viz_selected_surface_centroid(fi, &output.face_descriptors, &output.stage2);
+            overlay.focus_point = Some([centroid[0] as f32, centroid[1] as f32, centroid[2] as f32]);
+            overlay.focus_normal = Some(viz_surface_normal_at_point(
+                fi, centroid, &output.face_descriptors, &output.stage2,
+            ));
             viz_sender.show_and_wait(overlay);
         }
 
