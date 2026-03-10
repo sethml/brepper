@@ -876,6 +876,9 @@ where
     let mut perspective = true;
     let mut auto_center = true;
     let up = vec3(0.0f32, 0.0, 1.0);
+    // Maximum |Z-component| of the camera-from-target unit vector to keep
+    // the camera at least 15° from the +Z and -Z poles.  cos(15°) ≈ 0.9659.
+    const COS_15_DEG: f32 = 0.9659258_f32;
 
     // Current overlay GPU objects
     let mut highlight_meshes: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
@@ -884,11 +887,11 @@ where
     let mut sphere_meshes: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
     let mut waiting_for_input = false;
 
-    // Camera animation state
-    let mut anim_start_pos: Option<Vector3<f32>> = None;
-    let mut anim_start_target: Option<Vector3<f32>> = None;
-    let mut anim_end_target: Option<Vector3<f32>> = None;
-    let mut anim_end_pos: Option<Vector3<f32>> = None;
+    // Camera animation state (rotation-only slew: target and distance are fixed)
+    let mut anim_start_dir: Option<Vector3<f32>> = None; // unit vec from target to camera at anim start
+    let mut anim_end_dir: Option<Vector3<f32>> = None;   // unit vec from target to camera at anim end
+    let mut anim_target: Option<Vector3<f32>> = None;    // fixed target during slew
+    let mut anim_dist: f32 = 0.0;                        // fixed distance during slew
     let mut anim_t: f32 = 1.0; // 1.0 = no animation
 
     window.render_loop(move |frame_input| {
@@ -900,24 +903,32 @@ where
 
         camera.set_viewport(frame_input.viewport);
 
-        // Camera animation: smoothly rotate to face normal direction
+        // Camera animation: smoothly rotate to face normal direction (300 ms, rotation-only)
         if anim_t < 1.0 {
-            anim_t = (anim_t + 0.08).min(1.0); // ~12 frames to complete
+            anim_t = (anim_t + frame_input.elapsed_time as f32 / 300.0).min(1.0);
             let t = smooth_step(anim_t);
-            if let (Some(start_pos), Some(start_tgt), Some(end_tgt), Some(end_p)) =
-                (anim_start_pos, anim_start_target, anim_end_target, anim_end_pos)
+            if let (Some(start_dir), Some(end_dir), Some(tgt)) =
+                (anim_start_dir, anim_end_dir, anim_target)
             {
-                let new_target = start_tgt * (1.0 - t) + end_tgt * t;
-                let new_pos = start_pos * (1.0 - t) + end_p * t;
-                // Pick an up vector that won't be parallel to the view direction
-                let view_dir = (new_target - new_pos).normalize();
-                let world_z = vec3(0.0f32, 0.0, 1.0);
-                let anim_up = if view_dir.dot(world_z).abs() > 0.9 {
-                    vec3(0.0f32, 1.0, 0.0)
+                // Slerp between start and end view directions (camera-from-target)
+                let cos_angle = start_dir.dot(end_dir).clamp(-1.0, 1.0);
+                let new_dir = if cos_angle > 0.9999 {
+                    end_dir
                 } else {
-                    world_z
+                    let angle = cos_angle.acos();
+                    (start_dir * ((1.0 - t) * angle).sin() + end_dir * (t * angle).sin())
+                        / angle.sin()
                 };
-                camera.set_view(new_pos, new_target, anim_up);
+                // Clamp to 15° from poles: |dot(new_dir, Z)| <= cos(15°)
+                let z_component = new_dir.z.clamp(-COS_15_DEG, COS_15_DEG);
+                let xy_len = (new_dir.x * new_dir.x + new_dir.y * new_dir.y).sqrt();
+                let new_dir = if xy_len > 1e-6 {
+                    let scale = (1.0 - z_component * z_component).sqrt() / xy_len;
+                    vec3(new_dir.x * scale, new_dir.y * scale, z_component).normalize()
+                } else {
+                    vec3(1.0, 0.0, 0.0) // degenerate: look from +X
+                };
+                camera.set_view(tgt + new_dir * anim_dist, tgt, up);
             }
         }
         // Check for new overlay from pipeline thread (non-blocking)
@@ -965,31 +976,37 @@ where
                         .collect();
                     waiting_for_input = true;
 
-                    // Start camera animation if focus_point is set and auto-center is on
+                    // Start camera animation if focus_normal is set and auto-center is on.
+                    // Slew rotates only: target and distance stay fixed.
                     if auto_center {
-                        if let Some(fp) = overlay.focus_point {
-                            let target = vec3(fp[0], fp[1], fp[2]);
-                            let start_pos = *camera.position();
-                            let start_tgt = *camera.target();
-                            let dist = start_pos.distance(start_tgt);
-                            // Compute end camera position: along face normal if available
-                            let end_p = if let Some(fn_) = overlay.focus_normal {
-                                let n = vec3(fn_[0], fn_[1], fn_[2]);
-                                let n_len = n.magnitude();
-                                if n_len > 1e-6 {
-                                    target + (n / n_len) * dist
+                        if let Some(fn_) = overlay.focus_normal {
+                            let n = vec3(fn_[0], fn_[1], fn_[2]);
+                            let n_len = n.magnitude();
+                            if n_len > 1e-6 {
+                                let tgt = *camera.target();
+                                let dist = camera.position().distance(tgt);
+                                let cur_dir = (*camera.position() - tgt).normalize();
+                                // End direction: face normal (look from above the face)
+                                let mut end = (n / n_len).normalize();
+                                // Clamp end direction to 15° from poles
+                                let z_component = end.z.clamp(-COS_15_DEG, COS_15_DEG);
+                                let xy_len = (end.x * end.x + end.y * end.y).sqrt();
+                                end = if xy_len > 1e-6 {
+                                    let scale = (1.0 - z_component * z_component).sqrt() / xy_len;
+                                    vec3(end.x * scale, end.y * scale, z_component).normalize()
                                 } else {
-                                    target + (start_pos - start_tgt).normalize() * dist
+                                    cur_dir // can't slew to a pole, keep current
+                                };
+                                // Only slew if the angle exceeds 25°
+                                // (cos(25°) ≈ 0.9063; dot > threshold means angle < 25°)
+                                if cur_dir.dot(end) <= 0.9063_f32 {
+                                    anim_start_dir = Some(cur_dir);
+                                    anim_end_dir = Some(end);
+                                    anim_target = Some(tgt);
+                                    anim_dist = dist;
+                                    anim_t = 0.0;
                                 }
-                            } else {
-                                // No normal: pan to new target, keep viewing direction
-                                target + (start_pos - start_tgt).normalize() * dist
-                            };
-                            anim_start_pos = Some(start_pos);
-                            anim_start_target = Some(start_tgt);
-                            anim_end_target = Some(target);
-                            anim_end_pos = Some(end_p);
-                            anim_t = 0.0;
+                            }
                         }
                     }
                 }
@@ -1058,25 +1075,28 @@ where
                                 let s = angle.sin();
                                 v * c + axis.cross(v) * s + axis * axis.dot(v) * (1.0 - c)
                             };
-                        let rel_pos = *camera.position() - center;
-                        let rel_target = *camera.target() - center;
+                        // Orbit: rotate camera position around target, keeping Z up.
+                        let tgt = *camera.target();
+                        let rel_pos = *camera.position() - tgt;
+                        // Horizontal rotation around Z axis
                         let rel_pos = rotate(rel_pos, up, angle_h);
-                        let rel_target = rotate(rel_target, up, angle_h);
-                        let view_dir = ((center + rel_target) - (center + rel_pos)).normalize();
+                        // Vertical rotation around local right axis
+                        let view_dir = (-rel_pos).normalize();
                         let right = view_dir.cross(up);
                         let right_len = right.magnitude();
-                        if right_len > 1e-6 {
+                        let new_rel_pos = if right_len > 1e-6 {
                             let right = right / right_len;
                             let new_rel_pos = rotate(rel_pos, right, angle_v);
-                            if new_rel_pos.normalize().dot(up).abs() < 0.98 {
-                                let new_rel_target = rotate(rel_target, right, angle_v);
-                                camera.set_view(
-                                    center + new_rel_pos,
-                                    center + new_rel_target,
-                                    up,
-                                );
+                            // Clamp to 15° from poles (|Z component| <= cos(15°))
+                            if new_rel_pos.normalize().z.abs() <= COS_15_DEG {
+                                new_rel_pos
+                            } else {
+                                rel_pos
                             }
-                        }
+                        } else {
+                            rel_pos
+                        };
+                        camera.set_view(tgt + new_rel_pos, tgt, up);
                     }
                     Some(MouseButton::Right) => {
                         let pos = *camera.position();
