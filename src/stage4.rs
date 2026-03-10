@@ -134,7 +134,11 @@ fn compare_output_to_step(
 
     // Re-read the written STEP file to validate it round-trips correctly
     let mut reader = step_control::Reader::new();
-    reader.read_file_charptr(output_path);
+    let read_status = reader.read_file_charptr(output_path);
+    if read_status != if_select::ReturnStatus::Retdone {
+        eprintln!("  Compare 4.1: WARNING failed to re-read written STEP file {output_path}: {read_status:?}");
+        return Ok(());
+    }
     let progress = message::ProgressRange::new();
     reader.transfer_roots(&progress);
     let output_shape = reader.one_shape();

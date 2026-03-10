@@ -1385,6 +1385,9 @@ pub fn load_stl_meshdata(path: &std::path::Path) -> MeshData {
     use opencascade_sys::{message, rw_stl};
 
     let path_str = path.to_str().expect("invalid path");
+    if !path.exists() {
+        panic!("STL file not found: {}", path.display());
+    }
     let progress = message::ProgressRange::new();
     let tri_handle = rw_stl::read_file_charptr_progressrange_2(path_str, &progress);
     let tri = tri_handle.get();
@@ -1450,8 +1453,14 @@ pub fn load_step_meshdata(
     };
 
     let path_str = path.to_str().expect("invalid path");
+    if !path.exists() {
+        panic!("STEP file not found: {}", path.display());
+    }
     let mut reader = step_control::Reader::new();
-    reader.read_file_charptr(path_str);
+    let read_status = reader.read_file_charptr(path_str);
+    if read_status != opencascade_sys::if_select::ReturnStatus::Retdone {
+        panic!("Failed to read STEP file {}: {read_status:?}", path.display());
+    }
     let progress = message::ProgressRange::new();
     reader.transfer_roots(&progress);
     let shape = reader.one_shape();

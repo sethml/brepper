@@ -28,6 +28,10 @@ fn main() {
     let step_path = &args[2];
 
     // Read STL → Poly_Triangulation
+    if !std::path::Path::new(stl_path.as_str()).exists() {
+        eprintln!("Error: STL file not found: {stl_path}");
+        process::exit(1);
+    }
     let progress = message::ProgressRange::new();
     let tri_handle = rw_stl::read_file_charptr_progressrange_2(stl_path, &progress);
     let tri = tri_handle.get();
@@ -41,8 +45,16 @@ fn main() {
     }
 
     // Read STEP
+    if !std::path::Path::new(step_path.as_str()).exists() {
+        eprintln!("Error: STEP file not found: {step_path}");
+        process::exit(1);
+    }
     let mut reader = step_control::Reader::new();
-    reader.read_file_charptr(step_path);
+    let read_status = reader.read_file_charptr(step_path);
+    if read_status != opencascade_sys::if_select::ReturnStatus::Retdone {
+        eprintln!("Error: Failed to read STEP file {step_path}: {read_status:?}");
+        process::exit(1);
+    }
     let progress2 = message::ProgressRange::new();
     reader.transfer_roots(&progress2);
     let step_shape = reader.one_shape();

@@ -278,10 +278,6 @@ impl Config {
             None => return Ok(()),
         };
 
-        if !std::path::Path::new(&step_path).exists() {
-            return Err(format!("Compare STEP file not found: {step_path}").into());
-        }
-
         let mut reader = step_control::Reader::new();
         let read_status = reader.read_file_charptr(&step_path);
         if read_status != if_select::ReturnStatus::Retdone {

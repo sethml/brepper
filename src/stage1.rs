@@ -87,6 +87,7 @@ impl Default for VertexWeldOptions {
 #[derive(Debug)]
 pub enum MeshReadError {
     InvalidTolerance(f64),
+    FileNotFound(String),
     EmptyMesh,
 }
 
@@ -95,6 +96,9 @@ impl Display for MeshReadError {
         match self {
             MeshReadError::InvalidTolerance(tol) => {
                 write!(f, "invalid weld tolerance: {tol}, expected > 0")
+            }
+            MeshReadError::FileNotFound(path) => {
+                write!(f, "STL file not found: {path}")
             }
             MeshReadError::EmptyMesh => write!(f, "STL file did not contain any triangles"),
         }
@@ -249,6 +253,10 @@ pub fn read_connected_mesh_from_stl(
 ) -> Result<ConnectedMesh, MeshReadError> {
     if !options.tolerance.is_finite() || options.tolerance <= 0.0 {
         return Err(MeshReadError::InvalidTolerance(options.tolerance));
+    }
+
+    if !std::path::Path::new(stl_path).exists() {
+        return Err(MeshReadError::FileNotFound(stl_path.to_string()));
     }
 
     let progress = message::ProgressRange::new();
