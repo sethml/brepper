@@ -470,12 +470,34 @@ pub struct SphereOverlay {
     pub color: [f32; 4],
 }
 
+/// Arbitrary 3D line segments drawn in a specific color.
+pub struct LineOverlay {
+    /// Pairs of points: [p0, p1, p0, p1, ...]
+    pub positions: Vec<[f32; 3]>,
+    pub color: [f32; 4],
+    /// If true, lines are always visible (no depth test).
+    pub no_depth_test: bool,
+}
+
+/// A pre-tessellated 3D mesh overlay (for rendering OCCT shapes).
+pub struct ShapeMeshOverlay {
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub indices: Vec<u32>,
+    pub color: [f32; 4],
+    /// Edge wireframe positions (pairs).
+    pub edge_positions: Vec<[f32; 3]>,
+    pub edge_color: [f32; 4],
+}
+
 /// A visualization step: overlay to display while waiting for user input.
 pub struct VizOverlay {
     pub face_highlights: Vec<FaceHighlight>,
     pub edge_highlights: Vec<EdgeHighlight>,
     pub cylinders: Vec<CylinderOverlay>,
     pub spheres: Vec<SphereOverlay>,
+    pub lines: Vec<LineOverlay>,
+    pub shape_meshes: Vec<ShapeMeshOverlay>,
     pub status_text: String,
     /// If set, the camera will smoothly move to center on this point.
     pub focus_point: Option<[f32; 3]>,
@@ -496,6 +518,8 @@ impl VizOverlay {
             edge_highlights: Vec::new(),
             cylinders: Vec::new(),
             spheres: Vec::new(),
+            lines: Vec::new(),
+            shape_meshes: Vec::new(),
             status_text: String::new(),
             focus_point: None,
             focus_normal: None,
@@ -737,6 +761,51 @@ fn build_sphere_overlay_mesh(
     )
 }
 
+fn build_shape_mesh_overlay(
+    ctx: &Context,
+    sm: &ShapeMeshOverlay,
+) -> Gm<Mesh, PhysicalMaterial> {
+    let positions: Vec<Vector3<f32>> = sm.positions.iter().map(|p| vec3(p[0], p[1], p[2])).collect();
+    let normals: Vec<Vector3<f32>> = sm.normals.iter().map(|n| vec3(n[0], n[1], n[2])).collect();
+    let cpu_mesh = CpuMesh {
+        positions: Positions::F32(positions),
+        indices: Indices::U32(sm.indices.clone()),
+        normals: Some(normals),
+        ..Default::default()
+    };
+    let albedo = Srgba::new(
+        (sm.color[0] * 255.0) as u8,
+        (sm.color[1] * 255.0) as u8,
+        (sm.color[2] * 255.0) as u8,
+        (sm.color[3] * 255.0) as u8,
+    );
+    let is_transparent = sm.color[3] < 0.99;
+    let material = if is_transparent {
+        PhysicalMaterial::new_transparent(
+            ctx,
+            &CpuMaterial {
+                albedo,
+                roughness: 0.4,
+                metallic: 0.0,
+                ..Default::default()
+            },
+        )
+    } else {
+        let mut m = PhysicalMaterial::new_opaque(
+            ctx,
+            &CpuMaterial {
+                albedo,
+                roughness: 0.4,
+                metallic: 0.0,
+                ..Default::default()
+            },
+        );
+        m.render_states.cull = Cull::Back;
+        m
+    };
+    Gm::new(Mesh::new(ctx, &cpu_mesh), material)
+}
+
 /// Start the visualization system. Returns a `VizSender` that should be passed
 /// to the pipeline thread. This function blocks on the main thread, running
 /// the window event loop.
@@ -885,6 +954,9 @@ where
     let mut edge_highlight_renderers: Vec<(WireframeRenderer, [f32; 4])> = Vec::new();
     let mut cylinder_meshes: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
     let mut sphere_meshes: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
+    let mut line_renderers: Vec<(WireframeRenderer, [f32; 4], bool)> = Vec::new(); // (renderer, color, no_depth_test)
+    let mut shape_mesh_objects: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
+    let mut shape_mesh_wireframes: Vec<(WireframeRenderer, [f32; 4])> = Vec::new();
     let mut waiting_for_input = false;
 
     // Camera animation state (rotation-only slew: target and distance are fixed)
@@ -974,6 +1046,37 @@ where
                         .iter()
                         .map(|s| build_sphere_overlay_mesh(&context, s))
                         .collect();
+                    line_renderers = overlay
+                        .lines
+                        .iter()
+                        .map(|l| {
+                            let positions: Vec<Vector3<f32>> = l
+                                .positions
+                                .iter()
+                                .map(|p| vec3(p[0], p[1], p[2]))
+                                .collect();
+                            let wf = WireframeRenderer::new(&context, &positions);
+                            (wf, l.color, l.no_depth_test)
+                        })
+                        .collect();
+                    shape_mesh_objects = overlay
+                        .shape_meshes
+                        .iter()
+                        .map(|sm| build_shape_mesh_overlay(&context, sm))
+                        .collect();
+                    shape_mesh_wireframes = overlay
+                        .shape_meshes
+                        .iter()
+                        .map(|sm| {
+                            let positions: Vec<Vector3<f32>> = sm
+                                .edge_positions
+                                .iter()
+                                .map(|p| vec3(p[0], p[1], p[2]))
+                                .collect();
+                            let wf = WireframeRenderer::new(&context, &positions);
+                            (wf, sm.edge_color)
+                        })
+                        .collect();
                     waiting_for_input = true;
 
                     // Start camera animation if focus_normal is set and auto-center is on.
@@ -997,9 +1100,9 @@ where
                                 } else {
                                     cur_dir // can't slew to a pole, keep current
                                 };
-                                // Only slew if the angle exceeds 25°
-                                // (cos(25°) ≈ 0.9063; dot > threshold means angle < 25°)
-                                if cur_dir.dot(end) <= 0.9063_f32 {
+                                // Only slew if the angle exceeds 45°
+                                // (cos(45°) ≈ 0.7071; dot > threshold means angle < 45°)
+                                if cur_dir.dot(end) <= std::f32::consts::FRAC_1_SQRT_2 {
                                     anim_start_dir = Some(cur_dir);
                                     anim_end_dir = Some(end);
                                     anim_target = Some(tgt);
@@ -1204,8 +1307,8 @@ where
                 }
             }
 
-            // Translucent cylinder/sphere overlays
-            if !cylinder_meshes.is_empty() || !sphere_meshes.is_empty() {
+            // Translucent cylinder/sphere/shape mesh overlays
+            if !cylinder_meshes.is_empty() || !sphere_meshes.is_empty() || !shape_mesh_objects.is_empty() {
                 unsafe {
                     use context::HasContext;
                     context.enable(context::BLEND);
@@ -1216,6 +1319,9 @@ where
                 }
                 for sm in &sphere_meshes {
                     screen.render(&camera, std::iter::once(sm as &dyn Object), &lights);
+                }
+                for smo in &shape_mesh_objects {
+                    screen.render(&camera, std::iter::once(smo as &dyn Object), &lights);
                 }
                 unsafe {
                     use context::HasContext;
@@ -1251,6 +1357,16 @@ where
         // Edge highlight overlays (thick colored outlines on specific faces)
         for (wf, color) in &edge_highlight_renderers {
             wf.render(&context, &camera, *color, true);
+        }
+
+        // Shape mesh edge wireframes
+        for (wf, color) in &shape_mesh_wireframes {
+            wf.render(&context, &camera, *color, true);
+        }
+
+        // Line overlays (3D curves, always visible if no_depth_test)
+        for (wf, color, no_depth) in &line_renderers {
+            wf.render(&context, &camera, *color, !no_depth);
         }
 
         FrameOutput::default()
@@ -1527,4 +1643,141 @@ pub fn meshdata_from_connected_mesh(
     };
 
     (meshdata, face_indices_arr, face_vc_arr)
+}
+
+// ---------------------------------------------------------------------------
+// Tessellate OCCT shapes for visualization
+// ---------------------------------------------------------------------------
+
+/// Tessellate an OCCT TopoDS_Shape into a ShapeMeshOverlay ready for viz.
+/// Uses BRepMesh_IncrementalMesh for tessellation.
+pub fn tessellate_shape(
+    shape: &opencascade_sys::topo_ds::Shape,
+    color: [f32; 4],
+    edge_color: [f32; 4],
+    lin_deflection: f64,
+    ang_deflection: f64,
+) -> ShapeMeshOverlay {
+    use opencascade_sys::{
+        b_rep, b_rep_mesh, poly, top_abs, top_exp, top_loc, topo_ds,
+    };
+
+    let _mesh = b_rep_mesh::IncrementalMesh::new_shape_real_bool_real_bool(
+        shape,
+        lin_deflection,
+        false,
+        ang_deflection,
+        false,
+    );
+
+    let mut all_positions: Vec<[f32; 3]> = Vec::new();
+    let mut all_normals: Vec<[f32; 3]> = Vec::new();
+    let mut all_indices: Vec<u32> = Vec::new();
+    let mut all_edge_positions: Vec<[f32; 3]> = Vec::new();
+
+    let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
+        shape,
+        top_abs::ShapeEnum::Face,
+        top_abs::ShapeEnum::Shape,
+    );
+
+    while explorer.more() {
+        let face = topo_ds::face_shape(explorer.value());
+        let reversed = face.orientation() == top_abs::Orientation::Reversed;
+        let mut location = top_loc::Location::new();
+        let tri_handle = b_rep::Tool::triangulation(face, &mut location, 0);
+        if tri_handle.is_null() {
+            explorer.next();
+            continue;
+        }
+        let tri = tri_handle.get();
+        if tri.nb_nodes() == 0 {
+            explorer.next();
+            continue;
+        }
+
+        let has_location = !location.is_identity();
+        poly::compute_normals(tri_handle);
+
+        let base_idx = all_positions.len() as u32;
+        let nb_nodes = tri.nb_nodes();
+        let nb_tris = tri.nb_triangles();
+
+        for i in 1..=nb_nodes {
+            let pt = tri.node(i);
+            let (mut x, mut y, mut z) = (pt.x(), pt.y(), pt.z());
+            if has_location {
+                location
+                    .transformation()
+                    .transforms_real3(&mut x, &mut y, &mut z);
+            }
+            all_positions.push([x as f32, y as f32, z as f32]);
+        }
+
+        let normal_sign = if reversed { -1.0f32 } else { 1.0f32 };
+        for i in 1..=nb_nodes {
+            let normal = tri.normal_int(i);
+            all_normals.push([
+                normal.x() as f32 * normal_sign,
+                normal.y() as f32 * normal_sign,
+                normal.z() as f32 * normal_sign,
+            ]);
+        }
+
+        for i in 1..=nb_tris {
+            let triangle = tri.triangle(i);
+            let mut n1 = 0i32;
+            let mut n2 = 0i32;
+            let mut n3 = 0i32;
+            triangle.get(&mut n1, &mut n2, &mut n3);
+            if reversed {
+                all_indices.push(base_idx + (n1 - 1) as u32);
+                all_indices.push(base_idx + (n3 - 1) as u32);
+                all_indices.push(base_idx + (n2 - 1) as u32);
+            } else {
+                all_indices.push(base_idx + (n1 - 1) as u32);
+                all_indices.push(base_idx + (n2 - 1) as u32);
+                all_indices.push(base_idx + (n3 - 1) as u32);
+            }
+        }
+
+        explorer.next();
+    }
+
+    // Extract feature edges for the tessellation
+    let positions_v3: Vec<Vector3<f32>> = all_positions.iter().map(|p| vec3(p[0], p[1], p[2])).collect();
+    let (sharp_edges, _soft_edges) = extract_feature_edges(&positions_v3, &all_indices);
+    for p in &sharp_edges {
+        all_edge_positions.push([p.x, p.y, p.z]);
+    }
+
+    ShapeMeshOverlay {
+        positions: all_positions,
+        normals: all_normals,
+        indices: all_indices,
+        color,
+        edge_positions: all_edge_positions,
+        edge_color,
+    }
+}
+
+/// Sample points along an OCCT curve for line rendering.
+/// Returns pairs of points [p0, p1, p1, p2, ...] forming a polyline.
+pub fn sample_curve_for_viz(
+    curve: &opencascade_sys::geom::HandleGeomCurve,
+    num_segments: usize,
+) -> Vec<[f32; 3]> {
+    let c = curve.get();
+    let fp = c.first_parameter();
+    let lp = c.last_parameter();
+    let mut positions = Vec::with_capacity(num_segments * 2);
+    for i in 0..num_segments {
+        let t0 = fp + (lp - fp) * (i as f64) / (num_segments as f64);
+        let t1 = fp + (lp - fp) * ((i + 1) as f64) / (num_segments as f64);
+        let p0 = c.value(t0);
+        let p1 = c.value(t1);
+        positions.push([p0.x() as f32, p0.y() as f32, p0.z() as f32]);
+        positions.push([p1.x() as f32, p1.y() as f32, p1.z() as f32]);
+    }
+    positions
 }

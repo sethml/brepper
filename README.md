@@ -99,7 +99,7 @@ ARGUMENTS:
 
 OPTIONS:
     --deflection <value>          Linear deflection for STEP tessellation (default: 0.1)
-    --angular-deflection <value>  Angular deflection for STEP tessellation in radians (default: 0.5)
+    --angular-deflection <value>  Angular deflection for STEP tessellation in degrees (default: 28.6)
 ```
 
 Multiple files can be loaded simultaneously; each is rendered in a distinct color.
@@ -114,7 +114,7 @@ Multiple files can be loaded simultaneously; each is rendered in a distinct colo
 ./target/release/viewer reference.step output.stl
 
 # Finer tessellation for curved surfaces
-./target/release/viewer part.step --deflection 0.01 --angular-deflection 0.1
+./target/release/viewer part.step --deflection 0.01 --angular-deflection 5.7
 ```
 
 ### Controls
@@ -153,7 +153,7 @@ At each BFS step, the window shows the STL mesh with highlighted faces: seed fac
 | Skip to next seed/hypothesis | `Shift+Space` |
 | Quit visualization | `Q` |
 
-Supported stages: `2.1` (planar), `2.2` (cylindrical), `2.3` (spherical), `2.6` (surface selection).
+Supported stages: `2.1` (planar), `2.2` (cylindrical), `2.3` (spherical), `2.6` (surface selection), `3.3` (edge curves), `3.4` (faces), `3.5` (shells), `3.6` (solids).
 
 ### Running Tests
 

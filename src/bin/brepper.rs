@@ -21,7 +21,7 @@ fn run(config: &Config, viz: Option<&VizSender>) -> Result<(), Box<dyn std::erro
     }
 
     // Stage 3: Surface Reconstruction
-    let brep = stage3::stage3(config, surfaces)?;
+    let brep = stage3::stage3(config, surfaces, viz)?;
 
     if !config.stage.at_least(4, 1) {
         return Ok(());
@@ -97,7 +97,7 @@ fn main() {
                 return;
             }
 
-            let brep = match stage3::stage3(&config, surfaces) {
+            let brep = match stage3::stage3(&config, surfaces, Some(&viz_sender)) {
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!("Error: {e}");

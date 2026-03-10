@@ -20,7 +20,7 @@ fn config_for_compare(stl_path: &str, output_path: &str, step_path: &str) -> con
 fn run_stage4(config: &config::Config) {
     let mesh = stage1::stage1(config).expect("stage1 should pass");
     let surfaces = stage2::stage2(config, mesh, None).expect("stage2 should pass");
-    let brep = stage3::stage3(config, surfaces).expect("stage3 should pass");
+    let brep = stage3::stage3(config, surfaces, None).expect("stage3 should pass");
     stage4::stage4(config, brep).expect("stage4 should pass");
 }
 
@@ -234,7 +234,7 @@ fn missing_output_path_error() {
     let config = config::parse_config_from(["brepper", &stl, "-q"]).unwrap();
     let mesh = stage1::stage1(&config).expect("stage1 should pass");
     let surfaces = stage2::stage2(&config, mesh, None).expect("stage2 should pass");
-    let brep = stage3::stage3(&config, surfaces).expect("stage3 should pass");
+    let brep = stage3::stage3(&config, surfaces, None).expect("stage3 should pass");
     let result = stage4::stage4(&config, brep);
     assert!(result.is_err());
     let err = result.unwrap_err();

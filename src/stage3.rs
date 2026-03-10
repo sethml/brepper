@@ -1631,6 +1631,7 @@ fn validate_tangent_curve(
 fn compute_edge_curves_all(
     mut output: Stage3Output,
     config: &Config,
+    viz: Option<&crate::viz::VizSender>,
 ) -> Result<Stage3Output, Stage3Error> {
     let mut success_count = 0;
     let mut fail_count = 0;
@@ -1667,6 +1668,38 @@ fn compute_edge_curves_all(
                             fp, lp,
                         );
                     }
+                    if let Some(viz_sender) = viz {
+                        let fi0 = edge.face_indices[0];
+                        let fi1 = edge.face_indices[1];
+                        let mut overlay = crate::viz::VizOverlay::new();
+                        let face_colors = [
+                            [0.3, 0.3, 0.9, 0.35],
+                            [0.7, 0.3, 0.7, 0.35],
+                        ];
+                        for (k, &fi) in [fi0, fi1].iter().enumerate() {
+                            let ss_idx = output.face_descriptors[fi].selected_surface_idx;
+                            let ss = &output.stage2.selected_surfaces[ss_idx];
+                            let mesh_faces: &[usize] = match ss {
+                                SelectedSurface::Planar(i) => &output.stage2.planar_hypotheses[*i].faces,
+                                SelectedSurface::Cylindrical(i) => &output.stage2.cylindrical_hypotheses[*i].faces,
+                                SelectedSurface::Spherical(i) => &output.stage2.spherical_hypotheses[*i].faces,
+                            };
+                            overlay.face_highlights.push(crate::viz::FaceHighlight {
+                                face_indices: mesh_faces.to_vec(),
+                                color: face_colors[k],
+                            });
+                        }
+                        let curve = edge.curve_3d.as_ref().unwrap();
+                        overlay.lines.push(crate::viz::LineOverlay {
+                            positions: crate::viz::sample_curve_for_viz(curve, 64),
+                            color: [0.0, 1.0, 0.0, 1.0],
+                            no_depth_test: true,
+                        });
+                        overlay.status_text = format!(
+                            "Stage 3.3: Edge {ei}/{total}: faces [{fi0}, {fi1}] (tangent)"
+                        );
+                        viz_sender.show_and_wait(overlay);
+                    }
                 }
                 Err(msg) => {
                     if config.verbose {
@@ -1702,6 +1735,38 @@ fn compute_edge_curves_all(
                         fp, lp,
                     );
                 }
+                    if let Some(viz_sender) = viz {
+                        let fi0 = edge.face_indices[0];
+                        let fi1 = edge.face_indices[1];
+                        let mut overlay = crate::viz::VizOverlay::new();
+                        let face_colors = [
+                            [0.3, 0.3, 0.9, 0.35],
+                            [0.7, 0.3, 0.7, 0.35],
+                        ];
+                        for (k, &fi) in [fi0, fi1].iter().enumerate() {
+                            let ss_idx = output.face_descriptors[fi].selected_surface_idx;
+                            let ss = &output.stage2.selected_surfaces[ss_idx];
+                            let mesh_faces: &[usize] = match ss {
+                                SelectedSurface::Planar(i) => &output.stage2.planar_hypotheses[*i].faces,
+                                SelectedSurface::Cylindrical(i) => &output.stage2.cylindrical_hypotheses[*i].faces,
+                                SelectedSurface::Spherical(i) => &output.stage2.spherical_hypotheses[*i].faces,
+                            };
+                            overlay.face_highlights.push(crate::viz::FaceHighlight {
+                                face_indices: mesh_faces.to_vec(),
+                                color: face_colors[k],
+                            });
+                        }
+                        let curve = edge.curve_3d.as_ref().unwrap();
+                        overlay.lines.push(crate::viz::LineOverlay {
+                            positions: crate::viz::sample_curve_for_viz(curve, 64),
+                            color: [0.0, 1.0, 0.0, 1.0],
+                            no_depth_test: true,
+                        });
+                        overlay.status_text = format!(
+                            "Stage 3.3: Edge {ei}/{total}: faces [{fi0}, {fi1}]"
+                        );
+                        viz_sender.show_and_wait(overlay);
+                    }
             }
             Err(msg) => {
                 if config.verbose {
@@ -2891,6 +2956,7 @@ fn compare_surface_orientations_to_step(
 fn create_occt_faces_all(
     mut output: Stage3Output,
     config: &Config,
+    viz: Option<&crate::viz::VizSender>,
 ) -> Result<Stage3Output, Stage3Error> {
     let num_faces = output.face_descriptors.len();
 
@@ -2999,7 +3065,7 @@ fn create_occt_faces_all(
             SelectedSurface::Cylindrical(_) | SelectedSurface::Spherical(_)
         );
 
-        let (make_face, is_concave) = if is_periodic {
+        let (mut make_face, is_concave) = if is_periodic {
             create_periodic_face(fi, &output, &mut topo_edges, config)?
         } else {
             (create_planar_face(fi, &output, &mut topo_edges, config)?, false)
@@ -3017,6 +3083,36 @@ fn create_occt_faces_all(
                 output.face_descriptors[fi].edge_indices.len(),
             );
         }
+
+        if let Some(viz_sender) = viz {
+            let mut overlay = crate::viz::VizOverlay::new();
+            // Tessellate the OCCT face and show it translucent
+            let face_shape = make_face.shape();
+            overlay.shape_meshes.push(crate::viz::tessellate_shape(
+                face_shape, [0.3, 0.8, 0.3, 0.4], [0.0, 1.0, 0.0, 1.0], 0.1, 0.5,
+            ));
+            // Show edge curves in bright green
+            for &edge_idx in &output.face_descriptors[fi].edge_indices {
+                if let Some(curve) = output.edges[edge_idx].curve_3d.as_ref() {
+                    overlay.lines.push(crate::viz::LineOverlay {
+                        positions: crate::viz::sample_curve_for_viz(curve, 64),
+                        color: [0.0, 1.0, 0.0, 1.0],
+                        no_depth_test: true,
+                    });
+                }
+            }
+            let stype = match surface_type {
+                SelectedSurface::Planar(_) => "planar",
+                SelectedSurface::Cylindrical(_) => "cylindrical",
+                SelectedSurface::Spherical(_) => "spherical",
+            };
+            overlay.status_text = format!(
+                "Stage 3.4: Face {fi}/{num_faces}: {stype} ({} edges)",
+                output.face_descriptors[fi].edge_indices.len(),
+            );
+            viz_sender.show_and_wait(overlay);
+        }
+
 
         make_faces.push(make_face);
     }
@@ -3056,6 +3152,7 @@ fn create_occt_faces_all(
 fn construct_shells(
     mut output: Stage3Output,
     config: &Config,
+    viz: Option<&crate::viz::VizSender>,
 ) -> Result<Stage3Output, Stage3Error> {
     let num_faces = output.make_faces.len();
     if num_faces == 0 {
@@ -3204,6 +3301,21 @@ fn construct_shells(
         }
     }
 
+    if let Some(viz_sender) = viz {
+        for (si, shell) in shells.iter().enumerate() {
+            let mut overlay = crate::viz::VizOverlay::new();
+            overlay.shape_meshes.push(crate::viz::tessellate_shape(
+                shell.as_shape(), [0.3, 0.8, 0.3, 0.5], [0.0, 1.0, 0.0, 1.0], 0.1, 0.5,
+            ));
+            overlay.status_text = format!(
+                "Stage 3.5: Shell {si}/{} ({total_faces_in_shells} faces)",
+                shells.len(),
+            );
+            viz_sender.show_and_wait(overlay);
+        }
+    }
+
+
     if !config.quiet {
         eprintln!(
             "Stage 3.5: Constructed {} shell(s) from {} faces ({} faces in shells)",
@@ -3286,6 +3398,7 @@ fn compare_shells_to_step(
 fn construct_solids(
     mut output: Stage3Output,
     config: &Config,
+    viz: Option<&crate::viz::VizSender>,
 ) -> Result<Stage3Output, Stage3Error> {
     if output.shells.is_empty() {
         return Err(Stage3Error::AdjacencyError("no shells to make solids from".into()));
@@ -3321,6 +3434,21 @@ fn construct_solids(
 
         solids.push(solid);
     }
+
+    if let Some(viz_sender) = viz {
+        for (si, solid) in solids.iter().enumerate() {
+            let mut overlay = crate::viz::VizOverlay::new();
+            overlay.shape_meshes.push(crate::viz::tessellate_shape(
+                solid.as_shape(), [0.3, 0.8, 0.3, 0.5], [0.0, 1.0, 0.0, 1.0], 0.1, 0.5,
+            ));
+            overlay.status_text = format!(
+                "Stage 3.6: Solid {si}/{}",
+                solids.len(),
+            );
+            viz_sender.show_and_wait(overlay);
+        }
+    }
+
 
     if !config.quiet {
         eprintln!(
@@ -3454,7 +3582,7 @@ fn compare_solids_to_step(
 // ---------------------------------------------------------------------------
 
 /// Run stage 3: reconstruct B-Rep surfaces, edges, and topology from fitted surfaces.
-pub fn stage3(config: &Config, input: Stage2Output) -> Result<Stage3Output, Stage3Error> {
+pub fn stage3(config: &Config, input: Stage2Output, viz: Option<&crate::viz::VizSender>) -> Result<Stage3Output, Stage3Error> {
     // Stage 3.1: Create OCCT surface objects and build adjacency graph
     let output = build_surfaces_and_adjacency(input, config)?;
 
@@ -3471,28 +3599,32 @@ pub fn stage3(config: &Config, input: Stage2Output) -> Result<Stage3Output, Stag
     }
 
     // Stage 3.3: Compute edge curves via surface-surface intersection
-    let output = compute_edge_curves_all(output, config)?;
+    let viz_33 = if config.viz_active(3, 3) { viz } else { None };
+    let output = compute_edge_curves_all(output, config, viz_33)?;
 
     if !config.stage.at_least(3, 4) {
         return Ok(output);
     }
 
     // Stage 3.4: Create OCCT faces
-    let output = create_occt_faces_all(output, config)?;
+    let viz_34 = if config.viz_active(3, 4) { viz } else { None };
+    let output = create_occt_faces_all(output, config, viz_34)?;
 
     if !config.stage.at_least(3, 5) {
         return Ok(output);
     }
 
     // Stage 3.5: Construct shells
-    let output = construct_shells(output, config)?;
+    let viz_35 = if config.viz_active(3, 5) { viz } else { None };
+    let output = construct_shells(output, config, viz_35)?;
 
     if !config.stage.at_least(3, 6) {
         return Ok(output);
     }
 
     // Stage 3.6: Construct solids
-    let output = construct_solids(output, config)?;
+    let viz_36 = if config.viz_active(3, 6) { viz } else { None };
+    let output = construct_solids(output, config, viz_36)?;
 
     Ok(output)
 }

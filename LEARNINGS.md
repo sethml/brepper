@@ -284,3 +284,6 @@ Hypothesis: BFS refitting gradually rotates the cylinder axis when sphere faces 
 - `VizReceiver` (render side) receives overlays and sends back `VizAction` responses.
 - Closures inside `render_loop` must be `'static` — extract helper logic to free functions rather than using closures that capture outer scope references.
 - Config has `OwnedPtr<Shape>` which is not Clone — must move Config into the pipeline thread closure, not clone it.
+- `VizOverlay` supports multiple overlay types: `FaceHighlight` (mesh face coloring), `EdgeHighlight` (mesh edge coloring), `CylinderOverlay`/`SphereOverlay` (analytic geometry), `LineOverlay` (polyline segments with optional `no_depth_test`), `ShapeMeshOverlay` (tessellated OCCT shapes with edges).
+- `tessellate_shape()` tessellates a `TopoDS_Shape` via `BRepMesh_IncrementalMesh` for viz display. `sample_curve_for_viz()` samples a `HandleGeomCurve` into polyline segment pairs.
+- Stage 3 viz (3.3/3.4/3.5/3.6): stage 3.3 uses `FaceHighlight` for surface context and `LineOverlay` for edge curves; stage 3.4 uses `ShapeMeshOverlay` for OCCT faces; stages 3.5/3.6 use `ShapeMeshOverlay` for shells/solids.

@@ -21,8 +21,8 @@ struct Cli {
     #[arg(long, default_value = "0.1")]
     deflection: f64,
 
-    /// Angular deflection for STEP tessellation (radians)
-    #[arg(long, default_value = "0.5")]
+    /// Angular deflection for STEP tessellation in degrees (default: 28.6 = 0.5 rad)
+    #[arg(long, default_value = "28.6")]
     angular_deflection: f64,
 }
 
@@ -56,7 +56,7 @@ fn main() {
             }
             "step" | "stp" => {
                 eprintln!("Loading STEP: {}", file.display());
-                let data = viz::load_step_meshdata(&file, cli.deflection, cli.angular_deflection);
+                let data = viz::load_step_meshdata(&file, cli.deflection, cli.angular_deflection.to_radians());
                 eprintln!(
                     "  {} verts, {} tris, {} edge segs, {} soft edge segs",
                     data.positions.len(),
