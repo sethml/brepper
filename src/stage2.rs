@@ -10,6 +10,8 @@
 use crate::config::Config;
 use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_PLANAR_HYPOTHESIS, UNDEDUCED_CYLINDRICAL_HYPOTHESIS, UNDEDUCED_SPHERICAL_HYPOTHESIS, NO_HYPOTHESIS};
 use crate::viz::{self, VizAction, VizSender};
+use levenberg_marquardt::{LeastSquaresProblem, LevenbergMarquardt};
+use nalgebra::{Const, Dyn, OMatrix, OVector, Owned};
 use opencascade_sys::gp;
 use std::collections::{HashSet, VecDeque};
 use std::error::Error;
@@ -878,13 +880,9 @@ fn dot3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
 /// Compute the smallest eigenvector of a 3x3 symmetric matrix.
 /// The matrix is stored as [m00, m01, m02, m11, m12, m22] (upper triangle).
 /// Returns the eigenvector corresponding to the smallest eigenvalue.
-fn smallest_eigenvector_3x3(m: &[f64; 6]) -> [f64; 3] {
-    // m = [[m[0], m[1], m[2]],
-    //      [m[1], m[3], m[4]],
-    //      [m[2], m[4], m[5]]]
-    // Use the characteristic polynomial approach for 3x3 symmetric matrices.
-    // Characteristic equation: λ³ - c2*λ² + c1*λ - c0 = 0
-    // where c2 = trace, c1 = sum of 2x2 minors, c0 = determinant
+/// Compute eigenvalues of a 3x3 symmetric matrix stored as upper triangle
+/// [m00, m01, m02, m11, m12, m22]. Returns eigenvalues in unspecified order.
+fn eigenvalues_3x3_symmetric(m: &[f64; 6]) -> [f64; 3] {
     let a00 = m[0]; let a01 = m[1]; let a02 = m[2];
     let a11 = m[3]; let a12 = m[4]; let a22 = m[5];
 
@@ -894,45 +892,35 @@ fn smallest_eigenvector_3x3(m: &[f64; 6]) -> [f64; 3] {
             - a01 * (a01 * a22 - a12 * a02)
             + a02 * (a01 * a12 - a11 * a02);
 
-    // Depressed cubic: t³ + pt + q = 0 where λ = t + c2/3
     let p = c1 - c2 * c2 / 3.0;
     let q = -2.0 * c2 * c2 * c2 / 27.0 + c1 * c2 / 3.0 - c0;
 
-    let eigenvalues = if p.abs() < 1e-30 {
-        // All eigenvalues equal
+    if p.abs() < 1e-30 {
         let ev = c2 / 3.0;
-        [ev, ev, ev]
-    } else {
-        // p < 0 for real symmetric matrices with distinct eigenvalues
-        let neg_p_3 = (-p / 3.0).max(0.0);
-        let r = neg_p_3.sqrt();
-        let cos_arg = (-q / (2.0 * neg_p_3 * r)).clamp(-1.0, 1.0);
-        let theta = cos_arg.acos() / 3.0;
-        let shift = c2 / 3.0;
-        let two_pi_3 = 2.0 * std::f64::consts::PI / 3.0;
-        let ev0 = 2.0 * r * theta.cos() + shift;
-        let ev1 = 2.0 * r * (theta - two_pi_3).cos() + shift;
-        let ev2 = 2.0 * r * (theta - 2.0 * two_pi_3).cos() + shift;
-        [ev0, ev1, ev2]
-    };
+        return [ev, ev, ev];
+    }
 
-    // Find the smallest eigenvalue
-    let (min_idx, _) = eigenvalues.iter().enumerate()
-        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-        .unwrap();
+    let neg_p_3 = (-p / 3.0).max(0.0);
+    let r = neg_p_3.sqrt();
+    let cos_arg = (-q / (2.0 * neg_p_3 * r)).clamp(-1.0, 1.0);
+    let theta = cos_arg.acos() / 3.0;
+    let shift = c2 / 3.0;
+    let two_pi_3 = 2.0 * std::f64::consts::PI / 3.0;
+    [2.0 * r * theta.cos() + shift,
+     2.0 * r * (theta - two_pi_3).cos() + shift,
+     2.0 * r * (theta - 2.0 * two_pi_3).cos() + shift]
+}
 
-    // Compute eigenvector for the smallest eigenvalue using inverse iteration:
-    // (M - λI)v = 0, find null space
-    // Shift slightly to avoid exact singularity issues
-    let lambda = eigenvalues[min_idx];
-    let b00 = a00 - lambda;
-    let b11 = a11 - lambda;
-    let b22 = a22 - lambda;
+/// Compute the eigenvector of a 3x3 symmetric matrix for a given eigenvalue.
+/// Uses cross products of (M - λI) rows to find the null space.
+fn eigenvector_for_eigenvalue(m: &[f64; 6], lambda: f64) -> [f64; 3] {
+    let b00 = m[0] - lambda;
+    let b11 = m[3] - lambda;
+    let b22 = m[5] - lambda;
 
-    // Try cross products of rows to find the null space
-    let row0 = [b00, a01, a02];
-    let row1 = [a01, b11, a12];
-    let row2 = [a02, a12, b22];
+    let row0 = [b00, m[1], m[2]];
+    let row1 = [m[1], b11, m[4]];
+    let row2 = [m[2], m[4], b22];
 
     let candidates = [
         cross3(&row0, &row1),
@@ -940,7 +928,6 @@ fn smallest_eigenvector_3x3(m: &[f64; 6]) -> [f64; 3] {
         cross3(&row1, &row2),
     ];
 
-    // Pick the cross product with largest magnitude
     let mut best_idx = 0;
     let mut best_len_sq = 0.0;
     for (i, c) in candidates.iter().enumerate() {
@@ -954,12 +941,19 @@ fn smallest_eigenvector_3x3(m: &[f64; 6]) -> [f64; 3] {
     let mut ev = candidates[best_idx];
     let len = normalize3(&mut ev);
     if len < 1e-15 {
-        // Fallback: eigenvalues are degenerate, return arbitrary unit vector
         return [1.0, 0.0, 0.0];
     }
     ev
 }
 
+/// Returns the eigenvector corresponding to the smallest eigenvalue.
+fn smallest_eigenvector_3x3(m: &[f64; 6]) -> [f64; 3] {
+    let eigenvalues = eigenvalues_3x3_symmetric(m);
+    let (min_idx, _) = eigenvalues.iter().enumerate()
+        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .unwrap();
+    eigenvector_for_eigenvalue(m, eigenvalues[min_idx])
+}
 /// Build the area-weighted normal covariance matrix M = Σ wᵢ nᵢ nᵢᵀ.
 /// Returns the upper triangle [m00, m01, m02, m11, m12, m22].
 fn build_normal_covariance(
@@ -981,49 +975,31 @@ fn build_normal_covariance(
     }
     m
 }
-
 /// Fit cylinder parameters (axis direction, axis origin, radius) from a set of faces.
 /// Returns (axis_origin, axis_direction, radius).
-fn fit_cylinder(
-    face_indices: &[usize],
+/// Given an axis direction, project vertices onto the perpendicular plane
+/// and fit a 2D circle. Returns (axis_origin_3d, radius) or None if degenerate.
+fn fit_circle_for_axis(
+    axis_dir: &[f64; 3],
     vertex_set: &HashSet<usize>,
-    faces: &[MeshFace],
     vertices: &[MeshVertex],
-) -> Option<([f64; 3], [f64; 3], f64)> {
-    // Step 1: Axis direction from smallest eigenvector of normal covariance.
-    let cov = build_normal_covariance(face_indices, faces, vertices);
-    let mut axis_dir = smallest_eigenvector_3x3(&cov);
-    let len = normalize3(&mut axis_dir);
-    if len < 1e-15 {
-        return None;
-    }
-
-    // Step 2: Compute orthogonal basis perpendicular to axis.
-    let (u, w) = perpendicular_basis(&axis_dir);
-
-    // Step 3: Project vertices onto 2D plane perpendicular to axis and fit circle.
+) -> Option<([f64; 3], f64)> {
+    let (u, w) = perpendicular_basis(axis_dir);
     let verts: Vec<usize> = vertex_set.iter().copied().collect();
     let n = verts.len();
     if n < 3 {
         return None;
     }
 
-    // Collect 2D coordinates
     let mut xs = Vec::with_capacity(n);
     let mut ys = Vec::with_capacity(n);
     for &vi in &verts {
         let v = &vertices[vi];
-        let vx = v.x;
-        let vy = v.y;
-        let vz = v.z;
-        xs.push(vx * u[0] + vy * u[1] + vz * u[2]);
-        ys.push(vx * w[0] + vy * w[1] + vz * w[2]);
+        xs.push(v.x * u[0] + v.y * u[1] + v.z * u[2]);
+        ys.push(v.x * w[0] + v.y * w[1] + v.z * w[2]);
     }
 
     // Center the 2D data to improve numerical conditioning.
-    // Without centering, the normal equations matrix becomes ill-conditioned
-    // when absolute coordinates are large relative to the arc span (e.g.,
-    // 6 vertices spanning 2.5° of a r=2mm cylinder at position (15, 12.5)).
     let nf = n as f64;
     let mean_x = xs.iter().sum::<f64>() / nf;
     let mean_y = ys.iter().sum::<f64>() / nf;
@@ -1033,10 +1009,6 @@ fn fit_cylinder(
     }
 
     // Algebraic circle fit: x² + y² + Dx + Ey + F = 0
-    // Least squares: minimize Σ(x² + y² + Dx + Ey + F)²
-    // Normal equations: [Σx²  Σxy  Σx ] [D]   [-Σx(x²+y²)]
-    //                   [Σxy  Σy²  Σy ] [E] = [-Σy(x²+y²)]
-    //                   [Σx   Σy   n  ] [F]   [-Σ(x²+y²) ]
     let mut sx = 0.0_f64;
     let mut sy = 0.0_f64;
     let mut sx2 = 0.0_f64;
@@ -1061,12 +1033,10 @@ fn fit_cylinder(
         sxy2 += x * y * y;
     }
 
-    // RHS
     let rhs0 = -(sx3 + sxy2);
     let rhs1 = -(sx2y + sy3);
     let rhs2 = -(sx2 + sy2);
 
-    // 3x3 system: solve using Cramer's rule
     let a = [[sx2, sxy, sx], [sxy, sy2, sy], [sx, sy, nf]];
 
     let det_a = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
@@ -1074,7 +1044,7 @@ fn fit_cylinder(
               + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
 
     if det_a.abs() < 1e-30 {
-        return None; // Degenerate — vertices are collinear in projection
+        return None;
     }
 
     let inv_det = 1.0 / det_a;
@@ -1099,7 +1069,6 @@ fn fit_cylinder(
     }
     let radius = r_sq.sqrt();
 
-    // Convert 2D center back to 3D (undo centering offset)
     let abs_center_x = center_x + mean_x;
     let abs_center_y = center_y + mean_y;
     let axis_origin = [
@@ -1108,7 +1077,144 @@ fn fit_cylinder(
         abs_center_x * u[2] + abs_center_y * w[2],
     ];
 
-    Some((axis_origin, axis_dir, radius))
+    Some((axis_origin, radius))
+}
+
+/// LM problem for cylinder fitting.
+/// Parameters: [alpha, beta, qx, qy, qz, radius]
+/// alpha, beta: tilt from initial axis in perpendicular directions
+/// qx, qy, qz: axis point
+/// radius: cylinder radius
+struct CylinderLMProblem {
+    points: Vec<[f64; 3]>,
+    a0: [f64; 3],
+    u0: [f64; 3],
+    w0: [f64; 3],
+    params: OVector<f64, Const<6>>,
+}
+
+impl CylinderLMProblem {
+    fn new(
+        points: Vec<[f64; 3]>,
+        initial_axis: [f64; 3],
+        initial_origin: [f64; 3],
+        initial_radius: f64,
+    ) -> Self {
+        let (u0, w0) = perpendicular_basis(&initial_axis);
+        let params = OVector::<f64, Const<6>>::new(
+            0.0, 0.0,
+            initial_origin[0], initial_origin[1], initial_origin[2],
+            initial_radius,
+        );
+        Self { points, a0: initial_axis, u0, w0, params }
+    }
+
+    fn axis_dir_from_params(&self, params: &OVector<f64, Const<6>>) -> [f64; 3] {
+        let (alpha, beta) = (params[0], params[1]);
+        let mut v = [
+            self.a0[0] + alpha * self.u0[0] + beta * self.w0[0],
+            self.a0[1] + alpha * self.u0[1] + beta * self.w0[1],
+            self.a0[2] + alpha * self.u0[2] + beta * self.w0[2],
+        ];
+        normalize3(&mut v);
+        v
+    }
+
+    fn compute_residuals_for(&self, params: &OVector<f64, Const<6>>) -> OVector<f64, Dyn> {
+        let a = self.axis_dir_from_params(params);
+        let q = [params[2], params[3], params[4]];
+        let r = params[5];
+        let n = self.points.len();
+        let mut residuals = OVector::<f64, Dyn>::zeros_generic(Dyn(n), Const::<1>);
+        for (i, p) in self.points.iter().enumerate() {
+            let d = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+            let c = cross3(&d, &a);
+            let h = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+            residuals[i] = h - r;
+        }
+        residuals
+    }
+}
+
+impl LeastSquaresProblem<f64, Dyn, Const<6>> for CylinderLMProblem {
+    type ParameterStorage = Owned<f64, Const<6>>;
+    type ResidualStorage = Owned<f64, Dyn>;
+    type JacobianStorage = Owned<f64, Dyn, Const<6>>;
+
+    fn set_params(&mut self, x: &OVector<f64, Const<6>>) {
+        self.params.copy_from(x);
+    }
+
+    fn params(&self) -> OVector<f64, Const<6>> {
+        self.params
+    }
+
+    fn residuals(&self) -> Option<OVector<f64, Dyn>> {
+        Some(self.compute_residuals_for(&self.params))
+    }
+
+    fn jacobian(&self) -> Option<OMatrix<f64, Dyn, Const<6>>> {
+        let n = self.points.len();
+        let eps = 1e-8;
+        let mut jac = OMatrix::<f64, Dyn, Const<6>>::zeros_generic(
+            Dyn(n), Const::<6>,
+        );
+        for j in 0..6 {
+            let mut pp = self.params;
+            pp[j] += eps;
+            let rp = self.compute_residuals_for(&pp);
+            let mut pm = self.params;
+            pm[j] -= eps;
+            let rm = self.compute_residuals_for(&pm);
+            for i in 0..n {
+                jac[(i, j)] = (rp[i] - rm[i]) / (2.0 * eps);
+            }
+        }
+        Some(jac)
+    }
+}
+
+/// Fit cylinder parameters (axis direction, axis origin, radius) from a set of faces.
+/// Tries two axis estimation strategies — normal-covariance (good for wide arcs) and
+/// vertex-PCA (good for narrow arcs / drum-laced triangles) — picks the better one,
+/// then refines the axis direction by minimizing vertex-to-cylinder SSE.
+/// Returns (axis_origin, axis_direction, radius).
+fn fit_cylinder(
+    face_indices: &[usize],
+    vertex_set: &HashSet<usize>,
+    faces: &[MeshFace],
+    vertices: &[MeshVertex],
+) -> Option<([f64; 3], [f64; 3], f64)> {
+    if vertex_set.len() < 3 {
+        return None;
+    }
+
+    // Axis from smallest eigenvector of area-weighted normal covariance.
+    let cov = build_normal_covariance(face_indices, faces, vertices);
+    let mut axis_dir = smallest_eigenvector_3x3(&cov);
+    let len = normalize3(&mut axis_dir);
+    if len < 1e-15 {
+        return None;
+    }
+
+    // Initial circle fit to get starting origin and radius.
+    let (axis_origin, radius) = fit_circle_for_axis(&axis_dir, vertex_set, vertices)?;
+
+    // Refine with Levenberg-Marquardt optimization on radial residuals.
+    let points: Vec<[f64; 3]> = vertex_set.iter()
+        .map(|&vi| [vertices[vi].x, vertices[vi].y, vertices[vi].z])
+        .collect();
+    let problem = CylinderLMProblem::new(points, axis_dir, axis_origin, radius);
+    let (result, _report) = LevenbergMarquardt::new().minimize(problem);
+    let refined_dir = result.axis_dir_from_params(&result.params);
+    let refined_origin = [result.params[2], result.params[3], result.params[4]];
+    let refined_radius = result.params[5];
+
+    if refined_radius > 0.0 {
+        Some((refined_origin, refined_dir, refined_radius))
+    } else {
+        Some((axis_origin, axis_dir, radius))
+    }
 }
 
 /// Check if all vertices in a set are within tolerance of a cylinder surface.
@@ -1835,7 +1941,7 @@ fn deduce_cylindrical_hypotheses(
                 if neighbor_sets[fi].contains(&n2) { continue; }
                 // n2 must be pairwise qualified with n1
                 if !is_pairwise_qualified(n1, n2, mesh, angular_tol) { continue; }
-                
+
                 let trial = run_cylinder_trial_bfs(
                     &[fi, n1, n2], mesh,
                     vertex_tol, surface_tol, angular_tol,
