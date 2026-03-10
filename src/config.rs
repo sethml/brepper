@@ -1,5 +1,5 @@
 use clap::{ArgAction, Parser, ValueEnum};
-use opencascade_sys::{message, step_control, top_abs, top_exp};
+use opencascade_sys::{if_select, message, step_control, top_abs, top_exp};
 use std::fmt::{Display, Formatter};
 
 // ---------------------------------------------------------------------------
@@ -278,8 +278,15 @@ impl Config {
             None => return Ok(()),
         };
 
+        if !std::path::Path::new(&step_path).exists() {
+            return Err(format!("Compare STEP file not found: {step_path}").into());
+        }
+
         let mut reader = step_control::Reader::new();
-        reader.read_file_charptr(&step_path);
+        let read_status = reader.read_file_charptr(&step_path);
+        if read_status != if_select::ReturnStatus::Retdone {
+            return Err(format!("Failed to read compare STEP file {step_path}: {read_status:?}").into());
+        }
         let progress = message::ProgressRange::new();
         reader.transfer_roots(&progress);
         let step_shape = reader.one_shape();
