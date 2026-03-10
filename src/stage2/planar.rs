@@ -9,7 +9,7 @@ use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_PLANAR_
 use crate::viz::{self, VizAction, VizSender};
 
 use super::{
-    face_area, viz_bfs_seed, viz_bfs_step, viz_custom, viz_face_centroid,
+    face_area, viz_custom, viz_face_centroid,
     viz_face_normal, PlanarHypothesis, Stage2CompareError, REFIT_SKIP_MULTIPLIER,
 };
 
@@ -145,16 +145,26 @@ pub(super) fn deduce_planar_hypotheses(
 
         // Viz: show seed face
         let mut skip_viz = false;
-        if let Some(action) = viz_bfs_seed(
-            viz,
-            &[fi],
-            &format!("BFS-plane hi={hi}: seed fi={fi} [space=step, shift+space=skip]"),
-            Vec::new(), Vec::new(), &bg_faces, mesh,
-        ) {
-            match action {
-                VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
-                VizAction::NextSeed => { skip_viz = true; }
-                VizAction::NextStep => {}
+        {
+            let mut highlights = vec![
+                viz::FaceHighlight { face_indices: vec![fi], color: [0.0, 0.8, 0.0, 1.0] },
+            ];
+            if !bg_faces.is_empty() {
+                highlights.push(viz::FaceHighlight { face_indices: bg_faces.clone(), color: [0.5, 0.5, 0.5, 1.0] });
+            }
+            if let Some(action) = viz_custom(
+                viz, highlights,
+                Vec::new(),
+                &format!("BFS-plane hi={hi}: seed fi={fi} [space=step, shift+space=skip]"),
+                Vec::new(), Vec::new(),
+                Some(viz_face_centroid(fi, mesh)),
+                viz_face_normal(fi, mesh),
+            ) {
+                match action {
+                    VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
+                    VizAction::NextSeed => { skip_viz = true; }
+                    VizAction::NextStep => {}
+                }
             }
         }
 
@@ -271,12 +281,34 @@ pub(super) fn deduce_planar_hypotheses(
                 }
                 queue.push_back(ni);
 
-                // Viz: show accepted face
+                // Viz: show accepted face with richer coloring
                 if !skip_viz {
-                    if let Some(action) = viz_bfs_step(
-                        viz, &[fi], &face_list, ni,
+                    let queue_faces: Vec<usize> = queue.iter().copied().collect();
+                    let accepted_nonseed: Vec<usize> = face_list.iter()
+                        .filter(|&&f| f != fi && f != ni)
+                        .copied().collect();
+                    let mut highlights = vec![
+                        viz::FaceHighlight { face_indices: vec![fi], color: [0.0, 0.8, 0.0, 1.0] },
+                    ];
+                    if !accepted_nonseed.is_empty() {
+                        highlights.push(viz::FaceHighlight { face_indices: accepted_nonseed, color: [0.2, 0.4, 1.0, 1.0] });
+                    }
+                    highlights.push(viz::FaceHighlight { face_indices: vec![ni], color: [0.1, 0.2, 0.7, 1.0] });
+                    let edge_highlights = if !queue_faces.is_empty() {
+                        vec![viz::EdgeHighlight { face_indices: queue_faces, color: [1.0, 0.0, 0.0, 1.0] }]
+                    } else {
+                        Vec::new()
+                    };
+                    if !bg_faces.is_empty() {
+                        highlights.push(viz::FaceHighlight { face_indices: bg_faces.clone(), color: [0.5, 0.5, 0.5, 1.0] });
+                    }
+                    if let Some(action) = viz_custom(
+                        viz, highlights,
+                        edge_highlights,
                         &format!("BFS-plane hi={hi}: accepted fi={ni} ({} faces) [space=step, shift+space=skip]", face_list.len()),
-                        Vec::new(), Vec::new(), &bg_faces, mesh,
+                        Vec::new(), Vec::new(),
+                        Some(viz_face_centroid(ni, mesh)),
+                        viz_face_normal(ni, mesh),
                     ) {
                         match action {
                             VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }

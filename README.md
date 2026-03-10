@@ -145,7 +145,7 @@ brepper input.stl --viz-stages=2.1,2.2
 brepper input.stl --compare reference.step --viz-stages=2.1,2.2,2.3
 ```
 
-At each BFS step, the window shows the STL mesh with highlighted faces: seed faces in green, accepted hypothesis faces in blue, and the face being evaluated in yellow. Cylindrical and spherical hypotheses also display translucent geometry overlays. When `--compare` is provided, the STEP surface is shown at 35% opacity for reference.
+At each BFS step, the window shows the STL mesh with highlighted faces: seed faces in green, previously accepted faces in blue, the just-accepted face in dark blue, and BFS queue frontier edges in red. Cylindrical and spherical hypotheses also display translucent geometry overlays. When `--compare` is provided, the STEP surface is shown at 35% opacity for reference.
 
 | Action | Control |
 |--------|:--------|

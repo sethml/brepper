@@ -10,7 +10,7 @@ use crate::viz::{self, VizAction, VizSender};
 
 use super::{
     dot3, eigenvalues_3x3_symmetric, face_area, face_centroid, normalize3,
-    viz_bfs_seed, viz_bfs_step, viz_custom, viz_face_centroid, viz_face_normal,
+    viz_custom, viz_face_centroid, viz_face_normal,
     PlanarHypothesis, SphericalHypothesis, Stage2CompareError,
     MIN_SPHERE_EIGENVALUE_RATIO, MIN_SPHERE_FACES,
     REFIT_SKIP_MULTIPLIER,
@@ -419,22 +419,32 @@ pub(super) fn deduce_spherical_hypotheses(
         let bg_faces: Vec<usize> = (0..mesh.faces.len())
             .filter(|f| mesh.faces[*f].spherical_hypothesis >= 0)
             .collect();
-        if let Some(action) = viz_bfs_seed(
-            viz, &surrounding,
-            &format!("BFS-sph hi={hi}: {} seed faces, r={:.4} {} [space=step, shift+space=skip]",
-                surrounding.len(), current_radius, if convex { "convex" } else { "concave" }),
-            Vec::new(),
-            vec![viz::SphereOverlay {
-                center: current_center,
-                radius: current_radius,
-                color: [0.2, 0.4, 1.0, 0.3],
-            }],
-            &bg_faces, mesh,
-        ) {
-            match action {
-                VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
-                VizAction::NextSeed => { skip_viz = true; }
-                VizAction::NextStep => {}
+        {
+            let mut highlights = vec![
+                viz::FaceHighlight { face_indices: surrounding.clone(), color: [0.0, 0.8, 0.0, 1.0] },
+            ];
+            if !bg_faces.is_empty() {
+                highlights.push(viz::FaceHighlight { face_indices: bg_faces.clone(), color: [0.5, 0.5, 0.5, 1.0] });
+            }
+            if let Some(action) = viz_custom(
+                viz, highlights,
+                Vec::new(),
+                &format!("BFS-sph hi={hi}: {} seed faces, r={:.4} {} [space=step, shift+space=skip]",
+                    surrounding.len(), current_radius, if convex { "convex" } else { "concave" }),
+                Vec::new(),
+                vec![viz::SphereOverlay {
+                    center: current_center,
+                    radius: current_radius,
+                    color: [0.2, 0.4, 1.0, 0.3],
+                }],
+                Some(viz_face_centroid(surrounding[0], mesh)),
+                viz_face_normal(surrounding[0], mesh),
+            ) {
+                match action {
+                    VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
+                    VizAction::NextSeed => { skip_viz = true; }
+                    VizAction::NextStep => {}
+                }
             }
         }
 
@@ -649,10 +659,30 @@ pub(super) fn deduce_spherical_hypotheses(
                 }
                 queue.push_back(cni);
 
-                // Viz: show accepted face
+                // Viz: show accepted face with richer coloring
                 if !skip_viz {
-                    if let Some(action) = viz_bfs_step(
-                        viz, &surrounding, &face_list, cni,
+                    let queue_faces: Vec<usize> = queue.iter().copied().collect();
+                    let accepted_nonseed: Vec<usize> = face_list.iter()
+                        .filter(|f| !surrounding.contains(f) && **f != cni)
+                        .copied().collect();
+                    let mut highlights = vec![
+                        viz::FaceHighlight { face_indices: surrounding.clone(), color: [0.0, 0.8, 0.0, 1.0] },
+                    ];
+                    if !accepted_nonseed.is_empty() {
+                        highlights.push(viz::FaceHighlight { face_indices: accepted_nonseed, color: [0.2, 0.4, 1.0, 1.0] });
+                    }
+                    highlights.push(viz::FaceHighlight { face_indices: vec![cni], color: [0.1, 0.2, 0.7, 1.0] });
+                    let edge_highlights = if !queue_faces.is_empty() {
+                        vec![viz::EdgeHighlight { face_indices: queue_faces, color: [1.0, 0.0, 0.0, 1.0] }]
+                    } else {
+                        Vec::new()
+                    };
+                    if !bg_faces.is_empty() {
+                        highlights.push(viz::FaceHighlight { face_indices: bg_faces.clone(), color: [0.5, 0.5, 0.5, 1.0] });
+                    }
+                    if let Some(action) = viz_custom(
+                        viz, highlights,
+                        edge_highlights,
                         &format!("BFS-sph hi={hi}: accepted fi={cni} ({} faces) r={:.4} [space=step, shift+space=skip]", face_list.len(), current_radius),
                         Vec::new(),
                         vec![viz::SphereOverlay {
@@ -660,7 +690,8 @@ pub(super) fn deduce_spherical_hypotheses(
                             radius: current_radius,
                             color: [0.2, 0.4, 1.0, 0.3],
                         }],
-                        &bg_faces, mesh,
+                        Some(viz_face_centroid(cni, mesh)),
+                        viz_face_normal(cni, mesh),
                     ) {
                         match action {
                             VizAction::Quit => { user_quit = true; return (hypotheses, user_quit); }
