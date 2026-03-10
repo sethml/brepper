@@ -600,6 +600,7 @@ fn select_surfaces(
     planar_hypotheses: &mut [PlanarHypothesis],
     cylindrical_hypotheses: &mut [CylindricalHypothesis],
     spherical_hypotheses: &mut [SphericalHypothesis],
+    viz: Option<&VizSender>,
 ) -> Vec<SelectedSurface> {
     let num_faces = mesh.faces.len();
 
@@ -667,6 +668,109 @@ fn select_surfaces(
             .filter(|fi| !assigned[**fi])
             .copied()
             .collect();
+
+
+        // Viz: show selected hypothesis and competing hypotheses
+        if let Some(viz_sender) = viz {
+            let mut overlay = viz::VizOverlay::new();
+
+            // Already-assigned faces in dark gray
+            let assigned_faces: Vec<usize> = (0..num_faces)
+                .filter(|&fi| assigned[fi])
+                .collect();
+            if !assigned_faces.is_empty() {
+                overlay.face_highlights.push(viz::FaceHighlight {
+                    face_indices: assigned_faces,
+                    color: [0.3, 0.3, 0.3, 1.0],
+                });
+            }
+
+            // Faces being assigned in green
+            overlay.face_highlights.push(viz::FaceHighlight {
+                face_indices: sel_faces.clone(),
+                color: [0.0, 0.8, 0.0, 1.0],
+            });
+
+            // Find competing hypotheses that involve any of the sel_faces
+            let sel_face_set: HashSet<usize> = sel_faces.iter().copied().collect();
+            for (oi, other) in candidates.iter().enumerate() {
+                if oi == ci {
+                    continue;
+                }
+                let competing_faces: Vec<usize> = other.faces.iter()
+                    .filter(|fi| !assigned[**fi] && sel_face_set.contains(fi))
+                    .copied()
+                    .collect();
+                if !competing_faces.is_empty() {
+                    overlay.face_highlights.push(viz::FaceHighlight {
+                        face_indices: competing_faces,
+                        color: [0.5, 0.5, 0.5, 0.25],
+                    });
+                    // Show the competing hypothesis surface overlay
+                    match other.surface_type {
+                        1 => {
+                            let hyp = &cylindrical_hypotheses[other.hypothesis_index];
+                            overlay.cylinders.push(centered_cylinder_overlay(
+                                hyp.axis_origin, hyp.axis_direction, hyp.radius,
+                                &other.faces, mesh,
+                                [0.5, 0.5, 0.5, 0.25],
+                            ));
+                        }
+                        2 => {
+                            let hyp = &spherical_hypotheses[other.hypothesis_index];
+                            overlay.spheres.push(viz::SphereOverlay {
+                                center: hyp.center,
+                                radius: hyp.radius,
+                                color: [0.5, 0.5, 0.5, 0.25],
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // Show the winning hypothesis surface overlay in green
+            let type_name = match candidates[ci].surface_type {
+                0 => {
+                    // Planar — faces are sufficient
+                    "planar"
+                }
+                1 => {
+                    let hyp = &cylindrical_hypotheses[candidates[ci].hypothesis_index];
+                    overlay.cylinders.push(centered_cylinder_overlay(
+                        hyp.axis_origin, hyp.axis_direction, hyp.radius,
+                        &sel_faces, mesh,
+                        [0.0, 0.8, 0.0, 0.3],
+                    ));
+                    "cylindrical"
+                }
+                _ => {
+                    let hyp = &spherical_hypotheses[candidates[ci].hypothesis_index];
+                    overlay.spheres.push(viz::SphereOverlay {
+                        center: hyp.center,
+                        radius: hyp.radius,
+                        color: [0.0, 0.8, 0.0, 0.3],
+                    });
+                    "spherical"
+                }
+            };
+
+            overlay.status_text = format!(
+                "Stage 2.6: iter {}, selected {} {} (hi={}, {} faces, area={:.4}) [space=next]",
+                selected.len() + 1, type_name, candidates[ci].hypothesis_index,
+                candidates[ci].hypothesis_index, sel_faces.len(), best_area,
+            );
+
+            // Focus on centroid of selected faces
+            if !sel_faces.is_empty() {
+                overlay.focus_point = Some(viz_face_centroid(sel_faces[0], mesh));
+                overlay.focus_normal = viz_face_normal(sel_faces[0], mesh);
+            }
+
+            if viz_sender.show_and_wait(overlay) == VizAction::Quit {
+                break;
+            }
+        }
 
         for &fi in &sel_faces {
             assigned[fi] = true;
@@ -1118,9 +1222,10 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
     }
 
     // Stage 2.6: Select surfaces for reconstruction
+    let viz_26 = if config.viz_active(2, 6) { viz } else { None };
     let selected_surfaces = select_surfaces(
         &mesh, &mut planar_hypotheses, &mut cylindrical_hypotheses,
-        &mut spherical_hypotheses,
+        &mut spherical_hypotheses, viz_26,
     );
 
     if !config.quiet {

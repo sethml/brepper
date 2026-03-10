@@ -153,7 +153,7 @@ At each BFS step, the window shows the STL mesh with highlighted faces: seed fac
 | Skip to next seed/hypothesis | `Shift+Space` |
 | Quit visualization | `Q` |
 
-Supported stages: `2.1` (planar), `2.2` (cylindrical), `2.3` (spherical).
+Supported stages: `2.1` (planar), `2.2` (cylindrical), `2.3` (spherical), `2.6` (surface selection).
 
 ### Running Tests
 
