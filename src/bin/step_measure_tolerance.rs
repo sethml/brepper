@@ -49,7 +49,7 @@ fn main() {
         eprintln!("Error: STEP file not found: {step_path}");
         process::exit(1);
     }
-    let mut reader = step_control::Reader::new();
+    let mut reader = step_control::StepReader::new();
     let read_status = reader.read_file_charptr(step_path);
     if read_status != opencascade_sys::if_select::ReturnStatus::Retdone {
         eprintln!("Error: Failed to read STEP file {step_path}: {read_status:?}");

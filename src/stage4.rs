@@ -75,7 +75,7 @@ pub fn stage4(config: &Config, input: Stage3Output) -> Result<(), Stage4Error> {
     // Build a compound of all solids
     let compound = build_solid_compound(&input.solids);
 
-    // Write STEP file (serialized via OCCT_STEP_MUTEX in write_step_file)
+    // Write STEP file (serialized via StepWriter's built-in mutex)
     crate::write_step_file(compound.as_shape(), output_path)
         .map_err(|e| {
             if e.contains("Transfer") {

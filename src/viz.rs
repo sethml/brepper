@@ -1456,7 +1456,7 @@ pub fn load_step_meshdata(
     if !path.exists() {
         panic!("STEP file not found: {}", path.display());
     }
-    let mut reader = step_control::Reader::new();
+    let mut reader = step_control::StepReader::new();
     let read_status = reader.read_file_charptr(path_str);
     if read_status != opencascade_sys::if_select::ReturnStatus::Retdone {
         panic!("Failed to read STEP file {}: {read_status:?}", path.display());
@@ -1464,6 +1464,7 @@ pub fn load_step_meshdata(
     let progress = message::ProgressRange::new();
     reader.transfer_roots(&progress);
     let shape = reader.one_shape();
+    drop(reader); // release STEP mutex before meshing
 
     let _mesh = b_rep_mesh::IncrementalMesh::new_shape_real_bool_real_bool(
         &shape,

@@ -65,7 +65,7 @@ The following APIs are **thread-safe** (verified in OCCT C++ source — no globa
 - `BRepCheck`, `BRepGProp`, `BRepLib` (no globals)
 - All `gp::*`, `geom::*`, `topo_ds::*`, `top_exp::*` — value types / local objects
 
-Solution: `OCCT_STEP_MUTEX` in `lib.rs` with `read_step_file()` / `write_step_file()` wrapper functions that serialize only STEP I/O. Tests run fully in parallel for all other OCCT operations.
+Solution: `step_control::StepReader` and `step_control::StepWriter` wrappers in `opencascade-sys` hold a global `STEP_MUTEX` for their entire lifetime, serializing STEP I/O automatically. brepper's `read_step_file()` / `write_step_file()` use these wrappers. Tests run fully in parallel for all other OCCT operations.
 
 ## Common API Recipes
 
@@ -83,7 +83,7 @@ for i in 1..=tri.nb_nodes() {
 
 ### Read a STEP file → TopoDS_Shape
 ```rust
-// Thread-safe wrapper (serializes via OCCT_STEP_MUTEX):
+// Thread-safe wrapper (serializes via StepReader's built-in mutex):
 let shape = brepper::read_step_file(path).unwrap();
 ```
 
