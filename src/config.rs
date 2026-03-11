@@ -1,5 +1,5 @@
 use clap::{ArgAction, Parser, ValueEnum};
-use opencascade_sys::{if_select, message, step_control, top_abs, top_exp};
+use opencascade_sys::{top_abs, top_exp};
 use std::fmt::{Display, Formatter};
 
 // ---------------------------------------------------------------------------
@@ -278,14 +278,8 @@ impl Config {
             None => return Ok(()),
         };
 
-        let mut reader = step_control::Reader::new();
-        let read_status = reader.read_file_charptr(&step_path);
-        if read_status != if_select::ReturnStatus::Retdone {
-            return Err(format!("Failed to read compare STEP file {step_path}: {read_status:?}").into());
-        }
-        let progress = message::ProgressRange::new();
-        reader.transfer_roots(&progress);
-        let step_shape = reader.one_shape();
+        let step_shape = crate::read_step_file(&step_path)
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
         // Count faces for validation and status output
         let mut face_count = 0_usize;

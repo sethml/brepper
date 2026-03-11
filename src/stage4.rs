@@ -5,8 +5,8 @@
 use crate::config::Config;
 use crate::stage3::Stage3Output;
 use opencascade_sys::{
-    b_rep_extrema, b_rep_g_prop, extrema, g_prop, if_select, interface, message,
-    step_control, topo_ds, OwnedPtr,
+    b_rep_extrema, b_rep_g_prop, extrema, g_prop, message,
+    topo_ds, OwnedPtr,
 };
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -75,34 +75,15 @@ pub fn stage4(config: &Config, input: Stage3Output) -> Result<(), Stage4Error> {
     // Build a compound of all solids
     let compound = build_solid_compound(&input.solids);
 
-    // Set STEP metadata
-    interface::Static::set_c_val("write.step.schema", "AP214");
-    interface::Static::set_c_val("write.step.product.name", "brepper");
-
-    // Create writer and transfer the compound
-    let mut writer = step_control::Writer::new();
-    let progress = message::ProgressRange::new();
-    let status = writer.transfer_shape_stepmodeltype_bool_progressrange(
-        compound.as_shape(),
-        step_control::StepModelType::Asis,
-        true,
-        &progress,
-    );
-    if status != if_select::ReturnStatus::Retdone {
-        return Err(Stage4Error::TransferFailed(format!(
-            "STEPControl_Writer::Transfer returned {:?}",
-            status
-        )));
-    }
-
-    // Write to file
-    let status = writer.write(output_path);
-    if status != if_select::ReturnStatus::Retdone {
-        return Err(Stage4Error::WriteFailed(format!(
-            "STEPControl_Writer::Write returned {:?}",
-            status
-        )));
-    }
+    // Write STEP file (serialized via OCCT_STEP_MUTEX in write_step_file)
+    crate::write_step_file(compound.as_shape(), output_path)
+        .map_err(|e| {
+            if e.contains("Transfer") {
+                Stage4Error::TransferFailed(e)
+            } else {
+                Stage4Error::WriteFailed(e)
+            }
+        })?;
 
     if !config.quiet {
         eprintln!("Stage 4.1 ({:.3}s): Wrote {} solid(s) to {output_path}", t.elapsed().as_secs_f64(), input.solids.len());
@@ -135,15 +116,13 @@ fn compare_output_to_step(
     let compare_shape = config.compare_shape.as_ref().unwrap();
 
     // Re-read the written STEP file to validate it round-trips correctly
-    let mut reader = step_control::Reader::new();
-    let read_status = reader.read_file_charptr(output_path);
-    if read_status != if_select::ReturnStatus::Retdone {
-        eprintln!("  Compare 4.1: WARNING failed to re-read written STEP file {output_path}: {read_status:?}");
-        return Ok(());
-    }
-    let progress = message::ProgressRange::new();
-    reader.transfer_roots(&progress);
-    let output_shape = reader.one_shape();
+    let output_shape = match crate::read_step_file(output_path) {
+        Ok(shape) => shape,
+        Err(e) => {
+            eprintln!("  Compare 4.1: WARNING failed to re-read written STEP file {output_path}: {e}");
+            return Ok(());
+        }
+    };
 
     // Compare volumes
     let output_vol = compute_volume(&output_shape);

@@ -49,6 +49,24 @@ if shape_ref.shape_type() == top_abs::ShapeEnum::Face {
 ### Static Methods → Free Functions
 OCCT utility classes (e.g., `BRep_Tool`) become module-level free functions or associated functions on the type.
 
+### OCCT Thread Safety
+OCCT has process-global mutable state that is **not thread-safe**. Only STEP Reader/Writer operations are affected:
+- `STEPControl_Reader::new()` / `STEPControl_Writer::new()` call `STEPControl_Controller::Init()` → `XSAlgo::Init()`, which writes to `static Handle(XSAlgo_AlgoContainer) theContainer` and calls many `Interface_Static::Init()` / `SetIVal()` on global settings. The init guard (`static Standard_Boolean init`) is a plain bool, not atomic.
+- `interface::Static::set_c_val()` mutates global config.
+- `StepFile_Read.cxx` has `THE_GLOBAL_READ_MUTEX` but it only covers data **processing** after lex/yacc parsing — the parsing calls `Message::SendTrace()` / `Message::SendFail()` which access the global `Message_Messenger` singleton without synchronization.
+
+The following APIs are **thread-safe** (verified in OCCT C++ source — no global mutable state):
+- STL reading (`RWStl` — only `const` statics)
+- `Message_ProgressRange` (no global state)
+- `BRepExtrema_DistShapeShape` (no globals)
+- `GeomAPI_IntSS`, `ProjectPointOnCurve`, `ProjectPointOnSurf` (no globals)
+- All `BRepBuilderAPI` (MakeEdge, MakeFace, MakeVertex, Sewing) — only static helper functions
+- `ShapeFix_Shell`, `ShapeFix_Face`, `ShapeFix_Solid` (no globals)
+- `BRepCheck`, `BRepGProp`, `BRepLib` (no globals)
+- All `gp::*`, `geom::*`, `topo_ds::*`, `top_exp::*` — value types / local objects
+
+Solution: `OCCT_STEP_MUTEX` in `lib.rs` with `read_step_file()` / `write_step_file()` wrapper functions that serialize only STEP I/O. Tests run fully in parallel for all other OCCT operations.
+
 ## Common API Recipes
 
 ### Read an STL file → vertex positions
@@ -65,11 +83,8 @@ for i in 1..=tri.nb_nodes() {
 
 ### Read a STEP file → TopoDS_Shape
 ```rust
-use opencascade_sys::{step_control, message};
-let mut reader = step_control::Reader::new();
-reader.read_file_charptr(path);
-reader.transfer_roots(&message::ProgressRange::new());
-let shape = reader.one_shape();  // OwnedPtr<topo_ds::Shape>
+// Thread-safe wrapper (serializes via OCCT_STEP_MUTEX):
+let shape = brepper::read_step_file(path).unwrap();
 ```
 
 ### Iterate faces of a shape

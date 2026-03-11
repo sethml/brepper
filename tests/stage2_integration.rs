@@ -1192,11 +1192,7 @@ test_stl_step_stage26_compare!(
 
 /// Extract cylinder parameters from a STEP file: returns Vec<(axis_dir, axis_origin, radius)>.
 fn extract_step_cylinders(step_path: &str) -> Vec<([f64; 3], [f64; 3], f64)> {
-    use opencascade_sys::{step_control, message};
-    let mut reader = step_control::Reader::new();
-    reader.read_file_charptr(step_path);
-    reader.transfer_roots(&message::ProgressRange::new());
-    let shape = reader.one_shape();
+    let shape = brepper::read_step_file(step_path).unwrap();
 
     let mut cylinders = Vec::new();
     let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
@@ -1376,11 +1372,7 @@ test_cylinder_params_match!(
 
 /// Extract sphere parameters from a STEP file: returns Vec<(center, radius)>.
 fn extract_step_spheres(step_path: &str) -> Vec<([f64; 3], f64)> {
-    use opencascade_sys::{step_control, message};
-    let mut reader = step_control::Reader::new();
-    reader.read_file_charptr(step_path);
-    reader.transfer_roots(&message::ProgressRange::new());
-    let shape = reader.one_shape();
+    let shape = brepper::read_step_file(step_path).unwrap();
 
     let mut spheres = Vec::new();
     let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
