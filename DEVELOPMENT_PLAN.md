@@ -395,18 +395,143 @@ Algorithm:
 
 *Comment: Spheres are 4 DOF (center + radius). Minimum 4 non-coplanar points for a unique fit. For "negative curvature" (concave spherical patch), track normal orientation relative to center rather than using negative radius. ~~Key challenge: partial spherical patches are hard to distinguish from cylinders or even planes if the patch is small relative to the radius. Consider requiring a minimum angular extent or using curvature analysis to disambiguate.~~ Addressed: solid-angle coverage validation prevents 1D strip growth (cylinder fillets), surface-tolerance validation in BFS prevents growth along non-spherical surfaces, and max_sphere_radius prevents degenerate large-radius fits on flat faces. Also consider toroidal surfaces (donuts, fillets)—they're common in CAD and combine characteristics of cylinders and spheres. Note: torus faces locally fit spheres, producing sphere hypotheses on torus surfaces (e.g., pipe_elbow). Stage 2.6 will need torus hypothesis support to resolve this.*
 
-#### 2.4 Deduce ruled surface hypotheses
-TODO Optional. Find mesh which is coplanar on one axis, and model as an extruded curve surface/ruled surface.
+#### 2.4 Deduce conical hypotheses
 
-*Comment: This is a good idea for capturing linear extrusions and sweeps. A ruled surface is defined by two boundary curves with linear interpolation between them. For extrusions, one "curve" is a point (the surface degenerates to a generalized cylinder). Detection: look for parallel mesh edges that share the same direction. Fitting: project to a plane perpendicular to the ruling direction and fit a 2D curve. Watch out for twisted ruled surfaces (rulings aren't parallel)—these are harder to detect and fit.*
+Fit conical hypotheses to connected sets of faces that lie on a common cone. A cone is a surface of revolution (SOR) with a linear profile — it generalizes the cylinder (which has a constant-radius profile). Conical surfaces commonly appear as chamfers, tapered bores, and funnel shapes in CAD models.
 
-#### 2.5 Deduce NURBS hypotheses
-TODO: for groups of adjacent faces which are covered by one- or two-face planar hypotheses and not cylindrical or spherical hypotheses, try to fit a NURBS or b-spline surface to the vertices.
+A conical hypothesis consists of:
+- `apex: [f64; 3]` — Apex (tip) of the cone.
+- `axis_direction: [f64; 3]` — Unit direction vector along the axis (from apex outward toward the open end).
+- `half_angle: f64` — Half-angle of the cone (in radians). The angle between the axis and any generator line on the surface.
+- `convex: bool` — Whether face normals point away from the axis (convex, like the outside of a cone) or toward it (concave, like the inside of a conical hole).
+- `faces: Vec<usize>` — Mesh face indices that fit this hypothesis.
+- `vertices: Vec<usize>` — Mesh vertex indices on this cone.
+- `error_max: f64` — Maximum absolute distance from any vertex to the cone surface.
+- `error_abs_sum: f64` — Sum of absolute vertex-to-surface distances.
 
-*Comment: NURBS fitting is complex and requires careful consideration: (1) Parameterization: you need to assign (u,v) parameters to each mesh vertex before fitting. Common approaches: conformal mapping, Floater's mean value coordinates, or discrete harmonic mapping. (2) Degree and knot selection: start with bicubic (degree 3×3); knot placement can use chord-length parameterization or be optimized. (3) Regularization: without it, the surface may oscillate. Consider smoothness penalties. (4) An alternative worth considering: use OCCT's `GeomAPI_PointsToBSplineSurface` which handles much of this automatically. (5) For "freeform" regions that are nearly planar, a plane with small tolerance may be preferable to a NURBS that overfits noise.*
+**Cone parameterization:**
+A cone with apex $A$, axis direction $\hat{a}$, and half-angle $\theta$ satisfies: for any point $p$ on the surface, the angle between $(p - A)$ and $\hat{a}$ equals $\theta$. Equivalently, in (h,r) coordinates where $h = (p - A) \cdot \hat{a}$ (signed axial distance from apex) and $r = |(p - A) - h\hat{a}|$ (radial distance from axis), the surface satisfies $r = h \tan\theta$.
+
+The signed distance from a point $p$ to the cone surface (for LM residual) is:
+$$d = r_i \cos\theta - h_i \sin\theta$$
+where $h_i = (p_i - A) \cdot \hat{a}$ and $r_i = |(p_i - A) - h_i \hat{a}|$.
+
+**Initialization via (h,r) profile fitting:**
+This exploits the key insight from the unified SOR framework (see Algorithm Reference): all surfaces of revolution reduce to a 2D profile fitting problem once the axis is estimated.
+
+1. **Axis estimation** from normal covariance (same as cylinder): compute weighted covariance $M = \sum w_i n_i n_i^T$ where $n_i$ are face normals and $w_i$ are face areas. The eigenvector with smallest eigenvalue is the axis direction estimate.
+2. **Reduce to (h,r) coordinates**: $h_i = (v_i - \text{centroid}) \cdot \hat{a}$, $r_i = |(v_i - \text{centroid}) - h_i \hat{a}|$.
+3. **Fit linear profile** $r = m \cdot h + b$ via weighted linear regression (weights = vertex area).
+4. **Extract cone parameters**: half-angle $\theta = \arctan(m)$, apex at distance $-b/m$ from centroid along axis.
+5. **Reject if cylindrical**: if $|m| < 0.01$ (nearly constant radius), this is a cylinder, not a cone. Also reject if $\theta > 85°$ (nearly planar).
+
+**Alternative initialization via quadric fitting:**
+A cone is a quadric surface: $x^T A x + b^T x + c = 0$ with specific eigenvalue structure. This approach is useful as a cross-check or when the axis is poorly estimated.
+
+1. Build the 10-coefficient quadric feature matrix: for each vertex $p_i = (x,y,z)$, construct row $[x^2, y^2, z^2, xy, xz, yz, x, y, z, 1]$.
+2. SVD of the feature matrix. The right singular vector with smallest singular value gives the quadric coefficients.
+3. Convert to matrix form: $Q(x) = x^T \mathbf{A} x + b^T x + c$.
+4. Extract cone parameters:
+   - Apex: $A = -\frac{1}{2} \mathbf{A}^{-1} b$ (gradient of Q is zero at apex).
+   - Axis: eigenvector of $\mathbf{A}$ corresponding to the distinct eigenvalue (for a cone, two eigenvalues are equal and one is different).
+   - Half-angle: from the eigenvalue ratio.
+5. Validate: eigenvalue pattern must match a cone (two eigenvalues approximately equal, one distinct, with specific sign relationships). If the pattern matches a cylinder (one eigenvalue ≈ 0), sphere (all equal), or ellipsoid, skip.
+
+**BFS region growing** (analogous to cylindrical):
+- Seed from triples of faces (like cylinders) where normals make a roughly constant angle with the estimated axis, but the radial distance from the axis varies monotonically along the axis.
+- Expand via BFS: for each candidate face, check $|r_i - h_i \tan\theta| < \text{vertex\_tolerance}$ for all vertices.
+- Centroid validation: face centroid within surface_tolerance of the cone.
+- Convexity check: normal direction consistent with hypothesis convexity.
+- Angular tolerance: dihedral angle between adjacent faces ≤ angular_tolerance.
+- Angular coverage validation (same algorithm as cylinder).
+- Minimum 6-face requirement (a cone has 5 independent DOF but 6 faces provides margin).
+
+**Distinguishing cones from cylinders:**
+After fitting both a cylinder and a cone to the same face set, compare RMS residuals. If the cone fit is not significantly better than the cylinder fit (< 20% RMS improvement), prefer the simpler cylinder interpretation. This prevents noisy flat-profile data from being misclassified as a very gentle cone.
+
+**LM refinement:**
+Optimize $[A_x, A_y, A_z, \alpha, \beta, \theta]$ (6 parameters: apex position 3, axis tilt angles 2, half-angle 1).
+Residual: $d_i = r_i \cos\theta - h_i \sin\theta$.
+
+- With the `--compare` flag:
+    - Same centroid-projection validation as cylinder/sphere.
+
+*Comment: The (h,r) profile approach is elegant because it handles the cylinder/cone ambiguity naturally: a horizontal line in (h,r) is a cylinder, a sloped line is a cone, and the distinction is just the slope parameter. This is described in the SOR reduction technique. The quadric approach provides an independent validation path.*
+
+#### 2.5 Deduce toroidal hypotheses
+
+Fit toroidal hypotheses to connected sets of faces that lie on a common torus. Toroidal surfaces commonly appear as fillets (rounded edges), blends, and pipe elbows in CAD models. A torus is a surface of revolution with a circular profile offset from the axis.
+
+A toroidal hypothesis consists of:
+- `center: [f64; 3]` — Center of the torus (on the axis, in the plane of the major circle).
+- `axis_direction: [f64; 3]` — Unit direction vector along the torus axis.
+- `major_radius: f64` — Distance from center to the tube centerline ($R$).
+- `minor_radius: f64` — Radius of the tube cross-section ($r$). For a fillet of radius $r$, the minor radius is $r$.
+- `convex: bool` — Whether the torus patch is on the outer (convex) or inner (concave) surface of the tube.
+- `faces: Vec<usize>` — Mesh face indices that fit this hypothesis.
+- `vertices: Vec<usize>` — Mesh vertex indices on this torus.
+- `error_max: f64` — Maximum absolute distance from any vertex to the torus surface.
+- `error_abs_sum: f64` — Sum of absolute vertex-to-surface distances.
+
+**Torus parameterization:**
+A torus with center $C$, axis $\hat{a}$, major radius $R$, minor radius $r$ satisfies: for any point $p$, let $v = p - C$, $\text{axial} = v \cdot \hat{a}$, $\text{radial} = |v - \text{axial} \cdot \hat{a}|$. Then:
+$$d = \sqrt{(\text{radial} - R)^2 + \text{axial}^2} - r$$
+is the signed distance from $p$ to the torus surface (0 on surface, positive outside tube, negative inside).
+
+**Fitting via medial axis / tube center method:**
+
+Direct nonlinear fitting of 7 torus parameters ($C$, $\hat{a}$, $R$, $r$) is numerically fragile because of the high DOF and the coupling between parameters. The **medial axis approach** linearizes the problem by exploiting the geometric relationship between surface normals and the tube center.
+
+Key insight: for a surface with constant positive principal curvature $\kappa_1 = 1/r$ in one direction, the **tube center** (center of the osculating circle) at each point is $k_i = p_i + r \cdot n_i$ where $n_i$ is the outward surface normal. For a torus, all tube centers lie on the **major circle** — a circle of radius $R$ centered at $C$ in the plane perpendicular to $\hat{a}$. This reduces torus fitting to: (1) estimate $r$, (2) compute tube centers, (3) fit a 3D circle.
+
+**Step 1: Estimate minor radius $r$ from normal-line intersections.**
+- For pairs of adjacent (non-parallel) faces in the candidate region, compute the closest approach of their normal lines: $L_1: p_1 + t \cdot n_1$, $L_2: p_2 + s \cdot n_2$.
+- Reject pairs with nearly parallel normals ($|n_1 \cdot n_2| > 0.95$).
+- The closest-approach distance approximates 0 (for a torus, normal lines converge at the tube center), and the intersection parameter gives $r \approx t \approx s$ (for outward normals on a convex torus).
+- Collect many estimates, take the median for robustness against outliers.
+
+**Step 2: Compute tube center points.**
+- For each vertex $p_i$ with outward normal $n_i$: $k_i = p_i + r \cdot n_i$ (convex torus) or $k_i = p_i - r \cdot n_i$ (concave torus).
+- These points should cluster on the major circle.
+
+**Step 3: Classify spine geometry (detect degeneracies).**
+- Compute PCA of the $k_i$ points. Eigenvalue pattern:
+  - $\lambda_1 \approx \lambda_2 \gg \lambda_3$: points form a circle → **torus** (proceed).
+  - $\lambda_1 \gg \lambda_2 \approx \lambda_3$: points form a line → actually a **cylinder** (delegate to cylinder detection).
+  - $\lambda_1 \approx \lambda_2 \approx \lambda_3 \approx 0$: points cluster at a single point → actually a **sphere** (delegate to sphere detection).
+
+**Step 4: Fit 3D circle to tube center points.**
+- PCA of $k_i$: smallest eigenvector = circle plane normal = **torus axis direction** $\hat{a}$.
+- Project $k_i$ into the circle plane using an orthonormal basis $(u, v)$ perpendicular to $\hat{a}$.
+- 2D algebraic circle fit in the projected plane → center $(u_c, v_c)$ and radius $R$.
+- Convert back to 3D: torus center $C = \text{mean}(k_i) + u_c \cdot u + v_c \cdot v$, major radius $R$.
+
+**Step 5: LM refinement.**
+- Optimize $[C_x, C_y, C_z, \alpha, \beta, R, r]$ (7 parameters: center 3, axis tilt 2, major radius 1, minor radius 1).
+- Residual: $d_i = \sqrt{(\text{radial}_i - R)^2 + \text{axial}_i^2} - r$.
+
+**Seeding strategy:**
+Toroidal fillets occur at edges between two surfaces where a blend or fillet has been applied. The fillet faces have normals that rotate smoothly as you traverse the fillet. Seeding uses:
+
+- **Edge-based seeding**: For each boundary between two multi-face selected surfaces (from stage 2.6), examine the single-face planar hypothesis faces adjacent to that boundary. These "leftover" faces between two fitted surfaces are strong candidates for fillet/blend toroidal surfaces. Start BFS from clusters of these faces.
+- **Normal-rotation detection**: In a seed neighborhood, if normals rotate systematically around the tube cross-section (as measured by normal covariance: the $\lambda_1 \approx \lambda_2 \gg \lambda_3$ eigenvalue pattern, similar to cylinder but with additional normal variation), this suggests a toroidal surface.
+
+**BFS region growing:**
+- Vertex-to-torus distance: $|\sqrt{(\text{radial} - R)^2 + \text{axial}^2} - r| < \text{vertex\_tolerance}$.
+- Centroid validation: face centroid within surface_tolerance of torus.
+- Convexity check: normal direction consistent with hypothesis.
+- Angular tolerance: dihedral angle ≤ angular_tolerance.
+- Re-fit on marginal faces (same as cylinder/sphere).
+
+**Post-growth validation:**
+- Minimum 7-face requirement (torus has 7 DOF).
+- Angular coverage around the minor circle: faces should span multiple angular positions around the tube cross-section (analogous to cylinder angular coverage), ensuring the torus fit is well-constrained.
+
+*Comment: The medial axis / tube center method is far more robust for fillet-sized torus patches than direct 7-parameter nonlinear fitting. By reducing the problem to (1) estimate one scalar r, (2) fit a 3D circle to the tube centers, it separates the easy part (circle fitting is linear algebra) from the hard part (estimating the minor radius). The spine classification step (Step 3) also provides a natural way to detect degenerate cases where the "torus" is actually a cylinder or sphere — this happens when the fillet radius approaches the edge length or when the surface is nearly spherical.*
 
 #### 2.6 Select surfaces to use for reconstruction
-Assign each mesh face to exactly one "selected surface" for reconstruction. Since stages 2.1–2.3 produce hypotheses that may overlap (a face can belong to one planar, one cylindrical, and one spherical hypothesis simultaneously), surface selection must resolve these overlaps.
+Assign each mesh face to exactly one "selected surface" for reconstruction. Since stages 2.1–2.5 produce hypotheses that may overlap (a face can belong to one planar, one cylindrical, one spherical, one conical, and one toroidal hypothesis simultaneously), surface selection must resolve these overlaps.
+
 
 **Greedy area-based selection:**
 
@@ -414,15 +539,18 @@ The algorithm selects hypotheses greedily by total mesh face area, largest first
 
 **Algorithm:**
 1. Compute the geometric area of each mesh face.
-2. Build a candidate list of all hypotheses (planar with face count > 1, cylindrical, spherical). Each candidate tracks its set of member faces and their total area.
+2. Build a candidate list of all hypotheses (planar with face count > 1, cylindrical, spherical, conical, toroidal). Each candidate tracks its set of member faces and their total area.
+
 3. **Greedy loop**: while unassigned faces remain:
    a. For each candidate, compute the total area of its still-unassigned faces.
    b. Select the candidate with the largest remaining area.
    c. Assign all its still-unassigned faces to it as a selected surface.
    d. Remove those faces from all other candidates' pools.
-4. Assign any remaining unassigned faces to their single-face planar hypothesis (fallback for faces on surfaces not yet fitted: conical, toroidal, freeform). Stages 2.4–2.5 will replace some of these with ruled or NURBS surfaces.
+4. Assign any remaining unassigned faces to their single-face planar hypothesis (fallback for faces on surfaces not yet fitted: ruled, freeform). Stage 2.8 may replace some of these with NURBS surfaces.
+
 5. Build a `Vec<SelectedSurface>`, one per selected hypothesis, containing:
-   - `surface_type: SurfaceType` — enum: Planar, Cylindrical, Spherical (later: Ruled, BSpline).
+   - `surface_type: SurfaceType` — enum: Planar, Cylindrical, Spherical, Conical, Toroidal (later: BSpline).
+
    - `hypothesis_index: usize` — index into the appropriate hypothesis vector in Stage2Output.
    - `faces: Vec<usize>` — mesh face indices assigned to this surface.
    - `vertices: Vec<usize>` — mesh vertex indices on this surface (union of face vertices).
@@ -444,12 +572,94 @@ The algorithm selects hypotheses greedily by total mesh face area, largest first
 After stage 2.6 selects surfaces, some border faces may have been absorbed by a hypothesis that fits within tolerance but isn't the best fit. This step refines assignments and re-fits surfaces to improve accuracy.
 
 **Algorithm:**
-1. For each mesh face, check whether it belongs to more than one hypothesis (i.e., it has valid assignments in multiple hypothesis types — planar, cylindrical, spherical).
+1. For each mesh face, check whether it belongs to more than one hypothesis (i.e., it has valid assignments in multiple hypothesis types — planar, cylindrical, spherical, conical, toroidal).
+
 2. For each such face, compute the vertex-to-surface distance for each candidate surface (using the selected surfaces from 2.6, not the raw hypotheses).
 3. Reassign the face to the selected surface with the smallest maximum vertex distance.
 4. After all reassignments, re-fit each affected surface from its updated face/vertex set to remove any bias introduced by the extra vertices.
 
 This step is expected to be most useful at boundaries between surfaces of different types (e.g., where a cylinder meets a plane), where BFS may have greedily absorbed a border face that technically fits within tolerance but belongs more naturally to the adjacent surface. It may be unnecessary if the greedy area-based selection in 2.6 already produces clean boundaries — implement only if stage 3 reconstruction reveals boundary accuracy problems.
+
+#### 2.8 NURBS fallback
+
+For groups of adjacent faces that remain as single-face planar hypotheses after stages 2.1–2.5 (i.e., they don't fit any analytic surface), try to fit a NURBS or B-spline surface.
+
+**Algorithm:**
+1. Identify connected components of single-face planar hypothesis faces that are adjacent to each other in the mesh.
+2. For each component with ≥ 4 faces:
+   a. Compute UV parameterization of the face vertices (using discrete harmonic mapping or Floater's mean value coordinates).
+   b. Use OCCT's `GeomAPI_PointsToBSplineSurface` to fit a B-spline through the parameterized points.
+   c. Validate: max vertex-to-surface distance < `--surface-tolerance`.
+   d. If valid, create a NURBS hypothesis; if not, leave as single-face planar.
+3. Add valid NURBS hypotheses to the surface selection.
+
+*Comment: NURBS fitting is complex: parameterization quality strongly affects fit quality, degree/knot selection matters, and thin features may need special handling. Start with OCCT’s built-in B-spline fitter which handles degree selection and parameterization internally. For “freeform” regions that are nearly planar, a plane with small tolerance is preferable to a NURBS that overfits noise.*
+
+---
+
+### Algorithm Reference
+
+This section documents key algorithmic techniques drawn from computational geometry research that inform the surface fitting approach. These are referenced by the stage descriptions above.
+
+#### Unified Surface-of-Revolution (SOR) Framework
+
+All surfaces of revolution — cylinder, cone, sphere, torus — share a common structure: they are generated by rotating a 2D profile curve around an axis. This means they can all be fitted using a unified approach:
+
+1. **Estimate the axis of revolution** from the surface normals: for any SOR, surface normals are perpendicular to the axis (cylinder), make a constant angle with the axis (cone), point toward the axis (sphere pole behavior), or some combination. The axis can be estimated as the smallest eigenvector of the area-weighted normal covariance matrix $M = \sum w_i n_i n_i^T$.
+
+2. **Reduce to (h,r) coordinates**: for each vertex, compute $h = (p - \text{centroid}) \cdot \hat{a}$ (axial position) and $r = |(p - \text{centroid}) - h\hat{a}|$ (radial distance from axis).
+
+3. **Fit candidate profile curves** in the (h,r) plane:
+   - **Cylinder**: $r = R$ (constant) — horizontal line. 1 parameter: $R$.
+   - **Cone**: $r = m \cdot h + b$ (linear) — sloped line. 2 parameters: $m, b$.
+   - **Sphere**: $h^2 + (r - 0)^2 = R^2$ — circle centered on the axis. 2 parameters: $h_0, R$ (center offset and radius). But note: sphere center is ON the axis, so this is $h^2 + r^2 = R^2$ in centered coordinates.
+   - **Torus**: $(r - R)^2 + h^2 = r_{\text{minor}}^2$ — circle offset from axis. 2 parameters: $R, r_{\text{minor}}$.
+
+4. **Pick the best profile** by RMS residual. Use BIC or AIC to penalize model complexity (cylinder has 1 DOF, cone has 2, torus has 2).
+
+This framework naturally handles ambiguous cases: a very gentle cone looks like a cylinder (slope $\approx 0$); a sphere with very large radius looks like a plane ($R \to \infty$); a torus with large major radius looks like a cylinder ($R \gg r$).
+
+The current implementation uses separate fitting algorithms for each surface type (stages 2.2–2.5), which is appropriate for incremental development. A future refactoring pass (see Implementation Phases) will unify these into the SOR framework to improve accuracy on ambiguous cases and simplify the codebase.
+
+#### Gaussian Map (Normal Covariance) Classification
+
+The distribution of surface normals (the "Gaussian map") directly reveals the surface type. For a patch of mesh faces, compute the area-weighted covariance matrix of the normals:
+$$C = \sum_i w_i (n_i - \bar{n})(n_i - \bar{n})^T$$
+where $w_i$ is face area and $\bar{n}$ is the weighted mean normal. The eigenvalues $\lambda_1 \geq \lambda_2 \geq \lambda_3$ classify the surface:
+
+- **Plane**: $\lambda_1 \approx \lambda_2 \approx \lambda_3 \approx 0$ — all normals identical.
+- **Cylinder/Cone**: $\lambda_1 \approx \lambda_2 \gg \lambda_3$ — normals lie on a great circle (cylinder) or small circle (cone).
+- **Sphere**: $\lambda_1 \approx \lambda_2 \approx \lambda_3$ (all nonzero) — normals distributed isotropically.
+- **Torus**: $\lambda_1 > \lambda_2 \gg \lambda_3$ — normals form a band pattern.
+
+The cylinder axis estimation already uses this: the axis is the eigenvector of the uncentered normal covariance $M = \sum w_i n_i n_i^T$ corresponding to the smallest eigenvalue (the direction perpendicular to all normals). Extending this to pre-classify surface type before fitting would improve seeding efficiency.
+
+#### Medial Axis / Tube Center Method
+
+For any surface with a constant principal curvature $\kappa_1 = 1/r$ in one direction, the **medial axis** (locus of centers of curvature) can be computed directly from the surface points and normals:
+$$k_i = p_i + r \cdot n_i$$
+
+The geometry of the medial axis reveals the surface type:
+- **Cylinder**: medial axis is a line (the cylinder axis) — $k_i$ points are collinear.
+- **Sphere**: medial axis is a point (the center) — $k_i$ points cluster.
+- **Torus**: medial axis is a circle (the major circle) — $k_i$ points lie on a circle.
+- **Cone**: medial axis is a point (the apex) for one direction of curvature.
+
+This is used in stage 2.5 (torus fitting): estimate $r$ from normal-line intersections between adjacent faces, compute tube centers $k_i$, fit a 3D circle to get the major circle, and extract the torus parameters.
+
+#### Quadric Fitting
+
+Any quadric surface (plane, sphere, cylinder, cone, ellipsoid, hyperboloid, paraboloid) can be written as:
+$$Q(x, y, z) = Ax^2 + By^2 + Cz^2 + Dxy + Exz + Fyz + Gx + Hy + Iz + J = 0$$
+
+Fitting: construct the $N \times 10$ feature matrix and find its null space via SVD (smallest singular vector). The matrix form $x^T \mathbf{A} x + b^T x + c = 0$ encodes the surface type in the eigenvalues of $\mathbf{A}$:
+- **Sphere**: $\mathbf{A} = \lambda I$ (three equal eigenvalues).
+- **Cylinder**: one eigenvalue is 0 (axis direction), other two equal.
+- **Cone**: three nonzero eigenvalues with $\det(\mathbf{A}) \approx 0$ (passes through apex).
+- **Plane**: $\mathbf{A} = 0$ (all eigenvalues zero).
+
+Quadric fitting is fast (SVD of an $N \times 10$ matrix, $O(N)$) and provides a good initialization for specialized fitters. It's used as an alternative initialization for cone fitting (stage 2.4).
+
 
 ---
 
@@ -489,8 +699,12 @@ A vector of `BRepVertex` structs:
     - Planar → `geom::Plane::new_pnt_dir` with `gp::Pnt` at centroid and `gp::Dir` along normal. Wrapped via `to_handle().to_handle_surface()`.
     - Cylindrical → `geom::CylindricalSurface::new_ax3_real` with `gp::Ax3` from axis origin/direction and radius. Wrapped via `to_handle().to_handle_surface()`.
     - Spherical → `geom::SphericalSurface::new_ax3_real` with `gp::Ax3` from center and Z-axis direction. Wrapped via `to_handle().to_handle_surface()`.
-    - (Future: BSpline → `Geom_BSplineSurface` via `GeomAPI_PointsToBSplineSurface`, etc.)
-- For consistency with OCCT conventions: planes use gp_Ax3 with Z as normal; cylinders have Z along axis; spheres have poles at Z extremes. This affects pcurve computation in 3.3.
+    - Conical → `geom::ConicalSurface::new_ax3_real2` with `gp::Ax3` from apex/direction and half-angle + radius at reference height. Wrapped via `to_handle().to_handle_surface()`. The `Ax3` origin is at the cone apex, Z along axis.
+    - Toroidal → `geom::ToroidalSurface::new_ax3_real2` with `gp::Ax3` from center/axis direction, major radius $R$, and minor radius $r$. Wrapped via `to_handle().to_handle_surface()`. The `Ax3` origin is at the torus center, Z along rotation axis.
+    - (Future: BSpline → `Geom_BSplineSurface` via `GeomAPI_PointsToBSplineSurface`.)
+
+- For consistency with OCCT conventions: planes use gp_Ax3 with Z as normal; cylinders have Z along axis; spheres have poles at Z extremes; cones have Z along axis from apex; tori have Z along rotation axis. This affects pcurve computation in 3.3.
+
 
 **Adjacency graph construction:**
 1. Build face-to-surface map: for each mesh face, record which selected surface it belongs to (`build_face_to_surface_map`).
@@ -516,12 +730,16 @@ For each ReconEdge, determine whether the two adjacent surfaces are tangent alon
     - Planar: the hypothesis normal (constant).
     - Cylindrical: normalized radial direction from axis to point, negated if concave.
     - Spherical: normalized direction from center to point, negated if concave.
+    - Conical: radial direction from axis at the point's axial position, rotated by the cone's half-angle away from the axis, negated if concave. Specifically: for point $p$ with axial component $h = (p-A)\cdot\hat{a}$, the normal is the unit vector in the plane of (radial, axis) at angle $(90° - \theta)$ from radial.
+    - Toroidal: direction from the nearest tube center point to the surface point, negated if concave. The tube center is $c = C + R \cdot \hat{r}$ where $\hat{r}$ is the radial unit vector from the torus axis to the point.
+
 - Compute the dot product of the two normals. If all sampled pairs agree within 2° (dot > cos(2°) ≈ 0.9994), mark the edge as tangent.
 - Points too close to a cylinder axis or sphere center (degenerate) cause the edge to be marked non-tangent.
 
 **Decision: do not modify surfaces to enforce tangency.** Modifying analytic surfaces would change the geometry. Instead, tangent edges get special handling in edge curve computation (3.3): construct the edge curve directly rather than relying on surface-surface intersection.
 
-Tangent edges arise from fillets and blends: part_rounded_cube_10_r2 has 8 plane-cylinder tangent edges, and rounded_cube_10_r2 has 46 tangent edges (plane-cylinder + sphere-cylinder).
+Tangent edges arise from fillets and blends: part_rounded_cube_10_r2 has 8 plane-cylinder tangent edges, and rounded_cube_10_r2 has 46 tangent edges (plane-cylinder + sphere-cylinder). Toroidal fillets produce tangent edges at both boundaries (torus-plane, torus-cylinder, torus-torus).
+
 
 - With the `--compare` flag:
     - For each ReconEdge marked as tangent, verify that the corresponding edge in the reference STEP file is also tangent (i.e., the two adjacent STEP surfaces have matching normals along the STEP edge). Report a warning if tangency is detected in the mesh but not in the STEP reference, or vice versa.
@@ -535,8 +753,15 @@ For each ReconEdge, compute the 3D intersection curve between the two adjacent s
 - For tangent edges: construct the curve analytically rather than using `GeomAPI_IntSS` (which fails or produces degenerate results for tangent/near-tangent surfaces). Dispatches by surface pair type:
   - **Plane-cylinder**: `Geom_Line` parallel to the cylinder axis at the tangent point, computed from the cylinder axis, radius, and the plane normal component perpendicular to the axis.
   - **Cylinder-cylinder**: `Geom_Line` along the first cylinder's axis direction.
-  - **Sphere-cylinder**: `Geom_Circle` (great circle arc on the sphere). Center and radius come from the sphere hypothesis (which is accurately fitted, unlike cylinders which may have limited mesh data). The circle plane normal is `normalize(cross(v0 - center, v1 - center))`. Arc selection samples mesh boundary vertices to determine forward vs. reverse arc on the periodic circle.
+  - **Sphere-cylinder**: `Geom_Circle` (great circle arc on the sphere). Center and radius come from the sphere hypothesis. The circle plane normal is `normalize(cross(v0 - center, v1 - center))`. Arc selection samples mesh boundary vertices to determine forward vs. reverse arc on the periodic circle.
+  - **Plane-cone** (TODO): `Geom_Line` along the cone's generator at the tangent azimuth, from the tangent point toward (or away from) the apex.
+  - **Cylinder-cone** (TODO): `Geom_Circle` at the axial position where the cone radius equals the cylinder radius (when coaxial), or `IntSS`-based (non-coaxial).
+  - **Plane-torus** (TODO): `Geom_Circle` — the torus-plane tangent curve is a circle on the torus at the minor boundary (inner or outer equator). Center on the major circle, radius = R ± r.
+  - **Cylinder-torus** (TODO): `Geom_Circle` at the junction where the torus minor circle meets the cylinder. Commonly occurs at fillet-to-cylinder transitions.
+  - **Torus-torus** (TODO): `Geom_Circle` where two fillet torus patches meet (e.g., at rounded corners where 3 fillets converge). The shared circle lies on both tori.
+  - **Sphere-torus** (TODO): `Geom_Circle` — analogous to sphere-cylinder but the junction is a circle on the sphere.
   - **Fallback**: Construct a line from the two vertex endpoints.
+
   All tangent edges are trimmed to vertex endpoints using the same parameter projection as non-tangent edges. A `validate_tangent_curve` step checks that boundary vertices lie within `surface_tolerance_mm` of the constructed curve.
 
 **Trimming to vertex endpoints (implemented):**
@@ -553,6 +778,9 @@ For each ReconEdge, compute the 3D intersection curve between the two adjacent s
 
 **Seam edges (future):**
 - A face adjacent to itself (e.g., a full cylinder wrapping around) requires a seam edge at a fixed U or V parameter. Create the seam as an iso-parametric curve on the surface.
+- Conical faces: full-revolution cones require a seam edge along one generator line (iso-U curve from apex to base).
+- Toroidal faces: full-revolution tori (360° around major axis) require a seam at one meridian (iso-U); full-tube tori (360° around minor circle) also need a seam at one parallel (iso-V). A complete torus needs both.
+
 
 **Vertex position consistency (future):**
 - OCCT requires all edges at a vertex to share the same `TopoDS_Vertex` (same 3D point). When edges computed independently disagree slightly about vertex position, use the averaged position from the ReconVertex and set the vertex tolerance to the maximum deviation.
@@ -578,11 +806,15 @@ For each ReconFace, construct a `TopoDS_Face` from the surface and bounding wire
   - Identify the outer wire as the group with the most edges (heuristic).
   - Create `BRepBuilderAPI_MakeFace` with the surface handle and outer wire, then add inner wires as holes.
 
-- **Cylindrical and spherical faces** use three approaches:
+- **Cylindrical, spherical, conical, and toroidal faces** use three approaches:
+
   - **Full revolution** (all boundary edges are closed loops): UV-bounds construction via `MakeFace::new_handlegeomsurface_real5(surface, umin, umax, vmin, vmax, tol)`. UV bounds are computed from edge projections using a circular gap algorithm that handles periodicity. This automatically creates seam edges for proper B-Rep topology.
   - **Spherical faces with closed-loop edges near poles** (e.g., pill/capsule hemispheres or dome hemispheres cut by a meridional plane): The boundary circles may pass through or near the sphere's UV singularities (poles at V=±π/2 where U is undefined). When any boundary circle passes within 45° of either pole (detected via `ProjectPointOnCurve` + chord-length formula), the sphere surface is recreated with its Z-axis aligned to a reorientation axis. The axis is determined from: (a) the adjacent cylinder's axis direction for tangent edges, or (b) the boundary circle's plane normal for non-tangent edges (computed from 3 sampled points on the curve). This is safe because for all-closed-loop boundaries, the reorientation axis is unique. The hemisphere is selected by projecting a mesh face centroid onto the oriented surface and checking the V-sign. UV-bounds [0,2π] × [0,π/2] or [0,2π] × [-π/2,0] then work correctly since the boundary circle becomes an iso-V curve.
   - **Spherical faces with pole vertices** (e.g., rounded cube corners where cylinders meet at a sphere pole): When a spherical face's UV bounds include V=±π/2, vertex U values at the pole are undefined (singularity). The `compute_uv_bounds_from_edges` function excludes pole U values (within 0.01 radians of ±π/2) from the circular gap algorithm to avoid corrupted U spans. The face is then constructed via UV-bounds `MakeFace::new_handlegeomsurface_real5`, producing a triangular-topology face (3 edges, 2 meridians + 1 parallel; pole collapsed to a vertex). These faces have a harmless BRepCheck edge failure (tolerance ~0) on the first edge, resolved by sewing.
   - **Partial revolution** (open edges with vertices): Wire-based construction with pre-set pcurves. Before building the wire, `BRep_Builder::update_edge` sets `Geom2d_Line` pcurves on each IntSS edge for the periodic surface, mapping the edge's 3D parameter range to (u(t), v(t)) in surface UV space. This ensures MakeFace selects the correct arc and shares edges with adjacent planar faces for sewing.
+  - **Conical faces** (TODO): Same three approaches as cylinder (full revolution via UV-bounds, partial via wire+pcurves). The cone apex vertex is a UV singularity (all U values collapse to V=0 or V_apex); handle analogously to sphere poles. For truncated cones (no apex), UV-bounds construction suffices.
+  - **Toroidal faces** (TODO): UV-bounds construction for complete torus patches. The torus UV space is doubly periodic: U ∈ [0,2π) around the major axis, V ∈ [0,2π) around the tube. Fillet patches (partial torus) use wire-based construction with pcurves mapping 3D curves to torus UV space. The V range of a fillet is typically a small arc (e.g., 0 to π/2 for a 90° fillet).
+
   - Full spheres (no edges) use `MakeFace::new_handlegeomsurface_real(surface, tolerance)` with natural bounds.
 
 *Stage 3: Validate and compare.*
@@ -710,13 +942,56 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Implement closed-loop sphere-cylinder tangent edge curves and pole-safe hemisphere face construction for pill/capsule shapes. Closed-loop tangent circles are constructed as full `Geom_Circle` curves. When boundary circles pass within 45° of a sphere pole, the sphere surface is reoriented to align with the cylinder axis, making UV-bounds construction work correctly. Unblocks pill_coarse.stl and pill_fine.stl — STEP output matches reference to <1e-7 relative volume difference.
 - [ ] Consider implementing stage 2.7 (surface refitting) if stage 3 reconstruction reveals boundary accuracy problems from incorrect face-to-surface assignments.
 
-### Stage 2 Extensions: Additional Surface Types
-- [ ] Understand stage 2.4 (ruled surfaces) and imagine challenging test shapes. Create test models in tests/ccad/.
-- [ ] Implement stage 2.4: Deduce ruled surface hypotheses.
-- [ ] Understand stage 2.5 (NURBS/B-spline surfaces) and imagine challenging test shapes. Create test models in tests/ccad/.
-- [ ] Implement stage 2.5: Deduce NURBS hypotheses.
-- [ ] Imagine test shapes requiring extended surface selection (mixed analytic + freeform). Create test models in tests/ccad/.
-- [ ] Revisit stage 2.6: Extend surface selection to handle ruled and NURBS surfaces alongside analytic surfaces.
+### Stage 2 Extensions: Conical Surfaces
+- [ ] Create ccad test models for conical surfaces: `simple_cone.lua` (truncated cone), `block_with_conical_hole.lua` (block with conical bore), `cone_cylinder.lua` (cone joined to cylinder). Export STL+STEP pairs.
+- [ ] Implement `ConicalHypothesis` data structure in stage 2 (apex, axis, half-angle, convex, faces, vertices, errors).
+- [ ] Implement cone fitting: axis estimation from normal covariance, (h,r) profile fitting via linear regression to get half-angle and apex position. See Architecture section 2.4 for details.
+- [ ] Implement cone BFS region growing with vertex-to-cone distance validation and angular coverage check.
+- [ ] Extend stage 2.6 surface selection to include conical candidates.
+- [ ] Distinguish cones from cylinders: when both fit well, compare RMS residuals and prefer simpler cylinder unless cone is significantly better.
+- [ ] Unit tests: cone fitting on synthetic point sets; BFS growing on test meshes.
+- [ ] Full pipeline tests: simple_cone and block_with_conical_hole pass `--compare` through stage 4.1.
+- [ ] Unblock existing `cone_15x20_medium` (onshape) test.
+
+### Stage 2 Extensions: Toroidal Surfaces
+- [ ] Create ccad test models for toroidal surfaces: `filleted_block.lua` (block with `fillet_all()`), `quarter_torus.lua` (quarter-torus section), `pipe_elbow_ccad.lua` (90° pipe elbow with inner/outer torus + planes).
+- [ ] Implement `ToroidalHypothesis` data structure in stage 2 (center, axis, major_radius, minor_radius, convex, faces, vertices, errors).
+- [ ] Implement torus fitting via medial axis / tube center method: estimate minor radius from normal-line intersections, compute tube centers k_i = p_i + r*n_i, fit 3D circle to tube centers for major circle parameters. See Architecture section 2.5 for details.
+- [ ] Implement torus BFS region growing with vertex-to-torus distance validation.
+- [ ] Extend stage 2.6 surface selection to include toroidal candidates.
+- [ ] Unit tests: torus fitting on synthetic point sets; BFS growing on fillet meshes.
+- [ ] Full pipeline tests: filleted_block passes `--compare` through stage 4.1.
+- [ ] Unblock existing `pipe_elbow_10_fine` (onshape) test.
+
+### Stage 3 Extensions for Cone and Torus
+- [ ] Stage 3.1: Add `Geom_ConicalSurface` and `Geom_ToroidalSurface` creation from hypothesis parameters.
+- [ ] Stage 3.2: Add cone and torus analytical normal formulas for tangency detection.
+- [ ] Stage 3.3: Implement tangent edge curve computation for plane-cone, cylinder-cone, plane-torus, cylinder-torus, and torus-torus pairs.
+- [ ] Stage 3.3: Handle non-tangent cone and torus edge intersections via `GeomAPI_IntSS` with curve selection.
+- [ ] Stage 3.4: Implement conical face construction (UV-bounds for full revolution, wire+pcurves for partial, apex singularity handling).
+- [ ] Stage 3.4: Implement toroidal face construction (UV-bounds for full revolution, wire+pcurves for partial fillet patches, doubly-periodic UV handling).
+- [ ] Full pipeline tests: all cone and torus test models pass --compare through stage 4.1.
+
+### Unified Surface-of-Revolution Framework (refactor)
+- [ ] Extract shared SOR axis estimation (normal covariance smallest eigenvector) into a common utility function.
+- [ ] Implement (h,r) coordinate reduction: for a set of vertices and an axis, compute axial and radial coordinates.
+- [ ] Implement unified profile classifer: given (h,r) points, fit horizontal line (cylinder), sloped line (cone), circle centered on axis (sphere), and offset circle (torus). Return all fits with RMS residuals.
+- [ ] Refactor cylinder fitting to use (h,r) reduction + profile classification as an alternative initialization.
+- [ ] Refactor sphere fitting to use (h,r) reduction when axis is estimated from normal covariance.
+- [ ] Integrate unified SOR into BFS: after initial seed, try all profile types and pick best before growing.
+- [ ] Regression tests: ensure all existing test models still pass after refactor.
+
+### Gaussian Map Pre-Classification
+- [ ] Implement normal covariance eigenvalue classification: compute $\lambda_1, \lambda_2, \lambda_3$ eigenvalue pattern for face neighborhoods. Classify as planar ($\lambda_1 \gg \lambda_2 \approx \lambda_3$), cylindrical/conical ($\lambda_1 \approx \lambda_2 \gg \lambda_3$), spherical ($\lambda_1 \approx \lambda_2 \approx \lambda_3$), or toroidal.
+- [ ] Use classification to prioritize seeding strategies per region, reducing wasted fitting attempts.
+- [ ] Add quadric fitting (10-coefficient SVD) as a fast initialization alternative. Extract surface type from eigenvalue pattern of the 3×3 quadric matrix.
+
+### NURBS Fallback
+- [ ] Create test models with freeform surfaces that cannot be fit by analytic types (e.g., sculpted surface, spline loft).
+- [ ] Implement NURBS fitting for remaining unassigned face groups using OCCT's `GeomAPI_PointsToBSplineSurface`.
+- [ ] Integrate NURBS surfaces into stage 3 reconstruction (edge curves, face creation).
+- [ ] Extend stage 2.6 surface selection to handle NURBS alongside analytic surfaces.
+
 
 ---
 
@@ -766,8 +1041,15 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 | Rounded Cube fine (onshape) | 21466 triangles | 6 planes + 12 cylinders + 8 spheres | ✓ Stage 4.1 (STEP output) |
 | Pipe Elbow (onshape) | 11232 triangles | Cylinders + torus | ✗ Stage 3.1 (missing torus surface type) |
 | Cone (onshape) | 116 triangles | 1 cone + 1 plane | ✗ Stage 3.1 (missing cone surface type) |
-| Fillet | Blended edge | Planes + fillet surface | |
+| Simple Cone (ccad, TODO) | ~120 triangles | 1 truncated cone + 2 planes | Planned: conical surfaces phase |
+| Block with Conical Hole (ccad, TODO) | ~200 triangles | 6 planes + 1 concave cone | Planned: conical surfaces phase |
+| Cone-Cylinder (ccad, TODO) | ~300 triangles | 1 cone + 1 cylinder + 2 planes | Planned: conical surfaces phase |
+| Filleted Block (ccad, TODO) | ~400 triangles | 6 planes + 12 torus fillets | Planned: toroidal surfaces phase |
+| Quarter Torus (ccad, TODO) | ~200 triangles | 1 torus + 2 planes | Planned: toroidal surfaces phase |
+| Pipe Elbow ccad (ccad, TODO) | ~400 triangles | 2 tori (in/out) + 2 annular planes | Planned: toroidal surfaces phase |
+| Fillet + Cone (ccad, TODO) | ~500 triangles | Planes + cone + torus fillets | Planned: mixed cone+torus test |
 | Complex part | Real CAD export | Matching topology | |
+
 
 ---
 
@@ -785,6 +1067,9 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 
 - [ ] Support for OBJ, PLY input formats
 - [ ] IGES export option
-- [ ] Machine learning for surface type classification
 - [ ] Hole detection and filling
 - [ ] Feature recognition (holes, pockets, bosses)
+- [ ] Curvature-based surface detection: use per-vertex principal curvatures (Rusinkiewicz estimator) as an alternative seeding signal. Principal curvature signatures: plane (k1≈k2≈0), sphere (k1≈k2, constant), cylinder (k1=const, k2≈0), cone (k1 varies, k2≈0), torus (k1=const, k2 varies).
+- [ ] Quadric pre-classification: fit 10-coefficient quadric via SVD as a fast O(N) surface classifier before expensive nonlinear fitting. Eigenvalue pattern of the 3×3 quadric matrix directly classifies plane/sphere/cylinder/cone.
+- [ ] Adaptive mesh density handling: current BFS tolerance assumes roughly uniform tessellation. For meshes with varying triangle density (e.g., adaptive refinement near features), weight BFS decisions by triangle area.
+
