@@ -26,3 +26,18 @@ path = "src/bin/step_measure_tolerance.rs"
 [[bin]]
 name = "viewer"
 path = "src/bin/viewer.rs"
+
+# Optimize numerics-heavy dependencies even in dev builds.
+# Without this, nalgebra/levenberg-marquardt are ~35x slower in debug mode
+# due to bounds checking, shape queries, and deep un-inlined call chains.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package.nalgebra]
+opt-level = 3
+
+[profile.dev.package.levenberg-marquardt]
+opt-level = 3
+
+[profile.dev.package.simba]
+opt-level = 3
