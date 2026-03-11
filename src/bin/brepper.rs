@@ -4,8 +4,11 @@ use brepper::config::{self, Config};
 use brepper::{stage1, stage2, stage3, stage4};
 use brepper::viz::{self, VizSender};
 use std::process;
+use std::time::Instant;
 
 fn run(config: &Config, viz: Option<&VizSender>) -> Result<(), Box<dyn std::error::Error>> {
+    let total_start = Instant::now();
+
     // Stage 1: Mesh Input & Preprocessing
     let mesh = stage1::stage1(config)?;
 
@@ -29,6 +32,10 @@ fn run(config: &Config, viz: Option<&VizSender>) -> Result<(), Box<dyn std::erro
 
     // Stage 4: Output
     stage4::stage4(config, brep)?;
+
+    if !config.quiet {
+        eprintln!("Total CPU time: {:.3}s", total_start.elapsed().as_secs_f64());
+    }
 
     Ok(())
 }
@@ -73,6 +80,7 @@ fn main() {
 
         // Move config into the pipeline thread (re-run stage1 there)
         viz::run_viz_window(setup, move |viz_sender| {
+            let total_start = Instant::now();
             let mesh = match stage1::stage1(&config) {
                 Ok(m) => m,
                 Err(e) => {
@@ -111,6 +119,9 @@ fn main() {
 
             if let Err(e) = stage4::stage4(&config, brep) {
                 eprintln!("Error: {e}");
+            }
+            if !config.quiet {
+                eprintln!("Total CPU time: {:.3}s", total_start.elapsed().as_secs_f64());
             }
         });
     }

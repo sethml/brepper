@@ -16,6 +16,7 @@ use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex};
 use crate::viz::{self, VizAction, VizSender};
 use opencascade_sys::gp;
 use std::collections::HashSet;
+use std::time::Instant;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -857,6 +858,7 @@ fn compare_selected_surfaces(
 /// Run stage 2: fit surface hypotheses to mesh faces and select surfaces.
 pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz::VizSender>) -> Result<Stage2Output, Stage2Error> {
     // Stage 2.1: Deduce planar hypotheses
+    let t = Instant::now();
     let viz_21 = if config.viz_active(2, 1) { viz } else { None };
     let (mut planar_hypotheses, planar_quit) = deduce_planar_hypotheses(&mut mesh, config.vertex_tolerance_mm, config.verbosity, viz_21);
 
@@ -865,7 +867,8 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
         let single_face_count = planar_hypotheses.len() - multi_face_count;
         let covered_faces: usize = planar_hypotheses.iter().map(|h| h.faces.len()).sum();
         eprintln!(
-            "Stage 2.1: Deduced {} planar hypotheses ({} multi-face, {} single-face) covering {} of {} mesh faces",
+            "Stage 2.1 ({:.3}s): Deduced {} planar hypotheses ({} multi-face, {} single-face) covering {} of {} mesh faces",
+            t.elapsed().as_secs_f64(),
             planar_hypotheses.len(),
             multi_face_count,
             single_face_count,
@@ -917,6 +920,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
     }
 
     // Stage 2.2: Deduce cylindrical hypotheses
+    let t = Instant::now();
     let viz_22 = if config.viz_active(2, 2) { viz } else { None };
     let (mut cylindrical_hypotheses, cylindrical_quit) = deduce_cylindrical_hypotheses(
         &mut mesh, config.vertex_tolerance_mm,
@@ -930,7 +934,8 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
         let convex_count = cylindrical_hypotheses.iter().filter(|h| h.convex).count();
         let concave_count = cylindrical_hypotheses.len() - convex_count;
         eprintln!(
-            "Stage 2.2: Deduced {} cylindrical hypotheses ({} convex, {} concave) covering {} faces",
+            "Stage 2.2 ({:.3}s): Deduced {} cylindrical hypotheses ({} convex, {} concave) covering {} faces",
+            t.elapsed().as_secs_f64(),
             cylindrical_hypotheses.len(),
             convex_count,
             concave_count,
@@ -1012,6 +1017,7 @@ Normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
     }
 
     // Stage 2.3: Deduce spherical hypotheses
+    let t = Instant::now();
     let bb_diag = bounding_box_diagonal(&mesh.vertices);
     let max_sphere_radius = bb_diag * MAX_SPHERE_RADIUS_FACTOR;
     let viz_23 = if config.viz_active(2, 3) { viz } else { None };
@@ -1027,7 +1033,8 @@ Normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
         let convex_count = spherical_hypotheses.iter().filter(|h| h.convex).count();
         let concave_count = spherical_hypotheses.len() - convex_count;
         eprintln!(
-            "Stage 2.3: Deduced {} spherical hypotheses ({} convex, {} concave) covering {} faces",
+            "Stage 2.3 ({:.3}s): Deduced {} spherical hypotheses ({} convex, {} concave) covering {} faces",
+            t.elapsed().as_secs_f64(),
             spherical_hypotheses.len(),
             convex_count,
             concave_count,
@@ -1139,6 +1146,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
     }
 
     // Stage 2.6: Select surfaces for reconstruction
+    let t = Instant::now();
     let viz_26 = if config.viz_active(2, 6) { viz } else { None };
     let selected_surfaces = select_surfaces(
         &mesh, &mut planar_hypotheses, &mut cylindrical_hypotheses,
@@ -1157,7 +1165,8 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             }
         }
         eprintln!(
-            "Stage 2.6: Selected {} surfaces ({} planar, {} cylindrical, {} spherical) covering {} faces",
+            "Stage 2.6 ({:.3}s): Selected {} surfaces ({} planar, {} cylindrical, {} spherical) covering {} faces",
+            t.elapsed().as_secs_f64(),
             selected_surfaces.len(),
             planar_count,
             cylindrical_count,

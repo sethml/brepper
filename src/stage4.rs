@@ -10,6 +10,7 @@ use opencascade_sys::{
 };
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::time::Instant;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -65,6 +66,7 @@ impl Display for Stage4CompareError {
 
 /// Run stage 4: write the reconstructed B-Rep to a STEP file.
 pub fn stage4(config: &Config, input: Stage3Output) -> Result<(), Stage4Error> {
+    let t = Instant::now();
     let output_path = config
         .output_step
         .as_deref()
@@ -103,7 +105,7 @@ pub fn stage4(config: &Config, input: Stage3Output) -> Result<(), Stage4Error> {
     }
 
     if !config.quiet {
-        eprintln!("Stage 4.1: Wrote {} solid(s) to {output_path}", input.solids.len());
+        eprintln!("Stage 4.1 ({:.3}s): Wrote {} solid(s) to {output_path}", t.elapsed().as_secs_f64(), input.solids.len());
     }
 
     // Compare against reference STEP if --compare

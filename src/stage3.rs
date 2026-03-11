@@ -19,6 +19,7 @@ use opencascade_sys::{
     t_col_std, t_colgp, top_abs, top_exp, top_loc, topo_ds, OwnedPtr,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::time::Instant;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -559,6 +560,7 @@ fn build_surfaces_and_adjacency(
     input: Stage2Output,
     config: &Config,
 ) -> Result<Stage3Output, Stage3Error> {
+    let t = Instant::now();
     let num_surfaces = input.selected_surfaces.len();
 
     // 1. Build face-to-surface mapping
@@ -791,7 +793,8 @@ fn build_surfaces_and_adjacency(
     // Print summary
     if !config.quiet {
         eprintln!(
-            "Stage 3.1: Created {} OCCT surfaces, {} edges, {} vertices",
+            "Stage 3.1 ({:.3}s): Created {} OCCT surfaces, {} edges, {} vertices",
+            t.elapsed().as_secs_f64(),
             face_descriptors.len(),
             recon_edges.len(),
             brep_vertices.len(),
@@ -933,6 +936,7 @@ fn surface_normal_at_point(
 /// normals of the two adjacent surfaces. If all sampled normals agree within
 /// a small angle threshold (2°), the edge is marked as tangent.
 fn detect_tangency(mut output: Stage3Output, config: &Config) -> Stage3Output {
+    let t = Instant::now();
     const TANGENCY_ANGLE_DEG: f64 = 2.0;
     let tangency_cos = (TANGENCY_ANGLE_DEG * std::f64::consts::PI / 180.0).cos();
     let min_samples = 3;
@@ -997,7 +1001,8 @@ fn detect_tangency(mut output: Stage3Output, config: &Config) -> Stage3Output {
 
     if !config.quiet {
         eprintln!(
-            "Stage 3.2: Tangency detection: {} of {} edges are tangent",
+            "Stage 3.2 ({:.3}s): Tangency detection: {} of {} edges are tangent",
+            t.elapsed().as_secs_f64(),
             tangent_count,
             output.edges.len(),
         );
@@ -2024,6 +2029,7 @@ fn compute_edge_curves_all(
     config: &Config,
     viz: Option<&crate::viz::VizSender>,
 ) -> Result<Stage3Output, Stage3Error> {
+    let t = Instant::now();
     let mut success_count = 0;
     let mut fail_count = 0;
     let total = output.edges.len();
@@ -2191,7 +2197,8 @@ fn compute_edge_curves_all(
 
     if !config.quiet {
         eprintln!(
-            "Stage 3.3: Computed {success_count}/{total} edge curves ({fail_count} failed)",
+            "Stage 3.3 ({:.3}s): Computed {success_count}/{total} edge curves ({fail_count} failed)",
+            t.elapsed().as_secs_f64(),
         );
     }
 
@@ -3767,6 +3774,7 @@ fn create_occt_faces_all(
     config: &Config,
     viz: Option<&crate::viz::VizSender>,
 ) -> Result<Stage3Output, Stage3Error> {
+    let t = Instant::now();
     let num_faces = output.face_descriptors.len();
 
     // 1. Create shared TopoDS_Vertex for each BRepVertex.
@@ -3933,7 +3941,8 @@ fn create_occt_faces_all(
 
     if !config.quiet {
         eprintln!(
-            "Stage 3.4: Created {}/{} OCCT faces",
+            "Stage 3.4 ({:.3}s): Created {}/{} OCCT faces",
+            t.elapsed().as_secs_f64(),
             make_faces.len(),
             num_faces,
         );
@@ -3968,6 +3977,7 @@ fn construct_shells(
     config: &Config,
     viz: Option<&crate::viz::VizSender>,
 ) -> Result<Stage3Output, Stage3Error> {
+    let t = Instant::now();
     let num_faces = output.make_faces.len();
     if num_faces == 0 {
         return Err(Stage3Error::AdjacencyError("no faces to sew into shells".into()));
@@ -4138,7 +4148,8 @@ fn construct_shells(
 
     if !config.quiet {
         eprintln!(
-            "Stage 3.5: Constructed {} shell(s) from {} faces ({} faces in shells)",
+            "Stage 3.5 ({:.3}s): Constructed {} shell(s) from {} faces ({} faces in shells)",
+            t.elapsed().as_secs_f64(),
             shells.len(),
             num_faces,
             total_faces_in_shells,
@@ -4220,6 +4231,7 @@ fn construct_solids(
     config: &Config,
     viz: Option<&crate::viz::VizSender>,
 ) -> Result<Stage3Output, Stage3Error> {
+    let t = Instant::now();
     if output.shells.is_empty() {
         return Err(Stage3Error::AdjacencyError("no shells to make solids from".into()));
     }
@@ -4332,7 +4344,8 @@ fn construct_solids(
 
     if !config.quiet {
         eprintln!(
-            "Stage 3.6: Constructed {} solid(s) from {} shell(s)",
+            "Stage 3.6 ({:.3}s): Constructed {} solid(s) from {} shell(s)",
+            t.elapsed().as_secs_f64(),
             solids.len(),
             output.shells.len(),
         );

@@ -6,6 +6,7 @@
 use crate::config::Config;
 use opencascade_sys::{b_rep_builder_api, b_rep_extrema, extrema, gp, message, rw_stl};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::Instant;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -875,6 +876,7 @@ fn compare_mesh_to_step(mesh: &ConnectedMesh, config: &Config) -> Result<(), Com
 /// Run stage 1: read STL (1.1), validate mesh (1.2), and fuse coplanar triangles (1.3).
 pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
     // Stage 1.1: Read STL
+    let t = Instant::now();
     let mut mesh = read_connected_mesh_from_stl(
         &config.input_stl,
         VertexWeldOptions {
@@ -884,7 +886,8 @@ pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
 
     if !config.quiet {
         eprintln!(
-            "Stage 1.1: Read {} vertices, {} faces from STL",
+            "Stage 1.1 ({:.3}s): Read {} vertices, {} faces from STL",
+            t.elapsed().as_secs_f64(),
             mesh.vertices.len(),
             mesh.faces.len()
         );
@@ -895,11 +898,12 @@ pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
     }
 
     // Stage 1.2: Validate and populate topology
+    let t = Instant::now();
     mesh.validate_and_populate_topology()?;
 
     if !config.quiet {
         let s = &mesh.stats;
-        eprintln!("Stage 1.2: Mesh validation passed");
+        eprintln!("Stage 1.2 ({:.3}s): Mesh validation passed", t.elapsed().as_secs_f64());
         eprintln!(
             "  {} faces, {} vertices, {} shells, {} solids",
             s.mesh_faces, s.mesh_vertices, s.connected_shells, s.solids
@@ -911,11 +915,13 @@ pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
 
     if config.stage.at_least(1, 3) {
         // Stage 1.3: Fuse coplanar triangle pairs into quads
+        let t = Instant::now();
         fuse_coplanar_triangles(&mut mesh, config.vertex_tolerance_mm);
 
         if !config.quiet {
             eprintln!(
-                "Stage 1.3: Fused {} triangle pairs into quads ({} faces remaining)",
+                "Stage 1.3 ({:.3}s): Fused {} triangle pairs into quads ({} faces remaining)",
+                t.elapsed().as_secs_f64(),
                 mesh.stats.mesh_quads, mesh.stats.mesh_faces
             );
         }
