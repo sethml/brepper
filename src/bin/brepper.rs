@@ -42,6 +42,7 @@ fn run(config: &Config, viz: Option<&VizSender>) -> Result<(), Box<dyn std::erro
 
 fn main() {
     let mut config = config::parse_config();
+    brepper::suppress_occt_messages();
 
     if let Err(e) = config.load_compare_step() {
         eprintln!("Error loading comparison STEP file: {e}");
