@@ -5,6 +5,7 @@
 
 use brepper::config;
 use brepper::{stage1, stage2, stage3};
+use opencascade_sys::b_rep_check;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1211,4 +1212,34 @@ fn onshape_part_rounded_cube_stage36_compare() {
         &format!("{dir}/tests/onshape/part_rounded_cube_10_r2.step"),
     );
     run_stage3_36(&config);
+}
+
+// ---------------------------------------------------------------------------
+// BRepCheck validation tests
+// ---------------------------------------------------------------------------
+
+/// Verify that all solids pass BRepCheck validation (no self-intersecting wires, etc.).
+fn check_solids_brep_valid(output: &stage3::Stage3Output) {
+    for (si, solid) in output.solids.iter().enumerate() {
+        let analyzer = b_rep_check::Analyzer::new_shape_bool(
+            solid.as_shape(),
+            true,
+        );
+        assert!(
+            analyzer.is_valid(),
+            "solid {si} failed BRepCheck validation"
+        );
+    }
+}
+
+/// Rounded cube (coarse) with default parameters must produce a BRepCheck-valid solid.
+/// This catches sewing-induced wire corruption (e.g., sphere face wires getting
+/// cylinder edges inserted by BRepBuilderAPI_Sewing).
+#[test]
+fn rounded_cube_coarse_brep_check() {
+    let stl = format!("{}/tests/onshape/rounded_cube_10_r2_coarse.stl", manifest_dir());
+    let config = config_for_stl_36(&stl);
+    let output = run_stage3_36(&config);
+    check_solids_constructed(&output);
+    check_solids_brep_valid(&output);
 }

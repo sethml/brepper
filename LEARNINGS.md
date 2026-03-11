@@ -292,4 +292,8 @@ Hypothesis: BFS refitting gradually rotates the cylinder axis when sphere faces 
 - Config has `OwnedPtr<Shape>` which is not Clone — must move Config into the pipeline thread closure, not clone it.
 - `VizOverlay` supports multiple overlay types: `FaceHighlight` (mesh face coloring), `EdgeHighlight` (mesh edge coloring), `CylinderOverlay`/`SphereOverlay` (analytic geometry), `LineOverlay` (polyline segments with optional `no_depth_test`), `ShapeMeshOverlay` (tessellated OCCT shapes with edges).
 - `tessellate_shape()` tessellates a `TopoDS_Shape` via `BRepMesh_IncrementalMesh` for viz display. `sample_curve_for_viz()` samples a `HandleGeomCurve` into polyline segment pairs.
+
+
+### BRepLib::SameParameter corrupts pcurves on closely-spaced edges
+Calling `BRepLib::SameParameter(shape, 1.0, true)` with a large tolerance (1.0mm) and `forced=true` recomputes all pcurves, which can corrupt pcurves on faces with closely-spaced edges (e.g., sphere faces at sphere-cylinder tangent junctions). This manifests as BRepCheck_Wire self-intersection failures. The fix is to use `forced=false` (skip edges already flagged as SameParameter) and a tight tolerance (`vertex_tolerance_mm`, typically 1e-5). This allows edges that were correctly constructed to keep their pcurves while only fixing genuinely misaligned ones.
 - Stage 3 viz (3.3/3.4/3.5/3.6): stage 3.3 uses `FaceHighlight` for surface context and `LineOverlay` for edge curves; stage 3.4 uses `ShapeMeshOverlay` for OCCT faces; stages 3.5/3.6 use `ShapeMeshOverlay` for shells/solids.

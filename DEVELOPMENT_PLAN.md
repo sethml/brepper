@@ -614,6 +614,9 @@ Convert closed shells into `TopoDS_Solid` objects.
 
 **Algorithm:**
 - For each shell, use `ShapeFix_Solid::SolidFromShell` which handles orientation automatically.
+- Apply `ShapeFix_Shape::Perform()` for comprehensive face/wire/edge/shell/solid fixes.
+- Call `BRepLib::SameParameter` with `forced=false` and tight tolerance (`vertex_tolerance_mm`) to ensure pcurve/3D curve agreement without corrupting already-correct pcurves. Using `forced=true` or a large tolerance (e.g. 1.0mm) recomputes all pcurves and can corrupt faces with closely-spaced tangent edges (e.g. sphere faces at sphere-cylinder junctions), causing BRepCheck self-intersection failures.
+- Call `BRepLib::UpdateTolerances` and `BRepLib::OrientClosedSolid`.
 - Validate with `BRepCheck_Analyzer`. Log warning if validation fails (may indicate upstream face issues from stage 3.4).
 - Compute and report volume using `BRepGProp::VolumeProperties`.
 - Multi-shell solids (outer shell containing voids) not yet implemented — currently each shell produces one solid.

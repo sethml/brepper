@@ -4249,7 +4249,10 @@ fn construct_solids(
 
         // Fix SameParameter consistency: ensure pcurves and 3D curves agree,
         // and update edge/vertex tolerances to accommodate any gaps.
-        b_rep_lib::same_parameter_shape_real_bool(solid.as_shape(), 1.0, true);
+        // Use forced=false to only recompute edges that are not already flagged
+        // as SameParameter, and use the model's vertex tolerance rather than
+        // an aggressive tolerance that can corrupt pcurves on closely-spaced edges.
+        b_rep_lib::same_parameter_shape_real_bool(solid.as_shape(), config.vertex_tolerance_mm, false);
         b_rep_lib::update_tolerances_shape_bool(solid.as_shape(), true);
 
         // Orient the solid's faces so all normals point outward
