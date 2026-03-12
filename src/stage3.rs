@@ -352,6 +352,20 @@ fn create_occt_surface(
             let sphere = geom::SphericalSurface::new_ax3_real(&ax3, hyp.radius);
             geom::SphericalSurface::to_handle(sphere).to_handle_surface()
         }
+        SelectedSurface::Conical(idx) => {
+            let hyp = &output.conical_hypotheses[*idx];
+            let origin = gp::Pnt::new_real3(hyp.apex[0], hyp.apex[1], hyp.apex[2]);
+            let dir = gp::Dir::new_real3(
+                hyp.axis_direction[0],
+                hyp.axis_direction[1],
+                hyp.axis_direction[2],
+            );
+            let ax3 = gp::Ax3::new_pnt_dir(&origin, &dir);
+            // ConicalSurface::new_ax3_real2(ax3, semi_angle, ref_radius)
+            // With origin at apex, ref_radius = 0.0
+            let cone = geom::ConicalSurface::new_ax3_real2(&ax3, hyp.half_angle, 0.0);
+            geom::ConicalSurface::to_handle(cone).to_handle_surface()
+        }
     }
 }
 
@@ -361,6 +375,7 @@ fn surface_faces<'a>(surface: &SelectedSurface, output: &'a Stage2Output) -> &'a
         SelectedSurface::Planar(idx) => &output.planar_hypotheses[*idx].faces,
         SelectedSurface::Cylindrical(idx) => &output.cylindrical_hypotheses[*idx].faces,
         SelectedSurface::Spherical(idx) => &output.spherical_hypotheses[*idx].faces,
+        SelectedSurface::Conical(idx) => &output.conical_hypotheses[*idx].faces,
     }
 }
 /// Canonical (undirected) representation of a mesh edge for hashing.
@@ -805,6 +820,7 @@ fn build_surfaces_and_adjacency(
                     SelectedSurface::Planar(_) => "planar",
                     SelectedSurface::Cylindrical(_) => "cylindrical",
                     SelectedSurface::Spherical(_) => "spherical",
+                    SelectedSurface::Conical(_) => "conical",
                 };
                 eprintln!(
                     "  Face {}: {} surface, {} adjacent faces, {} edges, {} vertices",
@@ -922,6 +938,39 @@ fn surface_normal_at_point(
                 return None; // Point is at the center
             }
             let mut n = [dp[0] / len, dp[1] / len, dp[2] / len];
+            if !hyp.convex {
+                n = [-n[0], -n[1], -n[2]];
+            }
+            Some(n)
+        }
+        SelectedSurface::Conical(idx) => {
+            let hyp = &stage2.conical_hypotheses[*idx];
+            let dp = [
+                point[0] - hyp.apex[0],
+                point[1] - hyp.apex[1],
+                point[2] - hyp.apex[2],
+            ];
+            let h = dp[0] * hyp.axis_direction[0]
+                + dp[1] * hyp.axis_direction[1]
+                + dp[2] * hyp.axis_direction[2];
+            let radial = [
+                dp[0] - h * hyp.axis_direction[0],
+                dp[1] - h * hyp.axis_direction[1],
+                dp[2] - h * hyp.axis_direction[2],
+            ];
+            let radial_len = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+            if radial_len < 1e-15 {
+                return None; // Point is on the axis
+            }
+            // Outward normal on a cone: radial_unit * cos(half_angle) - axis * sin(half_angle)
+            let cos_ha = hyp.half_angle.cos();
+            let sin_ha = hyp.half_angle.sin();
+            let ru = [radial[0] / radial_len, radial[1] / radial_len, radial[2] / radial_len];
+            let mut n = [
+                ru[0] * cos_ha - hyp.axis_direction[0] * sin_ha,
+                ru[1] * cos_ha - hyp.axis_direction[1] * sin_ha,
+                ru[2] * cos_ha - hyp.axis_direction[2] * sin_ha,
+            ];
             if !hyp.convex {
                 n = [-n[0], -n[1], -n[2]];
             }
@@ -1991,6 +2040,32 @@ fn viz_surface_normal_at_point(
             let sign: f64 = if hyp.convex { 1.0 } else { -1.0 };
             [(sign * v[0] / len) as f32, (sign * v[1] / len) as f32, (sign * v[2] / len) as f32]
         }
+        SelectedSurface::Conical(i) => {
+            let hyp = &stage2.conical_hypotheses[*i];
+            let dp = [
+                point[0] - hyp.apex[0],
+                point[1] - hyp.apex[1],
+                point[2] - hyp.apex[2],
+            ];
+            let h = dp[0] * hyp.axis_direction[0]
+                + dp[1] * hyp.axis_direction[1]
+                + dp[2] * hyp.axis_direction[2];
+            let r = [dp[0] - h * hyp.axis_direction[0], dp[1] - h * hyp.axis_direction[1], dp[2] - h * hyp.axis_direction[2]];
+            let rlen = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt();
+            if rlen < 1e-10 {
+                return [0.0_f32, 0.0, 1.0];
+            }
+            let cos_ha = hyp.half_angle.cos();
+            let sin_ha = hyp.half_angle.sin();
+            let ru = [r[0] / rlen, r[1] / rlen, r[2] / rlen];
+            let sign: f64 = if hyp.convex { 1.0 } else { -1.0 };
+            let n = [
+                sign * (ru[0] * cos_ha - hyp.axis_direction[0] * sin_ha),
+                sign * (ru[1] * cos_ha - hyp.axis_direction[1] * sin_ha),
+                sign * (ru[2] * cos_ha - hyp.axis_direction[2] * sin_ha),
+            ];
+            [n[0] as f32, n[1] as f32, n[2] as f32]
+        }
     }
 }
 
@@ -2005,6 +2080,7 @@ fn viz_selected_surface_centroid(
         SelectedSurface::Planar(i) => &stage2.planar_hypotheses[*i].vertices,
         SelectedSurface::Cylindrical(i) => &stage2.cylindrical_hypotheses[*i].vertices,
         SelectedSurface::Spherical(i) => &stage2.spherical_hypotheses[*i].vertices,
+        SelectedSurface::Conical(i) => &stage2.conical_hypotheses[*i].vertices,
     };
     let mut cx = 0.0_f64;
     let mut cy = 0.0_f64;
@@ -2080,6 +2156,7 @@ fn compute_edge_curves_all(
                                 SelectedSurface::Planar(i) => &output.stage2.planar_hypotheses[*i].faces,
                                 SelectedSurface::Cylindrical(i) => &output.stage2.cylindrical_hypotheses[*i].faces,
                                 SelectedSurface::Spherical(i) => &output.stage2.spherical_hypotheses[*i].faces,
+                                SelectedSurface::Conical(i) => &output.stage2.conical_hypotheses[*i].faces,
                             };
                             overlay.face_highlights.push(crate::viz::FaceHighlight {
                                 face_indices: mesh_faces.to_vec(),
@@ -2158,6 +2235,7 @@ fn compute_edge_curves_all(
                                 SelectedSurface::Planar(i) => &output.stage2.planar_hypotheses[*i].faces,
                                 SelectedSurface::Cylindrical(i) => &output.stage2.cylindrical_hypotheses[*i].faces,
                                 SelectedSurface::Spherical(i) => &output.stage2.spherical_hypotheses[*i].faces,
+                                SelectedSurface::Conical(i) => &output.stage2.conical_hypotheses[*i].faces,
                             };
                             overlay.face_highlights.push(crate::viz::FaceHighlight {
                                 face_indices: mesh_faces.to_vec(),
@@ -3413,6 +3491,7 @@ fn validate_faces(output: &Stage3Output, config: &Config) -> Result<(), Stage3Er
                         SelectedSurface::Planar(_) => "planar",
                         SelectedSurface::Cylindrical(_) => "cylindrical",
                         SelectedSurface::Spherical(_) => "spherical",
+                        SelectedSurface::Conical(_) => "conical",
                     };
                     let mut issues = Vec::new();
                     if intersect != b_rep_check::Status::Noerror {
@@ -3707,6 +3786,7 @@ fn compare_surface_orientations_to_step(
             SelectedSurface::Planar(_) => "planar",
             SelectedSurface::Cylindrical(_) => "cylindrical",
             SelectedSurface::Spherical(_) => "spherical",
+            SelectedSurface::Conical(_) => "conical",
         };
 
         let is_convex = match surface {
@@ -3715,6 +3795,9 @@ fn compare_surface_orientations_to_step(
             }
             SelectedSurface::Spherical(idx) => {
                 Some(output.stage2.spherical_hypotheses[*idx].convex)
+            }
+            SelectedSurface::Conical(idx) => {
+                Some(output.stage2.conical_hypotheses[*idx].convex)
             }
             _ => None,
         };
@@ -3879,7 +3962,7 @@ fn create_occt_faces_all(
         let surface_type = &output.stage2.selected_surfaces[output.face_descriptors[fi].selected_surface_idx];
         let is_periodic = matches!(
             surface_type,
-            SelectedSurface::Cylindrical(_) | SelectedSurface::Spherical(_)
+            SelectedSurface::Cylindrical(_) | SelectedSurface::Spherical(_) | SelectedSurface::Conical(_)
         );
 
         let (mut make_face, is_concave) = if is_periodic {
@@ -3894,6 +3977,7 @@ fn create_occt_faces_all(
                 SelectedSurface::Planar(_) => "planar",
                 SelectedSurface::Cylindrical(_) => "cylindrical",
                 SelectedSurface::Spherical(_) => "spherical",
+                SelectedSurface::Conical(_) => "conical",
             };
             eprintln!(
                 "  Face {fi}: {stype} — created successfully ({} edges)",
@@ -3922,6 +4006,7 @@ fn create_occt_faces_all(
                 SelectedSurface::Planar(_) => "planar",
                 SelectedSurface::Cylindrical(_) => "cylindrical",
                 SelectedSurface::Spherical(_) => "spherical",
+                SelectedSurface::Conical(_) => "conical",
             };
             overlay.status_text = format!(
                 "Stage 3.4: Face {fi}/{num_faces}: {stype} ({} edges)",

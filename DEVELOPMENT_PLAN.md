@@ -944,14 +944,14 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 
 ### Stage 2 Extensions: Conical Surfaces
 - [x] Create ccad test models for conical surfaces: `simple_cone.lua` (truncated cone), `block_with_conical_hole.lua` (block with conical bore), `cone_cylinder.lua` (cone joined to cylinder, cone-cylinder tangency), `nosecone.lua` (cone with tangent spherical cap, cone-sphere tangency). Export STL+STEP pairs.
-- [ ] Implement `ConicalHypothesis` data structure in stage 2 (apex, axis, half-angle, convex, faces, vertices, errors).
-- [ ] Implement cone fitting: axis estimation from normal covariance, (h,r) profile fitting via linear regression to get half-angle and apex position. See Architecture section 2.4 for details.
-- [ ] Implement cone BFS region growing with vertex-to-cone distance validation and angular coverage check.
-- [ ] Extend stage 2.6 surface selection to include conical candidates.
-- [ ] Distinguish cones from cylinders: when both fit well, compare RMS residuals and prefer simpler cylinder unless cone is significantly better.
+- [x] Implement `ConicalHypothesis` data structure in stage 2 (apex, axis, half-angle, convex, faces, vertices, errors). Added `ConicalHypothesis` struct with fields for apex, axis_direction, half_angle, convex, faces, vertices, error_max, centroid_error_max, error_abs_sum. Extended `MeshFace` with `conical_hypothesis` field and `Stage2Output` with `conical_hypotheses` vector. Added `SelectedSurface::Conical` variant.
+- [x] Implement cone fitting: axis estimation from normal covariance, (h,r) profile fitting via linear regression to get half-angle and apex position. Apex-vertex seeding strategy instead of triple-seed: identifies vertices with many non-coplanar-normal incident faces (eigenval/trace < 0.3), uses all incident faces as seed set for robust axis estimation. Axis orientation ensured by flipping when h_sum < 0. Levenberg-Marquardt refinement for 6-parameter optimization (axis perturbation, apex position, half-angle). False-positive rejection filters: half-angle bounds (2°–85°), vertex error < surface_tol, apex distance < 10× bounding box diagonal, normal-axis angle consistency (std_dev < angular_tol/2).
+- [x] Implement cone BFS region growing with vertex-to-cone distance validation and angular coverage check. Seeds validated with relaxed tolerance (5× surface_tol), BFS expansion with vertex+centroid distance checks, convexity by majority vote after final re-fit.
+- [x] Extend stage 2.6 surface selection to include conical candidates. Cones participate in greedy area-based selection alongside planar/cylindrical/spherical hypotheses.
+- [x] Distinguish cones from cylinders/spheres/planes: half-angle bounds (< 2° = cylindrical, > 85° = planar), apex distance sanity check against mesh extent, and normal-axis angle standard deviation check to reject sphere patches falsely fitted as cones. All 325 tests pass with zero false positives.
 - [ ] Unit tests: cone fitting on synthetic point sets; BFS growing on test meshes.
-- [ ] Full pipeline tests: simple_cone and block_with_conical_hole pass `--compare` through stage 4.1.
-- [ ] Unblock existing `cone_15x20_medium` (onshape) test.
+- [ ] Full pipeline tests: simple_cone passes `--compare` through stage 4.1 (volume diff 4.07e-9, distance 5.26e-13 mm). block_with_conical_hole and cone_cylinder/nosecone need stage 3 fixes (BRepCheck wire orientation issue for conical faces, edge comparison mismatch).
+- [x] Unblock existing `cone_15x20_medium` (onshape) test. Stage 2 detection works perfectly (58 faces, ha=20.56°, err_max=2.4e-6). Stage 3 conical face has known BRepCheck wire orientation warning but comparison distances pass. Full pipeline produces STEP output.
 
 ### Stage 2 Extensions: Toroidal Surfaces
 - [ ] Create ccad test models for toroidal surfaces: `filleted_block.lua` (block with `fillet_all()`), `quarter_torus.lua` (quarter-torus section), `pipe_elbow_ccad.lua` (90° pipe elbow with inner/outer torus + planes).

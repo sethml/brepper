@@ -7,6 +7,7 @@
 //! 2.5: Deduce NURBS hypotheses
 //! 2.6: Select surfaces for reconstruction
 
+mod conical;
 mod cylindrical;
 mod planar;
 mod spherical;
@@ -20,6 +21,9 @@ use std::time::Instant;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+use self::conical::{
+    compare_conical_hypotheses, deduce_conical_hypotheses,
+};
 use self::cylindrical::{
     compare_cylindrical_hypotheses, deduce_cylindrical_hypotheses, vertex_to_cylinder_distance,
 };
@@ -59,6 +63,11 @@ pub(crate) const MIN_CYLINDER_FACES: usize = 3;
 /// non-degenerate faces are needed for a well-determined fit. This also rejects
 /// spurious fits from small patches that are consistent with many surface types.
 pub(crate) const MIN_SPHERE_FACES: usize = 4;
+
+/// Minimum number of mesh faces required to accept a conical hypothesis.
+/// A cone has 5 degrees of freedom (apex xyz, axis direction 2, half-angle),
+/// so at least 6 faces are needed for a well-determined and robust fit.
+pub(crate) const MIN_CONE_FACES: usize = 6;
 
 /// Maximum sphere radius as a multiple of the mesh bounding-box diagonal.
 /// With solid-angle coverage validation and surface-tolerance validation during
@@ -139,6 +148,29 @@ pub struct SphericalHypothesis {
     pub error_abs_sum: f64,
 }
 
+/// A conical surface hypothesis fitted to a set of mesh faces.
+#[derive(Debug, Clone)]
+pub struct ConicalHypothesis {
+    /// The apex of the cone (the point where the surface converges).
+    pub apex: [f64; 3],
+    /// Unit direction vector along the cone axis (pointing away from the apex toward the base).
+    pub axis_direction: [f64; 3],
+    /// Half-angle of the cone in radians (angle between axis and surface generator line).
+    pub half_angle: f64,
+    /// Whether the surface normal points away from the axis (convex=true) or toward it (concave=false).
+    pub convex: bool,
+    /// Set of mesh face indices that fit this hypothesis.
+    pub faces: Vec<usize>,
+    /// Set of mesh vertex indices on this cone.
+    pub vertices: Vec<usize>,
+    /// Maximum absolute distance from any vertex to the cone surface.
+    pub error_max: f64,
+    /// Maximum absolute distance from any face centroid to the cone surface.
+    pub centroid_error_max: f64,
+    /// Sum of absolute vertex-to-surface distances.
+    pub error_abs_sum: f64,
+}
+
 // TODO: Stage 2.4 - Ruled surface hypothesis
 // TODO: Stage 2.5 - NURBS hypothesis
 
@@ -148,6 +180,7 @@ pub enum SelectedSurface {
     Planar(usize),
     Cylindrical(usize),
     Spherical(usize),
+    Conical(usize),
     // TODO: RuledSurface(usize),
     // TODO: Nurbs(usize),
 }
@@ -167,6 +200,8 @@ pub struct Stage2Output {
     pub cylindrical_hypotheses: Vec<CylindricalHypothesis>,
     /// All spherical hypotheses deduced in stage 2.3.
     pub spherical_hypotheses: Vec<SphericalHypothesis>,
+    /// All conical hypotheses deduced in stage 2.4.
+    pub conical_hypotheses: Vec<ConicalHypothesis>,
     /// Surfaces selected in stage 2.6 for reconstruction. Each face should be
     /// covered by exactly one selected surface.
     pub selected_surfaces: Vec<SelectedSurface>,
@@ -518,6 +553,7 @@ fn select_surfaces(
     planar_hypotheses: &mut [PlanarHypothesis],
     cylindrical_hypotheses: &mut [CylindricalHypothesis],
     spherical_hypotheses: &mut [SphericalHypothesis],
+    conical_hypotheses: &mut [ConicalHypothesis],
     viz: Option<&VizSender>,
 ) -> Vec<SelectedSurface> {
     let num_faces = mesh.faces.len();
@@ -529,7 +565,7 @@ fn select_surfaces(
 
     // Step 2: Build candidate list from multi-face hypotheses.
     struct Candidate {
-        surface_type: u8, // 0=planar, 1=cylindrical, 2=spherical
+        surface_type: u8, // 0=planar, 1=cylindrical, 2=spherical, 3=conical
         hypothesis_index: usize,
         faces: Vec<usize>,
     }
@@ -555,6 +591,13 @@ fn select_surfaces(
     for (i, hyp) in spherical_hypotheses.iter().enumerate() {
         candidates.push(Candidate {
             surface_type: 2,
+            hypothesis_index: i,
+            faces: hyp.faces.clone(),
+        });
+    }
+    for (i, hyp) in conical_hypotheses.iter().enumerate() {
+        candidates.push(Candidate {
+            surface_type: 3,
             hypothesis_index: i,
             faces: hyp.faces.clone(),
         });
@@ -642,6 +685,9 @@ fn select_surfaces(
                                 color: [0.5, 0.5, 0.5, 0.25],
                             });
                         }
+                        3 => {
+                            // Conical competing — no viz overlay yet
+                        }
                         _ => {}
                     }
                 }
@@ -662,7 +708,7 @@ fn select_surfaces(
                     ));
                     "cylindrical"
                 }
-                _ => {
+                2 => {
                     let hyp = &spherical_hypotheses[candidates[ci].hypothesis_index];
                     overlay.spheres.push(viz::SphereOverlay {
                         center: hyp.center,
@@ -670,6 +716,10 @@ fn select_surfaces(
                         color: [0.0, 0.8, 0.0, 0.3],
                     });
                     "spherical"
+                }
+                _ => {
+                    // Conical — no viz overlay yet
+                    "conical"
                 }
             };
 
@@ -723,11 +773,17 @@ fn select_surfaces(
                 cylindrical_hypotheses[idx].vertices = sel_vertices;
                 SelectedSurface::Cylindrical(idx)
             }
-            _ => {
+            2 => {
                 let idx = candidates[ci].hypothesis_index;
                 spherical_hypotheses[idx].faces = sel_faces;
                 spherical_hypotheses[idx].vertices = sel_vertices;
                 SelectedSurface::Spherical(idx)
+            }
+            _ => {
+                let idx = candidates[ci].hypothesis_index;
+                conical_hypotheses[idx].faces = sel_faces;
+                conical_hypotheses[idx].vertices = sel_vertices;
+                SelectedSurface::Conical(idx)
             }
         };
         selected.push(selected_surface);
@@ -751,6 +807,7 @@ fn compare_selected_surfaces(
     planar_hypotheses: &[PlanarHypothesis],
     cylindrical_hypotheses: &[CylindricalHypothesis],
     spherical_hypotheses: &[SphericalHypothesis],
+    conical_hypotheses: &[ConicalHypothesis],
     mesh: &ConnectedMesh,
     config: &Config,
 ) -> Result<(), Stage2CompareError> {
@@ -763,6 +820,7 @@ fn compare_selected_surfaces(
             SelectedSurface::Planar(i) => ("planar", &planar_hypotheses[*i].faces),
             SelectedSurface::Cylindrical(i) => ("cylindrical", &cylindrical_hypotheses[*i].faces),
             SelectedSurface::Spherical(i) => ("spherical", &spherical_hypotheses[*i].faces),
+            SelectedSurface::Conical(i) => ("conical", &conical_hypotheses[*i].faces),
         };
 
         for &fi in face_indices {
@@ -824,6 +882,38 @@ fn compare_selected_surfaces(
                             hyp.center[0] + d[0] * scale,
                             hyp.center[1] + d[1] * scale,
                             hyp.center[2] + d[2] * scale,
+                        ]
+                    } else {
+                        centroid
+                    }
+                }
+                SelectedSurface::Conical(i) => {
+                    let hyp = &conical_hypotheses[*i];
+                    // Project centroid onto cone surface:
+                    // h = (centroid - apex) . axis, radial = centroid - apex - h*axis
+                    let d = [
+                        centroid[0] - hyp.apex[0],
+                        centroid[1] - hyp.apex[1],
+                        centroid[2] - hyp.apex[2],
+                    ];
+                    let h = dot3(&d, &hyp.axis_direction);
+                    let radial = [
+                        d[0] - h * hyp.axis_direction[0],
+                        d[1] - h * hyp.axis_direction[1],
+                        d[2] - h * hyp.axis_direction[2],
+                    ];
+                    let radial_dist = (radial[0] * radial[0]
+                        + radial[1] * radial[1]
+                        + radial[2] * radial[2])
+                        .sqrt();
+                    // On the cone at height h, the radius is h * tan(half_angle)
+                    let cone_r = h * hyp.half_angle.tan();
+                    if radial_dist > 1e-15 {
+                        let scale = cone_r / radial_dist;
+                        [
+                            hyp.apex[0] + h * hyp.axis_direction[0] + radial[0] * scale,
+                            hyp.apex[1] + h * hyp.axis_direction[1] + radial[1] * scale,
+                            hyp.apex[2] + h * hyp.axis_direction[2] + radial[2] * scale,
                         ]
                     } else {
                         centroid
@@ -903,6 +993,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
             planar_hypotheses,
             cylindrical_hypotheses: Vec::new(),
             spherical_hypotheses: Vec::new(),
+            conical_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -915,6 +1006,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
             planar_hypotheses,
             cylindrical_hypotheses: Vec::new(),
             spherical_hypotheses: Vec::new(),
+            conical_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -1000,6 +1092,7 @@ Normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             planar_hypotheses,
             cylindrical_hypotheses,
             spherical_hypotheses: Vec::new(),
+            conical_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -1012,6 +1105,7 @@ Normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             planar_hypotheses,
             cylindrical_hypotheses,
             spherical_hypotheses: Vec::new(),
+            conical_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -1097,6 +1191,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             planar_hypotheses,
             cylindrical_hypotheses,
             spherical_hypotheses,
+            conical_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -1109,14 +1204,55 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             planar_hypotheses,
             cylindrical_hypotheses,
             spherical_hypotheses,
+            conical_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
 
-    // Stage 2.4: Deduce ruled surface hypotheses
-    // TODO: optional - detect extruded curve surfaces
+    // Stage 2.4: Deduce conical hypotheses
+    let t = Instant::now();
+    let viz_24 = if config.viz_active(2, 4) { viz } else { None };
+    let (mut conical_hypotheses, conical_quit) = deduce_conical_hypotheses(
+        &mut mesh, config.vertex_tolerance_mm,
+        config.surface_tolerance_mm, config.angular_tolerance_rad,
+        config.verbosity, viz_24,
+    );
+
     if !config.quiet {
-        eprintln!("Stage 2.4: Deduce ruled surface hypotheses (not yet implemented)");
+        eprintln!(
+            "Stage 2.4 ({:.3}s): Found {} conical hypotheses",
+            t.elapsed().as_secs_f64(),
+            conical_hypotheses.len(),
+        );
+        for (i, h) in conical_hypotheses.iter().enumerate() {
+            eprintln!(
+                "  cone {}: {} faces, half_angle={:.4}°, apex=[{:.4},{:.4},{:.4}], {}, err_max={:.2e}",
+                i,
+                h.faces.len(),
+                h.half_angle.to_degrees(),
+                h.apex[0], h.apex[1], h.apex[2],
+                if h.convex { "convex" } else { "concave" },
+                h.error_max,
+            );
+        }
+    }
+
+    if config.compare_shape.is_some() {
+        compare_conical_hypotheses(&conical_hypotheses, &mesh, config)?;
+        if !config.quiet {
+            eprintln!("  Compare: all conical hypothesis centroids within tolerance");
+        }
+    }
+
+    if conical_quit {
+        return Ok(Stage2Output {
+            mesh,
+            planar_hypotheses,
+            cylindrical_hypotheses,
+            spherical_hypotheses,
+            conical_hypotheses,
+            selected_surfaces: Vec::new(),
+        });
     }
 
     if !config.stage.at_least(2, 5) {
@@ -1125,6 +1261,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             planar_hypotheses,
             cylindrical_hypotheses,
             spherical_hypotheses,
+            conical_hypotheses,
             selected_surfaces: Vec::new(),
         });
     }
@@ -1141,6 +1278,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             planar_hypotheses,
             cylindrical_hypotheses,
             spherical_hypotheses,
+            conical_hypotheses,
             selected_surfaces: Vec::new(),
         });
     }
@@ -1150,27 +1288,30 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
     let viz_26 = if config.viz_active(2, 6) { viz } else { None };
     let selected_surfaces = select_surfaces(
         &mesh, &mut planar_hypotheses, &mut cylindrical_hypotheses,
-        &mut spherical_hypotheses, viz_26,
+        &mut spherical_hypotheses, &mut conical_hypotheses, viz_26,
     );
 
     if !config.quiet {
         let mut planar_count = 0;
         let mut cylindrical_count = 0;
         let mut spherical_count = 0;
+        let mut conical_count = 0;
         for s in &selected_surfaces {
             match s {
                 SelectedSurface::Planar(_) => planar_count += 1,
                 SelectedSurface::Cylindrical(_) => cylindrical_count += 1,
                 SelectedSurface::Spherical(_) => spherical_count += 1,
+                SelectedSurface::Conical(_) => conical_count += 1,
             }
         }
         eprintln!(
-            "Stage 2.6 ({:.3}s): Selected {} surfaces ({} planar, {} cylindrical, {} spherical) covering {} faces",
+            "Stage 2.6 ({:.3}s): Selected {} surfaces ({} planar, {} cylindrical, {} spherical, {} conical) covering {} faces",
             t.elapsed().as_secs_f64(),
             selected_surfaces.len(),
             planar_count,
             cylindrical_count,
             spherical_count,
+            conical_count,
             mesh.faces.len(),
         );
     }
@@ -1179,7 +1320,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
     if config.compare_shape.is_some() {
         compare_selected_surfaces(
             &selected_surfaces, &planar_hypotheses, &cylindrical_hypotheses,
-            &spherical_hypotheses, &mesh, config,
+            &spherical_hypotheses, &conical_hypotheses, &mesh, config,
         )?;
         if !config.quiet {
             eprintln!("  Compare: all selected surface centroids within tolerance");
@@ -1191,6 +1332,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
         planar_hypotheses,
         cylindrical_hypotheses,
         spherical_hypotheses,
+        conical_hypotheses,
         selected_surfaces,
     })
 }
@@ -1202,7 +1344,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stage1::{self, MeshFace, MeshVertex, VertexWeldOptions, UNDEDUCED_PLANAR_HYPOTHESIS, UNDEDUCED_CYLINDRICAL_HYPOTHESIS, UNDEDUCED_SPHERICAL_HYPOTHESIS};
+    use crate::stage1::{self, MeshFace, MeshVertex, VertexWeldOptions, UNDEDUCED_PLANAR_HYPOTHESIS, UNDEDUCED_CYLINDRICAL_HYPOTHESIS, UNDEDUCED_SPHERICAL_HYPOTHESIS, UNDEDUCED_CONICAL_HYPOTHESIS};
 
     fn make_triangle_face(a: usize, b: usize, c: usize) -> MeshFace {
         MeshFace {
@@ -1213,6 +1355,7 @@ mod tests {
             planar_hypothesis: UNDEDUCED_PLANAR_HYPOTHESIS,
             cylindrical_hypothesis: UNDEDUCED_CYLINDRICAL_HYPOTHESIS,
             spherical_hypothesis: UNDEDUCED_SPHERICAL_HYPOTHESIS,
+            conical_hypothesis: UNDEDUCED_CONICAL_HYPOTHESIS,
         }
     }
 

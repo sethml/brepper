@@ -313,4 +313,29 @@ Hypothesis: BFS refitting gradually rotates the cylinder axis when sphere faces 
 
 ### BRepLib::SameParameter corrupts pcurves on closely-spaced edges
 Calling `BRepLib::SameParameter(shape, 1.0, true)` with a large tolerance (1.0mm) and `forced=true` recomputes all pcurves, which can corrupt pcurves on faces with closely-spaced edges (e.g., sphere faces at sphere-cylinder tangent junctions). This manifests as BRepCheck_Wire self-intersection failures. The fix is to use `forced=false` (skip edges already flagged as SameParameter) and a tight tolerance (`vertex_tolerance_mm`, typically 1e-5). This allows edges that were correctly constructed to keep their pcurves while only fixing genuinely misaligned ones.
+
+
+### Conical surface detection: apex-vertex seeding
+
+Triple-seed (3 adjacent faces) fails for cones because apex-adjacent faces share the apex vertex and only span ~12° of the cone base — this gives a biased centroid, tilted axis, and wrong half-angle (~2° instead of true ~20°). Instead, use **apex-vertex seeding**: identify vertices with many incident non-coplanar-normal faces (eigenval/trace ratio < 0.3 from normal covariance), then use ALL faces incident to each apex vertex as the seed set. This gives robust axis estimation.
+
+### Cone axis orientation must be explicit
+
+The normal covariance eigenvector gives an unsigned axis direction. The cone distance formula `d = r·cos(θ) - h·sin(θ)` requires h > 0 (vertices on the apex-to-base side). If the axis happens to point the wrong way, h is negative for base vertices and the distance formula produces huge false errors (~14mm instead of ~0). Fix: after profile fitting, check if the sum of all h values is negative and flip the axis if so, then re-fit the profile.
+
+### Conical faces need `is_periodic` treatment
+
+In stage 3, conical faces are periodic (full-revolution) like cylindrical and spherical faces. The `is_periodic` check must include `SelectedSurface::Conical(_)` or conical faces will go through `create_planar_face` instead of `create_periodic_face`, causing segfaults when a full-circle edge is encountered.
+
+### OCCT cone convention: origin at apex, zero ref_radius
+
+`geom::ConicalSurface::new_ax3_real2(&ax3, half_angle, ref_radius)` — for brepper's cones, set origin at the apex and ref_radius=0. The Ax3 origin is the apex point, Z-direction points from apex toward the base.
+
+### False positive cone detection on spherical/cylindrical patches
+
+Sphere and cylinder patches can be approximately fitted as cones because locally any smooth surface looks conical. Key discriminators:
+1. **Half-angle bounds**: ha < 2° → cylindrical, ha > 85° → planar. Reject both.
+2. **Apex distance**: If apex is > 10× mesh bounding-box diagonal from mesh center, the fit is degenerate (distant apex = near-cylindrical).
+3. **Normal-axis consistency**: On a true cone, every face normal makes the same angle with the axis (= 90° - half_angle). Compute std-dev of `acos(|n·axis|)` across all faces — if it exceeds `angular_tol / 2`, the surface isn't a cone (likely a sphere).
+4. **Error_max after final re-fit**: BFS may accept faces within tolerance during expansion, but the final re-fit can shift parameters — must verify `error_max ≤ surface_tol` after the final fit.
 - Stage 3 viz (3.3/3.4/3.5/3.6): stage 3.3 uses `FaceHighlight` for surface context and `LineOverlay` for edge curves; stage 3.4 uses `ShapeMeshOverlay` for OCCT faces; stages 3.5/3.6 use `ShapeMeshOverlay` for shells/solids.
