@@ -233,6 +233,51 @@ fn onshape_dome_hemisphere_stage41_compare() {
     run_stage4(&config);
 }
 
+// --- Cone pipeline tests ---
+
+#[test]
+fn simple_cone_step_output() {
+    let dir = manifest_dir();
+    let stl = format!("{dir}/tests/ccad/generated/simple_cone.stl");
+    let out = format!("{dir}/tmp/test_simple_cone_output.step");
+    let config = config_for_output(&stl, &out);
+    run_stage4(&config);
+    assert!(std::path::Path::new(&out).exists());
+}
+
+#[test]
+fn ccad_simple_cone_stage41_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/ccad/generated/simple_cone.stl"),
+        &format!("{dir}/tmp/test_simple_cone_cmp.step"),
+        &format!("{dir}/tests/ccad/generated/simple_cone.step"),
+    );
+    run_stage4(&config);
+}
+
+#[test]
+fn ccad_cone_cylinder_stage41_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/ccad/generated/cone_cylinder.stl"),
+        &format!("{dir}/tmp/test_cone_cylinder_cmp.step"),
+        &format!("{dir}/tests/ccad/generated/cone_cylinder.step"),
+    );
+    run_stage4(&config);
+}
+
+#[test]
+fn ccad_nosecone_stage41_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/ccad/generated/nosecone.stl"),
+        &format!("{dir}/tmp/test_nosecone_cmp.step"),
+        &format!("{dir}/tests/ccad/generated/nosecone.step"),
+    );
+    run_stage4(&config);
+}
+
 // --- Missing output path test ---
 
 #[test]

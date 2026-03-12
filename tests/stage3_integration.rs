@@ -1239,3 +1239,120 @@ fn rounded_cube_coarse_brep_check() {
     check_solids_constructed(&output);
     check_solids_brep_valid(&output);
 }
+
+// ---------------------------------------------------------------------------
+// Cone topology and pipeline tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn simple_cone_topology() {
+    let stl = format!("{}/tests/ccad/generated/simple_cone.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let output = run_stage3(&config);
+
+    // Truncated cone: 3 faces (cone + 2 planar caps), 2 edges (circles), 0 vertices
+    assert_eq!(output.face_descriptors.len(), 3, "simple_cone should have 3 faces");
+    assert_eq!(output.edges.len(), 2, "simple_cone should have 2 edges");
+    assert_eq!(output.vertices.len(), 0, "simple_cone should have 0 vertices");
+
+    let cone_faces: Vec<_> = output.face_descriptors.iter().enumerate()
+        .filter(|(_, fd)| {
+            matches!(
+                output.stage2.selected_surfaces[fd.selected_surface_idx],
+                stage2::SelectedSurface::Conical(_)
+            )
+        })
+        .collect();
+    assert_eq!(cone_faces.len(), 1, "should have 1 conical face");
+
+    check_topology(&output);
+}
+
+#[test]
+fn simple_cone_stage31_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/ccad/generated/simple_cone.stl"),
+        &format!("{dir}/tests/ccad/generated/simple_cone.step"),
+    );
+    run_stage3(&config);
+}
+
+#[test]
+fn simple_cone_face_creation() {
+    let stl = format!("{}/tests/ccad/generated/simple_cone.stl", manifest_dir());
+    let config = config_for_stl_34(&stl);
+    let output = run_stage3_34(&config);
+    check_all_faces_created(&output);
+    assert_eq!(output.make_faces.len(), 3);
+}
+
+#[test]
+fn simple_cone_stage34_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_34(
+        &format!("{dir}/tests/ccad/generated/simple_cone.stl"),
+        &format!("{dir}/tests/ccad/generated/simple_cone.step"),
+    );
+    run_stage3_34(&config);
+}
+
+#[test]
+fn simple_cone_stage35_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_35(
+        &format!("{dir}/tests/ccad/generated/simple_cone.stl"),
+        &format!("{dir}/tests/ccad/generated/simple_cone.step"),
+    );
+    run_stage3_35(&config);
+}
+
+#[test]
+fn simple_cone_stage36_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_36(
+        &format!("{dir}/tests/ccad/generated/simple_cone.stl"),
+        &format!("{dir}/tests/ccad/generated/simple_cone.step"),
+    );
+    run_stage3_36(&config);
+}
+
+#[test]
+fn cone_cylinder_stage31_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/ccad/generated/cone_cylinder.stl"),
+        &format!("{dir}/tests/ccad/generated/cone_cylinder.step"),
+    );
+    run_stage3(&config);
+}
+
+#[test]
+fn cone_cylinder_stage36_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_36(
+        &format!("{dir}/tests/ccad/generated/cone_cylinder.stl"),
+        &format!("{dir}/tests/ccad/generated/cone_cylinder.step"),
+    );
+    run_stage3_36(&config);
+}
+
+#[test]
+fn nosecone_stage31_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/ccad/generated/nosecone.stl"),
+        &format!("{dir}/tests/ccad/generated/nosecone.step"),
+    );
+    run_stage3(&config);
+}
+
+#[test]
+fn nosecone_stage36_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_36(
+        &format!("{dir}/tests/ccad/generated/nosecone.stl"),
+        &format!("{dir}/tests/ccad/generated/nosecone.step"),
+    );
+    run_stage3_36(&config);
+}

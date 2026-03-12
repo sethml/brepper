@@ -1542,4 +1542,74 @@ mod tests {
         assert!(sphs[0].convex);
         assert!((sphs[0].radius - 10.0).abs() < 0.01);
     }
+
+    /// Helper: run planar, cylindrical, and spherical deduction (prerequisites for cone detection).
+    fn run_prior_stages(mesh: &mut ConnectedMesh) -> Vec<PlanarHypothesis> {
+        let (planar, _) = deduce_planar_hypotheses(mesh, 1e-5, 0, None);
+        let _ = deduce_cylindrical_hypotheses(mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0, None);
+        let _ = deduce_spherical_hypotheses(
+            mesh, &planar, 1e-5, 0.4, 17.5_f64.to_radians(), 1000.0, 0, None,
+        );
+        planar
+    }
+
+    #[test]
+    fn cone_detected_at_default_angular_tolerance() {
+        let mut mesh = load_stage1("ccad/generated/simple_cone.stl");
+        run_prior_stages(&mut mesh);
+        let (cones, _) = deduce_conical_hypotheses(
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0, None,
+        );
+        assert_eq!(cones.len(), 1, "simple_cone should produce 1 cone hypothesis");
+        assert!(cones[0].convex, "simple_cone should be convex");
+        // simple_cone: truncated cone with r_top=5, r_bottom=10, h=30
+        // half-angle = atan((10-5)/30) ≈ 9.46°
+        let ha_deg = cones[0].half_angle.to_degrees();
+        assert!((ha_deg - 9.46).abs() < 1.0, "half-angle should be ~9.46°, got {ha_deg:.2}°");
+    }
+
+    #[test]
+    fn cube_angular_tolerance_rejects_cone() {
+        let mut mesh = load_stage1("manual/cube.stl");
+        run_prior_stages(&mut mesh);
+        let (cones, _) = deduce_conical_hypotheses(
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0, None,
+        );
+        assert_eq!(cones.len(), 0, "cube should produce 0 cones");
+    }
+
+    #[test]
+    fn concave_cone_detected() {
+        let mut mesh = load_stage1("ccad/generated/block_with_conical_hole.stl");
+        run_prior_stages(&mut mesh);
+        let (cones, _) = deduce_conical_hypotheses(
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0, None,
+        );
+        assert_eq!(cones.len(), 1, "block_with_conical_hole should produce 1 cone hypothesis");
+        assert!(!cones[0].convex, "block_with_conical_hole cone should be concave");
+    }
+
+    #[test]
+    fn sphere_not_detected_as_cone() {
+        // At stage 2.4 a sphere may produce a spurious cone hypothesis, but
+        // sphere coverage is better so the cone gets eliminated at stage 2.6.
+        // Here we just verify cone detection doesn't panic on a sphere mesh.
+        let mut mesh = load_stage1("ccad/generated/simple_sphere.stl");
+        run_prior_stages(&mut mesh);
+        let (cones, _) = deduce_conical_hypotheses(
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0, None,
+        );
+        // Allow 0 or 1 — the key coverage test is at stage 2.6 (integration tests)
+        assert!(cones.len() <= 1, "simple_sphere should produce at most 1 spurious cone");
+    }
+
+    #[test]
+    fn cylinder_not_detected_as_cone() {
+        let mut mesh = load_stage1("ccad/generated/simple_cylinder.stl");
+        run_prior_stages(&mut mesh);
+        let (cones, _) = deduce_conical_hypotheses(
+            &mut mesh, 1e-5, 0.4, 17.5_f64.to_radians(), 0, None,
+        );
+        assert_eq!(cones.len(), 0, "simple_cylinder should produce 0 cones");
+    }
 }

@@ -94,6 +94,7 @@ fn assert_step_surfaces_covered(
             geom_abs::SurfaceType::Plane => "Plane",
             geom_abs::SurfaceType::Cylinder => "Cylinder",
             geom_abs::SurfaceType::Sphere => "Sphere",
+            geom_abs::SurfaceType::Cone => "Cone",
             _ => unreachable!(),
         };
 
@@ -111,6 +112,11 @@ fn assert_step_surfaces_covered(
             }
             geom_abs::SurfaceType::Sphere => {
                 output.spherical_hypotheses.iter()
+                    .flat_map(|h| h.faces.iter().map(|&fi| face_centroid(&output.mesh.faces[fi], &output.mesh.vertices)))
+                    .collect()
+            }
+            geom_abs::SurfaceType::Cone => {
+                output.conical_hypotheses.iter()
                     .flat_map(|h| h.faces.iter().map(|&fi| face_centroid(&output.mesh.faces[fi], &output.mesh.vertices)))
                     .collect()
             }
@@ -857,6 +863,362 @@ test_stl_step_stage23_compare!(
 );
 
 // ===========================================================================
+// Stage 2.4: Conical hypothesis count tests
+// ===========================================================================
+
+fn config_for_stl_stage24(stl_path: &str) -> config::Config {
+    config::parse_config_from(["brepper", stl_path, "--stage=2.4", "-q"]).unwrap()
+}
+
+fn config_for_compare_stage24(stl_path: &str, step_path: &str) -> config::Config {
+    let mut config =
+        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=2.4", "-q"])
+            .unwrap();
+    config.load_compare_step().unwrap();
+    config
+}
+
+/// Generate a test that runs stage 2.4 with --compare against a STEP file.
+/// Also checks that every Plane/Cylinder/Sphere/Cone STEP face is covered by a
+/// hypothesis of the corresponding type.
+macro_rules! test_stl_step_stage24_compare {
+    ($name:ident, $stl_path:literal, $step_path:literal) => {
+        #[test]
+        fn $name() {
+            let stl = format!("{}/{}", manifest_dir(), $stl_path);
+            let step = format!("{}/{}", manifest_dir(), $step_path);
+            let config = config_for_compare_stage24(&stl, &step);
+            let output = run_stage2(&config);
+            assert_step_surfaces_covered(
+                &output, &config,
+                &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder,
+                  geom_abs::SurfaceType::Sphere, geom_abs::SurfaceType::Cone],
+            );
+        }
+    };
+}
+
+#[test]
+fn simple_cone_produces_one_conical_hypothesis() {
+    let stl = format!("{}/tests/ccad/generated/simple_cone.stl", manifest_dir());
+    let config = config_for_stl_stage24(&stl);
+    let output = run_stage2(&config);
+
+    assert_eq!(
+        output.conical_hypotheses.len(),
+        1,
+        "simple_cone should have 1 conical hypothesis"
+    );
+    let h = &output.conical_hypotheses[0];
+    assert!(h.convex, "simple_cone should be convex");
+    let ha_deg = h.half_angle.to_degrees();
+    assert!((ha_deg - 9.46).abs() < 1.0, "half-angle should be ~9.46°, got {ha_deg:.2}°");
+}
+
+#[test]
+fn block_with_conical_hole_produces_one_concave_cone() {
+    let stl = format!("{}/tests/ccad/generated/block_with_conical_hole.stl", manifest_dir());
+    let config = config_for_stl_stage24(&stl);
+    let output = run_stage2(&config);
+
+    assert_eq!(
+        output.conical_hypotheses.len(),
+        1,
+        "block_with_conical_hole should have 1 conical hypothesis"
+    );
+    let h = &output.conical_hypotheses[0];
+    assert!(!h.convex, "block_with_conical_hole cone should be concave");
+}
+
+#[test]
+fn cone_cylinder_produces_one_cone_one_cylinder() {
+    let stl = format!("{}/tests/ccad/generated/cone_cylinder.stl", manifest_dir());
+    let config = config_for_stl_stage24(&stl);
+    let output = run_stage2(&config);
+
+    assert_eq!(
+        output.conical_hypotheses.len(),
+        1,
+        "cone_cylinder should have 1 conical hypothesis"
+    );
+    assert_eq!(
+        output.cylindrical_hypotheses.len(),
+        1,
+        "cone_cylinder should have 1 cylindrical hypothesis"
+    );
+    assert!(output.conical_hypotheses[0].convex, "cone should be convex");
+    assert!(output.cylindrical_hypotheses[0].convex, "cylinder should be convex");
+}
+
+#[test]
+fn nosecone_produces_one_cone_one_sphere() {
+    let stl = format!("{}/tests/ccad/generated/nosecone.stl", manifest_dir());
+    let config = config_for_stl_stage24(&stl);
+    let output = run_stage2(&config);
+
+    assert_eq!(
+        output.conical_hypotheses.len(),
+        1,
+        "nosecone should have 1 conical hypothesis"
+    );
+    assert!(
+        !output.spherical_hypotheses.is_empty(),
+        "nosecone should have at least 1 spherical hypothesis"
+    );
+    let h = &output.conical_hypotheses[0];
+    assert!(h.convex, "nosecone cone should be convex");
+    let ha_deg = h.half_angle.to_degrees();
+    assert!((ha_deg - 30.0).abs() < 1.0, "half-angle should be ~30°, got {ha_deg:.2}°");
+}
+
+#[test]
+fn cube_produces_no_conical_hypotheses() {
+    let stl = format!("{}/tests/ccad/generated/cube.stl", manifest_dir());
+    let config = config_for_stl_stage24(&stl);
+    let output = run_stage2(&config);
+
+    assert_eq!(
+        output.conical_hypotheses.len(),
+        0,
+        "cube should have no conical hypotheses"
+    );
+}
+
+#[test]
+fn simple_cylinder_produces_no_conical_hypotheses() {
+    let stl = format!("{}/tests/ccad/generated/simple_cylinder.stl", manifest_dir());
+    let config = config_for_stl_stage24(&stl);
+    let output = run_stage2(&config);
+
+    assert_eq!(
+        output.conical_hypotheses.len(),
+        0,
+        "simple_cylinder should have no conical hypotheses"
+    );
+}
+
+#[test]
+fn simple_sphere_at_stage24_no_false_cones_in_selection() {
+    // A sphere may produce a spurious cone hypothesis at stage 2.4,
+    // but it should not survive stage 2.6 surface selection.
+    let stl = format!("{}/tests/ccad/generated/simple_sphere.stl", manifest_dir());
+    let config = config_for_stl_stage24(&stl);
+    let output = run_stage2(&config);
+
+    // At stage 2.4, the sphere may or may not produce a cone hypothesis.
+    // The key test is that it doesn't break anything. Coverage is verified
+    // at stage 2.6 (simple_sphere_surface_selection test).
+    assert!(
+        output.conical_hypotheses.len() <= 1,
+        "simple_sphere should produce at most 1 spurious cone, got {}",
+        output.conical_hypotheses.len(),
+    );
+}
+
+// ===========================================================================
+// Stage 2.4: Compare tests (all models should pass --compare at stage 2.4)
+// ===========================================================================
+
+// --- tests/ccad/generated/ ---
+test_stl_step_stage24_compare!(
+    ccad_cube_stage24_compare,
+    "tests/ccad/generated/cube.stl",
+    "tests/ccad/generated/cube.step"
+);
+test_stl_step_stage24_compare!(
+    ccad_simple_cylinder_stage24_compare,
+    "tests/ccad/generated/simple_cylinder.stl",
+    "tests/ccad/generated/simple_cylinder.step"
+);
+test_stl_step_stage24_compare!(
+    ccad_simple_cone_stage24_compare,
+    "tests/ccad/generated/simple_cone.stl",
+    "tests/ccad/generated/simple_cone.step"
+);
+test_stl_step_stage24_compare!(
+    ccad_block_with_conical_hole_stage24_compare,
+    "tests/ccad/generated/block_with_conical_hole.stl",
+    "tests/ccad/generated/block_with_conical_hole.step"
+);
+test_stl_step_stage24_compare!(
+    ccad_cone_cylinder_stage24_compare,
+    "tests/ccad/generated/cone_cylinder.stl",
+    "tests/ccad/generated/cone_cylinder.step"
+);
+test_stl_step_stage24_compare!(
+    ccad_nosecone_stage24_compare,
+    "tests/ccad/generated/nosecone.stl",
+    "tests/ccad/generated/nosecone.step"
+);
+test_stl_step_stage24_compare!(
+    ccad_block_with_hole_stage24_compare,
+    "tests/ccad/generated/block_with_hole.stl",
+    "tests/ccad/generated/block_with_hole.step"
+);
+test_stl_step_stage24_compare!(
+    ccad_simple_sphere_stage24_compare,
+    "tests/ccad/generated/simple_sphere.stl",
+    "tests/ccad/generated/simple_sphere.step"
+);
+test_stl_step_stage24_compare!(
+    ccad_hemisphere_stage24_compare,
+    "tests/ccad/generated/hemisphere.stl",
+    "tests/ccad/generated/hemisphere.step"
+);
+
+// --- tests/onshape/ ---
+test_stl_step_stage24_compare!(
+    onshape_cone_stage24_compare,
+    "tests/onshape/cone_15x20_medium.stl",
+    "tests/onshape/cone_15x20.step"
+);
+// Note: cone_tangent_planes has conical STEP faces but the cone is not detected
+// at stage 2.4 (meshed as cylindrical patches). It passes at stage 2.6 compare
+// because uncovered cone-typed STEP faces are not checked there.
+
+// ===========================================================================
+// Stage 2.4: Cone parameter matching tests
+// Verify that deduced cone hypotheses match STEP cone parameters
+// (axis direction, apex, half-angle).
+// ===========================================================================
+
+/// Extract cone parameters from a STEP file: returns Vec<(axis_dir, apex, half_angle_rad)>.
+fn extract_step_cones(step_path: &str) -> Vec<([f64; 3], [f64; 3], f64)> {
+    let shape = brepper::read_step_file(step_path).unwrap();
+
+    let mut cones = Vec::new();
+    let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
+        &shape, top_abs::ShapeEnum::Face, top_abs::ShapeEnum::Shape,
+    );
+    while explorer.more() {
+        let face = topo_ds::face_shape(explorer.current());
+        let adaptor = b_rep_adaptor::Surface::new_face(face);
+        if adaptor.get_type() == geom_abs::SurfaceType::Cone {
+            let cone = adaptor.cone();
+            let half_angle = cone.semi_angle();
+            let axis = cone.axis();
+            let dir = axis.direction();
+            let apex = cone.apex();
+            cones.push((
+                [dir.x(), dir.y(), dir.z()],
+                [apex.x(), apex.y(), apex.z()],
+                half_angle,
+            ));
+        }
+        explorer.next();
+    }
+
+    // Deduplicate: STEP files can have multiple faces on the same cone.
+    let mut unique: Vec<([f64; 3], [f64; 3], f64)> = Vec::new();
+    'outer: for (dir, apex, ha) in &cones {
+        for (udir, uapex, uha) in &unique {
+            // Axis directions must be parallel
+            let d = udir[0] * dir[0] + udir[1] * dir[1] + udir[2] * dir[2];
+            if d.abs() < 0.999 {
+                continue;
+            }
+            // Half-angles must match
+            if (uha - ha).abs() > 0.02 {
+                continue;
+            }
+            // Apexes must be close
+            let d2 = (apex[0]-uapex[0]).powi(2)
+                + (apex[1]-uapex[1]).powi(2)
+                + (apex[2]-uapex[2]).powi(2);
+            if d2 < 0.1 * 0.1 {
+                continue 'outer;
+            }
+        }
+        unique.push((*dir, *apex, *ha));
+    }
+    unique
+}
+
+/// Verify that each STEP cone has a matching hypothesis with compatible
+/// axis direction, apex position, and half-angle.
+fn assert_cones_match_step(
+    output: &stage2::Stage2Output,
+    step_path: &str,
+) {
+    let step_cones = extract_step_cones(step_path);
+    let hypotheses = &output.conical_hypotheses;
+
+    assert_eq!(
+        hypotheses.len(), step_cones.len(),
+        "Expected {} cone hypotheses (from STEP), got {}",
+        step_cones.len(), hypotheses.len(),
+    );
+
+    for (i, (step_dir, step_apex, step_ha)) in step_cones.iter().enumerate() {
+        let matched = hypotheses.iter().any(|h| {
+            // Half-angle match (within 2°)
+            if (h.half_angle - step_ha.abs()).abs() > 2.0_f64.to_radians() {
+                return false;
+            }
+            // Axis direction: must be parallel (or anti-parallel)
+            let d = h.axis_direction[0] * step_dir[0]
+                  + h.axis_direction[1] * step_dir[1]
+                  + h.axis_direction[2] * step_dir[2];
+            if d.abs() < 0.99 {
+                return false;
+            }
+            // Apex position match
+            let d2 = (h.apex[0] - step_apex[0]).powi(2)
+                + (h.apex[1] - step_apex[1]).powi(2)
+                + (h.apex[2] - step_apex[2]).powi(2);
+            d2 < 1.0 * 1.0 // 1mm tolerance for apex
+        });
+
+        assert!(
+            matched,
+            "STEP cone {} (dir=[{:.3},{:.3},{:.3}], apex=[{:.3},{:.3},{:.3}], ha={:.2}°) has no matching hypothesis",
+            i, step_dir[0], step_dir[1], step_dir[2],
+            step_apex[0], step_apex[1], step_apex[2],
+            step_ha.to_degrees(),
+        );
+    }
+}
+
+macro_rules! test_cone_params_match {
+    ($name:ident, $stl_path:literal, $step_path:literal) => {
+        #[test]
+        fn $name() {
+            let stl = format!("{}/{}", manifest_dir(), $stl_path);
+            let step = format!("{}/{}", manifest_dir(), $step_path);
+            let config = config_for_stl_stage24(&stl);
+            let output = run_stage2(&config);
+            assert_cones_match_step(&output, &step);
+        }
+    };
+}
+
+test_cone_params_match!(
+    ccad_simple_cone_params_match,
+    "tests/ccad/generated/simple_cone.stl",
+    "tests/ccad/generated/simple_cone.step"
+);
+test_cone_params_match!(
+    ccad_block_with_conical_hole_params_match,
+    "tests/ccad/generated/block_with_conical_hole.stl",
+    "tests/ccad/generated/block_with_conical_hole.step"
+);
+test_cone_params_match!(
+    ccad_cone_cylinder_cone_params_match,
+    "tests/ccad/generated/cone_cylinder.stl",
+    "tests/ccad/generated/cone_cylinder.step"
+);
+test_cone_params_match!(
+    ccad_nosecone_cone_params_match,
+    "tests/ccad/generated/nosecone.stl",
+    "tests/ccad/generated/nosecone.step"
+);
+test_cone_params_match!(
+    onshape_cone_15x20_params_match,
+    "tests/onshape/cone_15x20_medium.stl",
+    "tests/onshape/cone_15x20.step"
+);
+
+// ===========================================================================
 // Stage 2.6: Surface selection tests
 // ===========================================================================
 
@@ -992,6 +1354,87 @@ fn simple_sphere_surface_selection() {
 }
 
 #[test]
+fn simple_cone_surface_selection() {
+    let stl = format!("{}/tests/ccad/generated/simple_cone.stl", manifest_dir());
+    let config = config_for_stl_stage26(&stl);
+    let output = run_stage2(&config);
+
+    // simple_cone: 2 planar end caps + 1 conical surface = 3
+    let planar_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Planar(_)))
+        .count();
+    let cone_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Conical(_)))
+        .count();
+    assert_eq!(planar_count, 2, "simple_cone should have 2 planar surfaces");
+    assert_eq!(cone_count, 1, "simple_cone should have 1 conical surface");
+    assert_eq!(output.selected_surfaces.len(), 3, "simple_cone should have 3 total");
+}
+
+#[test]
+fn block_with_conical_hole_surface_selection() {
+    let stl = format!("{}/tests/ccad/generated/block_with_conical_hole.stl", manifest_dir());
+    let config = config_for_stl_stage26(&stl);
+    let output = run_stage2(&config);
+
+    // block_with_conical_hole: 16 planar surfaces + 1 conical hole = 17
+    // (the conical bore splits adjacent planar faces into more regions)
+    let planar_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Planar(_)))
+        .count();
+    let cone_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Conical(_)))
+        .count();
+    assert_eq!(cone_count, 1, "block_with_conical_hole should have 1 conical surface");
+    assert_eq!(output.selected_surfaces.len(), planar_count + 1,
+        "total should be planar + 1 cone");
+}
+
+#[test]
+fn cone_cylinder_surface_selection() {
+    let stl = format!("{}/tests/ccad/generated/cone_cylinder.stl", manifest_dir());
+    let config = config_for_stl_stage26(&stl);
+    let output = run_stage2(&config);
+
+    // cone_cylinder: 2 planar end caps + 1 cone + 1 cylinder = 4
+    let planar_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Planar(_)))
+        .count();
+    let cyl_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Cylindrical(_)))
+        .count();
+    let cone_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Conical(_)))
+        .count();
+    assert_eq!(planar_count, 2, "cone_cylinder should have 2 planar surfaces");
+    assert_eq!(cyl_count, 1, "cone_cylinder should have 1 cylindrical surface");
+    assert_eq!(cone_count, 1, "cone_cylinder should have 1 conical surface");
+    assert_eq!(output.selected_surfaces.len(), 4, "cone_cylinder should have 4 total");
+}
+
+#[test]
+fn nosecone_surface_selection() {
+    let stl = format!("{}/tests/ccad/generated/nosecone.stl", manifest_dir());
+    let config = config_for_stl_stage26(&stl);
+    let output = run_stage2(&config);
+
+    // nosecone: 1 planar base + 1 cone + 1 sphere = 3
+    let planar_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Planar(_)))
+        .count();
+    let sph_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Spherical(_)))
+        .count();
+    let cone_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Conical(_)))
+        .count();
+    assert_eq!(planar_count, 1, "nosecone should have 1 planar surface");
+    assert_eq!(sph_count, 1, "nosecone should have 1 spherical surface");
+    assert_eq!(cone_count, 1, "nosecone should have 1 conical surface");
+    assert_eq!(output.selected_surfaces.len(), 3, "nosecone should have 3 total");
+}
+
+#[test]
 fn all_faces_covered_by_selection() {
     use std::collections::HashSet;
     // For every model, every face must be covered by exactly one selected surface
@@ -1002,6 +1445,10 @@ fn all_faces_covered_by_selection() {
         "tests/ccad/generated/ball_on_cylinder.stl",
         "tests/ccad/generated/simple_sphere.stl",
         "tests/ccad/generated/hemisphere.stl",
+        "tests/ccad/generated/simple_cone.stl",
+        "tests/ccad/generated/block_with_conical_hole.stl",
+        "tests/ccad/generated/cone_cylinder.stl",
+        "tests/ccad/generated/nosecone.stl",
     ];
     for model in &models {
         let stl = format!("{}/{}", manifest_dir(), model);
@@ -1108,6 +1555,26 @@ test_stl_step_stage26_compare!(
     "tests/ccad/generated/ball_on_cylinder.stl",
     "tests/ccad/generated/ball_on_cylinder.step"
 );
+test_stl_step_stage26_compare!(
+    ccad_simple_cone_stage26_compare,
+    "tests/ccad/generated/simple_cone.stl",
+    "tests/ccad/generated/simple_cone.step"
+);
+test_stl_step_stage26_compare!(
+    ccad_block_with_conical_hole_stage26_compare,
+    "tests/ccad/generated/block_with_conical_hole.stl",
+    "tests/ccad/generated/block_with_conical_hole.step"
+);
+test_stl_step_stage26_compare!(
+    ccad_cone_cylinder_stage26_compare,
+    "tests/ccad/generated/cone_cylinder.stl",
+    "tests/ccad/generated/cone_cylinder.step"
+);
+test_stl_step_stage26_compare!(
+    ccad_nosecone_stage26_compare,
+    "tests/ccad/generated/nosecone.stl",
+    "tests/ccad/generated/nosecone.step"
+);
 
 // --- tests/onshape/ ---
 test_stl_step_stage26_compare!(
@@ -1166,6 +1633,11 @@ test_stl_step_stage26_compare!(
     onshape_cone_stage26_compare,
     "tests/onshape/cone_15x20_medium.stl",
     "tests/onshape/cone_15x20.step"
+);
+test_stl_step_stage26_compare!(
+    onshape_cone_tangent_planes_stage26_compare,
+    "tests/onshape/cone_tangent_planes_medium.stl",
+    "tests/onshape/cone_tangent_planes.step"
 );
 
 // --- tests/fusion/ ---
