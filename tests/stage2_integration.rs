@@ -1440,6 +1440,60 @@ fn nosecone_surface_selection() {
 }
 
 #[test]
+fn filleted_cylinder_surface_selection() {
+    let stl = format!("{}/tests/ccad/generated/filleted_cylinder.stl", manifest_dir());
+    let config = config_for_stl_stage26(&stl);
+    let output = run_stage2(&config);
+
+    // filleted_cylinder: 2 planar end caps + 1 cylinder body + 2 convex tori (fillets) = 5
+    let planar_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Planar(_)))
+        .count();
+    let cyl_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Cylindrical(_)))
+        .count();
+    let torus_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Toroidal(_)))
+        .count();
+    assert_eq!(planar_count, 2, "filleted_cylinder should have 2 planar surfaces");
+    assert_eq!(cyl_count, 1, "filleted_cylinder should have 1 cylindrical surface");
+    assert_eq!(torus_count, 2, "filleted_cylinder should have 2 toroidal surfaces");
+    assert_eq!(output.selected_surfaces.len(), 5, "filleted_cylinder should have 5 total");
+}
+
+#[test]
+fn filleted_hole_block_surface_selection() {
+    let stl = format!("{}/tests/ccad/generated/filleted_hole_block.stl", manifest_dir());
+    let config = config_for_stl_stage26(&stl);
+    let output = run_stage2(&config);
+
+    let torus_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Toroidal(_)))
+        .count();
+    let cyl_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Cylindrical(_)))
+        .count();
+    assert!(torus_count >= 2, "filleted_hole_block should have at least 2 toroidal surfaces, got {}", torus_count);
+    assert!(cyl_count >= 1, "filleted_hole_block should have at least 1 cylindrical surface, got {}", cyl_count);
+}
+
+#[test]
+fn filleted_pipe_surface_selection() {
+    let stl = format!("{}/tests/ccad/generated/filleted_pipe.stl", manifest_dir());
+    let config = config_for_stl_stage26(&stl);
+    let output = run_stage2(&config);
+
+    let torus_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Toroidal(_)))
+        .count();
+    let cyl_count = output.selected_surfaces.iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::Cylindrical(_)))
+        .count();
+    assert!(torus_count >= 4, "filleted_pipe should have at least 4 toroidal surfaces, got {}", torus_count);
+    assert!(cyl_count >= 2, "filleted_pipe should have at least 2 cylindrical surfaces, got {}", cyl_count);
+}
+
+#[test]
 fn all_faces_covered_by_selection() {
     use std::collections::HashSet;
     // For every model, every face must be covered by exactly one selected surface
@@ -1454,6 +1508,9 @@ fn all_faces_covered_by_selection() {
         "tests/ccad/generated/block_with_conical_hole.stl",
         "tests/ccad/generated/cone_cylinder.stl",
         "tests/ccad/generated/nosecone.stl",
+        "tests/ccad/generated/filleted_cylinder.stl",
+        "tests/ccad/generated/filleted_hole_block.stl",
+        "tests/ccad/generated/filleted_pipe.stl",
     ];
     for model in &models {
         let stl = format!("{}/{}", manifest_dir(), model);
@@ -1581,6 +1638,21 @@ test_stl_step_stage26_compare!(
     "tests/ccad/generated/nosecone.stl",
     "tests/ccad/generated/nosecone.step"
 );
+test_stl_step_stage26_compare!(
+    ccad_filleted_cylinder_stage26_compare,
+    "tests/ccad/generated/filleted_cylinder.stl",
+    "tests/ccad/generated/filleted_cylinder.step"
+);
+test_stl_step_stage26_compare!(
+    ccad_filleted_hole_block_stage26_compare,
+    "tests/ccad/generated/filleted_hole_block.stl",
+    "tests/ccad/generated/filleted_hole_block.step"
+);
+test_stl_step_stage26_compare!(
+    ccad_filleted_pipe_stage26_compare,
+    "tests/ccad/generated/filleted_pipe.stl",
+    "tests/ccad/generated/filleted_pipe.step"
+);
 
 // --- tests/onshape/ ---
 test_stl_step_stage26_compare!(
@@ -1613,8 +1685,13 @@ test_stl_step_stage26_compare!(
     "tests/onshape/dome_hemisphere_20_fine.stl",
     "tests/onshape/dome_hemisphere_20.step"
 );
-// Pipe elbow has torus surfaces that can't be fitted with current primitives
-// (planes, cylinders, spheres). Skipping stage 2.6 compare.
+// Pipe elbow now passes compare at stage 2.6 (torus surface is segmented into
+// many small cylindrical patches, but centroids still match).
+test_stl_step_stage26_compare!(
+    onshape_pipe_elbow_stage26_compare,
+    "tests/onshape/pipe_elbow_10_fine.stl",
+    "tests/onshape/pipe_elbow_10.step"
+);
 test_stl_step_stage26_compare!(
     onshape_plate_with_hole_stage26_compare,
     "tests/onshape/plate_with_hole_100x50_coarse.stl",

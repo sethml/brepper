@@ -367,6 +367,10 @@ Component-based seeding fails for tori because connected components typically co
 
 When convex and concave tori share edges (e.g., filleted_pipe: R=8.5 convex and R=7.5 concave), boundary vertices have incident faces from both torus patches. Seeds at these vertices mix faces from different tori, producing tube centers that scatter between two different major circles. A quality gate on the 3D circle fit RMS (reject if rms > 0.1 * minor_r) catches these mixed seeds early, before BFS expansion wastes time on a bad hypothesis.
 
+### Pipe elbow torus tessellation
+
+The onshape pipe_elbow model's torus surface is tessellated into many narrow strips whose normals span < 180° locally. Stage 2.5 torus fitting doesn't fire because the normal distribution looks locally cylindrical (not toroidal). Stage 2.6 selects 290 cylindrical patches that individually pass `--compare`. This is expected behavior for coarsely tessellated, low-curvature tori where the mesh facets don't exhibit the characteristic toroidal normal pattern (band pattern in Gaussian map). Future improvement: unified SOR framework fitting could detect this by comparing cylinder vs torus profile fits in (h,r) space.
+
 ### opencascade-sys bindings are more complete than you think
 
 The `Geom_ToroidalSurface` binding was present in opencascade-sys all along (`geom::ToroidalSurface::new_ax3_real2`), but workspace-scoped search tools (grep_search, file_search, semantic_search, and Explore agent searches) cannot find content in `../opencascade-rs/` because it's outside the workspace root. Use terminal `grep` to search files outside the workspace. Don't assume a binding is missing just because workspace search tools return no results.

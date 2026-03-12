@@ -560,7 +560,8 @@ The algorithm selects hypotheses greedily by total mesh face area, largest first
 **Why this works better than a fixed type-priority rule:** A fixed priority (e.g., spherical > cylindrical > multi-face planar) fails when a bogus hypothesis of a high-priority type (3-face r=139mm sphere) competes with a correct hypothesis of a lower-priority type (35-face r=2mm cylinder). Area-based greedy selection naturally picks the correct hypothesis because it covers vastly more area.
 
 **Nerfed tests:**
-- `onshape_pipe_elbow_stage26`: Runs without `--compare` because torus surfaces can't be fitted with current primitives (planes, cylinders, spheres). This is a missing surface type issue, not a selection algorithm issue — greedy selection alone won't fix it.
+- (none currently — `onshape_pipe_elbow_stage26` now passes `--compare`, see note below.)
+- `onshape_pipe_elbow_stage26_compare`: Passes `--compare` with 290 cylindrical + 0 toroidal selections. The pipe elbow's torus surface is tessellated into many narrow strips whose normals span < 180°, so stage 2.5 torus fitting doesn't fire (normals look locally cylindrical). This is expected — the torus is decomposed into cylindrical patches that individually pass `--compare`.
 
 - With the `--compare` flag, for each selected surface:
     - Compute face centroids and project them onto the selected surface.
@@ -958,7 +959,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Implement `ToroidalHypothesis` data structure in stage 2 (center, axis, major_radius, minor_radius, convex, faces, vertices, errors). Plumbed through stage 1 (`MeshFace.toroidal_hypothesis`, `UNDEDUCED_TOROIDAL_HYPOTHESIS`), stage 2 (`ToroidalHypothesis` struct, `SelectedSurface::Toroidal` variant, `Stage2Output.toroidal_hypotheses`), and stage 3 (all match arms handle `Toroidal` for surface normals, face lists, vertex lists, concavity, descriptions; OCCT surface creation is `todo!()` pending binding).
 - [x] Implement torus fitting via medial axis / tube center method: estimate minor radius from normal-line intersections, compute tube centers k_i = p_i + r*n_i, fit 3D circle to tube centers for major circle parameters. Vertex-neighborhood seeding with post-seeding merge, quality gate on circle-fit RMS (0.1*minor_r threshold). 7 integration tests pass.
 - [x] Implement torus BFS region growing with vertex-to-torus distance validation.
-- [ ] Extend stage 2.6 surface selection to include toroidal candidates.
+- [x] Extend stage 2.6 surface selection to include toroidal candidates. Toroidal candidates already participated in greedy area-based selection. Added 10 integration tests: 3 surface selection count tests (filleted_cylinder exact counts: 2 planar + 1 cylindrical + 2 toroidal = 5 total; filleted_hole_block/filleted_pipe minimum counts with >=2/>=4 toroidal), 3 stage 2.6 `--compare` tests for filleted models, `onshape_pipe_elbow_stage26_compare` (passes with 0 toroidal — torus segmented into cylindrical patches), and 3 `all_faces_covered_by_selection` tests for filleted models.
 - [ ] Unit tests: torus fitting on synthetic point sets; BFS growing on fillet meshes.
 - [ ] Full pipeline tests: filleted_cylinder, filleted_hole_block, filleted_pipe pass `--compare` through stage 4.1.
 - [ ] Unblock existing `pipe_elbow_10_fine` (onshape) test.
