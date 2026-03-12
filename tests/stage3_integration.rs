@@ -409,7 +409,6 @@ fn manual_cube_stage31_compare() {
 }
 
 #[test]
-#[ignore] // Cylinder algorithm rework (3-face seeding) changes surface groupings
 fn onshape_part_rounded_cube_stage31_compare() {
     let dir = manifest_dir();
     let config = config_for_compare(
@@ -840,7 +839,6 @@ fn manual_cube_stage34_compare() {
 }
 
 #[test]
-#[ignore] // Cylinder algorithm rework (3-face seeding) changes surface groupings
 fn onshape_part_rounded_cube_stage34_compare() {
     let dir = manifest_dir();
     let config = config_for_compare_34(
@@ -1022,7 +1020,6 @@ fn manual_cube_stage35_compare() {
 }
 
 #[test]
-#[ignore] // Cylinder algorithm rework (3-face seeding) changes surface groupings
 fn onshape_part_rounded_cube_stage35_compare() {
     let dir = manifest_dir();
     let config = config_for_compare_35(
@@ -1204,7 +1201,6 @@ fn manual_cube_stage36_compare() {
 }
 
 #[test]
-#[ignore] // Cylinder algorithm rework (3-face seeding) changes surface groupings
 fn onshape_part_rounded_cube_stage36_compare() {
     let dir = manifest_dir();
     let config = config_for_compare_36(
