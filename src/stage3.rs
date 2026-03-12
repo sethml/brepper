@@ -2670,6 +2670,54 @@ fn compute_uv_bounds_from_edges(
         }
     }
 
+    // For conical surfaces with a single boundary edge, the face extends to the
+    // apex (a degenerate point at V=0). Determine direction from mesh centroids.
+    if matches!(surface, SelectedSurface::Conical(_)) && fd.edge_indices.len() == 1 {
+        let hyp_idx = match surface {
+            SelectedSurface::Conical(i) => *i,
+            _ => unreachable!(),
+        };
+        let hyp = &output.stage2.conical_hypotheses[hyp_idx];
+
+        // Average v of mesh face centroids to determine which side of the edge the apex is on
+        let mut v_sum = 0.0;
+        let mut v_count = 0;
+        for &mfi in hyp.faces.iter().take(10) {
+            let face = &output.stage2.mesh.faces[mfi];
+            let v0 = &output.stage2.mesh.vertices[face.vertex_indices[0]];
+            let v1 = &output.stage2.mesh.vertices[face.vertex_indices[1]];
+            let v2 = &output.stage2.mesh.vertices[face.vertex_indices[2]];
+            let cx = (v0.x + v1.x + v2.x) / 3.0;
+            let cy = (v0.y + v1.y + v2.y) / 3.0;
+            let cz = (v0.z + v1.z + v2.z) / 3.0;
+            let pt = gp::Pnt::new_real3(cx, cy, cz);
+            let proj = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
+                &pt,
+                &fd.surface,
+                extrema::ExtAlgo::Grad,
+            );
+            if proj.nb_points() > 0 {
+                let mut u = 0.0;
+                let mut v = 0.0;
+                proj.lower_distance_parameters(&mut u, &mut v);
+                v_sum += v;
+                v_count += 1;
+            }
+        }
+
+        if v_count > 0 {
+            let v_avg = v_sum / v_count as f64;
+            let v_edge = vmin; // single edge, so vmin == vmax
+            if v_avg < v_edge {
+                // Face extends from apex (V=0) toward the base edge
+                vmin = 0.0;
+            } else {
+                // Face extends from the base edge toward the apex (V=0)
+                vmax = 0.0;
+            }
+        }
+    }
+
     if config.verbose {
         eprintln!("  Face {fi}: computed UV bounds u=[{umin:.6}, {umax:.6}], v=[{vmin:.6}, {vmax:.6}] from {} edge(s)", fd.edge_indices.len());
     }
@@ -3355,6 +3403,7 @@ fn create_periodic_face(
     let is_concave = match surface {
         SelectedSurface::Cylindrical(idx) => !output.stage2.cylindrical_hypotheses[*idx].convex,
         SelectedSurface::Spherical(idx) => !output.stage2.spherical_hypotheses[*idx].convex,
+        SelectedSurface::Conical(idx) => !output.stage2.conical_hypotheses[*idx].convex,
         _ => false,
     };
 

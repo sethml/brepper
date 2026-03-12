@@ -1356,3 +1356,54 @@ fn nosecone_stage36_compare() {
     );
     run_stage3_36(&config);
 }
+
+#[test]
+fn block_with_conical_hole_topology() {
+    let stl = format!("{}/tests/ccad/generated/block_with_conical_hole.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let output = run_stage3(&config);
+    // 6 planar faces + 1 conical hole = 7 faces, 14 edges, 8 vertices
+    assert_eq!(output.face_descriptors.len(), 7, "7 faces");
+    assert_eq!(output.edges.len(), 14, "14 edges");
+    assert_eq!(output.vertices.len(), 8, "8 vertices");
+}
+
+#[test]
+fn block_with_conical_hole_stage31_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/ccad/generated/block_with_conical_hole.stl"),
+        &format!("{dir}/tests/ccad/generated/block_with_conical_hole.step"),
+    );
+    run_stage3(&config);
+}
+
+#[test]
+fn block_with_conical_hole_stage36_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_36(
+        &format!("{dir}/tests/ccad/generated/block_with_conical_hole.stl"),
+        &format!("{dir}/tests/ccad/generated/block_with_conical_hole.step"),
+    );
+    run_stage3_36(&config);
+}
+
+#[test]
+fn onshape_cone_stage31_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/onshape/cone_15x20_medium.stl"),
+        &format!("{dir}/tests/onshape/cone_15x20.step"),
+    );
+    run_stage3(&config);
+}
+
+#[test]
+fn onshape_cone_stage36_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare_36(
+        &format!("{dir}/tests/onshape/cone_15x20_medium.stl"),
+        &format!("{dir}/tests/onshape/cone_15x20.step"),
+    );
+    run_stage3_36(&config);
+}

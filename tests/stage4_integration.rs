@@ -278,6 +278,28 @@ fn ccad_nosecone_stage41_compare() {
     run_stage4(&config);
 }
 
+#[test]
+fn ccad_block_with_conical_hole_stage41_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/ccad/generated/block_with_conical_hole.stl"),
+        &format!("{dir}/tmp/test_block_with_conical_hole_cmp.step"),
+        &format!("{dir}/tests/ccad/generated/block_with_conical_hole.step"),
+    );
+    run_stage4(&config);
+}
+
+#[test]
+fn onshape_cone_stage41_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/onshape/cone_15x20_medium.stl"),
+        &format!("{dir}/tmp/test_onshape_cone_cmp.step"),
+        &format!("{dir}/tests/onshape/cone_15x20.step"),
+    );
+    run_stage4(&config);
+}
+
 // --- Missing output path test ---
 
 #[test]

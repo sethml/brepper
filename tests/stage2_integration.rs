@@ -1377,8 +1377,7 @@ fn block_with_conical_hole_surface_selection() {
     let config = config_for_stl_stage26(&stl);
     let output = run_stage2(&config);
 
-    // block_with_conical_hole: 16 planar surfaces + 1 conical hole = 17
-    // (the conical bore splits adjacent planar faces into more regions)
+    // block_with_conical_hole: 6 planar surfaces (block faces) + 1 conical hole = 7
     let planar_count = output.selected_surfaces.iter()
         .filter(|s| matches!(s, stage2::SelectedSurface::Planar(_)))
         .count();
@@ -1386,8 +1385,8 @@ fn block_with_conical_hole_surface_selection() {
         .filter(|s| matches!(s, stage2::SelectedSurface::Conical(_)))
         .count();
     assert_eq!(cone_count, 1, "block_with_conical_hole should have 1 conical surface");
-    assert_eq!(output.selected_surfaces.len(), planar_count + 1,
-        "total should be planar + 1 cone");
+    assert_eq!(planar_count, 6, "block_with_conical_hole should have 6 planar surfaces");
+    assert_eq!(output.selected_surfaces.len(), 7, "total should be 6 planar + 1 cone");
 }
 
 #[test]

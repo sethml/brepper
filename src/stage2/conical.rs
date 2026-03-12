@@ -748,7 +748,12 @@ fn run_cone_trial_bfs(
             // estimate may be inaccurate, making convexity detection unreliable.
             // Convexity is determined after the final re-fit.
 
-            // Angular tolerance check
+            // Angular tolerance check — use 2× angular_tol for cones because
+            // tessellated cones have inter-strip dihedral angles that can exceed
+            // the default tolerance (e.g., 18° for 20 circumferential divisions
+            // vs. 17.5° default). The vertex-to-cone distance check below is the
+            // primary discriminator for cone membership.
+            let cone_angular_tol = angular_tol * 2.0;
             if let Some(n_cni) = mesh.faces[cni].normal {
                 let cni_vc2 = mesh.faces[cni].vertex_count as usize;
                 let cni_neighbors = mesh.faces[cni].neighbors;
@@ -760,7 +765,7 @@ fn run_cone_trial_bfs(
                     if let Some(n_adj) = mesh.faces[adj].normal {
                         let cos_a = dot3(&n_adj, &n_cni).clamp(-1.0, 1.0);
                         let angle = cos_a.acos();
-                        if angle > angular_tol {
+                        if angle > cone_angular_tol {
                             angular_reject = true;
                             break;
                         }

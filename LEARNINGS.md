@@ -339,3 +339,15 @@ Sphere and cylinder patches can be approximately fitted as cones because locally
 3. **Normal-axis consistency**: On a true cone, every face normal makes the same angle with the axis (= 90° - half_angle). Compute std-dev of `acos(|n·axis|)` across all faces — if it exceeds `angular_tol / 2`, the surface isn't a cone (likely a sphere).
 4. **Error_max after final re-fit**: BFS may accept faces within tolerance during expansion, but the final re-fit can shift parameters — must verify `error_max ≤ surface_tol` after the final fit.
 - Stage 3 viz (3.3/3.4/3.5/3.6): stage 3.3 uses `FaceHighlight` for surface context and `LineOverlay` for edge curves; stage 3.4 uses `ShapeMeshOverlay` for OCCT faces; stages 3.5/3.6 use `ShapeMeshOverlay` for shells/solids.
+
+### Cone BFS angular tolerance
+
+Tessellated cones with N circumferential divisions have inter-strip dihedral angles ≈ 360°/N. For N=20 (typical), that's ~18°, which exceeds the default `angular_tol` of 17.5°. The cone BFS uses `angular_tol * 2.0` because vertex-to-surface distance is the primary discriminator for cones (not angular similarity). Without this relaxation, BFS captures only ~127/167 cone facets, and the remaining strips become spurious small planar hypotheses that corrupt surface selection.
+
+### Cone apex UV bounds extension
+
+Full (non-truncated) cones with a single boundary edge at the base produce zero V-range from `compute_uv_bounds_from_edges` (both V values project to the same edge height). This creates a degenerate face → BRepCheck failure → sewing failure. Fix: for conical surfaces with a single boundary edge, extend V to 0 (the apex) by sampling mesh face centroids to determine which side of the edge the face extends, then setting `vmin = 0.0`. This is analogous to sphere pole V-extension for hemispheres.
+
+### Cone concave flag in face creation
+
+The `is_concave` check in `create_periodic_face` must handle `SelectedSurface::Conical(idx)` using `!hypothesis.convex`, not default to `false`. Concave cones (e.g., conical holes) need reversed normals during face construction so that sewing produces correctly oriented shells.
