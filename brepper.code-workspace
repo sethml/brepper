@@ -1,0 +1,25 @@
+{
+  "folders": [
+    {
+      "name": "brepper",
+      "path": "."
+    },
+    {
+      "name": "opencascade-sys",
+      "path": "../opencascade-rs/crates/opencascade-sys"
+    }
+  ],
+  "settings": {
+    "search.exclude": {
+      "**/target/**": true,
+      "**/occt-sys/OCCT/src/**/*.cxx": true,
+      "**/occt-sys/OCCT/adm/**": true,
+      "**/occt-sys/OCCT/data/**": true,
+      "**/occt-sys/OCCT/tools/**": true
+    },
+    "files.watcherExclude": {
+      "**/target/**": true,
+      "**/occt-sys/OCCT/**": true
+    }
+  }
+}
