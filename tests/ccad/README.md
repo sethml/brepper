@@ -57,3 +57,7 @@ computing them from scratch.
 | `t_shape` | T-shaped block | Coplanar faces, complex adjacency |
 | `two_holes` | Block with 2 different-diameter holes | 6 planes + 2 concave cylinders |
 | `wedge` | Triangular prism | Angled planar faces |
+| `simple_cone` | Truncated cone d1=20 d2=10 h=30 | 1 cone + 2 planes |
+| `block_with_conical_hole` | Block with tapered bore | 6 planes + 1 concave cone |
+| `cone_cylinder` | Cone joined to cylinder (tangent) | 1 cone + 1 cylinder + 2 planes |
+| `nosecone` | Cone with tangent spherical cap | 1 cone + 1 sphere + 1 plane |

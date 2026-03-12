@@ -137,6 +137,8 @@ All node/triangle indices are **1-based** (OCCT convention).
 - Transformations: `translate()`, `rotate_x/y/z()`, `scale()`, `center_xyz()` etc.
 - Construction: `extrude(face, height)`, `revolve(profile, angle)`.
 - Edge ops: `fillet_all(s, r)`, `chamfer_all(s, d)`.
+- Cone-sphere tangency construction: for a cone with half-angle α (from axis). At a tangent circle of radius r on the cone, the tangent sphere has radius R = r / cos(α), and its center sits on the cone axis at distance r·tan(α) beyond the tangent circle in the apex direction. Using `union(cone, sphere)` in ccad produces an exact tangent junction in the STEP output.
+- STEP files from ccad contain an embedded timestamp in the FILE_NAME header. `generate_models.sh` normalizes this to `'2000-01-01T00:00:00'` via sed to prevent gratuitous diffs on regeneration.
 
 ### CAD tessellation quad-strip patterns
 - Tessellated cylinders and spheres from CAD tools (CodeCAD/OCCT, Onshape) use quad-strip patterns where each quad facet splits into 2 coplanar triangles.

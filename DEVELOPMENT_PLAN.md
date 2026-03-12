@@ -943,7 +943,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Evaluated stage 2.7 (surface refitting): not needed. All test models including complex rounded_cube and pill pass --compare with max face-to-STEP distances of ~3e-6 mm or better. No boundary accuracy problems from face-to-surface assignments. Stage 2.7 can be revisited if cone/torus surfaces reveal boundary issues. Also un-ignored 7 tests (rounded_cube stages 3.1/3.4/3.5/3.6/4.1, pill_coarse/pill_fine stage 4.1) that were marked ignored due to cylinder 3-face seeding rework but now pass.
 
 ### Stage 2 Extensions: Conical Surfaces
-- [ ] Create ccad test models for conical surfaces: `simple_cone.lua` (truncated cone), `block_with_conical_hole.lua` (block with conical bore), `cone_cylinder.lua` (cone joined to cylinder). Export STL+STEP pairs.
+- [x] Create ccad test models for conical surfaces: `simple_cone.lua` (truncated cone), `block_with_conical_hole.lua` (block with conical bore), `cone_cylinder.lua` (cone joined to cylinder, cone-cylinder tangency), `nosecone.lua` (cone with tangent spherical cap, cone-sphere tangency). Export STL+STEP pairs.
 - [ ] Implement `ConicalHypothesis` data structure in stage 2 (apex, axis, half-angle, convex, faces, vertices, errors).
 - [ ] Implement cone fitting: axis estimation from normal covariance, (h,r) profile fitting via linear regression to get half-angle and apex position. See Architecture section 2.4 for details.
 - [ ] Implement cone BFS region growing with vertex-to-cone distance validation and angular coverage check.

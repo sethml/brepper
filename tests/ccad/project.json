@@ -168,6 +168,50 @@
         "translate": [0.0, 0.0, 0.0]
       },
       "visible": true
+    },
+    {
+      "id": "simple_cone",
+      "name": "simple_cone",
+      "source": "parts/simple_cone.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
+    },
+    {
+      "id": "block_with_conical_hole",
+      "name": "block_with_conical_hole",
+      "source": "parts/block_with_conical_hole.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
+    },
+    {
+      "id": "cone_cylinder",
+      "name": "cone_cylinder",
+      "source": "parts/cone_cylinder.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
+    },
+    {
+      "id": "nosecone",
+      "name": "nosecone",
+      "source": "parts/nosecone.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
     }
   ],
   "version": 1
