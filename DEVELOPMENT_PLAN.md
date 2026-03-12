@@ -509,23 +509,38 @@ Key insight: for a surface with constant positive principal curvature $\kappa_1 
 **Step 5: LM refinement.**
 - Optimize $[C_x, C_y, C_z, \alpha, \beta, R, r]$ (7 parameters: center 3, axis tilt 2, major radius 1, minor radius 1).
 - Residual: $d_i = \sqrt{(\text{radial}_i - R)^2 + \text{axial}_i^2} - r$.
+- LM patience 500, minimum 7 data points. Numerical Jacobian via central differences (eps=1e-8).
+
+**Alternative fitting: SOR axis method (`fit_torus_sor`).**
+When the tube center method fails (e.g., too few tube centers above threshold or quality gate failure), a surface-of-revolution axis estimation is used as fallback. Estimates torus axis from the smallest eigenvector of normal covariance, projects vertices to (h,r) coordinates, fits a shifted circle to deduce R and r. Same LM refinement follows. `fit_torus` wraps both methods: tries tube center first, falls back to SOR.
+
+**Deterministic iteration.**
+All vertex set iterations (HashSet) are sorted before use to ensure deterministic results regardless of hash ordering. Without this, the fitting results can vary between runs due to floating-point non-associativity.
 
 **Seeding strategy:**
-Toroidal fillets occur at edges between two surfaces where a blend or fillet has been applied. The fillet faces have normals that rotate smoothly as you traverse the fillet. Seeding uses:
+Vertex-neighborhood seeding: for each vertex with ≥3 incident uncommitted faces (excluding faces already committed to cylindrical, spherical, conical, or other toroidal hypotheses), use those faces as a BFS seed. Vertices sorted by incident face count descending for best seeds first.
 
-- **Edge-based seeding**: For each boundary between two multi-face selected surfaces (from stage 2.6), examine the single-face planar hypothesis faces adjacent to that boundary. These "leftover" faces between two fitted surfaces are strong candidates for fillet/blend toroidal surfaces. Start BFS from clusters of these faces.
-- **Normal-rotation detection**: In a seed neighborhood, if normals rotate systematically around the tube cross-section (as measured by normal covariance: the $\lambda_1 \approx \lambda_2 \gg \lambda_3$ eigenvalue pattern, similar to cylinder but with additional normal variation), this suggests a toroidal surface.
+**Seed fitting and grow-if-needed expansion:**
+- Fit torus to seed faces using the tube center method (Step 1–4 above), with SOR axis method as automatic fallback via `fit_torus_sor`.
+- If the seed fit passes vertex_tolerance and surface_tolerance: accept as-is.
+- If the seed fit fails vertex_tolerance but the worst vertex error < surface_tolerance: expand the seed by 1 ring of uncommitted neighbor faces (excluding faces committed to other surface types), re-fit, and optionally run a second LM refinement using the expanded fit params as starting point. Accept if the expanded fit passes both tolerances.
+- If expansion also fails: reject the seed.
 
 **BFS region growing:**
 - Vertex-to-torus distance: $|\sqrt{(\text{radial} - R)^2 + \text{axial}^2} - r| < \text{vertex\_tolerance}$.
 - Centroid validation: face centroid within surface_tolerance of torus.
 - Convexity check: normal direction consistent with hypothesis.
 - Angular tolerance: dihedral angle ≤ angular_tolerance.
-- Re-fit on marginal faces (same as cylinder/sphere).
+- Re-fit on marginal faces: if a face's vertices are within `REFIT_SKIP_MULTIPLIER × vertex_tolerance`, attempt a refit with the face included; accept iff the refit satisfies both vertex_tolerance (all vertices) and surface_tolerance (all centroids).
 
 **Post-growth validation:**
-- Minimum 7-face requirement (torus has 7 DOF).
-- Angular coverage around the minor circle: faces should span multiple angular positions around the tube cross-section (analogous to cylinder angular coverage), ensuring the torus fit is well-constrained.
+- Minimum 7-face requirement (torus has 7 DOF, LM needs ≥7 points).
+- Angular coverage around the minor circle: faces should span multiple angular positions around the tube cross-section.
+- Final vertex_tolerance re-validation after the last re-fit.
+- Face centroid within surface_tolerance.
+
+**Post-seeding merge:**
+Multiple vertex seeds on the same torus produce overlapping hypotheses. Merge hypotheses with compatible parameters (R/r within 1%, center within 10% of r, axis cosine > 0.999) AND topological adjacency (shared mesh edges). The adjacency check prevents merging disconnected torus patches (e.g., two filleted edges at different locations on the same model). Merge uses LM refit with the keeper's parameters as the starting point, and validates that the merged result satisfies both vertex_tolerance and surface_tolerance.
 
 *Comment: The medial axis / tube center method is far more robust for fillet-sized torus patches than direct 7-parameter nonlinear fitting. By reducing the problem to (1) estimate one scalar r, (2) fit a 3D circle to the tube centers, it separates the easy part (circle fitting is linear algebra) from the hard part (estimating the minor radius). The spine classification step (Step 3) also provides a natural way to detect degenerate cases where the "torus" is actually a cylinder or sphere — this happens when the fillet radius approaches the edge length or when the surface is nearly spherical.*
 

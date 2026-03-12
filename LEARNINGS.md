@@ -357,11 +357,17 @@ The `is_concave` check in `create_periodic_face` must handle `SelectedSurface::C
 
 ### Torus fitting: medial axis / tube center method
 
-The torus fitting algorithm: (1) estimate minor radius r from normal-line intersections of sampled face pairs, (2) compute tube centers k_i = p_i + r*n_i (choosing sign via majority vote on center-of-mass side), (3) fit 3D circle to tube centers using SVD for axis + least-squares for R, (4) refine all 7 parameters [alpha, beta, cx, cy, cz, R, r] via Levenberg-Marquardt.
+The torus fitting algorithm: (1) estimate minor radius r from normal-line intersections of sampled face pairs, (2) compute tube centers k_i = p_i + r*n_i (trying both signs, keeping best circle-fit RMS), (3) fit 3D circle to tube centers using PCA for axis + 2D algebraic circle fit for R, (4) refine all 7 parameters [alpha, beta, cx, cy, cz, R, r] via Levenberg-Marquardt (patience=500, threshold=7). For better normal estimates, vertex normals are averaged across all incident seed faces rather than using a single face normal. Vertex iteration is sorted for determinism (HashSet ordering varies between runs).
+
+When the tube center method fails, `fit_torus_sor` is tried as fallback: estimates the SOR axis from normal covariance smallest eigenvector, projects vertices to (h,r) coords, fits a shifted circle for R and r. `fit_torus` wraps both via `.or_else()`.
 
 ### Torus seeding: vertex-neighborhood + merge
 
-Component-based seeding fails for tori because connected components typically contain cylinder body faces and fillet faces mixed together (e.g., a 383-face component). Vertex-neighborhood seeding works: for each vertex with ≥3 incident uncommitted faces, use those faces as a BFS seed. Sort vertices by incident face count descending for best seeds first. Post-seeding, merge hypotheses with compatible parameters (R/r within 1%, center within 10% of r, axis cosine > 0.999) since multiple vertex seeds on the same torus produce overlapping hypotheses.
+Component-based seeding fails for tori because connected components typically contain cylinder body faces and fillet faces mixed together (e.g., a 383-face component). Vertex-neighborhood seeding works: for each vertex with ≥3 incident uncommitted faces (excluding cylindrical, spherical, conical, and committed-toroidal faces), use those faces as a BFS seed. Sort vertices by incident face count descending for best seeds first. Post-seeding, merge hypotheses with compatible parameters (R/r within 1%, center within 10% of r, axis cosine > 0.999) AND topological adjacency (shared mesh edges). The adjacency check prevents merging disconnected torus patches at different locations on the same model (e.g., filleted_hole_block has two separate R=9,r=2 torus fillets at z=2 and z=18).
+
+### Torus seed grow-if-needed expansion
+
+Small seeds (3–4 faces) from vertex neighborhoods often fit the torus correctly in R and r but fail vertex_tolerance because the data is too sparse for precise LM convergence. When the seed fit has worst vertex error below surface_tolerance but above vertex_tolerance, expanding by 1 ring of uncommitted neighbor faces and refitting can converge to vertex_tolerance with more data. A second direct LM refinement pass (using the expanded fit params as starting point, skipping tube-center re-estimation) further improves precision. This solved detection of concave inner fillets on filleted_pipe (R=7.5, r=1.5).
 
 ### Torus quality gate on circle-fit RMS
 
@@ -370,7 +376,14 @@ When convex and concave tori share edges (e.g., filleted_pipe: R=8.5 convex and 
 ### Pipe elbow torus tessellation
 
 The onshape pipe_elbow model's torus surface is tessellated into many narrow strips whose normals span < 180° locally. Stage 2.5 torus fitting doesn't fire because the normal distribution looks locally cylindrical (not toroidal). Stage 2.6 selects 290 cylindrical patches that individually pass `--compare`. This is expected behavior for coarsely tessellated, low-curvature tori where the mesh facets don't exhibit the characteristic toroidal normal pattern (band pattern in Gaussian map). Future improvement: unified SOR framework fitting could detect this by comparing cylinder vs torus profile fits in (h,r) space.
+### Torus merge uses LM refit, not fit_torus
 
-### opencascade-sys bindings are more complete than you think
+When merging two torus hypotheses, calling `fit_torus` on the combined face set often fails because the tube-center method's quality gate is sensitive to the larger, noisier data set. Instead, use the keeper hypothesis's parameters as the LM starting point and run `TorusLMProblem` directly. This converges reliably because the starting point is already close to the true solution. Always validate vertex_tolerance and surface_tolerance after merge refit.
+
+
+### HashSet iteration order causes flaky tests
+
+When fitting algorithms iterate over a `HashSet<usize>` of vertex indices, the iteration order varies between runs (Rust's default hasher uses per-process random keys). Since floating-point addition is non-associative, different iteration orders produce slightly different intermediate sums, which can change the final fitted parameters enough to make a marginal hypothesis pass or fail tolerance checks. Fix: collect HashSet into a Vec and sort before iterating in any computation that feeds into fitting (vertex positions, normals, tube centers). This is essential for reproducible test results.
+
 
 The `Geom_ToroidalSurface` binding was present in opencascade-sys all along (`geom::ToroidalSurface::new_ax3_real2`), but workspace-scoped search tools (grep_search, file_search, semantic_search, and Explore agent searches) cannot find content in `../opencascade-rs/` because it's outside the workspace root. Use terminal `grep` to search files outside the workspace. Don't assume a binding is missing just because workspace search tools return no results.

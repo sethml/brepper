@@ -321,9 +321,28 @@ fn fit_torus(
     faces: &[MeshFace],
     vertices: &[MeshVertex],
 ) -> Option<([f64; 3], [f64; 3], f64, f64)> {
+    // Try the tube-center method first, then fall back to SOR axis method.
+    fit_torus_inner(face_indices, vertex_set, faces, vertices)
+        .or_else(|| fit_torus_sor(face_indices, vertex_set, faces, vertices))
+}
+
+fn fit_torus_inner(
+    face_indices: &[usize],
+    vertex_set: &HashSet<usize>,
+    faces: &[MeshFace],
+    vertices: &[MeshVertex],
+) -> Option<([f64; 3], [f64; 3], f64, f64)> {
     if vertex_set.len() < 7 || face_indices.len() < 3 {
         return None;
     }
+
+    // Sort vertices for deterministic iteration order (avoids floating-point
+    // accumulation-order differences across runs due to HashSet randomization).
+    let sorted_verts: Vec<usize> = {
+        let mut v: Vec<usize> = vertex_set.iter().copied().collect();
+        v.sort_unstable();
+        v
+    };
 
     // Step 1: Estimate minor radius from normal-line intersections of adjacent face pairs.
     let mut r_estimates: Vec<f64> = Vec::new();
@@ -375,8 +394,7 @@ fn fit_torus(
     }
 
     if r_estimates.is_empty() {
-        // Fallback: try SOR axis + profile fitting approach
-        return fit_torus_sor(face_indices, vertex_set, faces, vertices);
+        return None;
     }
 
     // Robust minor radius: median of estimates
@@ -394,18 +412,29 @@ fn fit_torus(
     // We try both signs, and use the one that produces a better circle fit.
     let best = [1.0_f64, -1.0].iter().filter_map(|&sign| {
         // Compute tube centers
-        let tube_centers: Vec<[f64; 3]> = vertex_set.iter().filter_map(|&vi| {
-            // Find a face incident to this vertex to get its normal
-            let face = face_indices.iter().find(|&&fi| {
+        let tube_centers: Vec<[f64; 3]> = sorted_verts.iter().filter_map(|&vi| {
+            // Average normal from all incident seed faces for a better
+            // surface-normal estimate at the vertex.
+            let mut avg_n = [0.0_f64; 3];
+            let mut count = 0u32;
+            for &fi in face_indices {
                 let vc = faces[fi].vertex_count as usize;
-                faces[fi].vertex_indices[..vc].contains(&vi)
-            })?;
-            let n = faces[*face].normal?;
+                if !faces[fi].vertex_indices[..vc].contains(&vi) { continue; }
+                if let Some(n) = faces[fi].normal {
+                    avg_n[0] += n[0];
+                    avg_n[1] += n[1];
+                    avg_n[2] += n[2];
+                    count += 1;
+                }
+            }
+            if count == 0 { return None; }
+            let len = normalize3(&mut avg_n);
+            if len < 1e-15 { return None; }
             let v = &vertices[vi];
             Some([
-                v.x + sign * minor_r * n[0],
-                v.y + sign * minor_r * n[1],
-                v.z + sign * minor_r * n[2],
+                v.x + sign * minor_r * avg_n[0],
+                v.y + sign * minor_r * avg_n[1],
+                v.z + sign * minor_r * avg_n[2],
             ])
         }).collect();
 
@@ -432,7 +461,14 @@ fn fit_torus(
         };
 
         Some((center, axis, major_r, rms, sign))
-    }).min_by(|a, b| a.3.partial_cmp(&b.3).unwrap())?;
+    }).min_by(|a, b| a.3.partial_cmp(&b.3).unwrap());
+
+    let best = match best {
+        Some(b) => b,
+        None => {
+            return None;
+        }
+    };
 
     let (center, axis, major_r, rms, _sign) = best;
 
@@ -445,13 +481,13 @@ fn fit_torus(
     }
 
     // Step 4: LM refinement
-    let points: Vec<[f64; 3]> = vertex_set.iter()
+    let points: Vec<[f64; 3]> = sorted_verts.iter()
         .map(|&vi| [vertices[vi].x, vertices[vi].y, vertices[vi].z])
         .collect();
 
-    if points.len() >= 10 {
+    if points.len() >= 7 {
         let problem = TorusLMProblem::new(points, axis, center, major_r, minor_r);
-        let (result, _report) = LevenbergMarquardt::new().minimize(problem);
+        let (result, _report) = LevenbergMarquardt::new().with_patience(500).minimize(problem);
         let refined_axis = result.axis_dir_from_params(&result.params);
         let refined_center = [result.params[2], result.params[3], result.params[4]];
         let refined_major_r = result.params[5];
@@ -477,6 +513,13 @@ fn fit_torus_sor(
         return None;
     }
 
+    // Sort vertices for deterministic iteration order.
+    let sorted_verts: Vec<usize> = {
+        let mut v: Vec<usize> = vertex_set.iter().copied().collect();
+        v.sort_unstable();
+        v
+    };
+
     // Estimate axis from normal covariance (smallest eigenvector)
     let cov = build_normal_covariance(face_indices, faces, vertices);
     let mut axis = smallest_eigenvector_3x3(&cov);
@@ -489,8 +532,8 @@ fn fit_torus_sor(
     let mut cx = 0.0_f64;
     let mut cy = 0.0_f64;
     let mut cz = 0.0_f64;
-    let n = vertex_set.len();
-    for &vi in vertex_set {
+    let n = sorted_verts.len();
+    for &vi in &sorted_verts {
         cx += vertices[vi].x;
         cy += vertices[vi].y;
         cz += vertices[vi].z;
@@ -502,7 +545,7 @@ fn fit_torus_sor(
 
     // Compute (h, r) coordinates relative to centroid
     let mut hrs: Vec<(f64, f64)> = Vec::with_capacity(n);
-    for &vi in vertex_set {
+    for &vi in &sorted_verts {
         let dx = vertices[vi].x - cx;
         let dy = vertices[vi].y - cy;
         let dz = vertices[vi].z - cz;
@@ -562,13 +605,13 @@ fn fit_torus_sor(
     let center = [cx, cy, cz];
 
     // LM refinement
-    let points: Vec<[f64; 3]> = vertex_set.iter()
+    let points: Vec<[f64; 3]> = sorted_verts.iter()
         .map(|&vi| [vertices[vi].x, vertices[vi].y, vertices[vi].z])
         .collect();
 
-    if points.len() >= 10 && mean_r > 1e-10 {
+    if points.len() >= 7 && mean_r > 1e-10 {
         let problem = TorusLMProblem::new(points, axis, center, major_r, minor_r);
-        let (result, _report) = LevenbergMarquardt::new().minimize(problem);
+        let (result, _report) = LevenbergMarquardt::new().with_patience(500).minimize(problem);
         let refined_axis = result.axis_dir_from_params(&result.params);
         let refined_center = [result.params[2], result.params[3], result.params[4]];
         let refined_major_r = result.params[5];
@@ -725,6 +768,7 @@ struct TorusTrialResult {
 fn run_torus_trial_bfs(
     seed_faces: &[usize],
     mesh: &ConnectedMesh,
+    vertex_tol: f64,
     surface_tol: f64,
     angular_tol: f64,
     verbosity: u8,
@@ -762,32 +806,123 @@ fn run_torus_trial_bfs(
             current_dir[0], current_dir[1], current_dir[2]);
     }
 
-    // Verify seed: all vertices within tolerance (relaxed for seed)
-    let seed_tol = surface_tol * 5.0;
+    // Verify seed: all vertices within vertex tolerance.
+    // If the initial fit is promising but doesn't quite reach vertex_tol,
+    // try expanding the seed by one ring of uncommitted neighbor faces and
+    // refitting — the extra data helps LM converge on small patches.
     if !all_vertices_within_torus_tolerance(
         &vertex_set, &current_center, &current_dir, current_major_r, current_minor_r,
-        seed_tol, &mesh.vertices,
+        vertex_tol, &mesh.vertices,
     ) {
-        if verbosity >= 3 {
-            let worst_dist = vertex_set.iter().map(|&vi| {
-                vertex_to_torus_distance(&mesh.vertices[vi], &current_center, &current_dir, current_major_r, current_minor_r).abs()
-            }).fold(0.0_f64, f64::max);
-            eprintln!("  [BFS-torus] seed vertex tolerance failed: worst={:.2e} > tol={:.2e}",
-                worst_dist, seed_tol);
+        let worst_dist = vertex_set.iter().map(|&vi| {
+            vertex_to_torus_distance(&mesh.vertices[vi], &current_center, &current_dir, current_major_r, current_minor_r).abs()
+        }).fold(0.0_f64, f64::max);
+
+        // Only attempt expansion if the fit is "promising" (within surface_tol)
+        let mut expanded_ok = false;
+        if worst_dist < surface_tol {
+            let current_faces: Vec<usize> = face_list.clone();
+            for &fi in &current_faces {
+                let vc = mesh.faces[fi].vertex_count as usize;
+                for &ni in &mesh.faces[fi].neighbors[..vc] {
+                    if ni < 0 { continue; }
+                    let ni = ni as usize;
+                    if face_list.contains(&ni) { continue; }
+                    // Skip faces committed to other surface types
+                    if mesh.faces[ni].cylindrical_hypothesis >= 0 { continue; }
+                    if mesh.faces[ni].spherical_hypothesis >= 0 { continue; }
+                    if mesh.faces[ni].conical_hypothesis >= 0 { continue; }
+                    if mesh.faces[ni].toroidal_hypothesis != UNDEDUCED_TOROIDAL_HYPOTHESIS { continue; }
+                    face_list.push(ni);
+                    let nvc = mesh.faces[ni].vertex_count as usize;
+                    for &nvi in &mesh.faces[ni].vertex_indices[..nvc] {
+                        vertex_set.insert(nvi);
+                    }
+                }
+            }
+            if face_list.len() > current_faces.len() {
+                if let Some((c, d, r_big, r_small)) = fit_torus(&face_list, &vertex_set, &mesh.faces, &mesh.vertices) {
+                    let mut ec = c;
+                    let mut ed = d;
+                    let mut er = r_big;
+                    let mut esr = r_small;
+                    if !all_vertices_within_torus_tolerance(
+                        &vertex_set, &ec, &ed, er, esr,
+                        vertex_tol, &mesh.vertices,
+                    ) {
+                        // Try direct LM refinement starting from the expanded fit params
+                        let points: Vec<[f64; 3]> = vertex_set.iter()
+                            .map(|&vi| [mesh.vertices[vi].x, mesh.vertices[vi].y, mesh.vertices[vi].z])
+                            .collect();
+                        let problem = TorusLMProblem::new(points, ed, ec, er, esr);
+                        let (result, _report) = LevenbergMarquardt::new().with_patience(500).minimize(problem);
+                        let refined_dir = result.axis_dir_from_params(&result.params);
+                        let refined_center = [result.params[2], result.params[3], result.params[4]];
+                        let refined_major = result.params[5];
+                        let refined_minor = result.params[6];
+                        if refined_major > 0.0 && refined_minor > 0.0 {
+                            ec = refined_center;
+                            ed = refined_dir;
+                            er = refined_major;
+                            esr = refined_minor;
+                        }
+                    }
+                    if all_vertices_within_torus_tolerance(
+                        &vertex_set, &ec, &ed, er, esr,
+                        vertex_tol, &mesh.vertices,
+                    ) {
+                        current_center = ec;
+                        current_dir = ed;
+                        current_major_r = er;
+                        current_minor_r = esr;
+                        expanded_ok = true;
+                        if verbosity >= 3 {
+                            eprintln!("  [BFS-torus] seed expanded {} → {} faces, vertex_tol now OK",
+                                current_faces.len(), face_list.len());
+                        }
+                    } else if verbosity >= 3 {
+                        let exp_worst = vertex_set.iter().map(|&vi| {
+                            vertex_to_torus_distance(&mesh.vertices[vi], &ec, &ed, er, esr).abs()
+                        }).fold(0.0_f64, f64::max);
+                        eprintln!("  [BFS-torus] expanded {} → {} faces, R={:.4}, r={:.4}, vtx_worst={:.2e}",
+                            current_faces.len(), face_list.len(), er, esr, exp_worst);
+                    }
+                } else if verbosity >= 3 {
+                    eprintln!("  [BFS-torus] expanded {} → {} faces, fit_torus returned None",
+                        current_faces.len(), face_list.len());
+                }
+                if !expanded_ok {
+                    // Revert expansion
+                    face_list = current_faces;
+                    vertex_set.clear();
+                    for &sfi in &face_list {
+                        let vc = mesh.faces[sfi].vertex_count as usize;
+                        for &vi in &mesh.faces[sfi].vertex_indices[..vc] {
+                            vertex_set.insert(vi);
+                        }
+                    }
+                }
+            }
         }
-        return None;
+        if !expanded_ok {
+            if verbosity >= 3 {
+                eprintln!("  [BFS-torus] seed vertex tolerance failed: worst={:.2e} > tol={:.2e}",
+                    worst_dist, vertex_tol);
+            }
+            return None;
+        }
     }
 
-    // Verify seed face centroids
-    for &sfi in seed_faces {
-        let centroid = face_centroid(&mesh.faces[sfi], &mesh.vertices);
+    // Verify seed face centroids within surface tolerance
+    for &fi in &face_list {
+        let centroid = face_centroid(&mesh.faces[fi], &mesh.vertices);
         let cen_dist = vertex_to_torus_distance(
             &MeshVertex::from_xyz(centroid[0], centroid[1], centroid[2]),
             &current_center, &current_dir, current_major_r, current_minor_r,
         ).abs();
-        if cen_dist > seed_tol {
+        if cen_dist > surface_tol {
             if verbosity >= 3 {
-                eprintln!("  [BFS-torus] seed centroid tolerance failed: face {} dist={:.2e}", sfi, cen_dist);
+                eprintln!("  [BFS-torus] seed centroid tolerance failed: face {} dist={:.2e}", fi, cen_dist);
             }
             return None;
         }
@@ -833,13 +968,13 @@ fn run_torus_trial_bfs(
 
     // Track claimed faces
     let mut trial_claimed: HashSet<usize> = HashSet::new();
-    for &sfi in seed_faces {
-        trial_claimed.insert(sfi);
+    for &fi in &face_list {
+        trial_claimed.insert(fi);
     }
 
     let mut queue = VecDeque::new();
-    for &sfi in seed_faces {
-        queue.push_back(sfi);
+    for &fi in &face_list {
+        queue.push_back(fi);
     }
 
     // BFS expansion
@@ -901,9 +1036,9 @@ fn run_torus_trial_bfs(
                     &mesh.vertices[vi],
                     &current_center, &current_dir, current_major_r, current_minor_r,
                 ).abs();
-                if d > surface_tol {
+                if d > vertex_tol {
                     all_ok = false;
-                    if d > REFIT_SKIP_MULTIPLIER * surface_tol {
+                    if d > REFIT_SKIP_MULTIPLIER * vertex_tol {
                         any_far = true;
                         break;
                     }
@@ -943,7 +1078,7 @@ fn run_torus_trial_bfs(
 
                 if !all_vertices_within_torus_tolerance(
                     &trial_vertices, &new_center, &new_dir, new_major_r, new_minor_r,
-                    surface_tol, &mesh.vertices,
+                    vertex_tol, &mesh.vertices,
                 ) {
                     continue;
                 }
@@ -1016,14 +1151,19 @@ fn run_torus_trial_bfs(
         }
     }
 
-    // Final re-fit
+    // Final re-fit (only accept if it improves or maintains vertex_tol)
     if let Some((final_center, final_dir, final_major_r, final_minor_r)) =
         fit_torus(&face_list, &vertex_set, &mesh.faces, &mesh.vertices)
     {
-        current_center = final_center;
-        current_dir = final_dir;
-        current_major_r = final_major_r;
-        current_minor_r = final_minor_r;
+        if all_vertices_within_torus_tolerance(
+            &vertex_set, &final_center, &final_dir, final_major_r, final_minor_r,
+            vertex_tol, &mesh.vertices,
+        ) {
+            current_center = final_center;
+            current_dir = final_dir;
+            current_major_r = final_major_r;
+            current_minor_r = final_minor_r;
+        }
     }
 
     // Compute error metrics
@@ -1114,12 +1254,11 @@ pub(super) fn deduce_toroidal_hypotheses(
     let num_vertices = mesh.vertices.len();
     let mut hypotheses: Vec<ToroidalHypothesis> = Vec::new();
     let viz_quit = std::cell::Cell::new(false);
-    let _ = vertex_tol;
 
-    // Identify faces committed to multi-face planar, spherical, or conical
-    // hypotheses (ineligible for torus fitting).
-    // NOTE: Cylindrical hypotheses are deliberately NOT excluded — torus
-    // fitting ignores cylinder fits entirely.
+    // Identify faces committed to multi-face planar, spherical, conical, or
+    // cylindrical hypotheses (ineligible for torus seeding).
+    // NOTE: Cylindrical faces are excluded from seeds but are still eligible
+    // for BFS absorption (checked via toroidal_hypothesis field).
     let mut committed = vec![false; num_faces];
     for (fi, face) in mesh.faces.iter().enumerate() {
         // Multi-face planar
@@ -1128,6 +1267,10 @@ pub(super) fn deduce_toroidal_hypotheses(
             if pi < planar_hypotheses.len() && planar_hypotheses[pi].faces.len() > 1 {
                 committed[fi] = true;
             }
+        }
+        // Cylindrical
+        if face.cylindrical_hypothesis >= 0 {
+            committed[fi] = true;
         }
         // Spherical
         if face.spherical_hypothesis >= 0 {
@@ -1193,6 +1336,7 @@ pub(super) fn deduce_toroidal_hypotheses(
         let trial = run_torus_trial_bfs(
             &seed_faces,
             mesh,
+            vertex_tol,
             surface_tol,
             angular_tol,
             verbosity,
@@ -1224,11 +1368,11 @@ pub(super) fn deduce_toroidal_hypotheses(
 
         // Validate error and radii
         let trial = trial.and_then(|t| {
-            if t.error_max > surface_tol {
+            if t.error_max > vertex_tol {
                 if verbosity >= 3 {
                     eprintln!(
                         "  [torus] rejected: error_max={:.2e} > tol={:.2e}",
-                        t.error_max, surface_tol
+                        t.error_max, vertex_tol
                     );
                 }
                 return None;
@@ -1310,7 +1454,11 @@ pub(super) fn deduce_toroidal_hypotheses(
                 minor_radius: candidate.minor_radius,
                 convex: candidate.convex,
                 faces: candidate.faces,
-                vertices: candidate.vertices.into_iter().collect(),
+                vertices: {
+                    let mut v: Vec<usize> = candidate.vertices.into_iter().collect();
+                    v.sort_unstable();
+                    v
+                },
                 error_max: candidate.error_max,
                 centroid_error_max: candidate.centroid_error_max,
                 error_abs_sum: candidate.error_abs_sum,
@@ -1335,6 +1483,20 @@ pub(super) fn deduce_toroidal_hypotheses(
                     continue;
                 }
 
+                // Only merge topologically connected patches — don't merge
+                // disconnected patches that happen to share torus parameters
+                // (e.g., top and bottom fillets of a through-hole).
+                let faces_j: HashSet<usize> = hypotheses[j].faces.iter().copied().collect();
+                let adjacent = hypotheses[i].faces.iter().any(|&fi| {
+                    let vc = mesh.faces[fi].vertex_count as usize;
+                    mesh.faces[fi].neighbors[..vc].iter().any(|&ni| {
+                        ni >= 0 && faces_j.contains(&(ni as usize))
+                    })
+                });
+                if !adjacent {
+                    continue;
+                }
+
                 if verbosity >= 3 {
                     eprintln!(
                         "  [torus] merging hypothesis {} ({} faces) into {} ({} faces)",
@@ -1350,40 +1512,79 @@ pub(super) fn deduce_toroidal_hypotheses(
                 };
                 let absorb_faces = hypotheses[absorb].faces.clone();
                 let absorb_verts = hypotheses[absorb].vertices.clone();
-                hypotheses[keep].faces.extend(absorb_faces.iter());
-                hypotheses[keep].vertices.extend(absorb_verts.iter());
-                // Deduplicate vertices
-                hypotheses[keep].vertices.sort();
-                hypotheses[keep].vertices.dedup();
+                let mut merged_faces = hypotheses[keep].faces.clone();
+                merged_faces.extend(absorb_faces.iter());
+                let mut merged_verts = hypotheses[keep].vertices.clone();
+                merged_verts.extend(absorb_verts.iter());
+                merged_verts.sort();
+                merged_verts.dedup();
 
-                // Recompute error metrics for merged hypothesis
+                // Refit to the combined face+vertex set using the keeper's
+                // parameters as the LM starting point (avoids the tube-center
+                // estimation step which can fail for large combined sets).
+                let merged_points: Vec<[f64; 3]> = merged_verts.iter()
+                    .map(|&vi| [mesh.vertices[vi].x, mesh.vertices[vi].y, mesh.vertices[vi].z])
+                    .collect();
+                let problem = TorusLMProblem::new(
+                    merged_points,
+                    hypotheses[keep].axis_direction,
+                    hypotheses[keep].center,
+                    hypotheses[keep].major_radius,
+                    hypotheses[keep].minor_radius,
+                );
+                let (result, _report) = LevenbergMarquardt::new().with_patience(500).minimize(problem);
+                let axis = result.axis_dir_from_params(&result.params);
+                let center = [result.params[2], result.params[3], result.params[4]];
+                let major_r = result.params[5];
+                let minor_r = result.params[6];
+                if major_r <= 0.0 || minor_r <= 0.0 {
+                    if verbosity >= 3 {
+                        eprintln!("  [torus] merge LM produced degenerate radii, skipping merge of {} into {}", absorb, keep);
+                    }
+                    continue;
+                }
+
+                // Validate merged refit against vertex_tol and surface_tol
                 let mut err_max = 0.0_f64;
                 let mut err_sum = 0.0_f64;
-                for &vi in &hypotheses[keep].vertices {
+                for &vi in &merged_verts {
                     let d = vertex_to_torus_distance(
                         &mesh.vertices[vi],
-                        &hypotheses[keep].center,
-                        &hypotheses[keep].axis_direction,
-                        hypotheses[keep].major_radius,
-                        hypotheses[keep].minor_radius,
+                        &center, &axis, major_r, minor_r,
                     )
                     .abs();
                     err_max = err_max.max(d);
                     err_sum += d;
                 }
+                if err_max > vertex_tol {
+                    if verbosity >= 3 {
+                        eprintln!("  [torus] merge rejected: err_max={:.2e} > vertex_tol={:.2e}", err_max, vertex_tol);
+                    }
+                    continue;
+                }
                 let mut cen_err_max = 0.0_f64;
-                for &f in &hypotheses[keep].faces {
+                for &f in &merged_faces {
                     let c = face_centroid(&mesh.faces[f], &mesh.vertices);
                     let d = vertex_to_torus_distance(
                         &MeshVertex::from_xyz(c[0], c[1], c[2]),
-                        &hypotheses[keep].center,
-                        &hypotheses[keep].axis_direction,
-                        hypotheses[keep].major_radius,
-                        hypotheses[keep].minor_radius,
+                        &center, &axis, major_r, minor_r,
                     )
                     .abs();
                     cen_err_max = cen_err_max.max(d);
                 }
+                if cen_err_max > surface_tol {
+                    if verbosity >= 3 {
+                        eprintln!("  [torus] merge rejected: cen_err_max={:.2e} > surface_tol={:.2e}", cen_err_max, surface_tol);
+                    }
+                    continue;
+                }
+
+                hypotheses[keep].faces = merged_faces;
+                hypotheses[keep].vertices = merged_verts;
+                hypotheses[keep].center = center;
+                hypotheses[keep].axis_direction = axis;
+                hypotheses[keep].major_radius = major_r;
+                hypotheses[keep].minor_radius = minor_r;
                 hypotheses[keep].error_max = err_max;
                 hypotheses[keep].error_abs_sum = err_sum;
                 hypotheses[keep].centroid_error_max = cen_err_max;
