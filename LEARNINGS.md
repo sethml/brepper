@@ -366,3 +366,7 @@ Component-based seeding fails for tori because connected components typically co
 ### Torus quality gate on circle-fit RMS
 
 When convex and concave tori share edges (e.g., filleted_pipe: R=8.5 convex and R=7.5 concave), boundary vertices have incident faces from both torus patches. Seeds at these vertices mix faces from different tori, producing tube centers that scatter between two different major circles. A quality gate on the 3D circle fit RMS (reject if rms > 0.1 * minor_r) catches these mixed seeds early, before BFS expansion wastes time on a bad hypothesis.
+
+### opencascade-sys bindings are more complete than you think
+
+The `Geom_ToroidalSurface` binding was present in opencascade-sys all along (`geom::ToroidalSurface::new_ax3_real2`), but workspace-scoped search tools (grep_search, file_search, semantic_search, and Explore agent searches) cannot find content in `../opencascade-rs/` because it's outside the workspace root. Use terminal `grep` to search files outside the workspace. Don't assume a binding is missing just because workspace search tools return no results.

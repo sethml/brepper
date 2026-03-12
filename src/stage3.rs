@@ -366,8 +366,21 @@ fn create_occt_surface(
             let cone = geom::ConicalSurface::new_ax3_real2(&ax3, hyp.half_angle, 0.0);
             geom::ConicalSurface::to_handle(cone).to_handle_surface()
         }
-        SelectedSurface::Toroidal(_idx) => {
-            todo!("ToroidalSurface OCCT binding not yet available")
+        SelectedSurface::Toroidal(idx) => {
+            let hyp = &output.toroidal_hypotheses[*idx];
+            let origin = gp::Pnt::new_real3(hyp.center[0], hyp.center[1], hyp.center[2]);
+            let dir = gp::Dir::new_real3(
+                hyp.axis_direction[0],
+                hyp.axis_direction[1],
+                hyp.axis_direction[2],
+            );
+            let ax3 = gp::Ax3::new_pnt_dir(&origin, &dir);
+            let torus = geom::ToroidalSurface::new_ax3_real2(
+                &ax3,
+                hyp.major_radius,
+                hyp.minor_radius,
+            );
+            geom::ToroidalSurface::to_handle(torus).to_handle_surface()
         }
     }
 }

@@ -964,7 +964,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [ ] Unblock existing `pipe_elbow_10_fine` (onshape) test.
 
 ### Stage 3 Extensions for Cone and Torus
-- [ ] Stage 3.1: Add `Geom_ToroidalSurface` creation from hypothesis parameters (requires opencascade-sys binding).
+- [x] Stage 3.1: Add `Geom_ToroidalSurface` creation from hypothesis parameters. Uses `geom::ToroidalSurface::new_ax3_real2(&ax3, major_radius, minor_radius)` binding (already present in opencascade-sys). Unblocked `rounded_cube_coarse_brep_check` test.
 - [ ] Stage 3.2: Add torus analytical normal formulas for tangency detection. (Cone normals already implemented.)
 - [ ] Stage 3.3: Implement tangent edge curve computation for plane-cone, cylinder-cone, plane-torus, cylinder-torus, and torus-torus pairs.
 - [ ] Stage 3.3: Handle non-tangent cone and torus edge intersections via `GeomAPI_IntSS` with curve selection.
