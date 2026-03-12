@@ -955,7 +955,7 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 
 ### Stage 2 Extensions: Toroidal Surfaces
 - [x] Create ccad test models for toroidal surfaces: `filleted_cylinder.lua` (cylinder with fillets on circular edges → convex toroidal fillets), `filleted_hole_block.lua` (block with cylindrical bore, hole edges filleted → concave toroidal fillets), `filleted_pipe.lua` (hollow pipe with all edges filleted → mixed convex/concave toroidal fillets). Export STL+STEP pairs. Note: ccad's `profile_xz` only supports polylines (no arcs/circles), so `revolve()` produces conical-strip approximations, not true toroidal surfaces. Fillets on circular edges are the correct way to create TOROIDAL_SURFACE in STEP via ccad.
-- [ ] Implement `ToroidalHypothesis` data structure in stage 2 (center, axis, major_radius, minor_radius, convex, faces, vertices, errors).
+- [x] Implement `ToroidalHypothesis` data structure in stage 2 (center, axis, major_radius, minor_radius, convex, faces, vertices, errors). Plumbed through stage 1 (`MeshFace.toroidal_hypothesis`, `UNDEDUCED_TOROIDAL_HYPOTHESIS`), stage 2 (`ToroidalHypothesis` struct, `SelectedSurface::Toroidal` variant, `Stage2Output.toroidal_hypotheses`), and stage 3 (all match arms handle `Toroidal` for surface normals, face lists, vertex lists, concavity, descriptions; OCCT surface creation is `todo!()` pending binding).
 - [ ] Implement torus fitting via medial axis / tube center method: estimate minor radius from normal-line intersections, compute tube centers k_i = p_i + r*n_i, fit 3D circle to tube centers for major circle parameters. See Architecture section 2.5 for details.
 - [ ] Implement torus BFS region growing with vertex-to-torus distance validation.
 - [ ] Extend stage 2.6 surface selection to include toroidal candidates.
@@ -964,8 +964,8 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [ ] Unblock existing `pipe_elbow_10_fine` (onshape) test.
 
 ### Stage 3 Extensions for Cone and Torus
-- [ ] Stage 3.1: Add `Geom_ConicalSurface` and `Geom_ToroidalSurface` creation from hypothesis parameters.
-- [ ] Stage 3.2: Add cone and torus analytical normal formulas for tangency detection.
+- [ ] Stage 3.1: Add `Geom_ToroidalSurface` creation from hypothesis parameters (requires opencascade-sys binding).
+- [ ] Stage 3.2: Add torus analytical normal formulas for tangency detection. (Cone normals already implemented.)
 - [ ] Stage 3.3: Implement tangent edge curve computation for plane-cone, cylinder-cone, plane-torus, cylinder-torus, and torus-torus pairs.
 - [ ] Stage 3.3: Handle non-tangent cone and torus edge intersections via `GeomAPI_IntSS` with curve selection.
 - [ ] Stage 3.4: Implement conical face construction (UV-bounds for full revolution, wire+pcurves for partial, apex singularity handling).

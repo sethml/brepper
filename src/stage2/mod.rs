@@ -171,8 +171,33 @@ pub struct ConicalHypothesis {
     pub error_abs_sum: f64,
 }
 
-// TODO: Stage 2.4 - Ruled surface hypothesis
-// TODO: Stage 2.5 - NURBS hypothesis
+/// A toroidal surface hypothesis fitted to a set of mesh faces.
+#[derive(Debug, Clone)]
+pub struct ToroidalHypothesis {
+    /// Center of the torus (on the axis, in the plane of the major circle).
+    pub center: [f64; 3],
+    /// Unit direction vector along the torus rotation axis.
+    pub axis_direction: [f64; 3],
+    /// Distance from center to the tube centerline (major radius R).
+    pub major_radius: f64,
+    /// Radius of the tube cross-section (minor radius r).
+    pub minor_radius: f64,
+    /// Whether face normals point away from the tube center (convex=true, outer surface)
+    /// or toward the tube center (concave=false, inner surface).
+    pub convex: bool,
+    /// Set of mesh face indices that fit this hypothesis.
+    pub faces: Vec<usize>,
+    /// Set of mesh vertex indices on this torus.
+    pub vertices: Vec<usize>,
+    /// Maximum absolute distance from any vertex to the torus surface.
+    pub error_max: f64,
+    /// Maximum absolute distance from any face centroid to the torus surface.
+    pub centroid_error_max: f64,
+    /// Sum of absolute vertex-to-surface distances.
+    pub error_abs_sum: f64,
+}
+
+// TODO: Stage 2.8 - NURBS hypothesis
 
 /// Identifies a selected surface hypothesis by type and index.
 #[derive(Debug, Clone, Copy)]
@@ -181,7 +206,7 @@ pub enum SelectedSurface {
     Cylindrical(usize),
     Spherical(usize),
     Conical(usize),
-    // TODO: RuledSurface(usize),
+    Toroidal(usize),
     // TODO: Nurbs(usize),
 }
 
@@ -202,6 +227,8 @@ pub struct Stage2Output {
     pub spherical_hypotheses: Vec<SphericalHypothesis>,
     /// All conical hypotheses deduced in stage 2.4.
     pub conical_hypotheses: Vec<ConicalHypothesis>,
+    /// All toroidal hypotheses deduced in stage 2.5.
+    pub toroidal_hypotheses: Vec<ToroidalHypothesis>,
     /// Surfaces selected in stage 2.6 for reconstruction. Each face should be
     /// covered by exactly one selected surface.
     pub selected_surfaces: Vec<SelectedSurface>,
@@ -554,6 +581,7 @@ fn select_surfaces(
     cylindrical_hypotheses: &mut [CylindricalHypothesis],
     spherical_hypotheses: &mut [SphericalHypothesis],
     conical_hypotheses: &mut [ConicalHypothesis],
+    toroidal_hypotheses: &mut [ToroidalHypothesis],
     viz: Option<&VizSender>,
 ) -> Vec<SelectedSurface> {
     let num_faces = mesh.faces.len();
@@ -565,7 +593,7 @@ fn select_surfaces(
 
     // Step 2: Build candidate list from multi-face hypotheses.
     struct Candidate {
-        surface_type: u8, // 0=planar, 1=cylindrical, 2=spherical, 3=conical
+        surface_type: u8, // 0=planar, 1=cylindrical, 2=spherical, 3=conical, 4=toroidal
         hypothesis_index: usize,
         faces: Vec<usize>,
     }
@@ -598,6 +626,13 @@ fn select_surfaces(
     for (i, hyp) in conical_hypotheses.iter().enumerate() {
         candidates.push(Candidate {
             surface_type: 3,
+            hypothesis_index: i,
+            faces: hyp.faces.clone(),
+        });
+    }
+    for (i, hyp) in toroidal_hypotheses.iter().enumerate() {
+        candidates.push(Candidate {
+            surface_type: 4,
             hypothesis_index: i,
             faces: hyp.faces.clone(),
         });
@@ -685,8 +720,8 @@ fn select_surfaces(
                                 color: [0.5, 0.5, 0.5, 0.25],
                             });
                         }
-                        3 => {
-                            // Conical competing — no viz overlay yet
+                        3 | 4 => {
+                            // Conical/toroidal competing — no viz overlay yet
                         }
                         _ => {}
                     }
@@ -718,8 +753,12 @@ fn select_surfaces(
                     "spherical"
                 }
                 _ => {
-                    // Conical — no viz overlay yet
-                    "conical"
+                    // Conical/toroidal — no viz overlay yet
+                    match candidates[ci].surface_type {
+                        3 => "conical",
+                        4 => "toroidal",
+                        _ => "unknown",
+                    }
                 }
             };
 
@@ -779,12 +818,19 @@ fn select_surfaces(
                 spherical_hypotheses[idx].vertices = sel_vertices;
                 SelectedSurface::Spherical(idx)
             }
-            _ => {
+            3 => {
                 let idx = candidates[ci].hypothesis_index;
                 conical_hypotheses[idx].faces = sel_faces;
                 conical_hypotheses[idx].vertices = sel_vertices;
                 SelectedSurface::Conical(idx)
             }
+            4 => {
+                let idx = candidates[ci].hypothesis_index;
+                toroidal_hypotheses[idx].faces = sel_faces;
+                toroidal_hypotheses[idx].vertices = sel_vertices;
+                SelectedSurface::Toroidal(idx)
+            }
+            _ => unreachable!("unknown surface type"),
         };
         selected.push(selected_surface);
     }
@@ -802,12 +848,14 @@ fn select_surfaces(
 }
 
 /// Validate selected surfaces against a reference STEP file.
+#[allow(clippy::too_many_arguments)]
 fn compare_selected_surfaces(
     selected_surfaces: &[SelectedSurface],
     planar_hypotheses: &[PlanarHypothesis],
     cylindrical_hypotheses: &[CylindricalHypothesis],
     spherical_hypotheses: &[SphericalHypothesis],
     conical_hypotheses: &[ConicalHypothesis],
+    toroidal_hypotheses: &[ToroidalHypothesis],
     mesh: &ConnectedMesh,
     config: &Config,
 ) -> Result<(), Stage2CompareError> {
@@ -821,6 +869,7 @@ fn compare_selected_surfaces(
             SelectedSurface::Cylindrical(i) => ("cylindrical", &cylindrical_hypotheses[*i].faces),
             SelectedSurface::Spherical(i) => ("spherical", &spherical_hypotheses[*i].faces),
             SelectedSurface::Conical(i) => ("conical", &conical_hypotheses[*i].faces),
+            SelectedSurface::Toroidal(i) => ("toroidal", &toroidal_hypotheses[*i].faces),
         };
 
         for &fi in face_indices {
@@ -919,6 +968,56 @@ fn compare_selected_surfaces(
                         centroid
                     }
                 }
+                SelectedSurface::Toroidal(i) => {
+                    let hyp = &toroidal_hypotheses[*i];
+                    // Project centroid onto torus surface:
+                    // 1. Find the point on the major circle closest to centroid
+                    // 2. From that point, project outward to the minor circle
+                    let d = [
+                        centroid[0] - hyp.center[0],
+                        centroid[1] - hyp.center[1],
+                        centroid[2] - hyp.center[2],
+                    ];
+                    let axial = dot3(&d, &hyp.axis_direction);
+                    let radial = [
+                        d[0] - axial * hyp.axis_direction[0],
+                        d[1] - axial * hyp.axis_direction[1],
+                        d[2] - axial * hyp.axis_direction[2],
+                    ];
+                    let radial_dist = (radial[0] * radial[0]
+                        + radial[1] * radial[1]
+                        + radial[2] * radial[2])
+                        .sqrt();
+                    if radial_dist > 1e-15 {
+                        // Tube center on the major circle
+                        let tube_center = [
+                            hyp.center[0] + hyp.major_radius * radial[0] / radial_dist,
+                            hyp.center[1] + hyp.major_radius * radial[1] / radial_dist,
+                            hyp.center[2] + hyp.major_radius * radial[2] / radial_dist,
+                        ];
+                        let tube_vec = [
+                            centroid[0] - tube_center[0],
+                            centroid[1] - tube_center[1],
+                            centroid[2] - tube_center[2],
+                        ];
+                        let tube_dist = (tube_vec[0] * tube_vec[0]
+                            + tube_vec[1] * tube_vec[1]
+                            + tube_vec[2] * tube_vec[2])
+                            .sqrt();
+                        if tube_dist > 1e-15 {
+                            let scale = hyp.minor_radius / tube_dist;
+                            [
+                                tube_center[0] + tube_vec[0] * scale,
+                                tube_center[1] + tube_vec[1] * scale,
+                                tube_center[2] + tube_vec[2] * scale,
+                            ]
+                        } else {
+                            centroid
+                        }
+                    } else {
+                        centroid
+                    }
+                }
             };
 
             let pt = gp::Pnt::new_real3(projected[0], projected[1], projected[2]);
@@ -994,6 +1093,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
             cylindrical_hypotheses: Vec::new(),
             spherical_hypotheses: Vec::new(),
             conical_hypotheses: Vec::new(),
+            toroidal_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -1007,6 +1107,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
             cylindrical_hypotheses: Vec::new(),
             spherical_hypotheses: Vec::new(),
             conical_hypotheses: Vec::new(),
+            toroidal_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -1093,6 +1194,7 @@ Normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             cylindrical_hypotheses,
             spherical_hypotheses: Vec::new(),
             conical_hypotheses: Vec::new(),
+            toroidal_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -1106,6 +1208,7 @@ Normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             cylindrical_hypotheses,
             spherical_hypotheses: Vec::new(),
             conical_hypotheses: Vec::new(),
+            toroidal_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -1192,6 +1295,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             cylindrical_hypotheses,
             spherical_hypotheses,
             conical_hypotheses: Vec::new(),
+            toroidal_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -1205,6 +1309,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             cylindrical_hypotheses,
             spherical_hypotheses,
             conical_hypotheses: Vec::new(),
+            toroidal_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -1251,6 +1356,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             cylindrical_hypotheses,
             spherical_hypotheses,
             conical_hypotheses,
+            toroidal_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -1262,6 +1368,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             cylindrical_hypotheses,
             spherical_hypotheses,
             conical_hypotheses,
+            toroidal_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -1279,6 +1386,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             cylindrical_hypotheses,
             spherical_hypotheses,
             conical_hypotheses,
+            toroidal_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -1286,9 +1394,10 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
     // Stage 2.6: Select surfaces for reconstruction
     let t = Instant::now();
     let viz_26 = if config.viz_active(2, 6) { viz } else { None };
+    let mut toroidal_hypotheses: Vec<ToroidalHypothesis> = Vec::new();
     let selected_surfaces = select_surfaces(
         &mesh, &mut planar_hypotheses, &mut cylindrical_hypotheses,
-        &mut spherical_hypotheses, &mut conical_hypotheses, viz_26,
+        &mut spherical_hypotheses, &mut conical_hypotheses, &mut toroidal_hypotheses, viz_26,
     );
 
     if !config.quiet {
@@ -1296,22 +1405,25 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
         let mut cylindrical_count = 0;
         let mut spherical_count = 0;
         let mut conical_count = 0;
+        let mut toroidal_count = 0;
         for s in &selected_surfaces {
             match s {
                 SelectedSurface::Planar(_) => planar_count += 1,
                 SelectedSurface::Cylindrical(_) => cylindrical_count += 1,
                 SelectedSurface::Spherical(_) => spherical_count += 1,
                 SelectedSurface::Conical(_) => conical_count += 1,
+                SelectedSurface::Toroidal(_) => toroidal_count += 1,
             }
         }
         eprintln!(
-            "Stage 2.6 ({:.3}s): Selected {} surfaces ({} planar, {} cylindrical, {} spherical, {} conical) covering {} faces",
+            "Stage 2.6 ({:.3}s): Selected {} surfaces ({} planar, {} cylindrical, {} spherical, {} conical, {} toroidal) covering {} faces",
             t.elapsed().as_secs_f64(),
             selected_surfaces.len(),
             planar_count,
             cylindrical_count,
             spherical_count,
             conical_count,
+            toroidal_count,
             mesh.faces.len(),
         );
     }
@@ -1320,7 +1432,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
     if config.compare_shape.is_some() {
         compare_selected_surfaces(
             &selected_surfaces, &planar_hypotheses, &cylindrical_hypotheses,
-            &spherical_hypotheses, &conical_hypotheses, &mesh, config,
+            &spherical_hypotheses, &conical_hypotheses, &toroidal_hypotheses, &mesh, config,
         )?;
         if !config.quiet {
             eprintln!("  Compare: all selected surface centroids within tolerance");
@@ -1333,6 +1445,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
         cylindrical_hypotheses,
         spherical_hypotheses,
         conical_hypotheses,
+        toroidal_hypotheses,
         selected_surfaces,
     })
 }
@@ -1344,7 +1457,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stage1::{self, MeshFace, MeshVertex, VertexWeldOptions, UNDEDUCED_PLANAR_HYPOTHESIS, UNDEDUCED_CYLINDRICAL_HYPOTHESIS, UNDEDUCED_SPHERICAL_HYPOTHESIS, UNDEDUCED_CONICAL_HYPOTHESIS};
+    use crate::stage1::{self, MeshFace, MeshVertex, VertexWeldOptions, UNDEDUCED_PLANAR_HYPOTHESIS, UNDEDUCED_CYLINDRICAL_HYPOTHESIS, UNDEDUCED_SPHERICAL_HYPOTHESIS, UNDEDUCED_CONICAL_HYPOTHESIS, UNDEDUCED_TOROIDAL_HYPOTHESIS};
 
     fn make_triangle_face(a: usize, b: usize, c: usize) -> MeshFace {
         MeshFace {
@@ -1356,6 +1469,7 @@ mod tests {
             cylindrical_hypothesis: UNDEDUCED_CYLINDRICAL_HYPOTHESIS,
             spherical_hypothesis: UNDEDUCED_SPHERICAL_HYPOTHESIS,
             conical_hypothesis: UNDEDUCED_CONICAL_HYPOTHESIS,
+            toroidal_hypothesis: UNDEDUCED_TOROIDAL_HYPOTHESIS,
         }
     }
 

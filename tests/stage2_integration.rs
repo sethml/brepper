@@ -1462,6 +1462,7 @@ fn all_faces_covered_by_selection() {
                 stage2::SelectedSurface::Cylindrical(i) => &output.cylindrical_hypotheses[*i].faces,
                 stage2::SelectedSurface::Spherical(i) => &output.spherical_hypotheses[*i].faces,
                 stage2::SelectedSurface::Conical(i) => &output.conical_hypotheses[*i].faces,
+                stage2::SelectedSurface::Toroidal(i) => &output.toroidal_hypotheses[*i].faces,
             };
             for &fi in faces {
                 covered_faces.insert(fi);

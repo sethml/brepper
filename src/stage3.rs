@@ -366,6 +366,9 @@ fn create_occt_surface(
             let cone = geom::ConicalSurface::new_ax3_real2(&ax3, hyp.half_angle, 0.0);
             geom::ConicalSurface::to_handle(cone).to_handle_surface()
         }
+        SelectedSurface::Toroidal(_idx) => {
+            todo!("ToroidalSurface OCCT binding not yet available")
+        }
     }
 }
 
@@ -376,6 +379,7 @@ fn surface_faces<'a>(surface: &SelectedSurface, output: &'a Stage2Output) -> &'a
         SelectedSurface::Cylindrical(idx) => &output.cylindrical_hypotheses[*idx].faces,
         SelectedSurface::Spherical(idx) => &output.spherical_hypotheses[*idx].faces,
         SelectedSurface::Conical(idx) => &output.conical_hypotheses[*idx].faces,
+        SelectedSurface::Toroidal(idx) => &output.toroidal_hypotheses[*idx].faces,
     }
 }
 /// Canonical (undirected) representation of a mesh edge for hashing.
@@ -821,6 +825,7 @@ fn build_surfaces_and_adjacency(
                     SelectedSurface::Cylindrical(_) => "cylindrical",
                     SelectedSurface::Spherical(_) => "spherical",
                     SelectedSurface::Conical(_) => "conical",
+                    SelectedSurface::Toroidal(_) => "toroidal",
                 };
                 eprintln!(
                     "  Face {}: {} surface, {} adjacent faces, {} edges, {} vertices",
@@ -976,10 +981,48 @@ fn surface_normal_at_point(
             }
             Some(n)
         }
+        SelectedSurface::Toroidal(idx) => {
+            let hyp = &stage2.toroidal_hypotheses[*idx];
+            let dp = [
+                point[0] - hyp.center[0],
+                point[1] - hyp.center[1],
+                point[2] - hyp.center[2],
+            ];
+            // Project onto the major circle plane
+            let ax = hyp.axis_direction;
+            let h = dp[0] * ax[0] + dp[1] * ax[1] + dp[2] * ax[2];
+            let radial = [
+                dp[0] - h * ax[0],
+                dp[1] - h * ax[1],
+                dp[2] - h * ax[2],
+            ];
+            let radial_len = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+            if radial_len < 1e-15 {
+                return None; // Point is on the axis
+            }
+            // Point on the major circle closest to our point
+            let tube_center = [
+                hyp.center[0] + hyp.major_radius * radial[0] / radial_len,
+                hyp.center[1] + hyp.major_radius * radial[1] / radial_len,
+                hyp.center[2] + hyp.major_radius * radial[2] / radial_len,
+            ];
+            let tube_vec = [
+                point[0] - tube_center[0],
+                point[1] - tube_center[1],
+                point[2] - tube_center[2],
+            ];
+            let tube_len = (tube_vec[0] * tube_vec[0] + tube_vec[1] * tube_vec[1] + tube_vec[2] * tube_vec[2]).sqrt();
+            if tube_len < 1e-15 {
+                return None;
+            }
+            let mut n = [tube_vec[0] / tube_len, tube_vec[1] / tube_len, tube_vec[2] / tube_len];
+            if !hyp.convex {
+                n = [-n[0], -n[1], -n[2]];
+            }
+            Some(n)
+        }
     }
 }
-
-/// Detect tangency relationships along edges.
 ///
 /// For each ReconEdge, samples mesh boundary vertices and compares the surface
 /// normals of the two adjacent surfaces. If all sampled normals agree within
@@ -2066,6 +2109,37 @@ fn viz_surface_normal_at_point(
             ];
             [n[0] as f32, n[1] as f32, n[2] as f32]
         }
+        SelectedSurface::Toroidal(i) => {
+            let hyp = &stage2.toroidal_hypotheses[*i];
+            let dp = [
+                point[0] - hyp.center[0],
+                point[1] - hyp.center[1],
+                point[2] - hyp.center[2],
+            ];
+            let ax = hyp.axis_direction;
+            let h = dp[0] * ax[0] + dp[1] * ax[1] + dp[2] * ax[2];
+            let radial = [dp[0] - h * ax[0], dp[1] - h * ax[1], dp[2] - h * ax[2]];
+            let radial_len = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+            if radial_len < 1e-10 {
+                return [0.0_f32, 0.0, 1.0];
+            }
+            let tube_center = [
+                hyp.center[0] + hyp.major_radius * radial[0] / radial_len,
+                hyp.center[1] + hyp.major_radius * radial[1] / radial_len,
+                hyp.center[2] + hyp.major_radius * radial[2] / radial_len,
+            ];
+            let tv = [
+                point[0] - tube_center[0],
+                point[1] - tube_center[1],
+                point[2] - tube_center[2],
+            ];
+            let tv_len = (tv[0] * tv[0] + tv[1] * tv[1] + tv[2] * tv[2]).sqrt();
+            if tv_len < 1e-10 {
+                return [0.0_f32, 0.0, 1.0];
+            }
+            let sign: f64 = if hyp.convex { 1.0 } else { -1.0 };
+            [(sign * tv[0] / tv_len) as f32, (sign * tv[1] / tv_len) as f32, (sign * tv[2] / tv_len) as f32]
+        }
     }
 }
 
@@ -2081,6 +2155,7 @@ fn viz_selected_surface_centroid(
         SelectedSurface::Cylindrical(i) => &stage2.cylindrical_hypotheses[*i].vertices,
         SelectedSurface::Spherical(i) => &stage2.spherical_hypotheses[*i].vertices,
         SelectedSurface::Conical(i) => &stage2.conical_hypotheses[*i].vertices,
+        SelectedSurface::Toroidal(i) => &stage2.toroidal_hypotheses[*i].vertices,
     };
     let mut cx = 0.0_f64;
     let mut cy = 0.0_f64;
@@ -2157,6 +2232,7 @@ fn compute_edge_curves_all(
                                 SelectedSurface::Cylindrical(i) => &output.stage2.cylindrical_hypotheses[*i].faces,
                                 SelectedSurface::Spherical(i) => &output.stage2.spherical_hypotheses[*i].faces,
                                 SelectedSurface::Conical(i) => &output.stage2.conical_hypotheses[*i].faces,
+                                SelectedSurface::Toroidal(i) => &output.stage2.toroidal_hypotheses[*i].faces,
                             };
                             overlay.face_highlights.push(crate::viz::FaceHighlight {
                                 face_indices: mesh_faces.to_vec(),
@@ -2236,6 +2312,7 @@ fn compute_edge_curves_all(
                                 SelectedSurface::Cylindrical(i) => &output.stage2.cylindrical_hypotheses[*i].faces,
                                 SelectedSurface::Spherical(i) => &output.stage2.spherical_hypotheses[*i].faces,
                                 SelectedSurface::Conical(i) => &output.stage2.conical_hypotheses[*i].faces,
+                                SelectedSurface::Toroidal(i) => &output.stage2.toroidal_hypotheses[*i].faces,
                             };
                             overlay.face_highlights.push(crate::viz::FaceHighlight {
                                 face_indices: mesh_faces.to_vec(),
@@ -3404,6 +3481,7 @@ fn create_periodic_face(
         SelectedSurface::Cylindrical(idx) => !output.stage2.cylindrical_hypotheses[*idx].convex,
         SelectedSurface::Spherical(idx) => !output.stage2.spherical_hypotheses[*idx].convex,
         SelectedSurface::Conical(idx) => !output.stage2.conical_hypotheses[*idx].convex,
+        SelectedSurface::Toroidal(idx) => !output.stage2.toroidal_hypotheses[*idx].convex,
         _ => false,
     };
 
@@ -3541,6 +3619,7 @@ fn validate_faces(output: &Stage3Output, config: &Config) -> Result<(), Stage3Er
                         SelectedSurface::Cylindrical(_) => "cylindrical",
                         SelectedSurface::Spherical(_) => "spherical",
                         SelectedSurface::Conical(_) => "conical",
+                        SelectedSurface::Toroidal(_) => "toroidal",
                     };
                     let mut issues = Vec::new();
                     if intersect != b_rep_check::Status::Noerror {
@@ -3836,6 +3915,7 @@ fn compare_surface_orientations_to_step(
             SelectedSurface::Cylindrical(_) => "cylindrical",
             SelectedSurface::Spherical(_) => "spherical",
             SelectedSurface::Conical(_) => "conical",
+            SelectedSurface::Toroidal(_) => "toroidal",
         };
 
         let is_convex = match surface {
@@ -3847,6 +3927,9 @@ fn compare_surface_orientations_to_step(
             }
             SelectedSurface::Conical(idx) => {
                 Some(output.stage2.conical_hypotheses[*idx].convex)
+            }
+            SelectedSurface::Toroidal(idx) => {
+                Some(output.stage2.toroidal_hypotheses[*idx].convex)
             }
             _ => None,
         };
@@ -4012,6 +4095,7 @@ fn create_occt_faces_all(
         let is_periodic = matches!(
             surface_type,
             SelectedSurface::Cylindrical(_) | SelectedSurface::Spherical(_) | SelectedSurface::Conical(_)
+            | SelectedSurface::Toroidal(_)
         );
 
         let (mut make_face, is_concave) = if is_periodic {
@@ -4027,6 +4111,7 @@ fn create_occt_faces_all(
                 SelectedSurface::Cylindrical(_) => "cylindrical",
                 SelectedSurface::Spherical(_) => "spherical",
                 SelectedSurface::Conical(_) => "conical",
+                SelectedSurface::Toroidal(_) => "toroidal",
             };
             eprintln!(
                 "  Face {fi}: {stype} — created successfully ({} edges)",
@@ -4056,6 +4141,7 @@ fn create_occt_faces_all(
                 SelectedSurface::Cylindrical(_) => "cylindrical",
                 SelectedSurface::Spherical(_) => "spherical",
                 SelectedSurface::Conical(_) => "conical",
+                SelectedSurface::Toroidal(_) => "toroidal",
             };
             overlay.status_text = format!(
                 "Stage 3.4: Face {fi}/{num_faces}: {stype} ({} edges)",

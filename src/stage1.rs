@@ -19,6 +19,7 @@ pub const NO_HYPOTHESIS: i32 = -1;
 pub const UNDEDUCED_CYLINDRICAL_HYPOTHESIS: i32 = -2;
 pub const UNDEDUCED_SPHERICAL_HYPOTHESIS: i32 = -2;
 pub const UNDEDUCED_CONICAL_HYPOTHESIS: i32 = -2;
+pub const UNDEDUCED_TOROIDAL_HYPOTHESIS: i32 = -2;
 
 // ---------------------------------------------------------------------------
 // Data structures — Stage 1 output
@@ -47,6 +48,7 @@ pub struct MeshFace {
     pub cylindrical_hypothesis: i32,
     pub spherical_hypothesis: i32,
     pub conical_hypothesis: i32,
+    pub toroidal_hypothesis: i32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -306,6 +308,7 @@ pub fn read_connected_mesh_from_stl(
             cylindrical_hypothesis: UNDEDUCED_CYLINDRICAL_HYPOTHESIS,
             spherical_hypothesis: UNDEDUCED_SPHERICAL_HYPOTHESIS,
             conical_hypothesis: UNDEDUCED_CONICAL_HYPOTHESIS,
+            toroidal_hypothesis: UNDEDUCED_TOROIDAL_HYPOTHESIS,
         });
     }
 
@@ -956,6 +959,7 @@ mod tests {
             cylindrical_hypothesis: UNDEDUCED_CYLINDRICAL_HYPOTHESIS,
             spherical_hypothesis: UNDEDUCED_SPHERICAL_HYPOTHESIS,
             conical_hypothesis: UNDEDUCED_CONICAL_HYPOTHESIS,
+            toroidal_hypothesis: UNDEDUCED_TOROIDAL_HYPOTHESIS,
         }
     }
 
