@@ -1045,10 +1045,11 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 | Block with Conical Hole (ccad) | 312 triangles | 6 planes + 1 concave cone | ✓ Stage 4.1 (STEP output) |
 | Cone-Cylinder (ccad) | 292 triangles | 1 cone + 1 cylinder + 2 planes | ✓ Stage 4.1 (STEP output) |
 | Nosecone (ccad) | 820 triangles | 1 cone + 1 sphere + 1 plane | ✓ Stage 4.1 (STEP output) |
-| Filleted Block (ccad, TODO) | ~400 triangles | 6 planes + 12 torus fillets | Planned: toroidal surfaces phase |
-| Quarter Torus (ccad, TODO) | ~200 triangles | 1 torus + 2 planes | Planned: toroidal surfaces phase |
-| Pipe Elbow ccad (ccad, TODO) | ~400 triangles | 2 tori (in/out) + 2 annular planes | Planned: toroidal surfaces phase |
-| Fillet + Cone (ccad, TODO) | ~500 triangles | Planes + cone + torus fillets | Planned: mixed cone+torus test |
+| Filleted Cylinder (ccad) | 1528 triangles | 1 cylinder + 2 planes + 2 convex tori | Planned: toroidal surfaces phase |
+| Filleted Hole Block (ccad) | 1484 triangles | 6 planes + 1 concave cylinder + 2 concave tori | Planned: toroidal surfaces phase |
+| Filleted Pipe (ccad) | 2576 triangles | 2 cylinders + 2 planes + 4 tori (convex+concave) | Planned: toroidal surfaces phase |
+| Stepped Block Toroidal Fillets fine (onshape) | 50962 triangles | 16 planes + 37 cylinders + 18 tori | Planned: toroidal surfaces phase |
+| Stepped Block Toroidal Fillets medium (onshape) | 4576 triangles | 16 planes + 37 cylinders + 18 tori | Planned: toroidal surfaces phase |
 | Complex part | Real CAD export | Matching topology | |
 
 
