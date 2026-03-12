@@ -354,3 +354,15 @@ Full (non-truncated) cones with a single boundary edge at the base produce zero 
 ### Cone concave flag in face creation
 
 The `is_concave` check in `create_periodic_face` must handle `SelectedSurface::Conical(idx)` using `!hypothesis.convex`, not default to `false`. Concave cones (e.g., conical holes) need reversed normals during face construction so that sewing produces correctly oriented shells.
+
+### Torus fitting: medial axis / tube center method
+
+The torus fitting algorithm: (1) estimate minor radius r from normal-line intersections of sampled face pairs, (2) compute tube centers k_i = p_i + r*n_i (choosing sign via majority vote on center-of-mass side), (3) fit 3D circle to tube centers using SVD for axis + least-squares for R, (4) refine all 7 parameters [alpha, beta, cx, cy, cz, R, r] via Levenberg-Marquardt.
+
+### Torus seeding: vertex-neighborhood + merge
+
+Component-based seeding fails for tori because connected components typically contain cylinder body faces and fillet faces mixed together (e.g., a 383-face component). Vertex-neighborhood seeding works: for each vertex with ≥3 incident uncommitted faces, use those faces as a BFS seed. Sort vertices by incident face count descending for best seeds first. Post-seeding, merge hypotheses with compatible parameters (R/r within 1%, center within 10% of r, axis cosine > 0.999) since multiple vertex seeds on the same torus produce overlapping hypotheses.
+
+### Torus quality gate on circle-fit RMS
+
+When convex and concave tori share edges (e.g., filleted_pipe: R=8.5 convex and R=7.5 concave), boundary vertices have incident faces from both torus patches. Seeds at these vertices mix faces from different tori, producing tube centers that scatter between two different major circles. A quality gate on the 3D circle fit RMS (reject if rms > 0.1 * minor_r) catches these mixed seeds early, before BFS expansion wastes time on a bad hypothesis.

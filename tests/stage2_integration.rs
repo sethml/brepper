@@ -95,6 +95,7 @@ fn assert_step_surfaces_covered(
             geom_abs::SurfaceType::Cylinder => "Cylinder",
             geom_abs::SurfaceType::Sphere => "Sphere",
             geom_abs::SurfaceType::Cone => "Cone",
+            geom_abs::SurfaceType::Torus => "Torus",
             _ => unreachable!(),
         };
 
@@ -117,6 +118,11 @@ fn assert_step_surfaces_covered(
             }
             geom_abs::SurfaceType::Cone => {
                 output.conical_hypotheses.iter()
+                    .flat_map(|h| h.faces.iter().map(|&fi| face_centroid(&output.mesh.faces[fi], &output.mesh.vertices)))
+                    .collect()
+            }
+            geom_abs::SurfaceType::Torus => {
+                output.toroidal_hypotheses.iter()
                     .flat_map(|h| h.faces.iter().map(|&fi| face_centroid(&output.mesh.faces[fi], &output.mesh.vertices)))
                     .collect()
             }
@@ -1965,4 +1971,203 @@ test_sphere_params_match!(
     onshape_dome_hemisphere_params_match,
     "tests/onshape/dome_hemisphere_20_fine.stl",
     "tests/onshape/dome_hemisphere_20.step"
+);
+
+// ---------------------------------------------------------------------------
+// Stage 2.5: Toroidal hypothesis tests
+// ---------------------------------------------------------------------------
+
+fn config_for_stl_stage25(stl_path: &str) -> config::Config {
+    config::parse_config_from(["brepper", stl_path, "--stage=2.5", "-q"]).unwrap()
+}
+
+fn config_for_compare_stage25(stl_path: &str, step_path: &str) -> config::Config {
+    let mut config =
+        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=2.5", "-q"])
+            .unwrap();
+    config.load_compare_step().unwrap();
+    config
+}
+
+/// Extract toroidal surface parameters from a STEP file.
+fn extract_step_tori(step_path: &str) -> Vec<([f64; 3], [f64; 3], f64, f64)> {
+    let shape = brepper::read_step_file(step_path).unwrap();
+    let mut tori: Vec<([f64; 3], [f64; 3], f64, f64)> = Vec::new();
+    let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
+        &shape, top_abs::ShapeEnum::Face, top_abs::ShapeEnum::Shape,
+    );
+    while explorer.more() {
+        let face = topo_ds::face_shape(explorer.current());
+        let adaptor = b_rep_adaptor::Surface::new_face(face);
+        if adaptor.get_type() == geom_abs::SurfaceType::Torus {
+            let tor = adaptor.torus();
+            let major_r = tor.major_radius();
+            let minor_r = tor.minor_radius();
+            let ax3 = tor.position();
+            let loc = ax3.location();
+            let dir = ax3.direction();
+            let center = [loc.x(), loc.y(), loc.z()];
+            let axis = [dir.x(), dir.y(), dir.z()];
+            tori.push((center, axis, major_r, minor_r));
+        }
+        explorer.next();
+    }
+    // Deduplicate
+    let mut unique: Vec<([f64; 3], [f64; 3], f64, f64)> = Vec::new();
+    'outer: for &(center, axis, major_r, minor_r) in &tori {
+        for &(ucenter, _uaxis, ur, um) in &unique {
+            if (ur - major_r).abs() > 0.01 {
+                continue;
+            }
+            if (um - minor_r).abs() > 0.01 {
+                continue;
+            }
+            let d2 = (center[0] - ucenter[0]).powi(2)
+                    + (center[1] - ucenter[1]).powi(2)
+                    + (center[2] - ucenter[2]).powi(2);
+            if d2 < 0.01 * 0.01 {
+                continue 'outer;
+            }
+        }
+        unique.push((center, axis, major_r, minor_r));
+    }
+    unique
+}
+
+/// Verify that each STEP torus has a matching hypothesis.
+fn assert_tori_match_step(
+    output: &stage2::Stage2Output,
+    step_path: &str,
+) {
+    let step_tori = extract_step_tori(step_path);
+    let hypotheses = &output.toroidal_hypotheses;
+
+    assert!(
+        hypotheses.len() >= step_tori.len(),
+        "Expected at least {} torus hypotheses (from STEP), got {}",
+        step_tori.len(), hypotheses.len(),
+    );
+
+    for (i, (step_center, _step_axis, step_major_r, step_minor_r)) in step_tori.iter().enumerate() {
+        let matched = hypotheses.iter().any(|h| {
+            if (h.major_radius - step_major_r).abs() > 0.5 {
+                return false;
+            }
+            if (h.minor_radius - step_minor_r).abs() > 0.5 {
+                return false;
+            }
+            let d2 = (h.center[0] - step_center[0]).powi(2)
+                    + (h.center[1] - step_center[1]).powi(2)
+                    + (h.center[2] - step_center[2]).powi(2);
+            d2 < 1.0 * 1.0
+        });
+
+        assert!(
+            matched,
+            "STEP torus {} (center=[{:.3},{:.3},{:.3}], R={:.3}, r={:.3}) has no matching hypothesis",
+            i, step_center[0], step_center[1], step_center[2], step_major_r, step_minor_r,
+        );
+    }
+}
+
+#[test]
+fn filleted_cylinder_produces_two_convex_tori() {
+    let stl = format!("{}/tests/ccad/generated/filleted_cylinder.stl", manifest_dir());
+    let config = config_for_stl_stage25(&stl);
+    let output = run_stage2(&config);
+
+    assert_eq!(
+        output.toroidal_hypotheses.len(),
+        2,
+        "filleted_cylinder should have 2 toroidal hypotheses"
+    );
+    for (i, h) in output.toroidal_hypotheses.iter().enumerate() {
+        assert!(
+            (h.major_radius - 7.0).abs() < 0.1,
+            "torus {i}: major_radius should be ~7.0, got {:.4}", h.major_radius
+        );
+        assert!(
+            (h.minor_radius - 3.0).abs() < 0.1,
+            "torus {i}: minor_radius should be ~3.0, got {:.4}", h.minor_radius
+        );
+        assert!(h.convex, "torus {i}: should be convex");
+    }
+}
+
+#[test]
+fn filleted_cylinder_tori_match_step() {
+    let stl = format!("{}/tests/ccad/generated/filleted_cylinder.stl", manifest_dir());
+    let step = format!("{}/tests/ccad/generated/filleted_cylinder.step", manifest_dir());
+    let config = config_for_compare_stage25(&stl, &step);
+    let output = run_stage2(&config);
+    assert_tori_match_step(&output, &step);
+}
+
+#[test]
+fn filleted_hole_block_produces_two_tori() {
+    let stl = format!("{}/tests/ccad/generated/filleted_hole_block.stl", manifest_dir());
+    let config = config_for_stl_stage25(&stl);
+    let output = run_stage2(&config);
+
+    assert_eq!(
+        output.toroidal_hypotheses.len(),
+        2,
+        "filleted_hole_block should have 2 toroidal hypotheses"
+    );
+    for (i, h) in output.toroidal_hypotheses.iter().enumerate() {
+        assert!(
+            (h.major_radius - 9.0).abs() < 0.1,
+            "torus {i}: major_radius should be ~9.0, got {:.4}", h.major_radius
+        );
+        assert!(
+            (h.minor_radius - 2.0).abs() < 0.1,
+            "torus {i}: minor_radius should be ~2.0, got {:.4}", h.minor_radius
+        );
+    }
+}
+
+#[test]
+fn filleted_hole_block_tori_match_step() {
+    let stl = format!("{}/tests/ccad/generated/filleted_hole_block.stl", manifest_dir());
+    let step = format!("{}/tests/ccad/generated/filleted_hole_block.step", manifest_dir());
+    let config = config_for_compare_stage25(&stl, &step);
+    let output = run_stage2(&config);
+    assert_tori_match_step(&output, &step);
+}
+
+/// Generate a stage 2.5 STEP-compare+coverage test.
+macro_rules! test_stl_step_stage25_compare {
+    ($name:ident, $stl_path:literal, $step_path:literal) => {
+        #[test]
+        fn $name() {
+            let stl = format!("{}/{}", manifest_dir(), $stl_path);
+            let step = format!("{}/{}", manifest_dir(), $step_path);
+            let config = config_for_compare_stage25(&stl, &step);
+            let output = run_stage2(&config);
+            assert_step_surfaces_covered(
+                &output, &config,
+                &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder,
+                  geom_abs::SurfaceType::Sphere, geom_abs::SurfaceType::Cone,
+                  geom_abs::SurfaceType::Torus],
+            );
+        }
+    };
+}
+
+test_stl_step_stage25_compare!(
+    filleted_cylinder_step_compare,
+    "tests/ccad/generated/filleted_cylinder.stl",
+    "tests/ccad/generated/filleted_cylinder.step"
+);
+
+test_stl_step_stage25_compare!(
+    filleted_hole_block_step_compare,
+    "tests/ccad/generated/filleted_hole_block.stl",
+    "tests/ccad/generated/filleted_hole_block.step"
+);
+
+test_stl_step_stage25_compare!(
+    filleted_pipe_step_compare,
+    "tests/ccad/generated/filleted_pipe.stl",
+    "tests/ccad/generated/filleted_pipe.step"
 );

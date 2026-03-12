@@ -11,6 +11,7 @@ mod conical;
 mod cylindrical;
 mod planar;
 mod spherical;
+mod toroidal;
 
 use crate::config::Config;
 use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex};
@@ -31,6 +32,9 @@ use self::planar::{compare_planar_hypotheses, deduce_planar_hypotheses};
 use self::spherical::{
     bounding_box_diagonal, compare_spherical_hypotheses, deduce_spherical_hypotheses,
     vertex_to_sphere_distance,
+};
+use self::toroidal::{
+    compare_toroidal_hypotheses, deduce_toroidal_hypotheses,
 };
 
 // ---------------------------------------------------------------------------
@@ -68,6 +72,11 @@ pub(crate) const MIN_SPHERE_FACES: usize = 4;
 /// A cone has 5 degrees of freedom (apex xyz, axis direction 2, half-angle),
 /// so at least 6 faces are needed for a well-determined and robust fit.
 pub(crate) const MIN_CONE_FACES: usize = 6;
+
+/// Minimum number of mesh faces required to accept a toroidal hypothesis.
+/// A torus has 7 degrees of freedom (center xyz, axis direction 2, R, r),
+/// so at least 7 faces are needed for a well-determined fit.
+pub(crate) const MIN_TORUS_FACES: usize = 7;
 
 /// Maximum sphere radius as a multiple of the mesh bounding-box diagonal.
 /// With solid-angle coverage validation and surface-tolerance validation during
@@ -1373,10 +1382,62 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
         });
     }
 
-    // Stage 2.5: Deduce NURBS hypotheses
-    // TODO: fit NURBS to remaining ungrouped faces
+    // Stage 2.5: Deduce toroidal hypotheses
+    let t = Instant::now();
+    let viz_25 = if config.viz_active(2, 5) { viz } else { None };
+    let (mut toroidal_hypotheses, toroidal_quit) = deduce_toroidal_hypotheses(
+        &mut mesh, &planar_hypotheses,
+        config.vertex_tolerance_mm,
+        config.surface_tolerance_mm, config.angular_tolerance_rad,
+        config.verbosity, viz_25,
+    );
+
     if !config.quiet {
-        eprintln!("Stage 2.5: Deduce NURBS hypotheses (not yet implemented)");
+        let covered_faces: usize = toroidal_hypotheses.iter().map(|h| h.faces.len()).sum();
+        let convex_count = toroidal_hypotheses.iter().filter(|h| h.convex).count();
+        let concave_count = toroidal_hypotheses.len() - convex_count;
+        eprintln!(
+            "Stage 2.5 ({:.3}s): Deduced {} toroidal hypotheses ({} convex, {} concave) covering {} faces",
+            t.elapsed().as_secs_f64(),
+            toroidal_hypotheses.len(),
+            convex_count,
+            concave_count,
+            covered_faces,
+        );
+        if config.verbose {
+            for (i, h) in toroidal_hypotheses.iter().enumerate() {
+                eprintln!(
+                    "  Torus {}: {} faces, {} vertices, R={:.4}, r={:.4}, {}, \
+center=[{:.4}, {:.4}, {:.4}], axis=[{:.4}, {:.4}, {:.4}], \
+vtx_err_max={:.2e}, cen_err_max={:.2e}",
+                    i, h.faces.len(), h.vertices.len(),
+                    h.major_radius, h.minor_radius,
+                    if h.convex { "convex" } else { "concave" },
+                    h.center[0], h.center[1], h.center[2],
+                    h.axis_direction[0], h.axis_direction[1], h.axis_direction[2],
+                    h.error_max, h.centroid_error_max,
+                );
+            }
+        }
+    }
+
+    if config.compare_shape.is_some() {
+        compare_toroidal_hypotheses(&toroidal_hypotheses, &mesh, config)?;
+        if !config.quiet {
+            eprintln!("  Compare: all toroidal hypothesis centroids within tolerance");
+        }
+    }
+
+    if toroidal_quit {
+        return Ok(Stage2Output {
+            mesh,
+            planar_hypotheses,
+            cylindrical_hypotheses,
+            spherical_hypotheses,
+            conical_hypotheses,
+            toroidal_hypotheses,
+            selected_surfaces: Vec::new(),
+        });
     }
 
     if !config.stage.at_least(2, 6) {
@@ -1386,7 +1447,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             cylindrical_hypotheses,
             spherical_hypotheses,
             conical_hypotheses,
-            toroidal_hypotheses: Vec::new(),
+            toroidal_hypotheses,
             selected_surfaces: Vec::new(),
         });
     }
@@ -1394,7 +1455,6 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
     // Stage 2.6: Select surfaces for reconstruction
     let t = Instant::now();
     let viz_26 = if config.viz_active(2, 6) { viz } else { None };
-    let mut toroidal_hypotheses: Vec<ToroidalHypothesis> = Vec::new();
     let selected_surfaces = select_surfaces(
         &mesh, &mut planar_hypotheses, &mut cylindrical_hypotheses,
         &mut spherical_hypotheses, &mut conical_hypotheses, &mut toroidal_hypotheses, viz_26,
