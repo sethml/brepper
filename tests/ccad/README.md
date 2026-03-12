@@ -61,3 +61,6 @@ computing them from scratch.
 | `block_with_conical_hole` | Block with tapered bore | 6 planes + 1 concave cone |
 | `cone_cylinder` | Cone joined to cylinder (tangent) | 1 cone + 1 cylinder + 2 planes |
 | `nosecone` | Cone with tangent spherical cap | 1 cone + 1 sphere + 1 plane |
+| `filleted_cylinder` | Cylinder with all edges filleted | 1 cylinder + 2 planes + 2 convex tori |
+| `filleted_hole_block` | Block with hole, hole edges filleted | 6 planes + 1 concave cylinder + 2 concave tori |
+| `filleted_pipe` | Hollow pipe with all edges filleted | 2 cylinders + 2 planes + 4 tori (convex+concave) |

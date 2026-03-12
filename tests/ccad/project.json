@@ -212,6 +212,39 @@
         "translate": [0.0, 0.0, 0.0]
       },
       "visible": true
+    },
+    {
+      "id": "filleted_cylinder",
+      "name": "filleted_cylinder",
+      "source": "parts/filleted_cylinder.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
+    },
+    {
+      "id": "filleted_hole_block",
+      "name": "filleted_hole_block",
+      "source": "parts/filleted_hole_block.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
+    },
+    {
+      "id": "filleted_pipe",
+      "name": "filleted_pipe",
+      "source": "parts/filleted_pipe.lua",
+      "transform": {
+        "rotate": [0.0, 0.0, 0.0],
+        "scale": 1.0,
+        "translate": [0.0, 0.0, 0.0]
+      },
+      "visible": true
     }
   ],
   "version": 1

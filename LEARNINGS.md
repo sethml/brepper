@@ -136,7 +136,10 @@ All node/triangle indices are **1-based** (OCCT convention).
 - Boolean operations: `union()`, `difference()`, `intersection()`.
 - Transformations: `translate()`, `rotate_x/y/z()`, `scale()`, `center_xyz()` etc.
 - Construction: `extrude(face, height)`, `revolve(profile, angle)`.
-- Edge ops: `fillet_all(s, r)`, `chamfer_all(s, d)`.
+- Edge ops: `fillet_all(s, r)`, `chamfer_all(s, d)`. Selective: `edges(s):on_box_side("zmax"):collect()` → `fillet(s, edge_set, r)`.
+- ccad `profile_xz` only supports polylines (no arcs), so `revolve()` creates conical strip approximations, NOT true TOROIDAL_SURFACE. To create true toroidal surfaces in STEP via ccad, use fillet operations on circular edges (cylinder-plane junctions).
+- Filleting straight edges on a box creates only CYLINDRICAL_SURFACE, not toroidal. A fully-filleted box (rounded_cube) has only cylindrical + spherical surfaces (no tori). Toroidal surfaces appear from fillets on curved (circular) edges.
+- For pipe models: ensure fillet radius doesn't exceed half the annulus width (outer_r - inner_r), otherwise the mesh may have open edges from overlapping fillets.
 - Cone-sphere tangency construction: for a cone with half-angle α (from axis). At a tangent circle of radius r on the cone, the tangent sphere has radius R = r / cos(α), and its center sits on the cone axis at distance r·tan(α) beyond the tangent circle in the apex direction. Using `union(cone, sphere)` in ccad produces an exact tangent junction in the STEP output.
 - STEP files from ccad contain an embedded timestamp in the FILE_NAME header. `generate_models.sh` normalizes this to `'2000-01-01T00:00:00'` via sed to prevent gratuitous diffs on regeneration.
 

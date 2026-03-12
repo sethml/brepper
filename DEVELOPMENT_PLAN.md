@@ -954,13 +954,13 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Unblock existing `cone_15x20_medium` (onshape) test. Stage 2 detection works perfectly (58 faces, ha=20.56°, err_max=2.4e-6). Full pipeline now passes through stage 4.1 (vol diff 6.4e-9, distance ~0).
 
 ### Stage 2 Extensions: Toroidal Surfaces
-- [ ] Create ccad test models for toroidal surfaces: `filleted_block.lua` (block with `fillet_all()`), `quarter_torus.lua` (quarter-torus section), `pipe_elbow_ccad.lua` (90° pipe elbow with inner/outer torus + planes).
+- [x] Create ccad test models for toroidal surfaces: `filleted_cylinder.lua` (cylinder with fillets on circular edges → convex toroidal fillets), `filleted_hole_block.lua` (block with cylindrical bore, hole edges filleted → concave toroidal fillets), `filleted_pipe.lua` (hollow pipe with all edges filleted → mixed convex/concave toroidal fillets). Export STL+STEP pairs. Note: ccad's `profile_xz` only supports polylines (no arcs/circles), so `revolve()` produces conical-strip approximations, not true toroidal surfaces. Fillets on circular edges are the correct way to create TOROIDAL_SURFACE in STEP via ccad.
 - [ ] Implement `ToroidalHypothesis` data structure in stage 2 (center, axis, major_radius, minor_radius, convex, faces, vertices, errors).
 - [ ] Implement torus fitting via medial axis / tube center method: estimate minor radius from normal-line intersections, compute tube centers k_i = p_i + r*n_i, fit 3D circle to tube centers for major circle parameters. See Architecture section 2.5 for details.
 - [ ] Implement torus BFS region growing with vertex-to-torus distance validation.
 - [ ] Extend stage 2.6 surface selection to include toroidal candidates.
 - [ ] Unit tests: torus fitting on synthetic point sets; BFS growing on fillet meshes.
-- [ ] Full pipeline tests: filleted_block passes `--compare` through stage 4.1.
+- [ ] Full pipeline tests: filleted_cylinder, filleted_hole_block, filleted_pipe pass `--compare` through stage 4.1.
 - [ ] Unblock existing `pipe_elbow_10_fine` (onshape) test.
 
 ### Stage 3 Extensions for Cone and Torus
