@@ -488,7 +488,7 @@ Key insight: for a surface with constant positive principal curvature $\kappa_1 
 - For pairs of adjacent (non-parallel) faces in the candidate region, compute the closest approach of their normal lines: $L_1: p_1 + t \cdot n_1$, $L_2: p_2 + s \cdot n_2$.
 - Reject pairs with nearly parallel normals ($|n_1 \cdot n_2| > 0.95$).
 - The closest-approach distance approximates 0 (for a torus, normal lines converge at the tube center), and the intersection parameter gives $r \approx t \approx s$ (for outward normals on a convex torus).
-- Collect many estimates, take the median for robustness against outliers.
+- Collect many estimates, take the **25th percentile** for robustness. On a torus, normal-line intersections measure a mix of tube curvature ($\approx r$, the minor radius) and azimuthal curvature ($\approx R \pm r$). The tube-curvature estimates are the smallest values, so a low percentile avoids contamination from azimuthal estimates. (Median would pick $\approx R - r$ for concave patches.)
 
 **Step 2: Compute tube center points.**
 - For each vertex $p_i$ with outward normal $n_i$: $k_i = p_i + r \cdot n_i$ (convex torus) or $k_i = p_i - r \cdot n_i$ (concave torus).
@@ -512,19 +512,20 @@ Key insight: for a surface with constant positive principal curvature $\kappa_1 
 - LM patience 500, minimum 7 data points. Numerical Jacobian via central differences (eps=1e-8).
 
 **Alternative fitting: SOR axis method (`fit_torus_sor`).**
-When the tube center method fails (e.g., too few tube centers above threshold or quality gate failure), a surface-of-revolution axis estimation is used as fallback. Estimates torus axis from the smallest eigenvector of normal covariance, projects vertices to (h,r) coordinates, fits a shifted circle to deduce R and r. Same LM refinement follows. `fit_torus` wraps both methods: tries tube center first, falls back to SOR.
+When the tube center method fails (e.g., too few tube centers above threshold or quality gate failure), a surface-of-revolution axis estimation is used as fallback. Estimates torus axis from the smallest eigenvector of normal covariance, projects vertices to (h,r) coordinates, fits a shifted circle to deduce R and r. Same LM refinement follows. `fit_torus` tries **both** methods (tube center and SOR) and keeps whichever achieves the lowest maximum vertex-to-torus distance.
 
 **Deterministic iteration.**
 All vertex set iterations (HashSet) are sorted before use to ensure deterministic results regardless of hash ordering. Without this, the fitting results can vary between runs due to floating-point non-associativity.
 
 **Seeding strategy:**
-Vertex-neighborhood seeding: for each vertex with ≥3 incident uncommitted faces (excluding faces already committed to cylindrical, spherical, conical, or other toroidal hypotheses), use those faces as a BFS seed. Vertices sorted by incident face count descending for best seeds first.
+Face-based seeding: for each uncommitted candidate face (normal, non-hypothesized), build a seed consisting of that face plus all faces that share at least one vertex with it (the **1-ring vertex neighborhood**). Only uncommitted faces are included in the seed. The seed is sorted by face index for deterministic results. Seeds with fewer than `MIN_TORUS_FACES` (7) faces or fewer than 9 unique vertices are skipped. BFS skips faces that already have a toroidal hypothesis, so later seeds naturally avoid regions already identified.
 
-**Seed fitting and grow-if-needed expansion:**
-- Fit torus to seed faces using the tube center method (Step 1–4 above), with SOR axis method as automatic fallback via `fit_torus_sor`.
-- If the seed fit passes vertex_tolerance and surface_tolerance: accept as-is.
-- If the seed fit fails vertex_tolerance but the worst vertex error < surface_tolerance: expand the seed by 1 ring of uncommitted neighbor faces (excluding faces committed to other surface types), re-fit, and optionally run a second LM refinement using the expanded fit params as starting point. Accept if the expanded fit passes both tolerances.
-- If expansion also fails: reject the seed.
+**Multi-axis LM rescue:**
+If the initial geometric fit (tube center or SOR) does not meet vertex_tolerance, a multi-axis Levenberg–Marquardt rescue is attempted. Five axis candidates are tried: the geometric estimate, the smallest eigenvector of the face-normal covariance matrix, and the three coordinate axes [1,0,0], [0,1,0], [0,0,1]. For each axis candidate:
+1. Project vertices to the plane perpendicular to the axis and fit a 2D algebraic circle (Kasa method, 3×3 linear system) to estimate center position and major radius $R$.
+2. Estimate minor radius $r$ from the residuals of the 2D circle fit.
+3. Run LM refinement from this initial estimate.
+4. Track the best result across all axis candidates. Accept if the best achieves vertex_tolerance.
 
 **BFS region growing:**
 - Vertex-to-torus distance: $|\sqrt{(\text{radial} - R)^2 + \text{axial}^2} - r| < \text{vertex\_tolerance}$.
@@ -539,10 +540,7 @@ Vertex-neighborhood seeding: for each vertex with ≥3 incident uncommitted face
 - Final vertex_tolerance re-validation after the last re-fit.
 - Face centroid within surface_tolerance.
 
-**Post-seeding merge:**
-Multiple vertex seeds on the same torus produce overlapping hypotheses. Merge hypotheses with compatible parameters (R/r within 1%, center within 10% of r, axis cosine > 0.999) AND topological adjacency (shared mesh edges). The adjacency check prevents merging disconnected torus patches (e.g., two filleted edges at different locations on the same model). Merge uses LM refit with the keeper's parameters as the starting point, and validates that the merged result satisfies both vertex_tolerance and surface_tolerance.
-
-*Comment: The medial axis / tube center method is far more robust for fillet-sized torus patches than direct 7-parameter nonlinear fitting. By reducing the problem to (1) estimate one scalar r, (2) fit a 3D circle to the tube centers, it separates the easy part (circle fitting is linear algebra) from the hard part (estimating the minor radius). The spine classification step (Step 3) also provides a natural way to detect degenerate cases where the "torus" is actually a cylinder or sphere — this happens when the fillet radius approaches the edge length or when the surface is nearly spherical.*
+*Comment: The medial axis / tube center method is far more robust for fillet-sized torus patches than direct 7-parameter nonlinear fitting. By reducing the problem to (1) estimate one scalar r, (2) fit a 3D circle to the tube centers, it separates the easy part (circle fitting is linear algebra) from the hard part (estimating the minor radius). The spine classification step (Step 3) also provides a natural way to detect degenerate cases where the "torus" is actually a cylinder or sphere — this happens when the fillet radius approaches the edge length or when the surface is nearly spherical. The face-based seeding strategy (one seed per face) is simpler and more robust than vertex-based seeding with post-merge: every toroidal face gets a chance to anchor a hypothesis, and BFS naturally deduplicates by skipping already-committed faces.*
 
 #### 2.6 Select surfaces to use for reconstruction
 Assign each mesh face to exactly one "selected surface" for reconstruction. Since stages 2.1–2.5 produce hypotheses that may overlap (a face can belong to one planar, one cylindrical, one spherical, one conical, and one toroidal hypothesis simultaneously), surface selection must resolve these overlaps.
