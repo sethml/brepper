@@ -1725,7 +1725,24 @@ fn compute_tangent_edge_curve(
         );
     }
 
-    // Non-sphere-cylinder tangent edges require vertex endpoints
+    // Check for torus involvement
+    let has_torus = matches!(ss0, SelectedSurface::Toroidal(_))
+        || matches!(ss1, SelectedSurface::Toroidal(_));
+
+    if has_torus {
+        if is_closed_loop {
+            return compute_tangent_edge_curve_torus_closed(
+                edge, ss0, ss1, stage2, config,
+            );
+        }
+        let v0 = &vertices[edge.vertex_indices[0]];
+        let v1 = &vertices[edge.vertex_indices[1]];
+        return compute_tangent_edge_curve_torus_arc(
+            edge, v0, v1, ss0, ss1, stage2, config,
+        );
+    }
+
+    // Non-sphere-cylinder, non-torus tangent edges require vertex endpoints
     if is_closed_loop {
         return Err("tangent edge has no vertex endpoints".to_string());
     }
@@ -1867,6 +1884,166 @@ fn compute_tangent_edge_curve_sphere_cylinder_closed(
     let lp = curve.last_parameter();
 
     let trimmed = geom::TrimmedCurve::new_handlegeomcurve_real2(&circle_handle, fp, lp);
+    let trimmed_handle = geom::TrimmedCurve::to_handle(trimmed).to_handle_curve();
+
+    validate_tangent_curve(edge, &trimmed_handle, stage2, config)?;
+    edge.curve_3d = Some(trimmed_handle);
+    Ok(())
+}
+
+
+/// Extract the torus hypothesis index from one of the two surfaces.
+fn torus_idx_from_pair(
+    ss0: &SelectedSurface,
+    ss1: &SelectedSurface,
+) -> Result<usize, String> {
+    match (ss0, ss1) {
+        (SelectedSurface::Toroidal(t), _) => Ok(*t),
+        (_, SelectedSurface::Toroidal(t)) => Ok(*t),
+        _ => Err("no torus in surface pair".to_string()),
+    }
+}
+
+/// Construct a full-circle tangent edge curve for a closed-loop torus tangency.
+///
+/// Tangent curves involving a torus (with any coaxial surface: plane, cylinder, or
+/// another torus) are circles perpendicular to the torus axis. The circle center
+/// and radius are computed from the mesh boundary vertices.
+fn compute_tangent_edge_curve_torus_closed(
+    edge: &mut ReconEdge,
+    ss0: &SelectedSurface,
+    ss1: &SelectedSurface,
+    stage2: &Stage2Output,
+    config: &Config,
+) -> Result<(), String> {
+    let tor_idx = torus_idx_from_pair(ss0, ss1)?;
+    let tor = &stage2.toroidal_hypotheses[tor_idx];
+    let axis = tor.axis_direction;
+    let center = tor.center;
+
+    // Compute circle parameters from mesh boundary vertices.
+    // All vertices lie on a circle perpendicular to the torus axis.
+    let mut h_sum = 0.0;
+    let mut r_sum = 0.0;
+    let n = edge.mesh_boundary_vertices.len() as f64;
+    if n < 3.0 {
+        return Err("torus closed loop has too few boundary vertices".to_string());
+    }
+
+    for &vi in &edge.mesh_boundary_vertices {
+        let v = &stage2.mesh.vertices[vi];
+        let dp = [
+            v.x - center[0],
+            v.y - center[1],
+            v.z - center[2],
+        ];
+        let h = dp[0] * axis[0] + dp[1] * axis[1] + dp[2] * axis[2];
+        let radial = [
+            dp[0] - h * axis[0],
+            dp[1] - h * axis[1],
+            dp[2] - h * axis[2],
+        ];
+        let r = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+        h_sum += h;
+        r_sum += r;
+    }
+
+    let h_avg = h_sum / n;
+    let r_avg = r_sum / n;
+
+    // Circle center is on the torus axis at distance h_avg from torus center
+    let circle_center = [
+        center[0] + h_avg * axis[0],
+        center[1] + h_avg * axis[1],
+        center[2] + h_avg * axis[2],
+    ];
+
+    let center_pnt = gp::Pnt::new_real3(circle_center[0], circle_center[1], circle_center[2]);
+    let normal_dir = gp::Dir::new_real3(axis[0], axis[1], axis[2]);
+    let ax2 = gp::Ax2::new_pnt_dir(&center_pnt, &normal_dir);
+    let circle = geom::Circle::new_ax2_real(&ax2, r_avg);
+    let circle_handle = geom::Circle::to_handle(circle).to_handle_curve();
+
+    // Full circle for closed loop
+    let curve = circle_handle.get();
+    let fp = curve.first_parameter();
+    let lp = curve.last_parameter();
+
+    let trimmed = geom::TrimmedCurve::new_handlegeomcurve_real2(&circle_handle, fp, lp);
+    let trimmed_handle = geom::TrimmedCurve::to_handle(trimmed).to_handle_curve();
+
+    validate_tangent_curve(edge, &trimmed_handle, stage2, config)?;
+    edge.curve_3d = Some(trimmed_handle);
+    Ok(())
+}
+
+/// Construct a circle-arc tangent edge curve for a torus tangency with vertex endpoints.
+///
+/// The arc lies on a circle perpendicular to the torus axis. The circle center and
+/// radius are computed from the torus hypothesis and vertex positions, then the arc
+/// direction is determined from mesh boundary vertices.
+fn compute_tangent_edge_curve_torus_arc(
+    edge: &mut ReconEdge,
+    v0: &BRepVertex,
+    v1: &BRepVertex,
+    ss0: &SelectedSurface,
+    ss1: &SelectedSurface,
+    stage2: &Stage2Output,
+    config: &Config,
+) -> Result<(), String> {
+    let tor_idx = torus_idx_from_pair(ss0, ss1)?;
+    let tor = &stage2.toroidal_hypotheses[tor_idx];
+    let axis = tor.axis_direction;
+    let center = tor.center;
+
+    // Compute circle center and radius from both vertices
+    let mut h_avg = 0.0;
+    let mut r_avg = 0.0;
+    for v in [v0, v1] {
+        let dp = [
+            v.point[0] - center[0],
+            v.point[1] - center[1],
+            v.point[2] - center[2],
+        ];
+        let h = dp[0] * axis[0] + dp[1] * axis[1] + dp[2] * axis[2];
+        let radial = [
+            dp[0] - h * axis[0],
+            dp[1] - h * axis[1],
+            dp[2] - h * axis[2],
+        ];
+        let r = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+        h_avg += h;
+        r_avg += r;
+    }
+    h_avg /= 2.0;
+    r_avg /= 2.0;
+
+    let circle_center = [
+        center[0] + h_avg * axis[0],
+        center[1] + h_avg * axis[1],
+        center[2] + h_avg * axis[2],
+    ];
+
+    let center_pnt = gp::Pnt::new_real3(circle_center[0], circle_center[1], circle_center[2]);
+    let normal_dir = gp::Dir::new_real3(axis[0], axis[1], axis[2]);
+    let ax2 = gp::Ax2::new_pnt_dir(&center_pnt, &normal_dir);
+    let circle = geom::Circle::new_ax2_real(&ax2, r_avg);
+    let circle_handle = geom::Circle::to_handle(circle).to_handle_curve();
+
+    // Project vertex endpoints onto the circle curve
+    let t0 = project_point_on_curve(&v0.point, &circle_handle)?;
+    let t1 = project_point_on_curve(&v1.point, &circle_handle)?;
+
+    // Select the correct arc direction from mesh boundary vertices
+    let (t_lo, t_hi) = select_arc_parameters(
+        t0,
+        t1,
+        &edge.mesh_boundary_vertices,
+        &circle_handle,
+        &stage2.mesh,
+    );
+
+    let trimmed = geom::TrimmedCurve::new_handlegeomcurve_real2(&circle_handle, t_lo, t_hi);
     let trimmed_handle = geom::TrimmedCurve::to_handle(trimmed).to_handle_curve();
 
     validate_tangent_curve(edge, &trimmed_handle, stage2, config)?;
@@ -2592,35 +2769,44 @@ fn compute_uv_bounds_from_edges(
     let mut u_values: Vec<f64> = Vec::new();
     let mut v_values: Vec<f64> = Vec::new();
 
-    // Project edge midpoints and endpoints onto the surface
+    // Project edge sample points and endpoints onto the surface.
+    // For toroidal surfaces (doubly periodic), we need enough samples on each
+    // edge to resolve the V-periodicity via the circular gap algorithm.
+    let n_edge_samples = if matches!(surface, SelectedSurface::Toroidal(_)) { 3 } else { 1 };
+
     for &ei in &fd.edge_indices {
         let edge = &output.edges[ei];
         let curve = edge.curve_3d.as_ref().unwrap();
         let c = curve.get();
 
-        // Project midpoint
-        let mid_t = (c.first_parameter() + c.last_parameter()) / 2.0;
-        let mid_pt = c.value(mid_t);
-        let proj = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
-            &mid_pt,
-            &fd.surface,
-            extrema::ExtAlgo::Grad,
-        );
-        if proj.nb_points() > 0 {
-            let mut u = 0.0;
-            let mut v = 0.0;
-            proj.lower_distance_parameters(&mut u, &mut v);
-            if config.verbose {
-                eprintln!("    edge {ei} midpoint ({:.4},{:.4},{:.4}) -> u={u:.6}, v={v:.6}", mid_pt.x(), mid_pt.y(), mid_pt.z());
+        // Project sample points along the edge curve
+        let fp = c.first_parameter();
+        let lp = c.last_parameter();
+        for si in 0..n_edge_samples {
+            let frac = (si as f64 + 1.0) / (n_edge_samples as f64 + 1.0);
+            let t = fp + frac * (lp - fp);
+            let pt = c.value(t);
+            let proj = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
+                &pt,
+                &fd.surface,
+                extrema::ExtAlgo::Grad,
+            );
+            if proj.nb_points() > 0 {
+                let mut u = 0.0;
+                let mut v = 0.0;
+                proj.lower_distance_parameters(&mut u, &mut v);
+                if config.verbose && si == n_edge_samples / 2 {
+                    eprintln!("    edge {ei} midpoint ({:.4},{:.4},{:.4}) -> u={u:.6}, v={v:.6}", pt.x(), pt.y(), pt.z());
+                }
+                // For spherical surfaces, U is undefined at poles (V=±π/2).
+                // Skip U values near poles to avoid corrupting the circular gap algorithm.
+                let at_sphere_pole = matches!(surface, SelectedSurface::Spherical(_))
+                    && v.abs() > std::f64::consts::FRAC_PI_2 - 0.01;
+                if !at_sphere_pole {
+                    u_values.push(u);
+                }
+                v_values.push(v);
             }
-            // For spherical surfaces, U is undefined at poles (V=±π/2).
-            // Skip U values near poles to avoid corrupting the circular gap algorithm.
-            let at_sphere_pole = matches!(surface, SelectedSurface::Spherical(_))
-                && v.abs() > std::f64::consts::FRAC_PI_2 - 0.01;
-            if !at_sphere_pole {
-                u_values.push(u);
-            }
-            v_values.push(v);
         }
 
         // Project endpoints (for open edges with vertices)
@@ -2658,13 +2844,76 @@ fn compute_uv_bounds_from_edges(
         )));
     }
 
-    // Compute v bounds from all projected points
-    let mut vmin = v_values[0];
-    let mut vmax = v_values[0];
-    for &v in &v_values[1..] {
-        if v < vmin { vmin = v; }
-        if v > vmax { vmax = v; }
-    }
+    // Compute v bounds from all projected points.
+    // For toroidal surfaces (doubly periodic in V), use the circular gap
+    // algorithm to handle faces crossing the V=0/2π boundary. Without this,
+    // a quarter-tube fillet with V ∈ [3π/2, 2π] gets mis-expanded to [0, 3π/2].
+    let (mut vmin, mut vmax) = if matches!(surface, SelectedSurface::Toroidal(_)) {
+        let two_pi = 2.0 * std::f64::consts::PI;
+        // Also project a mesh face centroid to help disambiguate V arc direction
+        let hyp_idx = match surface {
+            SelectedSurface::Toroidal(i) => *i,
+            _ => unreachable!(),
+        };
+        let hyp = &output.stage2.toroidal_hypotheses[hyp_idx];
+        for &mfi in hyp.faces.iter().take(3) {
+            let face = &output.stage2.mesh.faces[mfi];
+            let v0 = &output.stage2.mesh.vertices[face.vertex_indices[0]];
+            let v1 = &output.stage2.mesh.vertices[face.vertex_indices[1]];
+            let v2 = &output.stage2.mesh.vertices[face.vertex_indices[2]];
+            let cx = (v0.x + v1.x + v2.x) / 3.0;
+            let cy = (v0.y + v1.y + v2.y) / 3.0;
+            let cz = (v0.z + v1.z + v2.z) / 3.0;
+            let pt = gp::Pnt::new_real3(cx, cy, cz);
+            let proj = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
+                &pt, &fd.surface, extrema::ExtAlgo::Grad,
+            );
+            if proj.nb_points() > 0 {
+                let mut u_tmp = 0.0;
+                let mut v_tmp = 0.0;
+                proj.lower_distance_parameters(&mut u_tmp, &mut v_tmp);
+                v_values.push(v_tmp);
+            }
+        }
+
+        let mut sorted_v: Vec<f64> = v_values.iter().map(|&v| v.rem_euclid(two_pi)).collect();
+        sorted_v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted_v.dedup_by(|a, b| (*a - *b).abs() < 1e-10);
+
+        if sorted_v.len() == 1 {
+            (sorted_v[0], sorted_v[0])
+        } else {
+            let mut max_gap = 0.0_f64;
+            let mut gap_end_idx = 0;
+            for i in 0..sorted_v.len() {
+                let next_i = (i + 1) % sorted_v.len();
+                let gap = if next_i > i {
+                    sorted_v[next_i] - sorted_v[i]
+                } else {
+                    sorted_v[next_i] + two_pi - sorted_v[i]
+                };
+                if gap > max_gap {
+                    max_gap = gap;
+                    gap_end_idx = next_i;
+                }
+            }
+            let gap_start_idx = if gap_end_idx == 0 { sorted_v.len() - 1 } else { gap_end_idx - 1 };
+            let v_lo = sorted_v[gap_end_idx];
+            let mut v_hi = sorted_v[gap_start_idx];
+            if v_hi < v_lo {
+                v_hi += two_pi;
+            }
+            (v_lo, v_hi)
+        }
+    } else {
+        let mut lo = v_values[0];
+        let mut hi = v_values[0];
+        for &v in &v_values[1..] {
+            if v < lo { lo = v; }
+            if v > hi { hi = v; }
+        }
+        (lo, hi)
+    };
 
     // Compute u bounds
     let all_closed_loops = fd.edge_indices.iter().all(|&ei| {
