@@ -128,7 +128,7 @@ for stl_file in "${stl_files[@]}"; do
 
     # Run tool, capture both stdout and stderr
     diag_file=$(mktemp)
-    output=$("$BINARY" "$stl_file" "$step_file" 2>"$diag_file") || {
+    output=$("$BINARY" --quad "$stl_file" "$step_file" 2>"$diag_file") || {
         printf "$ROW_FMT" "$base" "ERROR" "" "" "" "" "" "" "" "" "" "" "" ""
 
         rm -f "$diag_file"

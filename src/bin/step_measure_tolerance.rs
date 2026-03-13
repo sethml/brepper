@@ -10,6 +10,7 @@
 /// Units: all distances are in mm. OCCT's STEPControl_Reader converts STEP
 /// file units (typically meters for Onshape exports) to mm internally.
 /// STL files have no unit metadata; coordinates are assumed to be in mm.
+use brepper::stage1::{self, VertexWeldOptions};
 use opencascade_sys::{
     b_rep, b_rep_builder_api, b_rep_extrema, b_rep_g_prop, extrema, g_prop, gp, message, rw_stl,
     step_control, top_abs, top_exp, topo_ds,
@@ -20,15 +21,26 @@ use std::process;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() != 3 {
-        eprintln!("Usage: {} <input.stl> <input.step>", args[0]);
+
+    // Parse --quad flag
+    let mut positional = Vec::new();
+    let mut use_quad = false;
+    for arg in &args[1..] {
+        if arg == "--quad" {
+            use_quad = true;
+        } else {
+            positional.push(arg.as_str());
+        }
+    }
+    if positional.len() != 2 {
+        eprintln!("Usage: {} [--quad] <input.stl> <input.step>", args[0]);
         process::exit(1);
     }
-    let stl_path = &args[1];
-    let step_path = &args[2];
+    let stl_path = positional[0];
+    let step_path = positional[1];
 
     // Read STL → Poly_Triangulation
-    if !std::path::Path::new(stl_path.as_str()).exists() {
+    if !std::path::Path::new(stl_path).exists() {
         eprintln!("Error: STL file not found: {stl_path}");
         process::exit(1);
     }
@@ -45,7 +57,7 @@ fn main() {
     }
 
     // Read STEP
-    if !std::path::Path::new(step_path.as_str()).exists() {
+    if !std::path::Path::new(step_path).exists() {
         eprintln!("Error: STEP file not found: {step_path}");
         process::exit(1);
     }
@@ -192,31 +204,81 @@ fn main() {
         }
     }
 
-    // Centroid distances
+    // Centroid distances — either from raw triangles, or from quad-fused faces
     let mut ctr_max_dist = 0.0_f64;
-    let mut _ctr_max_idx = 1_i32;
     let mut ctr_dist_sum = 0.0_f64;
+    let mut ctr_count = 0_usize;
 
-    for i in 1..=num_triangles {
-        let triangle = tri.triangle(i);
-        let mut n1 = 0_i32;
-        let mut n2 = 0_i32;
-        let mut n3 = 0_i32;
-        triangle.get(&mut n1, &mut n2, &mut n3);
-        let p1 = tri.node(n1);
-        let p2 = tri.node(n2);
-        let p3 = tri.node(n3);
-        let centroid = gp::Pnt::new_real3(
-            (p1.x() + p2.x() + p3.x()) / 3.0,
-            (p1.y() + p2.y() + p3.y()) / 3.0,
-            (p1.z() + p2.z() + p3.z()) / 3.0,
+    if use_quad {
+        // Use brepper's mesh reader + quad fusing for centroid computation
+        let mut mesh = stage1::read_connected_mesh_from_stl(
+            stl_path,
+            VertexWeldOptions { tolerance: 1.0e-9 },
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("Error reading STL for quad fusing: {e:?}");
+            process::exit(1);
+        });
+        mesh.validate_and_populate_topology().unwrap_or_else(|e| {
+            eprintln!("Error validating mesh for quad fusing: {e:?}");
+            process::exit(1);
+        });
+        stage1::fuse_coplanar_triangles(&mut mesh, 1.0e-5);
+        let num_quads = mesh.faces.iter().filter(|f| f.vertex_count == 4).count();
+        let num_active = mesh.faces.iter().filter(|f| f.vertex_count > 0).count();
+        eprintln!(
+            "Quad fusing: {} faces ({} quads, {} tris)",
+            num_active,
+            num_quads,
+            num_active - num_quads
         );
-        let min_dist = min_distance_to_step(&centroid);
-        if min_dist < f64::MAX {
-            ctr_dist_sum += min_dist;
-            if min_dist > ctr_max_dist {
-                ctr_max_dist = min_dist;
-                _ctr_max_idx = i;
+        for face in &mesh.faces {
+            if face.vertex_count == 0 {
+                continue;
+            }
+            let n = face.vertex_count as usize;
+            let mut cx = 0.0_f64;
+            let mut cy = 0.0_f64;
+            let mut cz = 0.0_f64;
+            for vi_idx in 0..n {
+                let v = &mesh.vertices[face.vertex_indices[vi_idx]];
+                cx += v.x;
+                cy += v.y;
+                cz += v.z;
+            }
+            let inv_n = 1.0 / n as f64;
+            let centroid = gp::Pnt::new_real3(cx * inv_n, cy * inv_n, cz * inv_n);
+            let min_dist = min_distance_to_step(&centroid);
+            if min_dist < f64::MAX {
+                ctr_dist_sum += min_dist;
+                ctr_count += 1;
+                if min_dist > ctr_max_dist {
+                    ctr_max_dist = min_dist;
+                }
+            }
+        }
+    } else {
+        ctr_count = num_triangles as usize;
+        for i in 1..=num_triangles {
+            let triangle = tri.triangle(i);
+            let mut n1 = 0_i32;
+            let mut n2 = 0_i32;
+            let mut n3 = 0_i32;
+            triangle.get(&mut n1, &mut n2, &mut n3);
+            let p1 = tri.node(n1);
+            let p2 = tri.node(n2);
+            let p3 = tri.node(n3);
+            let centroid = gp::Pnt::new_real3(
+                (p1.x() + p2.x() + p3.x()) / 3.0,
+                (p1.y() + p2.y() + p3.y()) / 3.0,
+                (p1.z() + p2.z() + p3.z()) / 3.0,
+            );
+            let min_dist = min_distance_to_step(&centroid);
+            if min_dist < f64::MAX {
+                ctr_dist_sum += min_dist;
+                if min_dist > ctr_max_dist {
+                    ctr_max_dist = min_dist;
+                }
             }
         }
     }
@@ -320,7 +382,11 @@ fn main() {
     };
 
     let vtx_avg_dist = vtx_dist_sum / num_nodes as f64;
-    let ctr_avg_dist = ctr_dist_sum / num_triangles as f64;
+    let ctr_avg_dist = if ctr_count > 0 {
+        ctr_dist_sum / ctr_count as f64
+    } else {
+        0.0
+    };
 
     let worst_pt = tri.node(vtx_max_idx);
     eprintln!(
