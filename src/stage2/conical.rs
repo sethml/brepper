@@ -589,7 +589,7 @@ struct ConeTrialResult {
 fn run_cone_trial_bfs(
     seed_faces: &[usize],
     mesh: &ConnectedMesh,
-    _vertex_tol: f64,
+    vertex_tol: f64,
     surface_tol: f64,
     angular_tol: f64,
     verbosity: u8,
@@ -639,21 +639,109 @@ fn run_cone_trial_bfs(
         return None;
     }
 
-    // Verify seed: all vertices within tolerance
-    let seed_tol = surface_tol * 5.0;
+    // Verify seed: all vertices within vertex tolerance
     if !all_vertices_within_cone_tolerance(
         &vertex_set, &current_apex, &current_dir, current_half_angle,
-        seed_tol, &mesh.vertices,
+        vertex_tol, &mesh.vertices,
     ) {
-        if verbosity >= 3 {
-            let seed_str: Vec<String> = seed_faces.iter().map(|f| f.to_string()).collect();
-            let worst_dist = vertex_set.iter().map(|&vi| {
-                vertex_to_cone_distance(&mesh.vertices[vi], &current_apex, &current_dir, current_half_angle).abs()
-            }).fold(0.0_f64, f64::max);
-            eprintln!("  [BFS-cone] seed=({}) vertex tolerance failed: worst_dist={:.2e} > tol={:.2e}",
-                seed_str.join(","), worst_dist, seed_tol);
+        // Multi-axis LM rescue: try LM from multiple axis candidates
+        let sorted_verts: Vec<usize> = {
+            let mut v: Vec<usize> = vertex_set.iter().copied().collect();
+            v.sort_unstable();
+            v
+        };
+        let points: Vec<[f64; 3]> = sorted_verts.iter()
+            .map(|&vi| [mesh.vertices[vi].x, mesh.vertices[vi].y, mesh.vertices[vi].z])
+            .collect();
+
+        let cov = build_normal_covariance(seed_faces, &mesh.faces, &mesh.vertices);
+        let e0 = smallest_eigenvector_3x3(&cov);
+        let mut axes_to_try: Vec<[f64; 3]> = vec![
+            current_dir,
+            e0,
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        for a in &mut axes_to_try {
+            normalize3(a);
         }
-        return None;
+
+        let mut best_err = f64::MAX;
+        let mut best_params: Option<([f64; 3], [f64; 3], f64)> = None;
+
+        for axis_guess in &axes_to_try {
+            // Re-fit cone with this axis guess
+            let (trial_apex, trial_ha) = match fit_cone_profile(axis_guess, &vertex_set, &mesh.vertices, seed_faces, &mesh.faces) {
+                Some(v) => v,
+                None => continue,
+            };
+
+            // Ensure axis points towards vertices
+            let mut dir = *axis_guess;
+            let mut apex = trial_apex;
+            let mut ha = trial_ha;
+            let h_sum: f64 = vertex_set.iter().map(|&vi| {
+                let v = &mesh.vertices[vi];
+                (v.x - apex[0]) * dir[0] + (v.y - apex[1]) * dir[1] + (v.z - apex[2]) * dir[2]
+            }).sum();
+            if h_sum < 0.0 {
+                dir = [-dir[0], -dir[1], -dir[2]];
+                if let Some((new_apex, new_ha)) = fit_cone_profile(&dir, &vertex_set, &mesh.vertices, seed_faces, &mesh.faces) {
+                    apex = new_apex;
+                    ha = new_ha;
+                }
+            }
+
+            if points.len() >= 7 {
+                let problem = ConeLMProblem::new(points.clone(), dir, apex, ha);
+                let (result, _report) = LevenbergMarquardt::new().with_patience(500).minimize(problem);
+                let r_dir = result.axis_dir_from_params(&result.params);
+                let r_apex = [result.params[2], result.params[3], result.params[4]];
+                let r_ha = result.params[5];
+                if r_ha > 0.005 && r_ha < 85.0_f64.to_radians() {
+                    dir = r_dir;
+                    apex = r_apex;
+                    ha = r_ha;
+                }
+            }
+
+            let err = vertex_set.iter().map(|&vi| {
+                vertex_to_cone_distance(&mesh.vertices[vi], &apex, &dir, ha).abs()
+            }).fold(0.0_f64, f64::max);
+
+            if verbosity >= 3 {
+                eprintln!("    [cone-rescue] axis=[{:.3},{:.3},{:.3}] → apex=[{:.3},{:.3},{:.3}], ha={:.4}°, err={:.2e}",
+                    axis_guess[0], axis_guess[1], axis_guess[2],
+                    apex[0], apex[1], apex[2], ha.to_degrees(), err);
+            }
+
+            if err < best_err {
+                best_err = err;
+                best_params = Some((apex, dir, ha));
+            }
+        }
+
+        if best_err <= vertex_tol {
+            let (a, d, h) = best_params.unwrap();
+            current_apex = a;
+            current_dir = d;
+            current_half_angle = h;
+            if verbosity >= 3 {
+                eprintln!("  [BFS-cone] multi-axis LM rescued seed: ha={:.4}°, err={:.2e}",
+                    current_half_angle.to_degrees(), best_err);
+            }
+        } else {
+            if verbosity >= 3 {
+                let seed_str: Vec<String> = seed_faces.iter().map(|f| f.to_string()).collect();
+                let worst_dist = vertex_set.iter().map(|&vi| {
+                    vertex_to_cone_distance(&mesh.vertices[vi], &current_apex, &current_dir, current_half_angle).abs()
+                }).fold(0.0_f64, f64::max);
+                eprintln!("  [BFS-cone] seed=({}) vertex tolerance failed: worst_dist={:.2e} > tol={:.2e} (rescue best={:.2e})",
+                    seed_str.join(","), worst_dist, vertex_tol, best_err);
+            }
+            return None;
+        }
     }
 
     // Determine convexity from first seed face
@@ -665,14 +753,14 @@ fn run_cone_trial_bfs(
     // axis estimate may be inaccurate (especially with only 3 faces). Convexity
     // will be re-evaluated after BFS expansion and final re-fit.
 
-    // Verify all seed face centroids within relaxed tolerance
+    // Verify all seed face centroids within surface tolerance
     for &sfi in seed_faces {
         let centroid = face_centroid(&mesh.faces[sfi], &mesh.vertices);
         let cen_dist = vertex_to_cone_distance(
             &MeshVertex::from_xyz(centroid[0], centroid[1], centroid[2]),
             &current_apex, &current_dir, current_half_angle,
         ).abs();
-        if cen_dist > seed_tol {
+        if cen_dist > surface_tol {
             if verbosity >= 3 {
                 let seed_str: Vec<String> = seed_faces.iter().map(|f| f.to_string()).collect();
                 eprintln!("  [BFS-cone] seed=({}) centroid tolerance failed: face {} cen_dist={:.2e}",
@@ -806,9 +894,9 @@ fn run_cone_trial_bfs(
                     current_half_angle,
                 ).abs();
                 vtx_err_max = vtx_err_max.max(d);
-                if d > surface_tol {
+                if d > vertex_tol {
                     all_ok = false;
-                    if d > REFIT_SKIP_MULTIPLIER * surface_tol {
+                    if d > REFIT_SKIP_MULTIPLIER * vertex_tol {
                         any_far = true;
                         break;
                     }
@@ -862,7 +950,7 @@ fn run_cone_trial_bfs(
 
                 if !all_vertices_within_cone_tolerance(
                     &trial_vertices, &new_apex, &new_dir, new_ha,
-                    surface_tol, &mesh.vertices,
+                    vertex_tol, &mesh.vertices,
                 ) {
                     if verbosity >= 3 {
                         eprintln!("  [BFS-cone] from fi={} try cni={}: refit vertex tol failed → REJECT",
@@ -1174,10 +1262,10 @@ pub(super) fn deduce_conical_hypotheses(
                 }
                 return None;
             }
-            if t.error_max > surface_tol {
+            if t.error_max > vertex_tol {
                 if verbosity >= 3 {
-                    eprintln!("  [cone] apex vertex {} rejected: error_max={:.2e} > surface_tol={:.2e}",
-                        apex_vi, t.error_max, surface_tol);
+                    eprintln!("  [cone] apex vertex {} rejected: error_max={:.2e} > vertex_tol={:.2e}",
+                        apex_vi, t.error_max, vertex_tol);
                 }
                 return None;
             }
