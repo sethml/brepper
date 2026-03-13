@@ -437,12 +437,12 @@ A cone is a quadric surface: $x^T A x + b^T x + c = 0$ with specific eigenvalue 
    - Half-angle: from the eigenvalue ratio.
 5. Validate: eigenvalue pattern must match a cone (two eigenvalues approximately equal, one distinct, with specific sign relationships). If the pattern matches a cylinder (one eigenvalue ≈ 0), sphere (all equal), or ellipsoid, skip.
 
-**BFS region growing** (analogous to cylindrical):
-- Seed from triples of faces (like cylinders) where normals make a roughly constant angle with the estimated axis, but the radial distance from the axis varies monotonically along the axis.
-- Expand via BFS: for each candidate face, check $|r_i - h_i \tan\theta| < \text{vertex\_tolerance}$ for all vertices.
+**Apex-vertex seeding and BFS region growing:**
+- Identify apex candidates: vertices with ≥6 incident faces that have non-coplanar normals (smallest eigenvalue / trace < 0.3 from normal covariance). Skip faces already committed to cylindrical hypotheses.
+- For each apex candidate, use ALL incident faces as the seed set. Fit the cone from the seed, then early-reject if half-angle is outside [2°, 85°]. Verify all seed vertices within 5× surface_tol of the fitted cone.
+- Expand via BFS: for each candidate neighbor face, check vertex-to-cone distance < surface_tol. Skip faces already committed to conical or cylindrical hypotheses.
 - Centroid validation: face centroid within surface_tolerance of the cone.
-- Convexity check: normal direction consistent with hypothesis convexity.
-- Angular tolerance: dihedral angle between adjacent faces ≤ angular_tolerance.
+- Angular tolerance: dihedral angle between adjacent faces ≤ 2× angular_tolerance (relaxed because tessellated cones have wider inter-strip angles than cylinders).
 - Angular coverage validation (same algorithm as cylinder).
 - Minimum 6-face requirement (a cone has 5 independent DOF but 6 faces provides margin).
 

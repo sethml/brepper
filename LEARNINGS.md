@@ -347,6 +347,14 @@ Sphere and cylinder patches can be approximately fitted as cones because locally
 
 Tessellated cones with N circumferential divisions have inter-strip dihedral angles ≈ 360°/N. For N=20 (typical), that's ~18°, which exceeds the default `angular_tol` of 17.5°. The cone BFS uses `angular_tol * 2.0` because vertex-to-surface distance is the primary discriminator for cones (not angular similarity). Without this relaxation, BFS captures only ~127/167 cone facets, and the remaining strips become spurious small planar hypotheses that corrupt surface selection.
 
+### Cone performance: filter cylindrical hypotheses, NOT spherical
+
+On meshes with many curved surfaces (e.g., pipe_elbow_10_medium with 1162 faces), cone apex candidate detection can produce hundreds of false candidates (220 on pipe_elbow), each running expensive BFS+LM trials that grow to 400-500 faces. Three optimizations reduce Stage 2.4 from 17.4s to 0.000s:
+
+1. **Filter by cylindrical hypothesis**: Skip faces already committed to cylindrical hypotheses when building apex candidates, collecting seed faces, and during BFS expansion. On pipe_elbow, stage 2.2 commits 1039/1526 faces to cylindrical hypotheses, eliminating most false candidates.
+2. **Early half-angle rejection**: After initial cone fit but before seed tolerance check and BFS, reject cones with half-angle outside [2°, 85°]. Many false candidates produce degenerate near-cylindrical or near-planar cones.
+3. **Do NOT filter by spherical hypothesis**: Cone faces can have spurious spherical hypotheses from stage 2.3 (e.g., block_with_conical_hole: all 94 cone faces get spherical hypotheses). Filtering these kills real cone detection. Only cylindrical filtering is safe because cones and cylinders are geometrically distinct, while cones and spheres can overlap locally.
+
 ### Cone apex UV bounds extension
 
 Full (non-truncated) cones with a single boundary edge at the base produce zero V-range from `compute_uv_bounds_from_edges` (both V values project to the same edge height). This creates a degenerate face → BRepCheck failure → sewing failure. Fix: for conical surfaces with a single boundary edge, extend V to 0 (the apex) by sampling mesh face centroids to determine which side of the edge the face extends, then setting `vmin = 0.0`. This is analogous to sphere pole V-extension for hemispheres.

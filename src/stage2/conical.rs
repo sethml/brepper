@@ -628,9 +628,18 @@ fn run_cone_trial_bfs(
             current_dir[0], current_dir[1], current_dir[2]);
     }
 
+    // Early reject: half-angle must be in [2°, 85°] range
+    let ha_deg = current_half_angle.to_degrees();
+    if !(MIN_HALF_ANGLE_DEG..=MAX_HALF_ANGLE_DEG).contains(&ha_deg) {
+        if verbosity >= 3 {
+            let seed_str: Vec<String> = seed_faces.iter().map(|f| f.to_string()).collect();
+            eprintln!("  [BFS-cone] seed=({}) rejected: half_angle={:.2}° outside [{},{}]",
+                seed_str.join(","), ha_deg, MIN_HALF_ANGLE_DEG, MAX_HALF_ANGLE_DEG);
+        }
+        return None;
+    }
+
     // Verify seed: all vertices within tolerance
-    // Use a relaxed tolerance for seed validation because the initial axis
-    // estimate from 3 faces is rough. BFS expansion and re-fit will refine.
     let seed_tol = surface_tol * 5.0;
     if !all_vertices_within_cone_tolerance(
         &vertex_set, &current_apex, &current_dir, current_half_angle,
@@ -738,6 +747,10 @@ fn run_cone_trial_bfs(
 
             // Skip if already committed to a conical hypothesis or claimed by this trial
             if mesh.faces[cni].conical_hypothesis != UNDEDUCED_CONICAL_HYPOTHESIS {
+                continue;
+            }
+            // Skip faces already assigned to a cylindrical hypothesis
+            if mesh.faces[cni].cylindrical_hypothesis >= 0 {
                 continue;
             }
             if trial_claimed.contains(&cni) {
@@ -1074,6 +1087,7 @@ pub(super) fn deduce_conical_hypotheses(
             .filter(|&fi| {
                 mesh.faces[fi].conical_hypothesis == UNDEDUCED_CONICAL_HYPOTHESIS
                     && mesh.faces[fi].normal.is_some()
+                    && mesh.faces[fi].cylindrical_hypothesis < 0
             })
             .collect();
         if incident.len() < MIN_CONE_FACES {
@@ -1111,7 +1125,8 @@ pub(super) fn deduce_conical_hypotheses(
         let seed_faces: Vec<usize> = vertex_faces[apex_vi].iter()
             .copied()
             .filter(|&fi| mesh.faces[fi].conical_hypothesis == UNDEDUCED_CONICAL_HYPOTHESIS
-                && mesh.faces[fi].normal.is_some())
+                && mesh.faces[fi].normal.is_some()
+                && mesh.faces[fi].cylindrical_hypothesis < 0)
             .collect();
         if seed_faces.len() < MIN_CONE_FACES {
             continue;
