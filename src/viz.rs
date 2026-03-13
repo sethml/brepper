@@ -1442,6 +1442,93 @@ pub fn load_stl_meshdata(path: &std::path::Path) -> MeshData {
     }
 }
 
+/// Load an STL file into MeshData with quad fusing.
+///
+/// Uses brepper's stage1 pipeline to weld vertices, build topology, and fuse
+/// coplanar triangle pairs into quads. Edge extraction uses quad-aware logic
+/// so that internal quad diagonals are not drawn as edges.
+pub fn load_stl_meshdata_quad(path: &std::path::Path) -> MeshData {
+    use crate::stage1::{self, VertexWeldOptions};
+
+    let path_str = path.to_str().expect("invalid path");
+    let mut mesh =
+        stage1::read_connected_mesh_from_stl(path_str, VertexWeldOptions { tolerance: 1.0e-9 })
+            .unwrap_or_else(|e| {
+                panic!("Failed to read STL {}: {e:?}", path.display());
+            });
+    mesh.validate_and_populate_topology().unwrap_or_else(|e| {
+        panic!("Failed to validate mesh {}: {e:?}", path.display());
+    });
+    stage1::fuse_coplanar_triangles(&mut mesh, 1.0e-5);
+
+    // Build positions
+    let positions: Vec<Vector3<f32>> = mesh
+        .vertices
+        .iter()
+        .map(|v| vec3(v.x as f32, v.y as f32, v.z as f32))
+        .collect();
+
+    // Build triangle indices (quads split into two triangles for rendering)
+    // and per-vertex normals
+    let mut indices: Vec<u32> = Vec::new();
+    let mut normals = vec![vec3(0.0f32, 0.0, 0.0); positions.len()];
+
+    // Also collect face data for quad-aware edge extraction
+    let mut face_indices_arr: Vec<[usize; 4]> = Vec::new();
+    let mut face_vertex_counts: Vec<u8> = Vec::new();
+
+    for face in &mesh.faces {
+        if face.vertex_count == 0 {
+            continue;
+        }
+        let vis = &face.vertex_indices;
+        let vc = face.vertex_count as usize;
+
+        // Compute face normal
+        let v0 = positions[vis[0]];
+        let v1 = positions[vis[1]];
+        let v2 = positions[vis[2]];
+        let face_normal = (v1 - v0).cross(v2 - v0);
+        let len = face_normal.magnitude();
+        let face_normal = if len > 1e-10 { face_normal / len } else { face_normal };
+
+        // Emit triangles
+        indices.push(vis[0] as u32);
+        indices.push(vis[1] as u32);
+        indices.push(vis[2] as u32);
+        if vc == 4 {
+            indices.push(vis[0] as u32);
+            indices.push(vis[2] as u32);
+            indices.push(vis[3] as u32);
+        }
+
+        // Accumulate normals
+        for vi_idx in 0..vc {
+            normals[vis[vi_idx]] += face_normal;
+        }
+
+        face_indices_arr.push(face.vertex_indices);
+        face_vertex_counts.push(face.vertex_count);
+    }
+
+    for n in &mut normals {
+        let len = n.magnitude();
+        if len > 1e-10 {
+            *n /= len;
+        }
+    }
+
+    let (edge_positions, soft_edge_positions) =
+        extract_feature_edges_from_faces(&positions, &face_indices_arr, &face_vertex_counts);
+    MeshData {
+        positions,
+        normals,
+        indices,
+        edge_positions,
+        soft_edge_positions,
+    }
+}
+
 /// Load a STEP file into MeshData for visualization.
 pub fn load_step_meshdata(
     path: &std::path::Path,

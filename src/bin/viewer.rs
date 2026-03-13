@@ -24,6 +24,10 @@ struct Cli {
     /// Angular deflection for STEP tessellation in degrees (default: 28.6 = 0.5 rad)
     #[arg(long, default_value = "28.6")]
     angular_deflection: f64,
+
+    /// Fuse coplanar triangle pairs into quads (hides internal diagonal edges)
+    #[arg(long)]
+    quad: bool,
 }
 
 fn main() {
@@ -44,7 +48,11 @@ fn main() {
         match ext.as_str() {
             "stl" => {
                 eprintln!("Loading STL: {}", file.display());
-                let data = viz::load_stl_meshdata(&file);
+                let data = if cli.quad {
+                    viz::load_stl_meshdata_quad(&file)
+                } else {
+                    viz::load_stl_meshdata(&file)
+                };
                 eprintln!(
                     "  {} verts, {} tris, {} edge segs, {} soft edge segs",
                     data.positions.len(),
