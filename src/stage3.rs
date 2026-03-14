@@ -1154,10 +1154,18 @@ fn compute_edge_curve(
 
     // Select the best intersection curve (closest to mesh boundary vertices)
     let best_line_idx = if nb_lines == 1 {
-        1 // 1-indexed
+        1 // 1-indexed; parameter range doesn't matter — we trim later
     } else {
         select_closest_curve(&int_ss, &edge.mesh_boundary_vertices, mesh)
     };
+
+    if best_line_idx == 0 {
+        return Err(format!(
+            "no valid intersection curve for edge between faces {} and {} \
+             (all {} curves have extreme parameters)",
+            fi0, fi1, nb_lines,
+        ));
+    }
 
     let curve_handle = int_ss.line(best_line_idx);
 
@@ -1565,7 +1573,7 @@ fn select_closest_curve(
     mesh: &ConnectedMesh,
 ) -> i32 {
     let nb_lines = int_ss.nb_lines();
-    let mut best_idx = 1_i32;
+    let mut best_idx = 0_i32; // 0 = no valid curve found
     let mut best_total_dist = f64::MAX;
 
     // Compute centroid of boundary vertices
@@ -1589,21 +1597,44 @@ fn select_closest_curve(
         let fp = c.first_parameter();
         let lp = c.last_parameter();
 
-        // Sample 5 points along the curve and compute min distance to centroid
-        let mut min_dist = f64::MAX;
-        for i in 0..5 {
-            let t = fp + (lp - fp) * (i as f64 / 4.0);
-            let p = c.value(t);
-            let dx = p.x() - cx;
-            let dy = p.y() - cy;
-            let dz = p.z() - cz;
-            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-            min_dist = min_dist.min(dist);
-        }
+        // For curves with finite parameter ranges, check for extreme values
+        // that could cause overflow (e.g., hyperbolas from cone intersections
+        // whose Cosh overflows Standard_Real). Lines have infinite ranges but
+        // are safe — we'll use projection instead of parameter sampling.
+        let use_projection = !fp.is_finite() || !lp.is_finite()
+            || fp.abs() > 1e6 || lp.abs() > 1e6;
 
-        if min_dist < best_total_dist {
-            best_total_dist = min_dist;
-            best_idx = line_idx;
+        if use_projection {
+            // Project centroid onto curve to find distance
+            let centroid_pt = gp::Pnt::new_real3(cx, cy, cz);
+            let proj = geom_api::ProjectPointOnCurve::new_pnt_handlegeomcurve(
+                &centroid_pt, curve_handle,
+            );
+            if proj.nb_points() > 0 {
+                let dist = proj.lower_distance();
+                if dist < best_total_dist {
+                    best_total_dist = dist;
+                    best_idx = line_idx;
+                }
+            }
+            // If projection fails, skip this curve
+        } else {
+            // Sample 5 points along the curve and compute min distance to centroid.
+            let mut min_dist = f64::MAX;
+            for i in 0..5 {
+                let t = fp + (lp - fp) * (i as f64 / 4.0);
+                let p = c.value(t);
+                let dx = p.x() - cx;
+                let dy = p.y() - cy;
+                let dz = p.z() - cz;
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                min_dist = min_dist.min(dist);
+            }
+
+            if min_dist < best_total_dist {
+                best_total_dist = min_dist;
+                best_idx = line_idx;
+            }
         }
     }
 
@@ -2532,8 +2563,19 @@ fn compute_edge_curves_all(
                     }
             }
             Err(msg) => {
-                if config.verbose {
-                    eprintln!("  Edge {ei}: FAILED - {msg}");
+                if !config.quiet {
+                    let fi0 = edge.face_indices[0];
+                    let fi1 = edge.face_indices[1];
+                    let s0 = &output.stage2.selected_surfaces[output.face_descriptors[fi0].selected_surface_idx];
+                    let s1 = &output.stage2.selected_surfaces[output.face_descriptors[fi1].selected_surface_idx];
+                    let sname = |s: &SelectedSurface| match s {
+                        SelectedSurface::Planar(_) => "plane",
+                        SelectedSurface::Cylindrical(_) => "cylinder",
+                        SelectedSurface::Spherical(_) => "sphere",
+                        SelectedSurface::Conical(_) => "cone",
+                        SelectedSurface::Toroidal(_) => "torus",
+                    };
+                    eprintln!("  Edge {ei}: FAILED ({}-{}) - {msg}", sname(s0), sname(s1));
                 }
                 fail_count += 1;
             }
@@ -2547,10 +2589,10 @@ fn compute_edge_curves_all(
         );
     }
 
-    if fail_count > 0 {
-        return Err(Stage3Error::EdgeCurveError(format!(
-            "{fail_count} edge curves failed to compute"
-        )));
+    if fail_count > 0 && !config.quiet {
+        eprintln!(
+            "  Warning: {fail_count} edge curves could not be computed (affected faces will use fallback geometry)"
+        );
     }
 
     Ok(output)
@@ -2776,36 +2818,37 @@ fn compute_uv_bounds_from_edges(
 
     for &ei in &fd.edge_indices {
         let edge = &output.edges[ei];
-        let curve = edge.curve_3d.as_ref().unwrap();
-        let c = curve.get();
+        if let Some(curve) = edge.curve_3d.as_ref() {
+            let c = curve.get();
 
-        // Project sample points along the edge curve
-        let fp = c.first_parameter();
-        let lp = c.last_parameter();
-        for si in 0..n_edge_samples {
-            let frac = (si as f64 + 1.0) / (n_edge_samples as f64 + 1.0);
-            let t = fp + frac * (lp - fp);
-            let pt = c.value(t);
-            let proj = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
-                &pt,
-                &fd.surface,
-                extrema::ExtAlgo::Grad,
-            );
-            if proj.nb_points() > 0 {
-                let mut u = 0.0;
-                let mut v = 0.0;
-                proj.lower_distance_parameters(&mut u, &mut v);
-                if config.verbose && si == n_edge_samples / 2 {
-                    eprintln!("    edge {ei} midpoint ({:.4},{:.4},{:.4}) -> u={u:.6}, v={v:.6}", pt.x(), pt.y(), pt.z());
+            // Project sample points along the edge curve
+            let fp = c.first_parameter();
+            let lp = c.last_parameter();
+            for si in 0..n_edge_samples {
+                let frac = (si as f64 + 1.0) / (n_edge_samples as f64 + 1.0);
+                let t = fp + frac * (lp - fp);
+                let pt = c.value(t);
+                let proj = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
+                    &pt,
+                    &fd.surface,
+                    extrema::ExtAlgo::Grad,
+                );
+                if proj.nb_points() > 0 {
+                    let mut u = 0.0;
+                    let mut v = 0.0;
+                    proj.lower_distance_parameters(&mut u, &mut v);
+                    if config.verbose && si == n_edge_samples / 2 {
+                        eprintln!("    edge {ei} midpoint ({:.4},{:.4},{:.4}) -> u={u:.6}, v={v:.6}", pt.x(), pt.y(), pt.z());
+                    }
+                    // For spherical surfaces, U is undefined at poles (V=±π/2).
+                    // Skip U values near poles to avoid corrupting the circular gap algorithm.
+                    let at_sphere_pole = matches!(surface, SelectedSurface::Spherical(_))
+                        && v.abs() > std::f64::consts::FRAC_PI_2 - 0.01;
+                    if !at_sphere_pole {
+                        u_values.push(u);
+                    }
+                    v_values.push(v);
                 }
-                // For spherical surfaces, U is undefined at poles (V=±π/2).
-                // Skip U values near poles to avoid corrupting the circular gap algorithm.
-                let at_sphere_pole = matches!(surface, SelectedSurface::Spherical(_))
-                    && v.abs() > std::f64::consts::FRAC_PI_2 - 0.01;
-                if !at_sphere_pole {
-                    u_values.push(u);
-                }
-                v_values.push(v);
             }
         }
 
@@ -3109,7 +3152,10 @@ fn create_wire_based_periodic_face(
 
     for &ei in &fd.edge_indices {
         let edge = &output.edges[ei];
-        let curve = edge.curve_3d.as_ref().unwrap();
+        let curve = match edge.curve_3d.as_ref() {
+            Some(c) => c,
+            None => continue, // fallback edge — no parametric curve to project
+        };
         let c = curve.get();
 
         let t_start = c.first_parameter();
@@ -3226,7 +3272,6 @@ fn create_wire_based_periodic_face(
             eprintln!("    Edge {ei}: set sampled pcurve ({u1:.4},{v1:.4}) -> ({u2:.4},{v2:.4}), {n} pts");
         }
     }
-
     // Build wire from edges
     let wire_groups = group_edges_into_wires(fd, &output.edges);
     if wire_groups.is_empty() {
@@ -3258,23 +3303,30 @@ fn create_wire_based_periodic_face(
         }
 
         // Apply ShapeFix_Wire to fix pcurve and 3D gaps at shared vertices
-        let mut wire_fixer = shape_fix::Wire::new();
-        wire_fixer.load_wire(make_wire.wire());
-        wire_fixer.set_surface_handlegeomsurface(face_surface);
-        wire_fixer.set_precision(1.0);
-        *wire_fixer.fix_reorder_mode() = 1;
-        *wire_fixer.fix_connected_mode() = 1;
-        *wire_fixer.fix_gaps2d_mode() = 1;
-        *wire_fixer.fix_gaps3d_mode() = 1;
-        *wire_fixer.fix_edge_curves_mode() = 1;
-        *wire_fixer.fix_add_p_curve_mode() = 1;
-        *wire_fixer.fix_same_parameter_mode() = 1;
-        *wire_fixer.fix_shifted_mode() = 1;
-        *wire_fixer.fix_seam_mode() = 1;
-        *wire_fixer.fix_lacking_mode() = 1;
-        *wire_fixer.closed_wire_mode() = true;
-        wire_fixer.perform();
-        let fixed_wire = wire_fixer.wire();
+        let fixed_wire = if is_sphere {
+            let mut wire_fixer = shape_fix::Wire::new();
+            wire_fixer.load_wire(make_wire.wire());
+            wire_fixer.set_surface_handlegeomsurface(face_surface);
+            wire_fixer.set_precision(1.0);
+            *wire_fixer.fix_reorder_mode() = 1;
+            *wire_fixer.fix_connected_mode() = 1;
+            *wire_fixer.fix_gaps2d_mode() = 1;
+            *wire_fixer.fix_gaps3d_mode() = 1;
+            *wire_fixer.fix_edge_curves_mode() = 1;
+            *wire_fixer.fix_add_p_curve_mode() = 1;
+            *wire_fixer.fix_same_parameter_mode() = 1;
+            *wire_fixer.fix_shifted_mode() = 1;
+            *wire_fixer.fix_seam_mode() = 1;
+            *wire_fixer.fix_lacking_mode() = 1;
+            *wire_fixer.closed_wire_mode() = true;
+            wire_fixer.perform();
+            wire_fixer.wire().to_owned()
+        } else {
+            // For non-sphere periodic faces, skip ShapeFix_Wire entirely.
+            // ShapeFix can segfault on cones due to pcurve/edge curve interactions.
+            // We already computed and set pcurves above, so just use the wire as-is.
+            make_wire.wire().to_owned()
+        };
 
         // For sphere faces, insert degenerate edges at pole vertices.
         // At a pole (V=±π/2), U is degenerate — two edges meeting at the pole
@@ -3442,7 +3494,7 @@ fn create_wire_based_periodic_face(
     // Apply ShapeFix_Face to fix pcurve gaps at shared vertices.
     // The pcurves from edge sampling may have UV gaps where 3D edge curves
     // don't share endpoints exactly. ShapeFix_Face fixes wires/edges/pcurves.
-    {
+    if is_sphere {
         let mut fixer = shape_fix::Face::new_face(mf.face());
         fixer.set_precision(1.0); // cover gaps up to ~0.6mm
         // Enable periodic degenerated fix (adds degenerate edges at sphere poles)
@@ -3539,7 +3591,10 @@ fn create_periodic_face(
         let mut near_pole = false;
         for &ei in &fd.edge_indices {
             let edge = &output.edges[ei];
-            let curve_handle = edge.curve_3d.as_ref().unwrap();
+            let curve_handle = match edge.curve_3d.as_ref() {
+                Some(c) => c,
+                None => continue,
+            };
             for pole_sign in &[1.0_f64, -1.0] {
                 let pole = gp::Pnt::new_real3(
                     sph.center[0] + sph.radius * pole_sign * sphere_z[0],
@@ -3608,7 +3663,10 @@ fn create_periodic_face(
                 if axis.is_none() {
                     for &ei in &fd.edge_indices {
                         let edge = &output.edges[ei];
-                        let curve = edge.curve_3d.as_ref().unwrap().get();
+                        let curve = match edge.curve_3d.as_ref() {
+                            Some(c) => c.get(),
+                            None => continue,
+                        };
                         let fp = curve.first_parameter();
                         let lp = curve.last_parameter();
                         let span = lp - fp;
@@ -4274,9 +4332,42 @@ fn create_occt_faces_all(
     // 2. Create TopoDS_Edge for each ReconEdge, using shared vertices when available
     let mut topo_edges: Vec<OwnedPtr<b_rep_builder_api::MakeEdge>> = Vec::with_capacity(output.edges.len());
     for (ei, edge) in output.edges.iter().enumerate() {
-        let curve = edge.curve_3d.as_ref().unwrap_or_else(|| {
-            panic!("edge {ei} has no 3D curve \u{2014} stage 3.3 must run first")
-        });
+        let curve = match edge.curve_3d.as_ref() {
+            Some(c) => c,
+            None => {
+                // No intersection curve — create a straight-line edge between endpoints
+                if edge.vertex_indices[0] != usize::MAX
+                    && edge.vertex_indices[1] != usize::MAX
+                {
+                    let make_edge = b_rep_builder_api::MakeEdge::new_vertex2(
+                        &topo_vertices[edge.vertex_indices[0]],
+                        &topo_vertices[edge.vertex_indices[1]],
+                    );
+                    if !make_edge.is_done() {
+                        if !config.quiet {
+                            eprintln!("  Edge {ei}: straight-line fallback FAILED ({:?}), faces [{}, {}]",
+                                make_edge.error(), edge.face_indices[0], edge.face_indices[1]);
+                        }
+                        // Create a degenerate edge as placeholder
+                        let make_edge = b_rep_builder_api::MakeEdge::new_vertex2(
+                            &topo_vertices[edge.vertex_indices[0]],
+                            &topo_vertices[edge.vertex_indices[0]],
+                        );
+                        topo_edges.push(make_edge);
+                    } else {
+                        if !config.quiet {
+                            eprintln!("  Edge {ei}: using straight-line fallback (no intersection curve)");
+                        }
+                        topo_edges.push(make_edge);
+                    }
+                } else {
+                    return Err(Stage3Error::AdjacencyError(format!(
+                        "Edge {ei}: no curve and no vertex endpoints"
+                    )));
+                }
+                continue;
+            }
+        };
         let make_edge = if edge.vertex_indices[0] != usize::MAX
             && edge.vertex_indices[1] != usize::MAX
         {
@@ -4360,6 +4451,14 @@ fn create_occt_faces_all(
             | SelectedSurface::Toroidal(_)
         );
 
+        // TEMP: debug segfault
+        let stype = match surface_type {
+            SelectedSurface::Planar(_) => "planar",
+            SelectedSurface::Cylindrical(_) => "cylindrical",
+            SelectedSurface::Spherical(_) => "spherical",
+            SelectedSurface::Conical(_) => "conical",
+            SelectedSurface::Toroidal(_) => "toroidal",
+        };
         let (mut make_face, is_concave) = if is_periodic {
             create_periodic_face(fi, &output, &mut topo_edges, config)?
         } else {
@@ -4368,13 +4467,6 @@ fn create_occt_faces_all(
         *concave_flag = is_concave;
 
         if config.verbose {
-            let stype = match surface_type {
-                SelectedSurface::Planar(_) => "planar",
-                SelectedSurface::Cylindrical(_) => "cylindrical",
-                SelectedSurface::Spherical(_) => "spherical",
-                SelectedSurface::Conical(_) => "conical",
-                SelectedSurface::Toroidal(_) => "toroidal",
-            };
             eprintln!(
                 "  Face {fi}: {stype} — created successfully ({} edges)",
                 output.face_descriptors[fi].edge_indices.len(),

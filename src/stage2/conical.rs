@@ -656,9 +656,24 @@ fn run_cone_trial_bfs(
 
         let cov = build_normal_covariance(seed_faces, &mesh.faces, &mesh.vertices);
         let e0 = smallest_eigenvector_3x3(&cov);
+
+        // Compute the mean direction from apex to face centroids; for a cone
+        // with azimuthal coverage this is proportional to the axis direction.
+        let mut mean_dir = [0.0_f64; 3];
+        for &fi in seed_faces.iter() {
+            let centroid = face_centroid(&mesh.faces[fi], &mesh.vertices);
+            let mut d = [centroid[0] - current_apex[0], centroid[1] - current_apex[1], centroid[2] - current_apex[2]];
+            let len = (d[0]*d[0] + d[1]*d[1] + d[2]*d[2]).sqrt();
+            if len > 1e-15 {
+                d[0] /= len; d[1] /= len; d[2] /= len;
+                mean_dir[0] += d[0]; mean_dir[1] += d[1]; mean_dir[2] += d[2];
+            }
+        }
+
         let mut axes_to_try: Vec<[f64; 3]> = vec![
             current_dir,
             e0,
+            mean_dir,
             [1.0, 0.0, 0.0],
             [0.0, 1.0, 0.0],
             [0.0, 0.0, 1.0],
@@ -1042,13 +1057,78 @@ fn run_cone_trial_bfs(
         }
     }
 
-    // Final re-fit
+    // Final re-fit.
+    // Always try fit_cone() first (it recomputes the axis from the face
+    // normals, which cross-validates the result).  When fit_cone() produces
+    // a worse fit than the pre-existing (rescued) parameters AND the cone
+    // has sufficient height extent, fall back to LM refinement seeded from
+    // the current parameters.  The height check prevents sphere-cap false
+    // positives, where vertices near the pole of a sphere lie on a cone to
+    // within floating-point noise but do not represent a real conical surface.
+    let pre_refit_apex = current_apex;
+    let pre_refit_dir = current_dir;
+    let pre_refit_ha = current_half_angle;
+
     if let Some((final_apex, final_dir, final_ha)) =
         fit_cone(&face_list, &vertex_set, &mesh.faces, &mesh.vertices)
     {
         current_apex = final_apex;
         current_dir = final_dir;
         current_half_angle = final_ha;
+    }
+
+    // Check whether fit_cone() made things worse.
+    let refit_err = vertex_set.iter().map(|&vi| {
+        vertex_to_cone_distance(&mesh.vertices[vi], &current_apex, &current_dir, current_half_angle).abs()
+    }).fold(0.0_f64, f64::max);
+    let pre_err = vertex_set.iter().map(|&vi| {
+        vertex_to_cone_distance(&mesh.vertices[vi], &pre_refit_apex, &pre_refit_dir, pre_refit_ha).abs()
+    }).fold(0.0_f64, f64::max);
+
+    if refit_err > pre_err * 100.0 && pre_err < vertex_tol * 0.5 {
+        // fit_cone() produced a much worse result.  Fall back only if the
+        // vertices span a significant height range along the axis — this
+        // filters sphere-cap false positives where h_max is tiny.
+        let h_max = vertex_set.iter().map(|&vi| {
+            let v = &mesh.vertices[vi];
+            let d = [v.x - pre_refit_apex[0], v.y - pre_refit_apex[1], v.z - pre_refit_apex[2]];
+            dot3(&d, &pre_refit_dir).abs()
+        }).fold(0.0_f64, f64::max);
+
+        if verbosity >= 3 {
+            eprintln!("  [BFS-cone] refit degraded: refit_err={:.2e} vs pre_err={:.2e}, h_max={:.4}, threshold={:.4}",
+                refit_err, pre_err, h_max, surface_tol);
+        }
+
+        if h_max > surface_tol {
+            // Real cone — use LM refinement from rescued params.
+            if vertex_set.len() >= 10 {
+                let points: Vec<[f64; 3]> = vertex_set
+                    .iter()
+                    .map(|&vi| [mesh.vertices[vi].x, mesh.vertices[vi].y, mesh.vertices[vi].z])
+                    .collect();
+                let problem = ConeLMProblem::new(points, pre_refit_dir, pre_refit_apex, pre_refit_ha);
+                let (result, _report) = LevenbergMarquardt::new().with_patience(500).minimize(problem);
+                let r_dir = result.axis_dir_from_params(&result.params);
+                let r_apex = [result.params[2], result.params[3], result.params[4]];
+                let r_ha = result.params[5];
+                if r_ha > 0.005 && r_ha < MAX_HALF_ANGLE_DEG.to_radians() {
+                    current_apex = r_apex;
+                    current_dir = r_dir;
+                    current_half_angle = r_ha;
+                } else {
+                    current_apex = pre_refit_apex;
+                    current_dir = pre_refit_dir;
+                    current_half_angle = pre_refit_ha;
+                }
+            } else {
+                current_apex = pre_refit_apex;
+                current_dir = pre_refit_dir;
+                current_half_angle = pre_refit_ha;
+            }
+        }
+        // else: sphere cap or similar — keep the (worse) fit_cone() result,
+        // which will be rejected by downstream error checks.
     }
 
     // Compute error metrics

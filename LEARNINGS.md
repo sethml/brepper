@@ -394,5 +394,15 @@ The onshape pipe_elbow model's torus surface is tessellated into many narrow str
 
 When fitting algorithms iterate over a `HashSet<usize>` of vertex indices, the iteration order varies between runs (Rust's default hasher uses per-process random keys). Since floating-point addition is non-associative, different iteration orders produce slightly different intermediate sums, which can change the final fitted parameters enough to make a marginal hypothesis pass or fail tolerance checks. Fix: collect HashSet into a Vec and sort before iterating in any computation that feeds into fitting (vertex positions, normals, tube centers). This is essential for reproducible test results.
 
+### Wide-angle cone: compute_cone_axis failure
+
+`compute_cone_axis` uses the smallest eigenvector of the face-normal covariance matrix. For a cone with half-angle ha, face normals make angle (90°−ha) with the axis. The covariance eigenvalue along the axis is proportional to sin²(ha), while the radial eigenvalues are proportional to cos²(ha)/2. For ha > ~35°, sin²(ha) > cos²(ha)/2, so the axis is the **largest** eigenvector, not the smallest. This causes `fit_cone()` to produce completely wrong results for wide cones (ha > 35°).
+
+Fix: after the final `fit_cone()` re-fit, compare post-refit error against pre-refit (rescued) error. When the re-fit degrades the error by >100x and the pre-refit was tight (<vertex_tol/2), fall back to LM refinement seeded from the rescued params. A height check (h_max > surface_tol) filters sphere-cap false positives.
+
+### Mean direction as cone axis estimator
+
+For a cone with azimuthal coverage, the mean of the unit direction vectors from apex to face centroids equals cos(ha) × axis. This provides a simple, robust axis estimate that works for all half-angles, unlike the normal-covariance smallest-eigenvector method. Added as a 6th rescue axis candidate.
+
 
 The `Geom_ToroidalSurface` binding was present in opencascade-sys all along (`geom::ToroidalSurface::new_ax3_real2`), but workspace-scoped search tools (grep_search, file_search, semantic_search, and Explore agent searches) cannot find content in `../opencascade-rs/` because it's outside the workspace root. Use terminal `grep` to search files outside the workspace. Don't assume a binding is missing just because workspace search tools return no results.
