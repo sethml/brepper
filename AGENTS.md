@@ -15,22 +15,22 @@ If you notice a `<conversation-summary>` in your context, that means compaction 
 Follow this checklist IN ORDER. Do not skip steps. Do not reorder.
 
 1. Read LEARNINGS.md, README.md, and DEVELOPMENT_PLAN.md.
-2. If given instructions on work to do, follow them. Otherwise find the next incomplete single item prefixed by "[ ]" in the "## Implementation Phases" section of DEVELOPMENT_PLAN.md and implement that single item.
-3. Make sure tests pass. Don't skip important functionality. If there's enough ambiguity in the specification that you're unsure how to proceed, ask the user what to do. Don't be afraid to modify existing data structures or code if it's helpful.
+2. If given instructions on work to do, follow them. Otherwise find the first item in TODO.md and implement it.
+3. Don't worry about running tests for now. We're making changes such that a bunch of tests are broken.
 4. Update README.md (if user-facing behavior changed) and DEVELOPMENT_PLAN.md to reflect your changes. When updating DEVELOPMENT_PLAN.md, ensure the algorithm descriptions in the Architecture section accurately describe the code as implemented — if the implementation differs from the original plan, update the plan to match reality.
-5. Think about whether items in LEARNINGS.md are obsolete - if so, delete or rewrite them.
-6. Think about whether you've learned things that may be useful to a future AI agent editing the code - if so, add them to LEARNINGS.md.
-7. Commit your changes (see Commit Messages and Commit Checklist below), including any pre-existing staged files.
-8. Think about whether you encountered code that would be clearer or more correct if refactored or improved. If so, make the improvements, test, and commit.
-9. Run the chat log export command (see Chat Log Export below).
-10. Tell the user a limerick inspired by your work this session.
-11. Stop. Do not continue to the next iteration unless the user says to.
+5. When complete, move the item from TODO.md to the end of DONE.md.
+6. Think about whether items in LEARNINGS.md are obsolete - if so, delete or rewrite them.
+7. Think about whether you've learned things that may be useful to a future AI agent editing the code - if so, add them to LEARNINGS.md.
+8. Commit your changes (see Commit Messages and Commit Checklist below), including any pre-existing staged files.
+9. Think about whether you encountered code that would be clearer or more correct if refactored or improved. If so, make the improvements, test, and commit.
+10. Run the chat log export command (see Chat Log Export below).
+11. Tell the user a limerick inspired by your work this session.
+12. Stop. Do not continue to the next iteration unless the user says to.
 
 ### Commit Checklist (MANDATORY — verify before every commit)
 
 - `cargo clippy` emits no warnings.
 - Build passes with no errors or warnings.
-- All tests pass
 - Commit message uses heredoc format with model name and user prompts (see Commit Messages)
 - Chat log exported after commit (see Chat Log Export)
 
