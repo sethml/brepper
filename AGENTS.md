@@ -2,21 +2,37 @@
 
 This file contains guidelines for AI/LLM coding assistants working on this project.
 
+## IMPORTANT: Surviving Context Compaction
+
+When the user says "iterate", **immediately add the full iteration checklist (steps 1-12) to your todo list before doing any work**. Include steps like "Run clippy", "Commit changes", "Export chat log", "Tell limerick" — not just implementation subtasks. The todo list survives compaction; file contents, verbal instructions, and even the user's original prompt wording do not.
+
+When compacting, include the user's prompt in the conversation summary as guidance. Also include the hashline-edit tool usage instructions.
+
+If you notice a `<conversation-summary>` in your context, that means compaction has occurred — **re-read this file (AGENTS.md) immediately** before continuing work.
+
 ## When instructed to iterate:
 
-- Read LEARNINGS.md.
-- Read README.md.
-- Read DEVELOPMENT_PLAN.md.
-- If given instructions on work do to, follow them, otherwise find the next incomplete single item prefixed by "[ ]" in the "## Implementation Phases" section of DEVELOPMENT_PLAN.md and implement that single item.
-- Make sure tests pass. Don't skip important functionality. If there's enough ambiguity in the specification that you're unsure how to proceed, ask the user what to do. Don't be afraid to modify existing data structures or code if it's helpful.
-- Update README.md and DEVELOPMENT_PLAN.md to reflect your changes. When updating DEVELOPMENT_PLAN.md, ensure the algorithm descriptions in the Architecture section accurately describe the code as implemented — if the implementation differs from the original plan, update the plan to match reality.
-- Think about whether items in LEARNINGS.md are obsolete - if so, delete or rewrite them.
-- Think about whether you've learned things that may be useful to a future AI agent editing the code - if so, add them to LEARNINGS.md.
-- Commit your changes, including any pre-existing staged files.
-- Run `cargo clippy` and fix any warnings before committing. The codebase should have zero clippy warnings at all times.
-- Think about whether you encountered code that would be clearer or more correct if refactored or improved. If so, make the improvements, test, and commit.
-- Tell the user a limmerick inspired by your work this session.
-- Stop.
+Follow this checklist IN ORDER. Do not skip steps. Do not reorder.
+
+1. Read LEARNINGS.md, README.md, and DEVELOPMENT_PLAN.md.
+2. If given instructions on work to do, follow them. Otherwise find the next incomplete single item prefixed by "[ ]" in the "## Implementation Phases" section of DEVELOPMENT_PLAN.md and implement that single item.
+3. Make sure tests pass. Don't skip important functionality. If there's enough ambiguity in the specification that you're unsure how to proceed, ask the user what to do. Don't be afraid to modify existing data structures or code if it's helpful.
+4. Update README.md (if user-facing behavior changed) and DEVELOPMENT_PLAN.md to reflect your changes. When updating DEVELOPMENT_PLAN.md, ensure the algorithm descriptions in the Architecture section accurately describe the code as implemented — if the implementation differs from the original plan, update the plan to match reality.
+5. Think about whether items in LEARNINGS.md are obsolete - if so, delete or rewrite them.
+6. Think about whether you've learned things that may be useful to a future AI agent editing the code - if so, add them to LEARNINGS.md.
+7. Commit your changes (see Commit Messages and Commit Checklist below), including any pre-existing staged files.
+8. Think about whether you encountered code that would be clearer or more correct if refactored or improved. If so, make the improvements, test, and commit.
+9. Run the chat log export command (see Chat Log Export below).
+10. Tell the user a limerick inspired by your work this session.
+11. Stop. Do not continue to the next iteration unless the user says to.
+
+### Commit Checklist (MANDATORY — verify before every commit)
+
+- `cargo clippy` emits no warnings.
+- Build passes with no errors or warnings.
+- All tests pass
+- Commit message uses heredoc format with model name and user prompts (see Commit Messages)
+- Chat log exported after commit (see Chat Log Export)
 
 ## Project Layout
 
@@ -24,18 +40,22 @@ This is a **Rust** project. Key locations:
 
 - `README.md` - Program usage. Read it.
 - `DEVELOPMENT_PLAN.md` - Development plan. Read it.
-- `src/bin/step_distance.rs` — the main utility binary (Phase 1)
-- `src/lib.rs` — library crate (placeholder for future stages)
-- `scripts/` — shell scripts for batch operations over test data
-- `tests/` — STL and STEP test file pairs
-  - `tests/manual/` — handcrafted simple models
-  - `tests/onshape/` — models exported from Onshape
-  - `tests/ccad/generated/` — models generated via CodeCAD
 - `Cargo.toml` — Rust project manifest
+- `src/` — Rust source files
+  - `bin/brepper.rs` — the main program
+  - `bin/step_measure_tolerance.rs` — utility to measure distances from STL to correpsonding STEP
+  - `bin/viewer.rs` — GUI to visualize STL or STEP files
+- `scripts/` — shell scripts for batch operations over test data
+  - `step_distance_table.sh` - runs `step_measure_tolerance` over all STL/STEP pairs and summarizes statistics
+- `tests/` — STL and STEP test file pairs
+  - `manual/` — handcrafted simple models
+  - `onshape/` — models exported from Onshape
+  - `ccad/generated/` — models generated via CodeCAD
 
 ### OCCT / opencascade-rs
 
-The project uses the `opencascade-sys` crate (auto-generated Rust FFI bindings to OpenCASCADE Technology) via a path dependency. All useful C++ OCCT APIs should be available in the binding - if you want to use one that doesn't seem to be bound, complain loudly about it at the end of your response.
+The project uses the `opencascade-sys` crate (auto-generated Rust FFI bindings to OpenCASCADE Technology) via a path dependency. MANDATORY: All useful C++ OCCT APIs should be available in the binding - if you want to use one that doesn't seem to be bound, complain loudly about it AND STOP.
+
 ```
 ../opencascade-rs/crates/opencascade-sys   ← Rust FFI bindings (8700+ types)
 ../opencascade-rs/crates/opencascade-sys/PORTING.md  ← Naming conventions & usage patterns
@@ -45,6 +65,10 @@ The project uses the `opencascade-sys` crate (auto-generated Rust FFI bindings t
 ```
 
 The `builtin` feature (default) compiles OCCT from source — first build takes ~8 minutes. Subsequent builds are fast.
+
+## Previous Versions
+
+There's an abandoned incomplete C++ implementation of this tool in git branch `brepper-cpp2-abandoned` and directory ../brepper-cpp2. You're in the process of porting some improvements from the C++ implementation to this implementation.
 
 ## Commit Messages
 
@@ -120,24 +144,32 @@ files.
 Example workflow:
 1. Read: `hashline_read({filePath: "src/app.ts", startLine: 1, endLine: 20})`
    Returns: `1:qk|import React...`
-2. Edit: `hashline_edit({edits: [{filePath: "src/app.ts", lineHashes: "4:mp", content: "  return <div>Hello</div>;"}]})`
+2. Edit: `hashline_edit({edits: [{filePath: "src/app.ts", lineHashes: "3:fn,4:mp,5:ze", content: "export function App() {\n  return <div>Goodbye</div>;\n}"}]})`
 
 Operations:
-- **Replace**: set `lineHashes` to all lines being replaced, `content` to new text
+- **Replace**: set `lineHashes` to the lines being replaced (e.g. `"3:fn,4:mp,5:ze"`), `content` to new text
+- **Replace large range**: provide at least 3 hashes at each end, e.g. `"167:or,168:dd,169:yj-479:ge,480:dd,481:ea"`
 - **Insert after**: set `insertAfter: true`, `lineHashes` to anchor line
+- **Insert at file start**: set `insertAfter: true`, `lineHashes` to `"0:"`
 - **Delete**: set `content` to empty string
 - Multiple edits can be batched in one call across files
 
-### Don't Truncate Build or Test Output
+### IMPORTANT: Don't Truncate Build or Test Output
 
-Never pipe build or test commands through `head`, `tail`, or other truncating filters:
+**NEVER** pipe build or test commands through `head`, `tail`, `| grep`, or other truncating/filtering commands:
 - Errors often appear at unexpected locations in the output
 - Truncating can hide the actual failure while showing misleading context
 - Build systems and test frameworks already produce focused error output
+- If output is too long, read the full output file instead of truncating
 
-### Time Builds and Tests
+### IMPORTANT: Time Builds and Tests
 
-Run builds and tests with `time`. When they take more than 5 minutes, stop and ask the user whether to speed them up.
+**Always** prefix build and test commands with `time`. When they take more than 2 minutes ask the user whether to speed them up.
+
+Correct: `time make -j4 2>&1`
+Correct: `time ctest --output-on-failure -j4 2>&1`
+Wrong: `make -j4 2>&1 | tail -10`
+Wrong: `ctest -j4 2>&1 | tail -20`
 
 ## Temporary Test Code
 
