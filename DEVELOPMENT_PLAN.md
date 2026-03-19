@@ -573,8 +573,33 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 ### Incorporate learnings from aborted C++ implementation
 
 - [x] Port abstracted BFS region growing from C++ implementation. Created `src/stage2/bfs.rs` with a `SurfaceType` trait (associated types `Fit` and `Hypothesis`, methods for seeding, fitting, distance computation, acceptance testing, hypothesis building) and a generic `generate_hypotheses::<S>()` function. Implemented trait for all 5 surface types: `PlanarSurface`, `CylindricalSurface`, `SphericalSurface`, `ConicalSurface`, `ToroidalSurface`. Replaced 5 separate `deduce_*_hypotheses()` calls in stage2 with generic BFS invocations. Added post-BFS planar fallback synthesis for uncovered faces. Old per-type BFS functions retained (with `#[allow(dead_code)]`) as reference. **Regressions**: 8 `block_with_conical_hole` tests fail (0 conical hypotheses produced — the generic BFS lacks the old code's multi-axis LM rescue for cone seeds, which is needed when seed faces include non-conical faces near the apex). All other 388 tests pass. Stage 2 is ~3× slower (255s vs ~80s baseline) due to the generic BFS trying more seeds.
+- [x] Compare C++ implementations of surface fitting functions to Rust versions. Evaluate which is simpler, which is more likely to perform well, and how many hacks each has. Give a recommendation on whether to port the C++ approach to Rust to replace the Rust version, or to keep the Rust version, for each surface type. The goal is numerically accurate and fast surface fitting to both seed face regions and expanded regions.
+
+  **Findings (Rust ~7121 LOC vs C++ ~2236 LOC, ~3.2× larger — partly legacy dead code + verbose LM boilerplate + manual linear algebra):**
+
+  | Surface | Recommendation | Key Reason |
+  |---------|---------------|------------|
+  | Planar | Keep Rust, delete legacy BFS | Functionally equivalent; generic BFS is cleaner |
+  | Cylindrical | Keep Rust | Rust has LM refinement that C++ lacks (better accuracy) |
+  | Spherical | Keep Rust, **port C++ Gauss-Newton refinement** | Rust lacks iterative refinement after algebraic fit (clear gap) |
+  | Conical | Keep Rust, port analytic Jacobian | Rust has multi-axis LM rescue C++ lacks; C++ has cleaner analytic Jacobian |
+  | Toroidal | Keep Rust dual-method, port PCA axis + analytic Jacobian | C++ has elegant vertex-position PCA axis estimation and analytic Jacobian |
+
+  **Top-priority ports from C++ to Rust:**
+  1. Sphere Gauss-Newton refinement (iterative refinement after algebraic sphere fit)
+  2. Analytic Jacobians for cone and torus LM (replace finite-difference)
+  3. Torus minor-circle acceptance test (C++ checks minor circle center lies on major circle)
+  4. Vertex-position PCA for torus axis estimation (C++ uses vertex positions directly, not just normals)
 
 - [ ] Full pipeline tests: all test models including cone and torus models and filleted_cylinder, filleted_hole_block, filleted_pipe pass --compare through stage 4.1. Unblock existing `pipe_elbow_10_fine` (onshape) test.
+
+### Ports from C++ Implementation
+- [ ] Port sphere Gauss-Newton refinement: after algebraic least-squares sphere fit, run iterative Gauss-Newton to minimize vertex distance residuals. (C++ `surface_fit.cpp` `fit_sphere()` second pass.)
+- [ ] Port analytic Jacobians for cone LM: replace finite-difference Jacobian in cone LM refinement with closed-form partial derivatives. (C++ `surface_fit.cpp` `ConeResidual::df()`.)
+- [ ] Port analytic Jacobians for torus LM: same for torus fitting. (C++ `surface_fit.cpp` `TorusResidual::df()`.)
+- [ ] Port torus minor-circle acceptance test: after fitting, verify that minor-circle centers lie on the major circle within tolerance. Rejects false positives. (C++ `stage2.cpp` torus acceptance.)
+- [ ] Port vertex-position PCA for torus axis estimation: use PCA on vertex positions (not just normals) to estimate the torus axis of revolution. May improve robustness for partial tori. (C++ `stage2.cpp` torus seeding.)
+- [ ] Delete legacy `deduce_*_hypotheses()` functions (currently `#[allow(dead_code)]` in each surface type file) — no longer needed now that generic BFS works and comparison is complete.
 
 ### Unified Surface-of-Revolution Framework (refactor)
 - [ ] Extract shared SOR axis estimation (normal covariance smallest eigenvector) into a common utility function.
