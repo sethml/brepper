@@ -4,15 +4,15 @@ This file contains guidelines for AI/LLM coding assistants working on this proje
 
 ## IMPORTANT: Surviving Context Compaction
 
-When the user says "iterate", **immediately add the full iteration checklist (steps 1-12) to your todo list before doing any work**. Include steps like "Run clippy", "Commit changes", "Export chat log", "Tell limerick" — not just implementation subtasks. The todo list survives compaction; file contents, verbal instructions, and even the user's original prompt wording do not.
+When the user says `/iterate`, **immediately add the full iteration checklist (steps 1-12) to your todo list before doing any work**. Include steps like "Run clippy", "Commit changes", "Export chat log", "Tell limerick" — not just implementation subtasks. The todo list survives compaction; file contents, verbal instructions, and even the user's original prompt wording do not.
 
 When compacting, include the user's prompt in the conversation summary as guidance. Also include the hashline-edit tool usage instructions.
 
 If you notice a `<conversation-summary>` in your context, that means compaction has occurred — **re-read this file (AGENTS.md) immediately** before continuing work.
 
-## When instructed to iterate:
+## When the user says `/iterate`:
 
-Follow this checklist IN ORDER. Do not skip steps. Do not reorder.
+The `/iterate` command triggers the full development cycle below. This is the primary workflow command — when you see it, follow this checklist IN ORDER. Do not skip steps. Do not reorder.
 
 1. Read LEARNINGS.md, README.md, and DEVELOPMENT_PLAN.md.
 2. If given instructions on work to do, follow them. Otherwise find the first item in TODO.md and implement it.
