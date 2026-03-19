@@ -591,15 +591,15 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
   3. Torus minor-circle acceptance test (C++ checks minor circle center lies on major circle)
   4. Vertex-position PCA for torus axis estimation (C++ uses vertex positions directly, not just normals)
 
-- [ ] Full pipeline tests: all test models including cone and torus models and filleted_cylinder, filleted_hole_block, filleted_pipe pass --compare through stage 4.1. Unblock existing `pipe_elbow_10_fine` (onshape) test.
-
 ### Ports from C++ Implementation
-- [ ] Port sphere Gauss-Newton refinement: after algebraic least-squares sphere fit, run iterative Gauss-Newton to minimize vertex distance residuals. (C++ `surface_fit.cpp` `fit_sphere()` second pass.)
+- [x] Port sphere Gauss-Newton refinement: after algebraic least-squares sphere fit, run iterative Gauss-Newton to minimize vertex distance residuals. (C++ `surface_fit.cpp` `fit_sphere()` second pass.) Up to 20 iterations, convergence at delta_norm < 1e-14, requires ≥6 vertices. Uses normal equations with 4x4 Gaussian elimination (same as algebraic fit).
 - [ ] Port analytic Jacobians for cone LM: replace finite-difference Jacobian in cone LM refinement with closed-form partial derivatives. (C++ `surface_fit.cpp` `ConeResidual::df()`.)
 - [ ] Port analytic Jacobians for torus LM: same for torus fitting. (C++ `surface_fit.cpp` `TorusResidual::df()`.)
 - [ ] Port torus minor-circle acceptance test: after fitting, verify that minor-circle centers lie on the major circle within tolerance. Rejects false positives. (C++ `stage2.cpp` torus acceptance.)
 - [ ] Port vertex-position PCA for torus axis estimation: use PCA on vertex positions (not just normals) to estimate the torus axis of revolution. May improve robustness for partial tori. (C++ `stage2.cpp` torus seeding.)
 - [ ] Delete legacy `deduce_*_hypotheses()` functions (currently `#[allow(dead_code)]` in each surface type file) — no longer needed now that generic BFS works and comparison is complete.
+
+- [ ] Full pipeline tests: all test models including cone and torus models and filleted_cylinder, filleted_hole_block, filleted_pipe pass --compare through stage 4.1. Unblock existing `pipe_elbow_10_fine` (onshape) test.
 
 ### Unified Surface-of-Revolution Framework (refactor)
 - [ ] Extract shared SOR axis estimation (normal covariance smallest eigenvector) into a common utility function.

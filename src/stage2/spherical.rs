@@ -137,7 +137,105 @@ fn fit_sphere(
         return None;
     }
 
-    Some(([cx, cy, cz], r_sq.sqrt()))
+    let mut center = [cx, cy, cz];
+    let mut radius = r_sq.sqrt();
+
+    // Gauss-Newton refinement minimizing vertex-to-sphere distances.
+    // Parameters: (cx, cy, cz, r).
+    // f_i = ||p_i - c|| - r
+    // Jacobian: ∂f/∂c = -(p_i - c) / ||p_i - c||, ∂f/∂r = -1
+    // Solves J^T J delta = -J^T f via normal equations at each iteration.
+    if n >= 6 {
+        let verts: Vec<usize> = vertex_set.iter().copied().collect();
+        for _iter in 0..20 {
+            // Build normal equations: (J^T J) delta = -(J^T f)
+            let mut jtj = [[0.0_f64; 4]; 4];
+            let mut jtf = [0.0_f64; 4];
+
+            for &vi in &verts {
+                let v = &vertices[vi];
+                let diff = [v.x - center[0], v.y - center[1], v.z - center[2]];
+                let dist = (diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]).sqrt();
+                let fi = dist - radius;
+
+                let ji = if dist < 1e-12 {
+                    [0.0, 0.0, 0.0, -1.0]
+                } else {
+                    [-diff[0] / dist, -diff[1] / dist, -diff[2] / dist, -1.0]
+                };
+
+                for r in 0..4 {
+                    for c in 0..4 {
+                        jtj[r][c] += ji[r] * ji[c];
+                    }
+                    jtf[r] += ji[r] * fi;
+                }
+            }
+
+            // Solve 4x4 system: jtj * delta = -jtf
+            let mut aug_gn = [[0.0_f64; 5]; 4];
+            for i in 0..4 {
+                for j in 0..4 {
+                    aug_gn[i][j] = jtj[i][j];
+                }
+                aug_gn[i][4] = -jtf[i];
+            }
+
+            let mut singular = false;
+            for col in 0..4 {
+                let mut max_row = col;
+                let mut max_val = aug_gn[col][col].abs();
+                for row in (col + 1)..4 {
+                    if aug_gn[row][col].abs() > max_val {
+                        max_val = aug_gn[row][col].abs();
+                        max_row = row;
+                    }
+                }
+                if max_val < 1e-30 {
+                    singular = true;
+                    break;
+                }
+                if max_row != col {
+                    aug_gn.swap(col, max_row);
+                }
+                let pivot = aug_gn[col][col];
+                for j in col..5 {
+                    aug_gn[col][j] /= pivot;
+                }
+                for row in 0..4 {
+                    if row == col {
+                        continue;
+                    }
+                    let factor = aug_gn[row][col];
+                    for j in col..5 {
+                        aug_gn[row][j] -= factor * aug_gn[col][j];
+                    }
+                }
+            }
+            if singular {
+                break;
+            }
+
+            let delta = [aug_gn[0][4], aug_gn[1][4], aug_gn[2][4], aug_gn[3][4]];
+            center[0] += delta[0];
+            center[1] += delta[1];
+            center[2] += delta[2];
+            radius += delta[3];
+
+            let delta_norm = (delta[0] * delta[0] + delta[1] * delta[1]
+                + delta[2] * delta[2] + delta[3] * delta[3])
+                .sqrt();
+            if delta_norm < 1e-14 {
+                break;
+            }
+        }
+    }
+
+    if radius <= 0.0 {
+        return None;
+    }
+
+    Some((center, radius))
 }
 
 /// Check if all vertices are within tolerance of a sphere surface.

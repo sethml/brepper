@@ -207,6 +207,7 @@ Algorithm:
 - Rearrange: $v \cdot v = 2 v \cdot c - |c|^2 + r^2 = 2 v \cdot c + k$ where $k = r^2 - |c|^2$.
 - This is linear in unknowns $(c_x, c_y, c_z, k)$. Solve via least squares: $A x = b$ where $A_{i} = [2v_{ix}, 2v_{iy}, 2v_{iz}, 1]$ and $b_i = v_i \cdot v_i$.
 - After solving: center $= (c_x, c_y, c_z)$, radius $= \sqrt{k + |c|^2}$.
+- **Gauss-Newton refinement** (when ≥6 vertices): After the algebraic fit, iteratively minimize the geometric distance $f_i = \|p_i - c\| - r$. The Jacobian is $J_i = [-(p_i - c)/\|p_i - c\|, -1]$. Solve the normal equations $J^T J \delta = -J^T f$ at each iteration (4×4 system via Gaussian elimination). Up to 20 iterations, converges when $\|\delta\| < 10^{-14}$. This refines the algebraic fit to minimize the true vertex-to-surface distance rather than the algebraic residual.
 
 **Distinguishing spheres from cylinders:**
 - Faces with cylindrical hypotheses are NOT excluded — they may legitimately belong to both a cylinder and a sphere (e.g., equator band). Stage 2.6 disambiguates.
