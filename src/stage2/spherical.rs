@@ -12,7 +12,7 @@ use super::{
     dot3, eigenvalues_3x3_symmetric, face_area, face_centroid, normalize3,
     viz_custom, viz_face_centroid, viz_face_normal,
     PlanarHypothesis, SphericalHypothesis, Stage2CompareError,
-    MIN_SPHERE_EIGENVALUE_RATIO, MIN_SPHERE_FACES,
+    MAX_SPHERE_RADIUS_FACTOR, MIN_SPHERE_EIGENVALUE_RATIO, MIN_SPHERE_FACES,
     REFIT_SKIP_MULTIPLIER,
 };
 
@@ -141,6 +141,7 @@ fn fit_sphere(
 }
 
 /// Check if all vertices are within tolerance of a sphere surface.
+#[allow(dead_code)]
 fn all_vertices_within_sphere_tolerance(
     vertex_set: &HashSet<usize>,
     center: &[f64; 3],
@@ -228,6 +229,7 @@ fn solid_angle_coverage_valid(
 }
 
 /// Build a map from vertex index to the set of face indices incident on that vertex.
+#[allow(dead_code)]
 fn build_vertex_to_faces_map(mesh: &ConnectedMesh) -> Vec<Vec<usize>> {
     let mut vtf: Vec<Vec<usize>> = vec![Vec::new(); mesh.vertices.len()];
     for (fi, face) in mesh.faces.iter().enumerate() {
@@ -250,6 +252,7 @@ fn build_vertex_to_faces_map(mesh: &ConnectedMesh) -> Vec<Vec<usize>> {
 /// vertices. If the fit is good, seed a BFS to grow the hypothesis. After BFS,
 /// validate solid-angle coverage to reject fillet-strip growth.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub(super) fn deduce_spherical_hypotheses(
     mesh: &mut ConnectedMesh,
     planar_hypotheses: &[PlanarHypothesis],
@@ -890,4 +893,164 @@ pub(super) fn compare_spherical_hypotheses(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// SurfaceType trait implementation for generic BFS
+// ---------------------------------------------------------------------------
+
+use super::bfs::{BfsConfig, Seed, SurfaceType};
+
+/// Fitted sphere parameters.
+#[derive(Clone)]
+pub(super) struct SphereFit {
+    pub center: [f64; 3],
+    pub radius: f64,
+    pub convex: Option<bool>,
+}
+
+/// Marker struct for the spherical surface type.
+pub(super) struct SphericalSurface;
+
+impl SphericalSurface {
+    /// Build vertex-to-faces map (needed for seeding).
+    #[allow(dead_code)]
+    fn vertex_to_faces(mesh: &ConnectedMesh) -> Vec<Vec<usize>> {
+        build_vertex_to_faces_map(mesh)
+    }
+}
+
+impl SurfaceType for SphericalSurface {
+    type Fit = SphereFit;
+    type Hypothesis = SphericalHypothesis;
+
+    fn name() -> &'static str { "spherical" }
+
+    fn hypothesis_field(face: &MeshFace) -> i32 { face.spherical_hypothesis }
+
+    fn set_hypothesis_field(face: &mut MeshFace, value: i32) {
+        face.spherical_hypothesis = value;
+    }
+
+    fn undeduced_value() -> i32 { UNDEDUCED_SPHERICAL_HYPOTHESIS }
+
+    fn face_eligible(face: &MeshFace) -> bool {
+        face.spherical_hypothesis == UNDEDUCED_SPHERICAL_HYPOTHESIS
+    }
+
+    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, _config: &BfsConfig) -> Vec<Seed> {
+        if mesh.faces[fi].normal.is_none() {
+            return Vec::new();
+        }
+        // 1-ring: collect all faces sharing any vertex with fi
+        let vc = mesh.faces[fi].vertex_count as usize;
+        let mut seed_set: HashSet<usize> = HashSet::new();
+        seed_set.insert(fi);
+        for &vi in &mesh.faces[fi].vertex_indices[..vc] {
+            // Find all faces incident on this vertex
+            for (fj, face) in mesh.faces.iter().enumerate() {
+                let fj_vc = face.vertex_count as usize;
+                for &fj_vi in &face.vertex_indices[..fj_vc] {
+                    if fj_vi == vi && face.normal.is_some() {
+                        if face.spherical_hypothesis == UNDEDUCED_SPHERICAL_HYPOTHESIS {
+                            seed_set.insert(fj);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        if seed_set.len() < 3 {
+            return Vec::new();
+        }
+        let faces: Vec<usize> = seed_set.into_iter().collect();
+        vec![Seed { faces }]
+    }
+
+    fn fit_surface(
+        mesh: &ConnectedMesh,
+        _face_list: &[usize],
+        vertex_list: &[usize],
+        _verbosity: u8,
+    ) -> Option<Self::Fit> {
+        let vertex_set: HashSet<usize> = vertex_list.iter().copied().collect();
+        let (center, radius) = fit_sphere(&vertex_set, &mesh.vertices)?;
+        // Reject obviously wrong radii
+        let bb_diag = bounding_box_diagonal(&mesh.vertices);
+        if radius > bb_diag * MAX_SPHERE_RADIUS_FACTOR {
+            return None;
+        }
+        Some(SphereFit { center, radius, convex: None })
+    }
+
+    fn vertex_distance(fit: &Self::Fit, pos: &[f64; 3]) -> f64 {
+        let v = MeshVertex::from_xyz(pos[0], pos[1], pos[2]);
+        vertex_to_sphere_distance(&v, &fit.center, fit.radius).abs()
+    }
+
+    fn convexity_check(fit: &Self::Fit, mesh: &ConnectedMesh, fi: usize) -> bool {
+        if let Some(convex) = fit.convex {
+            let fi_convex = determine_sphere_convexity(
+                &mesh.faces[fi], &mesh.vertices, &fit.center,
+            );
+            fi_convex == convex
+        } else {
+            true
+        }
+    }
+
+    fn determine_convexity(mesh: &ConnectedMesh, face_list: &[usize], fit: &mut Self::Fit) {
+        if let Some(&first) = face_list.first() {
+            fit.convex = Some(determine_sphere_convexity(
+                &mesh.faces[first], &mesh.vertices, &fit.center,
+            ));
+        }
+    }
+
+    fn acceptance_test(
+        mesh: &ConnectedMesh,
+        face_list: &[usize],
+        fit: &Self::Fit,
+        _config: &BfsConfig,
+    ) -> bool {
+        if face_list.len() < MIN_SPHERE_FACES {
+            return false;
+        }
+        solid_angle_coverage_valid(
+            face_list, &fit.center, &mesh.faces, &mesh.vertices,
+        )
+    }
+
+    fn make_hypothesis(
+        mesh: &ConnectedMesh,
+        faces: Vec<usize>,
+        vertices: Vec<usize>,
+        fit: &Self::Fit,
+    ) -> SphericalHypothesis {
+        let mut error_max = 0.0_f64;
+        let mut centroid_error_max = 0.0_f64;
+        let mut error_abs_sum = 0.0_f64;
+        for &vi in &vertices {
+            let v = &mesh.vertices[vi];
+            let d = vertex_to_sphere_distance(v, &fit.center, fit.radius).abs();
+            error_max = error_max.max(d);
+            error_abs_sum += d;
+        }
+        for &fi in &faces {
+            let c = face_centroid(&mesh.faces[fi], &mesh.vertices);
+            let v = MeshVertex::from_xyz(c[0], c[1], c[2]);
+            let d = vertex_to_sphere_distance(&v, &fit.center, fit.radius).abs();
+            centroid_error_max = centroid_error_max.max(d);
+        }
+        SphericalHypothesis {
+            center: fit.center,
+            radius: fit.radius,
+            convex: fit.convex.unwrap_or(true),
+            faces,
+            vertices,
+            error_max,
+            centroid_error_max,
+            error_abs_sum,
+        }
+    }
 }

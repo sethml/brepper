@@ -284,6 +284,7 @@ fn fit_cylinder(
 }
 
 /// Check if all vertices in a set are within tolerance of a cylinder surface.
+#[allow(dead_code)]
 fn all_vertices_within_cylinder_tolerance(
     vertex_set: &HashSet<usize>,
     axis_origin: &[f64; 3],
@@ -398,6 +399,7 @@ fn angular_coverage_valid(
 }
 
 /// Result of a trial BFS for cylindrical hypothesis evaluation.
+#[allow(dead_code)]
 struct CylinderTrialResult {
     faces: Vec<usize>,
     vertices: HashSet<usize>,
@@ -416,6 +418,7 @@ struct CylinderTrialResult {
 /// Returns `None` if the trial fails validation (min faces, centroid check).
 /// Sets `viz_quit` if the user quits from viz.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 fn run_cylinder_trial_bfs(
     seed_faces: &[usize],
     mesh: &ConnectedMesh,
@@ -939,6 +942,7 @@ fn is_pairwise_qualified(
 /// neighbor of fi, and n2 is a pairwise-qualified neighbor of n1 that is NOT a
 /// neighbor of fi. Runs a trial BFS for each triple, keeps the best trial
 /// (most area), and commits.
+#[allow(dead_code)]
 pub(super) fn deduce_cylindrical_hypotheses(
     mesh: &mut ConnectedMesh,
     vertex_tol: f64,
@@ -1184,4 +1188,159 @@ pub(super) fn compare_cylindrical_hypotheses(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// SurfaceType trait implementation for generic BFS
+// ---------------------------------------------------------------------------
+
+use super::bfs::{BfsConfig, Seed, SurfaceType};
+
+/// Fitted cylinder parameters.
+#[derive(Clone)]
+pub(super) struct CylinderFit {
+    pub axis_origin: [f64; 3],
+    pub axis_direction: [f64; 3],
+    pub radius: f64,
+    pub convex: Option<bool>,
+}
+
+/// Marker struct for the cylindrical surface type.
+pub(super) struct CylindricalSurface;
+
+impl SurfaceType for CylindricalSurface {
+    type Fit = CylinderFit;
+    type Hypothesis = CylindricalHypothesis;
+
+    fn name() -> &'static str { "cylindrical" }
+
+    fn hypothesis_field(face: &MeshFace) -> i32 { face.cylindrical_hypothesis }
+
+    fn set_hypothesis_field(face: &mut MeshFace, value: i32) {
+        face.cylindrical_hypothesis = value;
+    }
+
+    fn undeduced_value() -> i32 { UNDEDUCED_CYLINDRICAL_HYPOTHESIS }
+
+    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig) -> Vec<Seed> {
+        if mesh.faces[fi].normal.is_none() {
+            return Vec::new();
+        }
+
+        let fi_vc = mesh.faces[fi].vertex_count as usize;
+        let angular_tol = config.angular_tol;
+
+        // Collect pairwise-qualified neighbors of fi
+        let fi_neighbors: Vec<usize> = mesh.faces[fi].neighbors[..fi_vc]
+            .iter()
+            .filter(|&&n| n >= 0)
+            .map(|&n| n as usize)
+            .filter(|&n1| is_pairwise_qualified(fi, n1, mesh, angular_tol))
+            .collect();
+
+        // fi's neighbor set for the "n2 not neighbor of fi" check
+        let fi_neighbor_set: HashSet<usize> = mesh.faces[fi].neighbors[..fi_vc]
+            .iter()
+            .filter(|&&n| n >= 0)
+            .map(|&n| n as usize)
+            .collect();
+
+        let mut seeds = Vec::new();
+        for &n1 in &fi_neighbors {
+            let n1_vc = mesh.faces[n1].vertex_count as usize;
+            for &n2_raw in &mesh.faces[n1].neighbors[..n1_vc] {
+                if n2_raw < 0 { continue; }
+                let n2 = n2_raw as usize;
+                if n2 == fi { continue; }
+                if fi_neighbor_set.contains(&n2) { continue; }
+                if !is_pairwise_qualified(n1, n2, mesh, angular_tol) { continue; }
+                seeds.push(Seed { faces: vec![fi, n1, n2] });
+            }
+        }
+        seeds
+    }
+
+    fn fit_surface(
+        mesh: &ConnectedMesh,
+        face_list: &[usize],
+        vertex_list: &[usize],
+        _verbosity: u8,
+    ) -> Option<Self::Fit> {
+        let vertex_set: HashSet<usize> = vertex_list.iter().copied().collect();
+        let (origin, dir, radius) = fit_cylinder(face_list, &vertex_set, &mesh.faces, &mesh.vertices)?;
+        Some(CylinderFit { axis_origin: origin, axis_direction: dir, radius, convex: None })
+    }
+
+    fn vertex_distance(fit: &Self::Fit, pos: &[f64; 3]) -> f64 {
+        let v = MeshVertex::from_xyz(pos[0], pos[1], pos[2]);
+        vertex_to_cylinder_distance(&v, &fit.axis_origin, &fit.axis_direction, fit.radius).abs()
+    }
+
+    fn convexity_check(fit: &Self::Fit, mesh: &ConnectedMesh, fi: usize) -> bool {
+        if let Some(convex) = fit.convex {
+            let fi_convex = determine_convexity(
+                &mesh.faces[fi], &mesh.vertices, &fit.axis_origin, &fit.axis_direction,
+            );
+            fi_convex == convex
+        } else {
+            true
+        }
+    }
+
+    fn determine_convexity(mesh: &ConnectedMesh, face_list: &[usize], fit: &mut Self::Fit) {
+        if let Some(&first) = face_list.first() {
+            fit.convex = Some(determine_convexity(
+                &mesh.faces[first], &mesh.vertices, &fit.axis_origin, &fit.axis_direction,
+            ));
+        }
+    }
+
+    fn acceptance_test(
+        mesh: &ConnectedMesh,
+        face_list: &[usize],
+        fit: &Self::Fit,
+        _config: &BfsConfig,
+    ) -> bool {
+        if face_list.len() < MIN_CYLINDER_FACES {
+            return false;
+        }
+        angular_coverage_valid(
+            face_list, &fit.axis_origin, &fit.axis_direction,
+            &mesh.faces, &mesh.vertices,
+        )
+    }
+
+    fn make_hypothesis(
+        mesh: &ConnectedMesh,
+        faces: Vec<usize>,
+        vertices: Vec<usize>,
+        fit: &Self::Fit,
+    ) -> CylindricalHypothesis {
+        let mut error_max = 0.0_f64;
+        let mut centroid_error_max = 0.0_f64;
+        let mut error_abs_sum = 0.0_f64;
+        for &vi in &vertices {
+            let v = &mesh.vertices[vi];
+            let d = vertex_to_cylinder_distance(v, &fit.axis_origin, &fit.axis_direction, fit.radius).abs();
+            error_max = error_max.max(d);
+            error_abs_sum += d;
+        }
+        for &fi in &faces {
+            let c = face_centroid(&mesh.faces[fi], &mesh.vertices);
+            let v = MeshVertex::from_xyz(c[0], c[1], c[2]);
+            let d = vertex_to_cylinder_distance(&v, &fit.axis_origin, &fit.axis_direction, fit.radius).abs();
+            centroid_error_max = centroid_error_max.max(d);
+        }
+        CylindricalHypothesis {
+            axis_origin: fit.axis_origin,
+            axis_direction: fit.axis_direction,
+            radius: fit.radius,
+            convex: fit.convex.unwrap_or(true),
+            faces,
+            vertices,
+            error_max,
+            centroid_error_max,
+            error_abs_sum,
+        }
+    }
 }

@@ -7,6 +7,7 @@
 //! 2.5: Deduce NURBS hypotheses
 //! 2.6: Select surfaces for reconstruction
 
+mod bfs;
 mod conical;
 mod cylindrical;
 mod planar;
@@ -23,19 +24,25 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 use self::conical::{
-    compare_conical_hypotheses, deduce_conical_hypotheses,
+    compare_conical_hypotheses,
 };
 use self::cylindrical::{
-    compare_cylindrical_hypotheses, deduce_cylindrical_hypotheses, vertex_to_cylinder_distance,
+    compare_cylindrical_hypotheses, vertex_to_cylinder_distance,
 };
-use self::planar::{compare_planar_hypotheses, deduce_planar_hypotheses};
+use self::planar::compare_planar_hypotheses;
 use self::spherical::{
-    bounding_box_diagonal, compare_spherical_hypotheses, deduce_spherical_hypotheses,
+    bounding_box_diagonal, compare_spherical_hypotheses,
     vertex_to_sphere_distance,
 };
 use self::toroidal::{
-    compare_toroidal_hypotheses, deduce_toroidal_hypotheses,
+    compare_toroidal_hypotheses,
 };
+use self::bfs::BfsConfig;
+use self::planar::PlanarSurface;
+use self::cylindrical::CylindricalSurface;
+use self::spherical::SphericalSurface;
+use self::conical::ConicalSurface;
+use self::toroidal::ToroidalSurface;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -217,6 +224,26 @@ pub enum SelectedSurface {
     Conical(usize),
     Toroidal(usize),
     // TODO: Nurbs(usize),
+}
+
+// ---------------------------------------------------------------------------
+// HypothesisFaces implementations (for generic BFS)
+// ---------------------------------------------------------------------------
+
+impl bfs::HypothesisFaces for PlanarHypothesis {
+    fn faces(&self) -> &[usize] { &self.faces }
+}
+impl bfs::HypothesisFaces for CylindricalHypothesis {
+    fn faces(&self) -> &[usize] { &self.faces }
+}
+impl bfs::HypothesisFaces for SphericalHypothesis {
+    fn faces(&self) -> &[usize] { &self.faces }
+}
+impl bfs::HypothesisFaces for ConicalHypothesis {
+    fn faces(&self) -> &[usize] { &self.faces }
+}
+impl bfs::HypothesisFaces for ToroidalHypothesis {
+    fn faces(&self) -> &[usize] { &self.faces }
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +530,7 @@ pub(crate) fn viz_face_normal(face_idx: usize, mesh: &ConnectedMesh) -> Option<[
 
 /// Send a custom viz overlay with full control over highlights.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub(crate) fn viz_custom(
     viz: Option<&VizSender>,
     highlights: Vec<viz::FaceHighlight>,
@@ -1057,8 +1085,44 @@ fn compare_selected_surfaces(
 pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz::VizSender>) -> Result<Stage2Output, Stage2Error> {
     // Stage 2.1: Deduce planar hypotheses
     let t = Instant::now();
-    let viz_21 = if config.viz_active(2, 1) { viz } else { None };
-    let (mut planar_hypotheses, planar_quit) = deduce_planar_hypotheses(&mut mesh, config.vertex_tolerance_mm, config.verbosity, viz_21);
+    let _viz_21 = if config.viz_active(2, 1) { viz } else { None };
+    let bfs_config = BfsConfig {
+        vertex_tol: config.vertex_tolerance_mm,
+        surface_tol: config.surface_tolerance_mm,
+        angular_tol: config.angular_tolerance_rad,
+        verbosity: config.verbosity,
+    };
+    let (mut planar_hypotheses, planar_quit) = bfs::generate_hypotheses::<PlanarSurface>(&mut mesh, &bfs_config, None);
+
+    // Synthesize single-face planar hypotheses for faces not covered by BFS.
+    // BFS with acceptance >= 2 only produces multi-face hypotheses; every
+    // remaining face still needs a planar fallback for stage 2.6 selection.
+    for fi in 0..mesh.faces.len() {
+        if mesh.faces[fi].planar_hypothesis < 0 {
+            let face = &mesh.faces[fi];
+            let n = face.normal.unwrap();
+            let vc = face.vertex_count as usize;
+            let verts: Vec<usize> = face.vertex_indices[..vc].to_vec();
+            let sum_d: f64 = verts.iter()
+                .map(|&vi| {
+                    let v = &mesh.vertices[vi];
+                    n[0] * v.x + n[1] * v.y + n[2] * v.z
+                })
+                .sum();
+            let distance = sum_d / verts.len() as f64;
+            let new_idx = planar_hypotheses.len() as i32;
+            planar_hypotheses.push(PlanarHypothesis {
+                normal: n,
+                distance,
+                faces: vec![fi],
+                vertices: verts,
+                error_max: 0.0,
+                error_min: 0.0,
+                error_abs_sum: 0.0,
+            });
+            mesh.faces[fi].planar_hypothesis = new_idx;
+        }
+    }
 
     if !config.quiet {
         let multi_face_count = planar_hypotheses.iter().filter(|h| h.faces.len() > 1).count();
@@ -1123,13 +1187,8 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
 
     // Stage 2.2: Deduce cylindrical hypotheses
     let t = Instant::now();
-    let viz_22 = if config.viz_active(2, 2) { viz } else { None };
-    let (mut cylindrical_hypotheses, cylindrical_quit) = deduce_cylindrical_hypotheses(
-        &mut mesh, config.vertex_tolerance_mm,
-        config.surface_tolerance_mm, config.angular_tolerance_rad,
-        config.verbosity,
-        viz_22,
-    );
+    let _viz_22 = if config.viz_active(2, 2) { viz } else { None };
+    let (mut cylindrical_hypotheses, cylindrical_quit) = bfs::generate_hypotheses::<CylindricalSurface>(&mut mesh, &bfs_config, None);
 
     if !config.quiet {
         let covered_faces: usize = cylindrical_hypotheses.iter().map(|h| h.faces.len()).sum();
@@ -1224,15 +1283,10 @@ Normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
 
     // Stage 2.3: Deduce spherical hypotheses
     let t = Instant::now();
-    let bb_diag = bounding_box_diagonal(&mesh.vertices);
-    let max_sphere_radius = bb_diag * MAX_SPHERE_RADIUS_FACTOR;
-    let viz_23 = if config.viz_active(2, 3) { viz } else { None };
-    let (mut spherical_hypotheses, spherical_quit) = deduce_spherical_hypotheses(
-        &mut mesh, &planar_hypotheses, config.vertex_tolerance_mm,
-        config.surface_tolerance_mm, config.angular_tolerance_rad, max_sphere_radius,
-        config.verbosity,
-        viz_23,
-    );
+    let _bb_diag = bounding_box_diagonal(&mesh.vertices);
+    let _max_sphere_radius = _bb_diag * MAX_SPHERE_RADIUS_FACTOR;
+    let _viz_23 = if config.viz_active(2, 3) { viz } else { None };
+    let (mut spherical_hypotheses, spherical_quit) = bfs::generate_hypotheses::<SphericalSurface>(&mut mesh, &bfs_config, None);
 
     if !config.quiet {
         let covered_faces: usize = spherical_hypotheses.iter().map(|h| h.faces.len()).sum();
@@ -1325,12 +1379,8 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
 
     // Stage 2.4: Deduce conical hypotheses
     let t = Instant::now();
-    let viz_24 = if config.viz_active(2, 4) { viz } else { None };
-    let (mut conical_hypotheses, conical_quit) = deduce_conical_hypotheses(
-        &mut mesh, config.vertex_tolerance_mm,
-        config.surface_tolerance_mm, config.angular_tolerance_rad,
-        config.verbosity, viz_24,
-    );
+    let _viz_24 = if config.viz_active(2, 4) { viz } else { None };
+    let (mut conical_hypotheses, conical_quit) = bfs::generate_hypotheses::<ConicalSurface>(&mut mesh, &bfs_config, None);
 
     if !config.quiet {
         eprintln!(
@@ -1384,13 +1434,8 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
 
     // Stage 2.5: Deduce toroidal hypotheses
     let t = Instant::now();
-    let viz_25 = if config.viz_active(2, 5) { viz } else { None };
-    let (mut toroidal_hypotheses, toroidal_quit) = deduce_toroidal_hypotheses(
-        &mut mesh, &planar_hypotheses,
-        config.vertex_tolerance_mm,
-        config.surface_tolerance_mm, config.angular_tolerance_rad,
-        config.verbosity, viz_25,
-    );
+    let _viz_25 = if config.viz_active(2, 5) { viz } else { None };
+    let (mut toroidal_hypotheses, toroidal_quit) = bfs::generate_hypotheses::<ToroidalSurface>(&mut mesh, &bfs_config, None);
 
     if !config.quiet {
         let covered_faces: usize = toroidal_hypotheses.iter().map(|h| h.faces.len()).sum();

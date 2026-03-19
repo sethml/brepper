@@ -8,9 +8,7 @@ See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for the overall pipeline architec
 
 ## General Approach
 
-*Comment: The approach described here is "region growing" from seed faces—this works but may produce suboptimal results because the first seed determines the region boundaries. An alternative is RANSAC-style fitting: randomly sample minimal point sets, fit surfaces, count inliers, and keep the best. RANSAC is more robust to the mesh traversal order. The region-growing approach described here also doesn't naturally handle the case where the same surface type appears in disconnected regions (e.g., two separate planar faces with the same orientation). Consider a hybrid: use RANSAC or global clustering first, then refine with region growing.*
-
-**Response: Given vertices that lie within epsilon of precisely on the surfaces involved, hopefully the first seed will grow to the entire region. I think the depth-first search or breadth-first search should effectively find planar surfaces that are partially disconnected. If they're fully disconnected, we'll consider them independent planar surfaces, which is fine.**
+"Region growing" from seed faces while preserving fit invariants, refitting as necessary as faces are added to the region. Given that vertices lie within epsilon of precisely on the surfaces involved, any seed on a surface should grow to the entire region.
 
 ---
 

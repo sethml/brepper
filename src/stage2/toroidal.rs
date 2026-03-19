@@ -650,6 +650,7 @@ fn fit_torus_sor(
 // ---------------------------------------------------------------------------
 
 /// Check if all vertices in a set are within tolerance of a torus surface.
+#[allow(dead_code)]
 fn all_vertices_within_torus_tolerance(
     vertex_set: &HashSet<usize>,
     center: &[f64; 3],
@@ -770,6 +771,7 @@ fn angular_coverage_valid(
 // Trial BFS for toroidal hypothesis evaluation
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 struct TorusTrialResult {
     faces: Vec<usize>,
     vertices: HashSet<usize>,
@@ -785,6 +787,7 @@ struct TorusTrialResult {
 
 /// Run a trial BFS for a toroidal hypothesis starting from seed faces.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 fn run_torus_trial_bfs(
     seed_faces: &[usize],
     mesh: &ConnectedMesh,
@@ -1325,6 +1328,7 @@ fn run_torus_trial_bfs(
 ///
 /// Cylinder hypotheses are deliberately ignored — torus fitting operates
 /// independently of cylinder fitting.
+#[allow(dead_code)]
 pub(super) fn deduce_toroidal_hypotheses(
     mesh: &mut ConnectedMesh,
     planar_hypotheses: &[super::PlanarHypothesis],
@@ -1662,4 +1666,191 @@ pub(super) fn compare_toroidal_hypotheses(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// SurfaceType trait implementation for generic BFS
+// ---------------------------------------------------------------------------
+
+use super::bfs::{BfsConfig, Seed, SurfaceType};
+
+/// Fitted torus parameters.
+#[derive(Clone)]
+pub(super) struct TorusFit {
+    pub center: [f64; 3],
+    pub axis_direction: [f64; 3],
+    pub major_radius: f64,
+    pub minor_radius: f64,
+    pub convex: Option<bool>,
+}
+
+/// Marker struct for the toroidal surface type.
+pub(super) struct ToroidalSurface;
+
+impl SurfaceType for ToroidalSurface {
+    type Fit = TorusFit;
+    type Hypothesis = ToroidalHypothesis;
+
+    fn name() -> &'static str { "toroidal" }
+
+    fn hypothesis_field(face: &MeshFace) -> i32 { face.toroidal_hypothesis }
+
+    fn set_hypothesis_field(face: &mut MeshFace, value: i32) {
+        face.toroidal_hypothesis = value;
+    }
+
+    fn undeduced_value() -> i32 { UNDEDUCED_TOROIDAL_HYPOTHESIS }
+
+    fn face_eligible(face: &MeshFace) -> bool {
+        face.toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS
+    }
+
+    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, _config: &BfsConfig) -> Vec<Seed> {
+        if mesh.faces[fi].normal.is_none() {
+            return Vec::new();
+        }
+        // Skip faces already committed to cylindrical, spherical, or conical
+        if mesh.faces[fi].cylindrical_hypothesis >= 0
+            || mesh.faces[fi].spherical_hypothesis >= 0
+            || mesh.faces[fi].conical_hypothesis >= 0
+        {
+            return Vec::new();
+        }
+
+        // 1-ring: collect all faces sharing any vertex with fi
+        let vc = mesh.faces[fi].vertex_count as usize;
+        let mut seed_set: HashSet<usize> = HashSet::new();
+        seed_set.insert(fi);
+        for &vi in &mesh.faces[fi].vertex_indices[..vc] {
+            for (fj, face) in mesh.faces.iter().enumerate() {
+                let fj_vc = face.vertex_count as usize;
+                let contains_vi = face.vertex_indices[..fj_vc].contains(&vi);
+                if contains_vi
+                    && face.normal.is_some()
+                    && face.toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS
+                    && face.cylindrical_hypothesis < 0
+                    && face.spherical_hypothesis < 0
+                    && face.conical_hypothesis < 0
+                {
+                    seed_set.insert(fj);
+                }
+            }
+        }
+
+        // Need enough faces and vertices for 7-DOF fit
+        let faces: Vec<usize> = seed_set.into_iter().collect();
+        let mut verts: HashSet<usize> = HashSet::new();
+        for &sfi in &faces {
+            let svc = mesh.faces[sfi].vertex_count as usize;
+            for &vi in &mesh.faces[sfi].vertex_indices[..svc] {
+                verts.insert(vi);
+            }
+        }
+        if faces.len() < MIN_TORUS_FACES || verts.len() < 9 {
+            return Vec::new();
+        }
+
+        vec![Seed { faces }]
+    }
+
+    fn fit_surface(
+        mesh: &ConnectedMesh,
+        face_list: &[usize],
+        vertex_list: &[usize],
+        _verbosity: u8,
+    ) -> Option<Self::Fit> {
+        let vertex_set: HashSet<usize> = vertex_list.iter().copied().collect();
+        let (center, axis, major_r, minor_r) =
+            fit_torus(face_list, &vertex_set, &mesh.faces, &mesh.vertices)?;
+        if minor_r <= 0.0 || major_r <= 0.0 || minor_r > major_r {
+            return None;
+        }
+        Some(TorusFit {
+            center,
+            axis_direction: axis,
+            major_radius: major_r,
+            minor_radius: minor_r,
+            convex: None,
+        })
+    }
+
+    fn vertex_distance(fit: &Self::Fit, pos: &[f64; 3]) -> f64 {
+        let v = MeshVertex::from_xyz(pos[0], pos[1], pos[2]);
+        vertex_to_torus_distance(&v, &fit.center, &fit.axis_direction, fit.major_radius, fit.minor_radius).abs()
+    }
+
+    fn convexity_check(fit: &Self::Fit, mesh: &ConnectedMesh, fi: usize) -> bool {
+        if let Some(convex) = fit.convex {
+            let fi_convex = determine_convexity(
+                &mesh.faces[fi], &mesh.vertices,
+                &fit.center, &fit.axis_direction, fit.major_radius,
+            );
+            fi_convex == convex
+        } else {
+            true
+        }
+    }
+
+    fn determine_convexity(mesh: &ConnectedMesh, face_list: &[usize], fit: &mut Self::Fit) {
+        if let Some(&first) = face_list.first() {
+            fit.convex = Some(determine_convexity(
+                &mesh.faces[first], &mesh.vertices,
+                &fit.center, &fit.axis_direction, fit.major_radius,
+            ));
+        }
+    }
+
+    fn acceptance_test(
+        mesh: &ConnectedMesh,
+        face_list: &[usize],
+        fit: &Self::Fit,
+        _config: &BfsConfig,
+    ) -> bool {
+        if face_list.len() < MIN_TORUS_FACES {
+            return false;
+        }
+        angular_coverage_valid(
+            face_list, &fit.center, &fit.axis_direction,
+            &mesh.faces, &mesh.vertices,
+        )
+    }
+
+    fn make_hypothesis(
+        mesh: &ConnectedMesh,
+        faces: Vec<usize>,
+        vertices: Vec<usize>,
+        fit: &Self::Fit,
+    ) -> ToroidalHypothesis {
+        let mut error_max = 0.0_f64;
+        let mut centroid_error_max = 0.0_f64;
+        let mut error_abs_sum = 0.0_f64;
+        for &vi in &vertices {
+            let v = &mesh.vertices[vi];
+            let d = vertex_to_torus_distance(
+                v, &fit.center, &fit.axis_direction, fit.major_radius, fit.minor_radius,
+            ).abs();
+            error_max = error_max.max(d);
+            error_abs_sum += d;
+        }
+        for &fi in &faces {
+            let c = face_centroid(&mesh.faces[fi], &mesh.vertices);
+            let v = MeshVertex::from_xyz(c[0], c[1], c[2]);
+            let d = vertex_to_torus_distance(
+                &v, &fit.center, &fit.axis_direction, fit.major_radius, fit.minor_radius,
+            ).abs();
+            centroid_error_max = centroid_error_max.max(d);
+        }
+        ToroidalHypothesis {
+            center: fit.center,
+            axis_direction: fit.axis_direction,
+            major_radius: fit.major_radius,
+            minor_radius: fit.minor_radius,
+            convex: fit.convex.unwrap_or(true),
+            faces,
+            vertices,
+            error_max,
+            centroid_error_max,
+            error_abs_sum,
+        }
+    }
 }

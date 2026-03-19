@@ -569,6 +569,11 @@ Each stage should have a source file stageN.rs, with a definition of that stage'
 - [x] Stage 3.3: Non-tangent cone and torus edge intersections via `GeomAPI_IntSS` with curve selection — already works for all test models (simple_cone, cone_cylinder, nosecone, block_with_conical_hole all pass stage 3.6 compare).
 - [x] Stage 3.4: Conical face construction — already works for all test models. Existing UV-bounds and face creation code handles cones correctly.
 - [x] Stage 3.4: Toroidal face construction — fixed doubly-periodic V-bounds. The torus V parameter is periodic in [0, 2π]; simple min/max produced wrong bounds for faces crossing V=0. Applied circular gap algorithm (same as U-bounds for partial revolution). Fixed filleted_cylinder volume: 13.5% error → <1e-7 relative diff. Fixed filleted_pipe: 6.4% → <1e-7.
+
+### Incorporate learnings from aborted C++ implementation
+
+- [x] Port abstracted BFS region growing from C++ implementation. Created `src/stage2/bfs.rs` with a `SurfaceType` trait (associated types `Fit` and `Hypothesis`, methods for seeding, fitting, distance computation, acceptance testing, hypothesis building) and a generic `generate_hypotheses::<S>()` function. Implemented trait for all 5 surface types: `PlanarSurface`, `CylindricalSurface`, `SphericalSurface`, `ConicalSurface`, `ToroidalSurface`. Replaced 5 separate `deduce_*_hypotheses()` calls in stage2 with generic BFS invocations. Added post-BFS planar fallback synthesis for uncovered faces. Old per-type BFS functions retained (with `#[allow(dead_code)]`) as reference. **Regressions**: 8 `block_with_conical_hole` tests fail (0 conical hypotheses produced — the generic BFS lacks the old code's multi-axis LM rescue for cone seeds, which is needed when seed faces include non-conical faces near the apex). All other 388 tests pass. Stage 2 is ~3× slower (255s vs ~80s baseline) due to the generic BFS trying more seeds.
+
 - [ ] Full pipeline tests: all test models including cone and torus models and filleted_cylinder, filleted_hole_block, filleted_pipe pass --compare through stage 4.1. Unblock existing `pipe_elbow_10_fine` (onshape) test.
 
 ### Unified Surface-of-Revolution Framework (refactor)

@@ -379,6 +379,18 @@ Normal-line intersections between adjacent faces on a torus produce a **mix** of
 
 Component-based seeding fails for tori because connected components typically contain cylinder body faces and fillet faces mixed together (e.g., a 383-face component). Face-based seeding works: for each uncommitted candidate face, build a seed consisting of that face plus all faces sharing at least one vertex (the 1-ring vertex neighborhood). Only uncommitted faces are included. Seeds with <7 faces or <9 vertices are skipped. BFS naturally skips faces already committed to a toroidal hypothesis, so later seeds avoid already-identified regions. This is simpler and more robust than vertex-neighborhood seeding with post-merge: every toroidal face gets a chance to anchor a hypothesis without needing merge to combine overlapping seeds.
 
+### Generic BFS abstraction (bfs.rs)
+
+The `SurfaceType` trait in `bfs.rs` unifies BFS region growing across all 5 surface types. Key design decisions:
+- Associated types `Fit` (surface parameters) and `Hypothesis` (hypothesis struct) avoid trait objects.
+- `generate_seeds()` returns `Vec<Seed>` — each type has its own seeding strategy (face-pair for plane/cylinder, vertex-neighborhood for sphere, apex-vertex for cone, 1-ring for torus).
+- `fit_surface()` takes face/vertex lists and returns `Option<Fit>` — type-specific fitting logic.
+- `vertex_distance()` computes point-to-surface distance for BFS expansion.
+- `acceptance_test()` validates after BFS (angular coverage, min face count, etc.).
+- `seed_vtol_multiplier()` and `angular_tol_multiplier()` allow per-type tolerance overrides (defaults 1.0).
+- **Performance regression**: The generic BFS is ~3× slower than per-type BFS because it generates more seeds (it tries all seeds from `generate_seeds()` instead of early-terminating). The per-type code had hand-tuned seed iteration with domain-specific early exit.
+- **Conical BFS regression**: The generic BFS lacks the old cone code's multi-axis LM rescue (6 axis guesses × patience-500 LM) for seeds that include non-conical faces near the apex. Without this, cone seeds get ~3e-5 max error (vs vtol 1e-5), failing seed validation. Adding the rescue back makes it work but is prohibitively slow for the full suite (~600s vs ~80s baseline).
+
 ### Multi-axis LM rescue for small torus patches
 
 Small torus patches (~15° of the major circle) often defeat geometric axis estimation because there is insufficient angular coverage for reliable PCA or normal covariance analysis. When the initial geometric fit fails vertex_tolerance, a multi-axis Levenberg–Marquardt rescue tries 5 axis candidates: the geometric estimate, the normal covariance smallest eigenvector, and the three coordinate axes. For each axis, vertices are projected to a 2D plane perpendicular to the axis, a 2D algebraic circle (Kasa method, 3×3 system) estimates center and major radius, and LM refines from there. The best result across all candidates is kept if it achieves vertex_tolerance.

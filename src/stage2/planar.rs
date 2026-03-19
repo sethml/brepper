@@ -18,6 +18,7 @@ use super::{
 // ---------------------------------------------------------------------------
 
 /// Signed distance from a vertex to a plane defined by (normal, distance).
+#[allow(dead_code)]
 pub(super) fn vertex_to_plane_distance(v: &MeshVertex, normal: &[f64; 3], distance: f64) -> f64 {
     normal[0] * v.x + normal[1] * v.y + normal[2] * v.z - distance
 }
@@ -57,6 +58,7 @@ pub(super) fn fit_plane(
 }
 
 /// Check that all vertices in a set are within tolerance of a plane.
+#[allow(dead_code)]
 fn all_vertices_within_tolerance(
     vertex_set: &HashSet<usize>,
     normal: &[f64; 3],
@@ -81,6 +83,7 @@ fn all_vertices_within_tolerance(
 /// For each unassigned face, creates a new planar hypothesis seeded from that
 /// face's plane, then grows it via BFS to neighboring faces that are coplanar
 /// (normal alignment and vertex-to-plane distance within tolerance).
+#[allow(dead_code)]
 pub(super) fn deduce_planar_hypotheses(
     mesh: &mut ConnectedMesh,
     vertex_tol: f64,
@@ -439,4 +442,98 @@ pub(super) fn compare_planar_hypotheses(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// SurfaceType trait implementation for generic BFS
+// ---------------------------------------------------------------------------
+
+use super::bfs::{BfsConfig, Seed, SurfaceType};
+
+/// Fitted plane parameters.
+#[derive(Clone)]
+pub(super) struct PlaneFit {
+    pub normal: [f64; 3],
+    pub distance: f64,
+}
+
+/// Marker struct for the planar surface type.
+pub(super) struct PlanarSurface;
+
+impl SurfaceType for PlanarSurface {
+    type Fit = PlaneFit;
+    type Hypothesis = PlanarHypothesis;
+
+    fn name() -> &'static str { "planar" }
+
+    fn hypothesis_field(face: &MeshFace) -> i32 { face.planar_hypothesis }
+
+    fn set_hypothesis_field(face: &mut MeshFace, value: i32) {
+        face.planar_hypothesis = value;
+    }
+
+    fn undeduced_value() -> i32 { UNDEDUCED_PLANAR_HYPOTHESIS }
+
+    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, _config: &BfsConfig) -> Vec<Seed> {
+        // Single-face seed, like C++ PlanarTraits
+        if mesh.faces[fi].normal.is_none() {
+            return Vec::new();
+        }
+        vec![Seed { faces: vec![fi] }]
+    }
+
+    fn fit_surface(
+        mesh: &ConnectedMesh,
+        face_list: &[usize],
+        vertex_list: &[usize],
+        _verbosity: u8,
+    ) -> Option<Self::Fit> {
+        let vertex_set: HashSet<usize> = vertex_list.iter().copied().collect();
+        let (normal, distance) = fit_plane(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
+        Some(PlaneFit { normal, distance })
+    }
+
+    fn vertex_distance(fit: &Self::Fit, pos: &[f64; 3]) -> f64 {
+        (fit.normal[0] * pos[0] + fit.normal[1] * pos[1] + fit.normal[2] * pos[2] - fit.distance)
+            .abs()
+    }
+
+    fn acceptance_test(
+        _mesh: &ConnectedMesh,
+        face_list: &[usize],
+        _fit: &Self::Fit,
+        _config: &BfsConfig,
+    ) -> bool {
+        // Require at least 2 faces for BFS-generated planar hypotheses.
+        // Single-face fallbacks are synthesized in stage 2.6.
+        face_list.len() >= 2
+    }
+
+    fn make_hypothesis(
+        mesh: &ConnectedMesh,
+        faces: Vec<usize>,
+        vertices: Vec<usize>,
+        fit: &Self::Fit,
+    ) -> PlanarHypothesis {
+        let mut error_max = f64::NEG_INFINITY;
+        let mut error_min = f64::INFINITY;
+        let mut error_abs_sum = 0.0_f64;
+        for &vi in &vertices {
+            let v = &mesh.vertices[vi];
+            let d = fit.normal[0] * v.x + fit.normal[1] * v.y + fit.normal[2] * v.z
+                - fit.distance;
+            error_max = error_max.max(d);
+            error_min = error_min.min(d);
+            error_abs_sum += d.abs();
+        }
+        PlanarHypothesis {
+            normal: fit.normal,
+            distance: fit.distance,
+            faces,
+            vertices,
+            error_max,
+            error_min,
+            error_abs_sum,
+        }
+    }
 }

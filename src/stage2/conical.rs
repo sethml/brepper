@@ -469,6 +469,7 @@ fn fit_cone(
 }
 
 /// Check if all vertices in a set are within tolerance of a cone surface.
+#[allow(dead_code)]
 fn all_vertices_within_cone_tolerance(
     vertex_set: &HashSet<usize>,
     apex: &[f64; 3],
@@ -570,6 +571,7 @@ fn angular_coverage_valid(
 // Trial BFS for conical hypothesis evaluation
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 struct ConeTrialResult {
     faces: Vec<usize>,
     vertices: HashSet<usize>,
@@ -586,6 +588,7 @@ struct ConeTrialResult {
 /// Run a trial BFS for a conical hypothesis starting from seed faces.
 /// Returns None if the trial fails validation.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 fn run_cone_trial_bfs(
     seed_faces: &[usize],
     mesh: &ConnectedMesh,
@@ -1210,6 +1213,7 @@ fn run_cone_trial_bfs(
 /// don't give enough geometric spread), we identify potential apex vertices —
 /// vertices shared by many non-coplanar faces — and use all faces incident to
 /// each apex vertex as the seed set. This gives robust axis estimation.
+#[allow(dead_code)]
 pub(super) fn deduce_conical_hypotheses(
     mesh: &mut ConnectedMesh,
     vertex_tol: f64,
@@ -1524,4 +1528,200 @@ pub(super) fn compare_conical_hypotheses(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// SurfaceType trait implementation for generic BFS
+// ---------------------------------------------------------------------------
+
+use super::bfs::{BfsConfig, Seed, SurfaceType};
+
+/// Fitted cone parameters.
+#[derive(Clone)]
+pub(super) struct ConeFit {
+    pub apex: [f64; 3],
+    pub axis_direction: [f64; 3],
+    pub half_angle: f64,
+    pub convex: Option<bool>,
+}
+
+/// Marker struct for the conical surface type.
+pub(super) struct ConicalSurface;
+
+impl SurfaceType for ConicalSurface {
+    type Fit = ConeFit;
+    type Hypothesis = ConicalHypothesis;
+
+    fn name() -> &'static str { "conical" }
+
+    fn hypothesis_field(face: &MeshFace) -> i32 { face.conical_hypothesis }
+
+    fn set_hypothesis_field(face: &mut MeshFace, value: i32) {
+        face.conical_hypothesis = value;
+    }
+
+    fn undeduced_value() -> i32 { UNDEDUCED_CONICAL_HYPOTHESIS }
+
+    fn face_eligible(face: &MeshFace) -> bool {
+        face.conical_hypothesis == UNDEDUCED_CONICAL_HYPOTHESIS
+            && face.cylindrical_hypothesis < 0
+    }
+
+    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, _config: &BfsConfig) -> Vec<Seed> {
+        // Apex-vertex seeding: for each vertex of fi, check if it qualifies as an
+        // apex candidate (many non-coplanar incident faces).
+        if mesh.faces[fi].normal.is_none() {
+            return Vec::new();
+        }
+        if mesh.faces[fi].cylindrical_hypothesis >= 0 {
+            return Vec::new();
+        }
+
+        let vc = mesh.faces[fi].vertex_count as usize;
+        let mut seeds = Vec::new();
+
+        for &vi in &mesh.faces[fi].vertex_indices[..vc] {
+            // Collect incident faces for this vertex that are eligible
+            let mut incident: Vec<usize> = Vec::new();
+            for (fj, face) in mesh.faces.iter().enumerate() {
+                let fj_vc = face.vertex_count as usize;
+                let contains_vi = face.vertex_indices[..fj_vc].contains(&vi);
+                if contains_vi
+                    && face.conical_hypothesis == UNDEDUCED_CONICAL_HYPOTHESIS
+                    && face.normal.is_some()
+                    && face.cylindrical_hypothesis < 0
+                {
+                    incident.push(fj);
+                }
+            }
+
+            if incident.len() < MIN_CONE_FACES {
+                continue;
+            }
+
+            // Check non-coplanarity of normals
+            let cov = build_normal_covariance(&incident, &mesh.faces, &mesh.vertices);
+            let axis = smallest_eigenvector_3x3(&cov);
+            let eigenval = cov[0] * axis[0] * axis[0]
+                + cov[3] * axis[1] * axis[1]
+                + cov[5] * axis[2] * axis[2]
+                + 2.0 * cov[1] * axis[0] * axis[1]
+                + 2.0 * cov[2] * axis[0] * axis[2]
+                + 2.0 * cov[4] * axis[1] * axis[2];
+            let trace = cov[0] + cov[3] + cov[5];
+            if trace < 1e-10 || eigenval / trace > 0.3 {
+                continue;
+            }
+
+            seeds.push(Seed { faces: incident });
+        }
+        seeds
+    }
+
+    fn fit_surface(
+        mesh: &ConnectedMesh,
+        face_list: &[usize],
+        vertex_list: &[usize],
+        _verbosity: u8,
+    ) -> Option<Self::Fit> {
+        let vertex_set: HashSet<usize> = vertex_list.iter().copied().collect();
+        let (apex, dir, ha) = fit_cone(face_list, &vertex_set, &mesh.faces, &mesh.vertices)?;
+        // Reject degenerate half-angles
+        let ha_deg = ha.to_degrees();
+        if !(MIN_HALF_ANGLE_DEG..=MAX_HALF_ANGLE_DEG).contains(&ha_deg) {
+            return None;
+        }
+        // Reject apex too far from mesh
+        let bb_diag = super::bounding_box_diagonal(&mesh.vertices);
+        let bb_center = {
+            let mut min = [f64::INFINITY; 3];
+            let mut max = [f64::NEG_INFINITY; 3];
+            for v in &mesh.vertices {
+                min[0] = min[0].min(v.x); max[0] = max[0].max(v.x);
+                min[1] = min[1].min(v.y); max[1] = max[1].max(v.y);
+                min[2] = min[2].min(v.z); max[2] = max[2].max(v.z);
+            }
+            [(min[0]+max[0])/2.0, (min[1]+max[1])/2.0, (min[2]+max[2])/2.0]
+        };
+        let apex_dist = ((apex[0] - bb_center[0]).powi(2)
+            + (apex[1] - bb_center[1]).powi(2)
+            + (apex[2] - bb_center[2]).powi(2)).sqrt();
+        if apex_dist > bb_diag * MAX_APEX_DISTANCE_FACTOR {
+            return None;
+        }
+        Some(ConeFit { apex, axis_direction: dir, half_angle: ha, convex: None })
+    }
+
+    fn vertex_distance(fit: &Self::Fit, pos: &[f64; 3]) -> f64 {
+        let v = MeshVertex::from_xyz(pos[0], pos[1], pos[2]);
+        vertex_to_cone_distance(&v, &fit.apex, &fit.axis_direction, fit.half_angle).abs()
+    }
+
+    fn convexity_check(fit: &Self::Fit, mesh: &ConnectedMesh, fi: usize) -> bool {
+        if let Some(convex) = fit.convex {
+            let fi_convex = determine_convexity(
+                &mesh.faces[fi], &mesh.vertices, &fit.apex, &fit.axis_direction,
+            );
+            fi_convex == convex
+        } else {
+            true
+        }
+    }
+
+    fn determine_convexity(mesh: &ConnectedMesh, face_list: &[usize], fit: &mut Self::Fit) {
+        if let Some(&first) = face_list.first() {
+            fit.convex = Some(determine_convexity(
+                &mesh.faces[first], &mesh.vertices, &fit.apex, &fit.axis_direction,
+            ));
+        }
+    }
+
+    fn acceptance_test(
+        mesh: &ConnectedMesh,
+        face_list: &[usize],
+        fit: &Self::Fit,
+        _config: &BfsConfig,
+    ) -> bool {
+        if face_list.len() < MIN_CONE_FACES {
+            return false;
+        }
+        angular_coverage_valid(
+            face_list, &fit.apex, &fit.axis_direction,
+            &mesh.faces, &mesh.vertices,
+        )
+    }
+
+    fn make_hypothesis(
+        mesh: &ConnectedMesh,
+        faces: Vec<usize>,
+        vertices: Vec<usize>,
+        fit: &Self::Fit,
+    ) -> ConicalHypothesis {
+        let mut error_max = 0.0_f64;
+        let mut centroid_error_max = 0.0_f64;
+        let mut error_abs_sum = 0.0_f64;
+        for &vi in &vertices {
+            let v = &mesh.vertices[vi];
+            let d = vertex_to_cone_distance(v, &fit.apex, &fit.axis_direction, fit.half_angle).abs();
+            error_max = error_max.max(d);
+            error_abs_sum += d;
+        }
+        for &fi in &faces {
+            let c = face_centroid(&mesh.faces[fi], &mesh.vertices);
+            let v = MeshVertex::from_xyz(c[0], c[1], c[2]);
+            let d = vertex_to_cone_distance(&v, &fit.apex, &fit.axis_direction, fit.half_angle).abs();
+            centroid_error_max = centroid_error_max.max(d);
+        }
+        ConicalHypothesis {
+            apex: fit.apex,
+            axis_direction: fit.axis_direction,
+            half_angle: fit.half_angle,
+            convex: fit.convex.unwrap_or(true),
+            faces,
+            vertices,
+            error_max,
+            centroid_error_max,
+            error_abs_sum,
+        }
+    }
 }
