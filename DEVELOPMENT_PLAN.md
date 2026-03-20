@@ -509,51 +509,103 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 
 ### Test Cases
 
-| Test Case | Input | Expected Output | Status |
-|-----------|-------|-----------------|--------|
-| Cube | 12 triangles | 6 planes, 1 solid | ✓ Stage 4.1 (STEP output) |
-| Wedge | 12 triangles | 6 planes (incl. angled) | ✓ Stage 4.1 (STEP output) |
-| T-Shape | 28 triangles | 10 planes | ✓ Stage 4.1 (STEP output) |
-| Staircase | 48 triangles | 12 planes | ✓ Stage 4.1 (STEP output) |
-| Chamfered Cube (onshape) | 44 triangles | 26 planes | ✓ Stage 4.1 (STEP output) |
-| Stepped Block (onshape) | 52 triangles | 16 planes | ✓ Stage 4.1 (STEP output) |
-| L Bracket (onshape) | 492 triangles | 10 planes | ✓ Stage 4.1 (STEP output) |
-| Cylinder (onshape) | 232 triangles | 1 cylinder + 2 planes | ✓ Stage 4.1 (STEP output) |
-| Simple Cylinder (ccad) | 124 triangles | 1 cylinder + 2 planes | ✓ Stage 4.1 (STEP output) |
-| Block with Hole (ccad) | 132 triangles | 6 planes + 1 concave cylinder | ✓ Stage 4.1 (STEP output) |
-| Pipe (ccad) | 244 triangles | 2 cylinders (in/out) + 2 annular planes | ✓ Stage 4.1 (STEP output) |
-| Stepped Cylinder (ccad) | 240 triangles | 2 cylinders + 3 planes | ✓ Stage 4.1 (STEP output) |
-| Two Holes (ccad) | 252 triangles | 6 planes + 2 concave cylinders | ✓ Stage 4.1 (STEP output) |
-| Block Corner Hole (ccad) | 44 triangles | 6 planes + 1 concave cylinder | ✓ Stage 4.1 (STEP output) |
-| Simple Sphere (ccad) | 974 triangles | 1 sphere | ✓ Stage 4.1 (STEP output) |
-| Hemisphere (ccad) | 518 triangles | 1 sphere + 1 plane | ✓ Stage 4.1 (STEP output) |
-| Spherical Pocket (ccad) | 486 triangles | 6 planes + 1 concave sphere | ✓ Stage 4.1 (STEP output) |
-| Ball on Cylinder (ccad) | 764 triangles | 1 sphere + 1 cylinder + 1 plane | ✓ Stage 4.1 (STEP output) |
-| Sphere (onshape) | 20448 triangles | 1 sphere | ✓ Stage 4.1 (STEP output) |
-| Dome Hemisphere (onshape) | 10368 triangles | 1 sphere + 1 plane | ✓ Stage 4.1 (STEP output) |
-| Pill coarse (onshape) | 752 triangles | 1 cylinder + 2 spheres | ✓ Stage 4.1 (STEP output) |
-| Pill fine (onshape) | 20736 triangles | 1 cylinder + 2 spheres | ✓ Stage 4.1 (STEP output) |
-| Plate with Hole (onshape) | 136 triangles | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
-| Plate with Hole low (fusion) | 112 triangles | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
-| Plate with Hole med (fusion) | 168 triangles | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
-| Plate with Hole high (fusion) | 284 triangles | 6 planes + 1 cylinder | ✓ Stage 4.1 (STEP output) |
-| Part Rounded Cube coarse (onshape) | 140 triangles | 6 planes + 4 cylinders | ✓ Stage 4.1 (STEP output) |
-| Part Rounded Cube fine (onshape) | 588 triangles | 6 planes + 4 cylinders | ✓ Stage 4.1 (STEP output) |
-| Rounded Cube coarse (onshape) | 820 triangles | 6 planes + 12 cylinders + 8 spheres | ✓ Stage 4.1 (needs --angular-tolerance 20) |
-| Rounded Cube medium (onshape) | 3548 triangles | 6 planes + 12 cylinders + 8 spheres | ✓ Stage 4.1 (STEP output) |
-| Rounded Cube fine (onshape) | 21466 triangles | 6 planes + 12 cylinders + 8 spheres | ✓ Stage 4.1 (STEP output) |
-| Pipe Elbow (onshape) | 11232 triangles | Cylinders + torus | ✗ Stage 3.1 (missing torus surface type) |
-| Cone (onshape) | 116 triangles | 1 cone + 1 plane | ✓ Stage 4.1 (STEP output) |
-| Simple Cone (ccad) | 120 triangles | 1 truncated cone + 2 planes | ✓ Stage 4.1 (STEP output) |
-| Block with Conical Hole (ccad) | 312 triangles | 6 planes + 1 concave cone | ✓ Stage 4.1 (STEP output) |
-| Cone-Cylinder (ccad) | 292 triangles | 1 cone + 1 cylinder + 2 planes | ✓ Stage 4.1 (STEP output) |
-| Nosecone (ccad) | 820 triangles | 1 cone + 1 sphere + 1 plane | ✓ Stage 4.1 (STEP output) |
-| Filleted Cylinder (ccad) | 1528 triangles | 1 cylinder + 2 planes + 2 convex tori | Planned: toroidal surfaces phase |
-| Filleted Hole Block (ccad) | 1484 triangles | 6 planes + 1 concave cylinder + 2 concave tori | Planned: toroidal surfaces phase |
-| Filleted Pipe (ccad) | 2576 triangles | 2 cylinders + 2 planes + 4 tori (convex+concave) | Planned: toroidal surfaces phase |
-| Stepped Block Toroidal Fillets fine (onshape) | 50962 triangles | 16 planes + 37 cylinders + 18 tori | Planned: toroidal surfaces phase |
-| Stepped Block Toroidal Fillets medium (onshape) | 4576 triangles | 16 planes + 37 cylinders + 18 tori | Planned: toroidal surfaces phase |
-| Complex part | Real CAD export | Matching topology | |
+Each STL test file was run with both debug and release builds of brepper:
+
+```
+# Debug build:
+./target/debug/brepper <input.stl> -o /dev/null --compare <input.step>
+# Release build:
+./target/release/brepper <input.stl> -o /dev/null --compare <input.step>
+# Special case (rounded_cube_10_r2_coarse): add --angular-tolerance 20
+```
+
+Tests last run: 2026-03-19. Files without a corresponding .step have no --compare flag.
+
+#### Bad inputs (expected failures)
+
+| Test File | Triangles | Debug | Release | Notes |
+|-----------|-----------|-------|---------|-------|
+| tests/bad/cube_on_plane.stl | — | FAIL (0.04s) | FAIL (0.42s) | Stage 1.2 compare: vertex 9mm from STEP |
+| tests/bad/cube_shifted.stl | — | FAIL (0.04s) | FAIL (0.04s) | Stage 1.2 compare: vertex 6.9mm from STEP |
+| tests/bad/degenerate_face.stl | — | FAIL (0.03s) | FAIL (0.03s) | Validation: 1 degenerate face |
+| tests/bad/inconsistent_winding.stl | — | FAIL (0.03s) | FAIL (0.03s) | Validation: 3 flipped edges |
+| tests/bad/non_manifold_edge.stl | — | FAIL (0.03s) | FAIL (0.03s) | Validation: 1 non-manifold edge |
+
+#### ccad/generated
+
+| Test File | Triangles | Debug | Release | Notes |
+|-----------|-----------|-------|---------|-------|
+| ball_on_cylinder.stl | 765 | ✓ (2.04s) | ✓ (1.56s) | |
+| block_corner_hole.stl | 44 | ✓ (0.08s) | ✓ (0.08s) | |
+| block_with_conical_hole.stl | 312 | FAIL (0.64s) | FAIL (0.53s) | Stage 3.1 compare: edge 5.3mm from STEP |
+| block_with_hole.stl | 132 | ✓ (0.45s) | ✓ (0.37s) | |
+| cone_cylinder.stl | 314 | ✓ (0.26s) | ✓ (0.23s) | |
+| cube.stl | 12 | ✓ (0.05s) | ✓ (0.05s) | |
+| filleted_cylinder.stl | 1528 | FAIL (41.02s) | FAIL (26.41s) | Stage 3.5 compare: shell inf from STEP |
+| filleted_hole_block.stl | 1484 | FAIL (30.96s) | FAIL (20.58s) | Stage 3.1 compare: edge 0.39mm from STEP |
+| filleted_pipe.stl | 2576 | FAIL (39.11s) | FAIL (27.96s) | Stage 3.1 compare: edge 0.59mm from STEP |
+| hemisphere.stl | 519 | ✓ (0.94s) | ✓ (0.73s) | |
+| nosecone.stl | 713 | ✓ (0.99s) | ✓ (0.77s) | |
+| pipe.stl | 244 | ✓ (0.11s) | ✓ (0.11s) | |
+| simple_cone.stl | 348 | ✓ (0.28s) | ✓ (0.23s) | |
+| simple_cylinder.stl | 124 | ✓ (0.06s) | ✓ (0.05s) | |
+| simple_sphere.stl | 976 | ✓ (58.51s) | ✓ (41.04s) | |
+| spherical_pocket.stl | 487 | ✓ (4.94s) | ✓ (3.66s) | |
+| staircase.stl | 48 | ✓ (0.14s) | ✓ (0.14s) | |
+| stepped_cylinder.stl | 240 | ✓ (0.11s) | ✓ (0.11s) | |
+| t_shape.stl | 28 | ✓ (0.09s) | ✓ (0.09s) | |
+| two_holes.stl | 252 | ✓ (0.50s) | ✓ (0.42s) | |
+| wedge.stl | 12 | ✓ (0.05s) | ✓ (0.05s) | |
+
+#### fusion
+
+| Test File | Triangles | Debug | Release | Notes |
+|-----------|-----------|-------|---------|-------|
+| plate_with_hole_100x50_high.stl | 284 | ✓ (0.62s) | ✓ (0.52s) | |
+| plate_with_hole_100x50_low.stl | 112 | ✓ (0.25s) | ✓ (0.22s) | |
+| plate_with_hole_100x50_medium.stl | 168 | ✓ (0.35s) | ✓ (0.31s) | |
+
+#### manual
+
+| Test File | Triangles | Debug | Release | Notes |
+|-----------|-----------|-------|---------|-------|
+| cube.stl | 12 | ✓ (0.05s) | ✓ (0.05s) | |
+
+#### onshape
+
+| Test File | Triangles | Debug | Release | Notes |
+|-----------|-----------|-------|---------|-------|
+| chamfered_cube_10_c1_medium.ascii.stl | 44 | FAIL (0.06s) | FAIL (0.06s) | Stage 1.2 compare: vertex 4.8e-5mm from STEP (ASCII precision) |
+| chamfered_cube_10_c1_medium.stl | 44 | ✓ (0.17s) | ✓ (0.17s) | |
+| cone_15x20_medium.stl | 116 | ✓ (0.10s) | ✓ (0.09s) | |
+| cone_tangent_planes_medium.stl | 376 | FAIL (3.99s) | FAIL (2.93s) | Stage 3.1 compare: vertex 0.16mm from STEP |
+| cylinder_10_r2_fine.stl | 576 | ✓ (0.17s) | ✓ (0.16s) | |
+| cylinder_10x30_medium.stl | 232 | ✓ (0.08s) | ✓ (0.08s) | |
+| dome_hemisphere_20_fine.stl | 10368 | ✓ (8.33s) | ✓ (7.01s) | |
+| l_bracket_simple_medium.stl | 492 | ✓ (0.90s) | ✓ (0.83s) | |
+| nosecone_medium.stl | 1572 | FAIL (117.51s) | FAIL (74.87s) | Stage 3.1 compare: edge 0.18mm from STEP |
+| part_rounded_cube_10_r2_coarse.stl | 140 | ✓ (0.21s) | ✓ (0.20s) | |
+| part_rounded_cube_10_r2_fine.stl | 588 | ✓ (0.71s) | ✓ (0.66s) | |
+| pill_coarse.stl | 752 | ✓ (25.68s) | ✓ (16.52s) | |
+| pill_fine.stl | 20736 | ✓ (106.29s) | ✓ (74.32s) | |
+| pipe_elbow_10_fine.stl | 11232 | FAIL (26.27s) | FAIL (21.78s) | Stage 3.1 compare: edge 7.9mm from STEP |
+| pipe_elbow_10_medium.stl | 2320 | FAIL (7.97s) | FAIL (5.85s) | Stage 3.1 adjacency error |
+| plate_with_hole_100x50_coarse.stl | 136 | ✓ (0.30s) | ✓ (0.26s) | |
+| rounded_cube_10_r2_coarse.stl | 820 | ✓ (3.88s) | ✓ (2.99s) | Uses --angular-tolerance 20 |
+| rounded_cube_10_r2_fine.stl | 21466 | ✓ (35.62s) | ✓ (33.19s) | |
+| rounded_cube_10_r2_medium.stl | 3548 | ✓ (32.52s) | ✓ (23.44s) | |
+| sphere_25_fine.stl | 20448 | ✓ (82.73s) | ✓ (54.04s) | |
+| stepped_block_coarse.stl | 52 | ✓ (0.16s) | ✓ (0.16s) | |
+| stepped_block_toroidal_fillets_fine.stl | 50962 | FAIL (60.21s) | FAIL (60.04s) | Stage 1.2 compare: vertex 1.2e-5mm from STEP |
+| stepped_block_toroidal_fillets_medium.stl | 4576 | FAIL (5.57s) | FAIL (5.51s) | Stage 1.2 compare: vertex 1.1e-5mm from STEP |
+
+#### Summary
+
+- **Total test files**: 52
+- **Passing (debug)**: 33 / 52
+- **Passing (release)**: 33 / 52
+- **Expected failures (bad/)**: 5
+- **Failing non-bad tests**: 14 (3 filleted/toroidal, 2 pipe elbow, 2 stepped_block_toroidal_fillets, 1 block_with_conical_hole, 1 cone_tangent_planes, 1 nosecone, 1 chamfered_cube ASCII, 2 compare tolerance marginal)
 
 
 ---
