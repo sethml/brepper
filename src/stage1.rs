@@ -16,9 +16,8 @@ use std::fmt::{Display, Formatter};
 
 pub const UNDEDUCED_PLANAR_HYPOTHESIS: i32 = -2;
 pub const NO_HYPOTHESIS: i32 = -1;
-pub const UNDEDUCED_CYLINDRICAL_HYPOTHESIS: i32 = -2;
-pub const UNDEDUCED_SPHERICAL_HYPOTHESIS: i32 = -2;
 pub const UNDEDUCED_CONICAL_HYPOTHESIS: i32 = -2;
+pub const UNDEDUCED_SPHERICAL_HYPOTHESIS: i32 = -2;
 pub const UNDEDUCED_TOROIDAL_HYPOTHESIS: i32 = -2;
 
 // ---------------------------------------------------------------------------
@@ -45,9 +44,8 @@ pub struct MeshFace {
     pub neighbors: [i32; 4],
     pub normal: Option<[f64; 3]>,
     pub planar_hypothesis: i32,
-    pub cylindrical_hypothesis: i32,
-    pub spherical_hypothesis: i32,
     pub conical_hypothesis: i32,
+    pub spherical_hypothesis: i32,
     pub toroidal_hypothesis: i32,
 }
 
@@ -305,9 +303,8 @@ pub fn read_connected_mesh_from_stl(
             neighbors: [-1, -1, -1, -1],
             normal: None,
             planar_hypothesis: UNDEDUCED_PLANAR_HYPOTHESIS,
-            cylindrical_hypothesis: UNDEDUCED_CYLINDRICAL_HYPOTHESIS,
-            spherical_hypothesis: UNDEDUCED_SPHERICAL_HYPOTHESIS,
             conical_hypothesis: UNDEDUCED_CONICAL_HYPOTHESIS,
+            spherical_hypothesis: UNDEDUCED_SPHERICAL_HYPOTHESIS,
             toroidal_hypothesis: UNDEDUCED_TOROIDAL_HYPOTHESIS,
         });
     }
@@ -956,9 +953,8 @@ mod tests {
             neighbors: [-1, -1, -1, -1],
             normal: None,
             planar_hypothesis: UNDEDUCED_PLANAR_HYPOTHESIS,
-            cylindrical_hypothesis: UNDEDUCED_CYLINDRICAL_HYPOTHESIS,
-            spherical_hypothesis: UNDEDUCED_SPHERICAL_HYPOTHESIS,
             conical_hypothesis: UNDEDUCED_CONICAL_HYPOTHESIS,
+            spherical_hypothesis: UNDEDUCED_SPHERICAL_HYPOTHESIS,
             toroidal_hypothesis: UNDEDUCED_TOROIDAL_HYPOTHESIS,
         }
     }
@@ -977,7 +973,7 @@ mod tests {
             assert_eq!(face.neighbors, [-1, -1, -1, -1]);
             assert!(face.normal.is_none());
             assert_eq!(face.planar_hypothesis, UNDEDUCED_PLANAR_HYPOTHESIS);
-            assert_eq!(face.cylindrical_hypothesis, UNDEDUCED_CYLINDRICAL_HYPOTHESIS);
+            assert_eq!(face.conical_hypothesis, UNDEDUCED_CONICAL_HYPOTHESIS);
             assert_eq!(face.spherical_hypothesis, UNDEDUCED_SPHERICAL_HYPOTHESIS);
         }
     }

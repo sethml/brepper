@@ -183,10 +183,10 @@ fn block_with_hole_topology() {
     // The cylindrical face should exist
     let cyl_faces: Vec<_> = output.face_descriptors.iter().enumerate()
         .filter(|(_, fd)| {
-            matches!(
-                output.stage2.selected_surfaces[fd.selected_surface_idx],
-                stage2::SelectedSurface::Cylindrical(_)
-            )
+            match &output.stage2.selected_surfaces[fd.selected_surface_idx] {
+                stage2::SelectedSurface::Conical(i) => output.stage2.conical_hypotheses[*i].is_cylinder(),
+                _ => false,
+            }
         })
         .collect();
     assert_eq!(cyl_faces.len(), 1, "should have 1 cylindrical face");

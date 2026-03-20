@@ -184,6 +184,23 @@ where
     let mut acceptance_failures = 0_u32;
     let mut committed = 0_u32;
 
+    // PROFILING: timing instrumentation
+    let prof_start = std::time::Instant::now();
+    let mut prof_faces_visited = 0_u64;
+    let mut prof_total_seed_count = 0_u64;
+    let mut prof_total_bfs_faces = 0_u64;
+    let mut prof_total_fit_calls = 0_u64;
+    let mut prof_total_refit_calls = 0_u64;
+    let mut prof_time_seed_gen = std::time::Duration::ZERO;
+    let mut prof_time_seed_fit = std::time::Duration::ZERO;
+    let mut prof_time_bfs = std::time::Duration::ZERO;
+    let mut prof_time_refit = std::time::Duration::ZERO;
+    let mut prof_time_final_fit = std::time::Duration::ZERO;
+    let mut prof_time_acceptance = std::time::Duration::ZERO;
+    let mut prof_max_seeds_per_face = 0_usize;
+    let mut prof_max_bfs_faces = 0_usize;
+    let mut prof_last_report = std::time::Instant::now();
+
     // Initialize hypothesis fields to UNDEDUCED
     for fi in 0..num_faces {
         S::set_hypothesis_field(&mut mesh.faces[fi], S::undeduced_value());
@@ -194,9 +211,27 @@ where
             continue;
         }
 
+        prof_faces_visited += 1;
+        // PROFILING: periodic progress report every 2 seconds
+        if prof_last_report.elapsed().as_secs_f64() > 2.0 {
+            eprintln!(
+                "  [{}-BFS PROFILE] fi={}/{} ({:.1}%), elapsed={:.1}s, seeds_so_far={}, fits={}, refits={}, committed={}",
+                S::name(), fi, num_faces, 100.0 * fi as f64 / num_faces as f64,
+                prof_start.elapsed().as_secs_f64(),
+                prof_total_seed_count, prof_total_fit_calls, prof_total_refit_calls, committed,
+            );
+            prof_last_report = std::time::Instant::now();
+        }
+
+        let t_seed_gen = std::time::Instant::now();
         let seeds = S::generate_seeds(mesh, fi, config);
+        prof_time_seed_gen += t_seed_gen.elapsed();
         if seeds.is_empty() {
             continue;
+        }
+        prof_total_seed_count += seeds.len() as u64;
+        if seeds.len() > prof_max_seeds_per_face {
+            prof_max_seeds_per_face = seeds.len();
         }
         seeds_generated += seeds.len() as u32;
 
@@ -213,13 +248,18 @@ where
             }
             let seed_vertices: Vec<usize> = seed_vertex_set.iter().copied().collect();
 
+            let t_fit = std::time::Instant::now();
             let fit = match S::fit_surface(mesh, &seed.faces, &seed_vertices, config.verbosity) {
                 Some(f) => f,
                 None => {
+                    prof_time_seed_fit += t_fit.elapsed();
+                    prof_total_fit_calls += 1;
                     fit_failures += 1;
                     continue;
                 }
             };
+            prof_time_seed_fit += t_fit.elapsed();
+            prof_total_fit_calls += 1;
             seeds_tried += 1;
 
             // Validate seed: vertex tolerance (using surface-specific multiplier)
@@ -295,6 +335,7 @@ where
             }
 
             // --- BFS expansion ---
+            let t_bfs = std::time::Instant::now();
             let mut trial_faces: Vec<usize> = seed.faces.clone();
             let mut trial_face_set: HashSet<usize> = seed.faces.iter().copied().collect();
             let mut trial_vertex_set: HashSet<usize> = seed_vertex_set.clone();
@@ -369,6 +410,7 @@ where
                         } else if max_vtx_dist > skip_vtol || ctr_dist > skip_stol {
                             continue;
                         } else {
+                            let t_refit = std::time::Instant::now();
                             let mut test_faces = trial_faces.clone();
                             test_faces.push(ni);
                             let mut test_verts = trial_vertices.clone();
@@ -378,8 +420,9 @@ where
 
                             let mut refit = match S::fit_surface(mesh, &test_faces, &test_verts, 0) {
                                 Some(f) => f,
-                                None => continue,
+                                None => { prof_time_refit += t_refit.elapsed(); prof_total_refit_calls += 1; continue; },
                             };
+                            prof_total_refit_calls += 1;
 
                             let mut refit_ok = true;
                             for &tfi in &test_faces {
@@ -404,6 +447,7 @@ where
                                 }
                             }
                             if !refit_ok {
+                                prof_time_refit += t_refit.elapsed();
                                 continue;
                             }
 
@@ -411,6 +455,7 @@ where
                             S::determine_convexity(mesh, &trial_faces, &mut refit);
                             current_fit = refit;
                             accepted = true;
+                            prof_time_refit += t_refit.elapsed();
                         }
                     }
 
@@ -425,8 +470,14 @@ where
                     }
                 }
             }
+            prof_time_bfs += t_bfs.elapsed();
+            prof_total_bfs_faces += trial_faces.len() as u64;
+            if trial_faces.len() > prof_max_bfs_faces {
+                prof_max_bfs_faces = trial_faces.len();
+            }
 
             // Final re-fit
+            let t_final = std::time::Instant::now();
             if let Some(final_fit) = S::fit_surface(
                 mesh,
                 &trial_faces,
@@ -483,11 +534,15 @@ where
 
             // (Re-)determine convexity after final refit
             S::determine_convexity(mesh, &trial_faces, &mut current_fit);
+            prof_time_final_fit += t_final.elapsed();
 
+            let t_accept = std::time::Instant::now();
             if !S::acceptance_test(mesh, &trial_faces, &current_fit, config) {
+                prof_time_acceptance += t_accept.elapsed();
                 acceptance_failures += 1;
                 continue;
             }
+            prof_time_acceptance += t_accept.elapsed();
 
             let total_area: f64 = trial_faces
                 .iter()
@@ -538,6 +593,28 @@ where
         );
     }
 
+    // PROFILING: final summary
+    let prof_total = prof_start.elapsed();
+    eprintln!(
+        "  [{}-BFS PROFILE SUMMARY] total={:.3}s, faces_visited={}, total_seeds={}, max_seeds_per_face={}",
+        S::name(), prof_total.as_secs_f64(), prof_faces_visited, prof_total_seed_count, prof_max_seeds_per_face,
+    );
+    eprintln!(
+        "    seed_gen={:.3}s, seed_fit={:.3}s ({} calls), bfs={:.3}s (total_bfs_faces={}, max={})",
+        prof_time_seed_gen.as_secs_f64(), prof_time_seed_fit.as_secs_f64(), prof_total_fit_calls,
+        prof_time_bfs.as_secs_f64(), prof_total_bfs_faces, prof_max_bfs_faces,
+    );
+    eprintln!(
+        "    refit={:.3}s ({} calls), final_fit={:.3}s, acceptance={:.3}s",
+        prof_time_refit.as_secs_f64(), prof_total_refit_calls,
+        prof_time_final_fit.as_secs_f64(), prof_time_acceptance.as_secs_f64(),
+    );
+    eprintln!(
+        "    avg_seed_fit={:.3}ms, avg_refit={:.3}ms",
+        if prof_total_fit_calls > 0 { prof_time_seed_fit.as_secs_f64() * 1000.0 / prof_total_fit_calls as f64 } else { 0.0 },
+        if prof_total_refit_calls > 0 { prof_time_refit.as_secs_f64() * 1000.0 / prof_total_refit_calls as f64 } else { 0.0 },
+    );
+
     (hypotheses, false)
 }
 
@@ -555,7 +632,7 @@ pub(super) trait HypothesisFaces {
 // ---------------------------------------------------------------------------
 
 /// Check if two faces are neighbors (share an edge).
-fn is_neighbor(mesh: &ConnectedMesh, fi: usize, fj: usize) -> bool {
+pub(super) fn is_neighbor(mesh: &ConnectedMesh, fi: usize, fj: usize) -> bool {
     let f = &mesh.faces[fi];
     let vc = f.vertex_count as usize;
     for &n in &f.neighbors[..vc] {

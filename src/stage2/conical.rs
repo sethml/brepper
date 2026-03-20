@@ -13,9 +13,10 @@ use crate::viz::{self, VizAction, VizSender};
 use super::{
     build_normal_covariance, cross3, dot3, face_area, face_centroid,
     normalize3, perpendicular_basis, smallest_eigenvector_3x3, viz_custom, viz_face_centroid,
-    viz_face_normal, ConicalHypothesis, Stage2CompareError,
-    MIN_CONE_FACES, REFIT_SKIP_MULTIPLIER,
+    viz_face_normal, ConicalHypothesis, Stage2CompareError, MIN_CROSS_THRESHOLD,
+    MIN_CONE_FACES, MIN_CYLINDER_FACES, REFIT_SKIP_MULTIPLIER,
 };
+use super::cylindrical::{vertex_to_cylinder_distance, fit_cylinder};
 
 /// Minimum half-angle (degrees) — below this the cone is effectively a cylinder.
 const MIN_HALF_ANGLE_DEG: f64 = 2.0;
@@ -876,10 +877,6 @@ fn run_cone_trial_bfs(
             if mesh.faces[cni].conical_hypothesis != UNDEDUCED_CONICAL_HYPOTHESIS {
                 continue;
             }
-            // Skip faces already assigned to a cylindrical hypothesis
-            if mesh.faces[cni].cylindrical_hypothesis >= 0 {
-                continue;
-            }
             if trial_claimed.contains(&cni) {
                 continue;
             }
@@ -1257,7 +1254,19 @@ pub(super) fn compare_conical_hypotheses(
             let radial_dist = (radial[0] * radial[0] + radial[1] * radial[1]
                 + radial[2] * radial[2]).sqrt();
 
-            let projected = if radial_dist > 1e-15 {
+            let projected = if hyp.is_cylinder() {
+                // For cylinders: project onto cylinder surface at radius_at_apex
+                if radial_dist > 1e-15 {
+                    let scale = hyp.radius_at_apex / radial_dist;
+                    [
+                        hyp.apex[0] + h * hyp.axis_direction[0] + radial[0] * scale,
+                        hyp.apex[1] + h * hyp.axis_direction[1] + radial[1] * scale,
+                        hyp.apex[2] + h * hyp.axis_direction[2] + radial[2] * scale,
+                    ]
+                } else {
+                    centroid
+                }
+            } else if radial_dist > 1e-15 {
                 // Project onto cone surface: at height h, the cone radius is h * tan(half_angle)
                 let cone_r = h * hyp.half_angle.tan();
                 let scale = cone_r / radial_dist;
@@ -1296,17 +1305,46 @@ pub(super) fn compare_conical_hypotheses(
 
 use super::bfs::{BfsConfig, Seed, SurfaceType};
 
-/// Fitted cone parameters.
+/// Fitted cone/cylinder parameters.
 #[derive(Clone)]
 pub(super) struct ConeFit {
     pub apex: [f64; 3],
     pub axis_direction: [f64; 3],
     pub half_angle: f64,
+    pub radius: f64,  // cylinder radius when half_angle == 0
     pub convex: Option<bool>,
 }
 
-/// Marker struct for the conical surface type.
+/// Marker struct for the conical/cylindrical surface type.
+/// Produces ConicalHypothesis for both cones (half_angle > 0) and
+/// cylinders (half_angle == 0).
 pub(super) struct ConicalSurface;
+
+/// Check if two faces are pairwise qualified for conical/cylindrical seeding.
+/// Both must have normals, the normals must be sufficiently different, and the
+/// dihedral angle must be within tolerance.
+fn conical_pairwise_qualified(
+    mesh: &ConnectedMesh, fi: usize, ni: usize, angular_tol: f64,
+) -> bool {
+    if mesh.faces[ni].conical_hypothesis != UNDEDUCED_CONICAL_HYPOTHESIS {
+        return false;
+    }
+    let fi_normal = match mesh.faces[fi].normal {
+        Some(n) => n,
+        None => return false,
+    };
+    let ni_normal = match mesh.faces[ni].normal {
+        Some(n) => n,
+        None => return false,
+    };
+    let cross = cross3(&fi_normal, &ni_normal);
+    let cross_mag = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+    if cross_mag < MIN_CROSS_THRESHOLD {
+        return false;
+    }
+    let cos_angle = dot3(&fi_normal, &ni_normal).clamp(-1.0, 1.0);
+    cos_angle.acos() <= angular_tol
+}
 
 impl SurfaceType for ConicalSurface {
     type Fit = ConeFit;
@@ -1322,58 +1360,34 @@ impl SurfaceType for ConicalSurface {
 
     fn undeduced_value() -> i32 { UNDEDUCED_CONICAL_HYPOTHESIS }
 
-    fn face_eligible(face: &MeshFace) -> bool {
-        face.conical_hypothesis == UNDEDUCED_CONICAL_HYPOTHESIS
-            && face.cylindrical_hypothesis < 0
-    }
-
-    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, _config: &BfsConfig) -> Vec<Seed> {
-        // Apex-vertex seeding: for each vertex of fi, check if it qualifies as an
-        // apex candidate (many non-coplanar incident faces).
+    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig) -> Vec<Seed> {
         if mesh.faces[fi].normal.is_none() {
             return Vec::new();
         }
-        if mesh.faces[fi].cylindrical_hypothesis >= 0 {
+        if mesh.faces[fi].conical_hypothesis != UNDEDUCED_CONICAL_HYPOTHESIS {
             return Vec::new();
         }
 
         let vc = mesh.faces[fi].vertex_count as usize;
+        let angular_tol = config.angular_tol;
+
+        // Collect qualified neighbors of fi
+        let qualified_neighbors: Vec<usize> = mesh.faces[fi].neighbors[..vc]
+            .iter()
+            .filter(|&&n| n >= 0)
+            .map(|&n| n as usize)
+            .filter(|&ni| conical_pairwise_qualified(mesh, fi, ni, angular_tol))
+            .collect();
+
+        // Generate 3-face seeds: fi + n1 + n2 where n1 and n2 are qualified
+        // neighbors of fi but not neighbors of each other
         let mut seeds = Vec::new();
-
-        for &vi in &mesh.faces[fi].vertex_indices[..vc] {
-            // Collect incident faces for this vertex that are eligible
-            let mut incident: Vec<usize> = Vec::new();
-            for (fj, face) in mesh.faces.iter().enumerate() {
-                let fj_vc = face.vertex_count as usize;
-                let contains_vi = face.vertex_indices[..fj_vc].contains(&vi);
-                if contains_vi
-                    && face.conical_hypothesis == UNDEDUCED_CONICAL_HYPOTHESIS
-                    && face.normal.is_some()
-                    && face.cylindrical_hypothesis < 0
-                {
-                    incident.push(fj);
-                }
+        for (i, &n1) in qualified_neighbors.iter().enumerate() {
+            for &n2 in &qualified_neighbors[(i + 1)..] {
+                // n2 must not be a neighbor of n1
+                if super::bfs::is_neighbor(mesh, n1, n2) { continue; }
+                seeds.push(Seed { faces: vec![fi, n1, n2] });
             }
-
-            if incident.len() < MIN_CONE_FACES {
-                continue;
-            }
-
-            // Check non-coplanarity of normals
-            let cov = build_normal_covariance(&incident, &mesh.faces, &mesh.vertices);
-            let axis = smallest_eigenvector_3x3(&cov);
-            let eigenval = cov[0] * axis[0] * axis[0]
-                + cov[3] * axis[1] * axis[1]
-                + cov[5] * axis[2] * axis[2]
-                + 2.0 * cov[1] * axis[0] * axis[1]
-                + 2.0 * cov[2] * axis[0] * axis[2]
-                + 2.0 * cov[4] * axis[1] * axis[2];
-            let trace = cov[0] + cov[3] + cov[5];
-            if trace < 1e-10 || eigenval / trace > 0.3 {
-                continue;
-            }
-
-            seeds.push(Seed { faces: incident });
         }
         seeds
     }
@@ -1385,36 +1399,78 @@ impl SurfaceType for ConicalSurface {
         _verbosity: u8,
     ) -> Option<Self::Fit> {
         let vertex_set: HashSet<usize> = vertex_list.iter().copied().collect();
-        let (apex, dir, ha) = fit_cone(face_list, &vertex_set, &mesh.faces, &mesh.vertices)?;
-        // Reject degenerate half-angles
-        let ha_deg = ha.to_degrees();
-        if !(MIN_HALF_ANGLE_DEG..=MAX_HALF_ANGLE_DEG).contains(&ha_deg) {
-            return None;
-        }
-        // Reject apex too far from mesh
-        let bb_diag = super::bounding_box_diagonal(&mesh.vertices);
-        let bb_center = {
-            let mut min = [f64::INFINITY; 3];
-            let mut max = [f64::NEG_INFINITY; 3];
-            for v in &mesh.vertices {
-                min[0] = min[0].min(v.x); max[0] = max[0].max(v.x);
-                min[1] = min[1].min(v.y); max[1] = max[1].max(v.y);
-                min[2] = min[2].min(v.z); max[2] = max[2].max(v.z);
+
+        // Try cylinder first, then cone, pick the one with lower max vertex error
+        let cyl_result = fit_cylinder(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
+        let cone_result = fit_cone(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
+
+        let cyl_fit = cyl_result.map(|(origin, dir, radius)| {
+            ConeFit { apex: origin, axis_direction: dir, half_angle: 0.0, radius, convex: None }
+        });
+
+        let cone_fit = cone_result.and_then(|(apex, dir, ha)| {
+            let ha_deg = ha.to_degrees();
+            if !(MIN_HALF_ANGLE_DEG..=MAX_HALF_ANGLE_DEG).contains(&ha_deg) {
+                return None;
             }
-            [(min[0]+max[0])/2.0, (min[1]+max[1])/2.0, (min[2]+max[2])/2.0]
-        };
-        let apex_dist = ((apex[0] - bb_center[0]).powi(2)
-            + (apex[1] - bb_center[1]).powi(2)
-            + (apex[2] - bb_center[2]).powi(2)).sqrt();
-        if apex_dist > bb_diag * MAX_APEX_DISTANCE_FACTOR {
-            return None;
+            // Reject apex too far from mesh
+            let bb_diag = super::bounding_box_diagonal(&mesh.vertices);
+            let bb_center = {
+                let mut min = [f64::INFINITY; 3];
+                let mut max = [f64::NEG_INFINITY; 3];
+                for v in &mesh.vertices {
+                    min[0] = min[0].min(v.x); max[0] = max[0].max(v.x);
+                    min[1] = min[1].min(v.y); max[1] = max[1].max(v.y);
+                    min[2] = min[2].min(v.z); max[2] = max[2].max(v.z);
+                }
+                [(min[0]+max[0])/2.0, (min[1]+max[1])/2.0, (min[2]+max[2])/2.0]
+            };
+            let apex_dist = ((apex[0] - bb_center[0]).powi(2)
+                + (apex[1] - bb_center[1]).powi(2)
+                + (apex[2] - bb_center[2]).powi(2)).sqrt();
+            if apex_dist > bb_diag * MAX_APEX_DISTANCE_FACTOR {
+                return None;
+            }
+            Some(ConeFit { apex, axis_direction: dir, half_angle: ha, radius: 0.0, convex: None })
+        });
+
+        // Compute max vertex error for each successful fit
+        let cyl_max = cyl_fit.as_ref().map(|fit| {
+            vertex_list.iter().map(|&vi| {
+                let v = &mesh.vertices[vi];
+                vertex_to_cylinder_distance(v, &fit.apex, &fit.axis_direction, fit.radius).abs()
+            }).fold(0.0_f64, f64::max)
+        });
+
+        let cone_max = cone_fit.as_ref().map(|fit| {
+            vertex_list.iter().map(|&vi| {
+                let v = &mesh.vertices[vi];
+                vertex_to_cone_distance(v, &fit.apex, &fit.axis_direction, fit.half_angle).abs()
+            }).fold(0.0_f64, f64::max)
+        });
+
+        // Pick the better fit
+        match (cyl_fit, cone_fit) {
+            (Some(cf), Some(kf)) => {
+                if cyl_max.unwrap() <= cone_max.unwrap() {
+                    Some(cf)
+                } else {
+                    Some(kf)
+                }
+            }
+            (Some(cf), None) => Some(cf),
+            (None, Some(kf)) => Some(kf),
+            (None, None) => None,
         }
-        Some(ConeFit { apex, axis_direction: dir, half_angle: ha, convex: None })
     }
 
     fn vertex_distance(fit: &Self::Fit, pos: &[f64; 3]) -> f64 {
         let v = MeshVertex::from_xyz(pos[0], pos[1], pos[2]);
-        vertex_to_cone_distance(&v, &fit.apex, &fit.axis_direction, fit.half_angle).abs()
+        if fit.half_angle < 1e-4 {
+            vertex_to_cylinder_distance(&v, &fit.apex, &fit.axis_direction, fit.radius).abs()
+        } else {
+            vertex_to_cone_distance(&v, &fit.apex, &fit.axis_direction, fit.half_angle).abs()
+        }
     }
 
     fn convexity_check(fit: &Self::Fit, mesh: &ConnectedMesh, fi: usize) -> bool {
@@ -1442,7 +1498,8 @@ impl SurfaceType for ConicalSurface {
         fit: &Self::Fit,
         _config: &BfsConfig,
     ) -> bool {
-        if face_list.len() < MIN_CONE_FACES {
+        let min_faces = if fit.half_angle < 1e-4 { MIN_CYLINDER_FACES } else { MIN_CONE_FACES };
+        if face_list.len() < min_faces {
             return false;
         }
         angular_coverage_valid(
@@ -1461,21 +1518,20 @@ impl SurfaceType for ConicalSurface {
         let mut centroid_error_max = 0.0_f64;
         let mut error_abs_sum = 0.0_f64;
         for &vi in &vertices {
-            let v = &mesh.vertices[vi];
-            let d = vertex_to_cone_distance(v, &fit.apex, &fit.axis_direction, fit.half_angle).abs();
+            let d = Self::vertex_distance(fit, &[mesh.vertices[vi].x, mesh.vertices[vi].y, mesh.vertices[vi].z]);
             error_max = error_max.max(d);
             error_abs_sum += d;
         }
         for &fi in &faces {
             let c = face_centroid(&mesh.faces[fi], &mesh.vertices);
-            let v = MeshVertex::from_xyz(c[0], c[1], c[2]);
-            let d = vertex_to_cone_distance(&v, &fit.apex, &fit.axis_direction, fit.half_angle).abs();
+            let d = Self::vertex_distance(fit, &c);
             centroid_error_max = centroid_error_max.max(d);
         }
         ConicalHypothesis {
             apex: fit.apex,
             axis_direction: fit.axis_direction,
             half_angle: fit.half_angle,
+            radius_at_apex: fit.radius,
             convex: fit.convex.unwrap_or(true),
             faces,
             vertices,
@@ -1578,7 +1634,6 @@ mod tests {
                     neighbors: [-1, -1, -1, -1],
                     normal: Some(normals[fidx % normals.len()]),
                     planar_hypothesis: -1,
-                    cylindrical_hypothesis: -1,
                     spherical_hypothesis: -1,
                     conical_hypothesis: -2,
                     toroidal_hypothesis: -2,
@@ -1688,7 +1743,6 @@ mod tests {
             neighbors: [-1, -1, -1, -1],
             normal: Some([0.0, 0.0, 1.0]),
             planar_hypothesis: -1,
-            cylindrical_hypothesis: -1,
             spherical_hypothesis: -1,
             conical_hypothesis: -2,
             toroidal_hypothesis: -2,

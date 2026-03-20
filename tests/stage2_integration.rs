@@ -44,6 +44,27 @@ fn run_stage2(config: &config::Config) -> stage2::Stage2Output {
     stage2::stage2(config, mesh, None).expect("stage2 should pass")
 }
 
+/// Get cylinder hypotheses from the unified conical_hypotheses vector.
+fn cylinder_hypotheses(output: &stage2::Stage2Output) -> Vec<&stage2::ConicalHypothesis> {
+    output.conical_hypotheses.iter().filter(|h| h.is_cylinder()).collect()
+}
+
+/// Check if a selected surface is a cylinder.
+fn is_selected_cylinder(s: &stage2::SelectedSurface, output: &stage2::Stage2Output) -> bool {
+    match s {
+        stage2::SelectedSurface::Conical(i) => output.conical_hypotheses[*i].is_cylinder(),
+        _ => false,
+    }
+}
+
+/// Check if a selected surface is a true cone (not a cylinder).
+fn is_selected_cone(s: &stage2::SelectedSurface, output: &stage2::Stage2Output) -> bool {
+    match s {
+        stage2::SelectedSurface::Conical(i) => !output.conical_hypotheses[*i].is_cylinder(),
+        _ => false,
+    }
+}
+
 /// Compute the centroid of a mesh face.
 fn face_centroid(face: &stage1::MeshFace, vertices: &[stage1::MeshVertex]) -> [f64; 3] {
     let n = face.vertex_count as usize;
@@ -107,7 +128,7 @@ fn assert_step_surfaces_covered(
                     .collect()
             }
             geom_abs::SurfaceType::Cylinder => {
-                output.cylindrical_hypotheses.iter()
+                output.conical_hypotheses.iter().filter(|h| h.is_cylinder())
                     .flat_map(|h| h.faces.iter().map(|&fi| face_centroid(&output.mesh.faces[fi], &output.mesh.vertices)))
                     .collect()
             }
@@ -419,14 +440,15 @@ fn simple_cylinder_produces_one_cylindrical_hypothesis() {
     let config = config_for_stl_stage22(&stl);
     let output = run_stage2(&config);
 
+    let cyls = cylinder_hypotheses(&output);
     assert_eq!(
-        output.cylindrical_hypotheses.len(),
+        cyls.len(),
         1,
         "simple_cylinder should have 1 cylindrical hypothesis"
     );
-    let h = &output.cylindrical_hypotheses[0];
+    let h = cyls[0];
     assert!(h.convex, "simple_cylinder should be convex");
-    assert!((h.radius - 10.0).abs() < 0.01, "radius should be ~10.0, got {}", h.radius);
+    assert!((h.radius_at_apex - 10.0).abs() < 0.01, "radius should be ~10.0, got {}", h.radius_at_apex);
 }
 
 #[test]
@@ -435,14 +457,15 @@ fn block_with_hole_produces_one_concave_cylinder() {
     let config = config_for_stl_stage22(&stl);
     let output = run_stage2(&config);
 
+    let cyls = cylinder_hypotheses(&output);
     assert_eq!(
-        output.cylindrical_hypotheses.len(),
+        cyls.len(),
         1,
         "block_with_hole should have 1 cylindrical hypothesis"
     );
-    let h = &output.cylindrical_hypotheses[0];
+    let h = cyls[0];
     assert!(!h.convex, "block_with_hole cylinder should be concave");
-    assert!((h.radius - 6.0).abs() < 0.01, "radius should be ~6.0, got {}", h.radius);
+    assert!((h.radius_at_apex - 6.0).abs() < 0.01, "radius should be ~6.0, got {}", h.radius_at_apex);
 }
 
 #[test]
@@ -451,14 +474,15 @@ fn pipe_produces_two_cylindrical_hypotheses() {
     let config = config_for_stl_stage22(&stl);
     let output = run_stage2(&config);
 
+    let cyls = cylinder_hypotheses(&output);
     assert_eq!(
-        output.cylindrical_hypotheses.len(),
+        cyls.len(),
         2,
         "pipe should have 2 cylindrical hypotheses"
     );
     // One convex (outer) and one concave (inner)
-    let convex_count = output.cylindrical_hypotheses.iter().filter(|h| h.convex).count();
-    let concave_count = output.cylindrical_hypotheses.iter().filter(|h| !h.convex).count();
+    let convex_count = cyls.iter().filter(|h| h.convex).count();
+    let concave_count = cyls.iter().filter(|h| !h.convex).count();
     assert_eq!(convex_count, 1, "pipe should have 1 convex cylinder");
     assert_eq!(concave_count, 1, "pipe should have 1 concave cylinder");
 }
@@ -469,14 +493,15 @@ fn two_holes_produces_two_concave_cylinders() {
     let config = config_for_stl_stage22(&stl);
     let output = run_stage2(&config);
 
+    let cyls = cylinder_hypotheses(&output);
     assert_eq!(
-        output.cylindrical_hypotheses.len(),
+        cyls.len(),
         2,
         "two_holes should have 2 cylindrical hypotheses"
     );
-    let concave_count = output.cylindrical_hypotheses.iter().filter(|h| !h.convex).count();
+    let concave_count = cyls.iter().filter(|h| !h.convex).count();
     assert_eq!(concave_count, 2, "both cylinders should be concave");
-    let mut radii: Vec<f64> = output.cylindrical_hypotheses.iter().map(|h| h.radius).collect();
+    let mut radii: Vec<f64> = cyls.iter().map(|h| h.radius_at_apex).collect();
     radii.sort_by(|a, b| a.partial_cmp(b).unwrap());
     assert!((radii[0] - 3.0).abs() < 0.01, "smaller radius should be ~3.0, got {}", radii[0]);
     assert!((radii[1] - 5.0).abs() < 0.01, "larger radius should be ~5.0, got {}", radii[1]);
@@ -491,8 +516,9 @@ fn chamfered_cube_produces_no_cylindrical_hypotheses() {
     let config = config_for_stl_stage22(&stl);
     let output = run_stage2(&config);
 
+    let cyls = cylinder_hypotheses(&output);
     assert_eq!(
-        output.cylindrical_hypotheses.len(),
+        cyls.len(),
         0,
         "chamfered cube should have no cylindrical hypotheses"
     );
@@ -689,8 +715,9 @@ fn ball_on_cylinder_produces_one_sphere_one_cylinder() {
     let config = config_for_stl_stage23(&stl);
     let output = run_stage2(&config);
 
+    let cyls = cylinder_hypotheses(&output);
     assert_eq!(
-        output.cylindrical_hypotheses.len(),
+        cyls.len(),
         1,
         "ball_on_cylinder should have 1 cylindrical hypothesis"
     );
@@ -699,9 +726,9 @@ fn ball_on_cylinder_produces_one_sphere_one_cylinder() {
         1,
         "ball_on_cylinder should have 1 spherical hypothesis"
     );
-    let cyl = &output.cylindrical_hypotheses[0];
+    let cyl = cyls[0];
     assert!(cyl.convex, "cylinder should be convex");
-    assert!((cyl.radius - 5.0).abs() < 0.01, "cylinder radius should be ~5.0, got {}", cyl.radius);
+    assert!((cyl.radius_at_apex - 5.0).abs() < 0.01, "cylinder radius should be ~5.0, got {}", cyl.radius_at_apex);
     let sph = &output.spherical_hypotheses[0];
     assert!(sph.convex, "sphere should be convex");
     assert!((sph.radius - 8.0).abs() < 0.01, "sphere radius should be ~8.0, got {}", sph.radius);
@@ -943,18 +970,20 @@ fn cone_cylinder_produces_one_cone_one_cylinder() {
     let config = config_for_stl_stage24(&stl);
     let output = run_stage2(&config);
 
+    let cones = output.conical_hypotheses.iter().filter(|h| !h.is_cylinder()).collect::<Vec<_>>();
+    let cyls = cylinder_hypotheses(&output);
     assert_eq!(
-        output.conical_hypotheses.len(),
+        cones.len(),
         1,
         "cone_cylinder should have 1 conical hypothesis"
     );
     assert_eq!(
-        output.cylindrical_hypotheses.len(),
+        cyls.len(),
         1,
         "cone_cylinder should have 1 cylindrical hypothesis"
     );
-    assert!(output.conical_hypotheses[0].convex, "cone should be convex");
-    assert!(output.cylindrical_hypotheses[0].convex, "cylinder should be convex");
+    assert!(cones[0].convex, "cone should be convex");
+    assert!(cyls[0].convex, "cylinder should be convex");
 }
 
 #[test]
@@ -992,15 +1021,16 @@ fn cube_produces_no_conical_hypotheses() {
 }
 
 #[test]
-fn simple_cylinder_produces_no_conical_hypotheses() {
+fn simple_cylinder_produces_no_true_cone_hypotheses() {
     let stl = format!("{}/tests/ccad/generated/simple_cylinder.stl", manifest_dir());
     let config = config_for_stl_stage24(&stl);
     let output = run_stage2(&config);
 
+    let true_cones = output.conical_hypotheses.iter().filter(|h| !h.is_cylinder()).count();
     assert_eq!(
-        output.conical_hypotheses.len(),
+        true_cones,
         0,
-        "simple_cylinder should have no conical hypotheses"
+        "simple_cylinder should have no true cone hypotheses"
     );
 }
 
@@ -1149,7 +1179,7 @@ fn assert_cones_match_step(
     step_path: &str,
 ) {
     let step_cones = extract_step_cones(step_path);
-    let hypotheses = &output.conical_hypotheses;
+    let hypotheses: Vec<_> = output.conical_hypotheses.iter().filter(|h| !h.is_cylinder()).collect();
 
     assert_eq!(
         hypotheses.len(), step_cones.len(),
@@ -1285,7 +1315,7 @@ fn block_with_hole_surface_selection() {
         .filter(|s| matches!(s, stage2::SelectedSurface::Planar(_)))
         .count();
     let cyl_count = output.selected_surfaces.iter()
-        .filter(|s| matches!(s, stage2::SelectedSurface::Cylindrical(_)))
+        .filter(|s| is_selected_cylinder(s, &output))
         .count();
     assert_eq!(planar_count, 6, "block_with_hole should have 6 planar surfaces");
     assert_eq!(cyl_count, 1, "block_with_hole should have 1 cylindrical surface");
@@ -1303,7 +1333,7 @@ fn pipe_surface_selection() {
         .filter(|s| matches!(s, stage2::SelectedSurface::Planar(_)))
         .count();
     let cyl_count = output.selected_surfaces.iter()
-        .filter(|s| matches!(s, stage2::SelectedSurface::Cylindrical(_)))
+        .filter(|s| is_selected_cylinder(s, &output))
         .count();
     assert_eq!(planar_count, 2, "pipe should have 2 planar surfaces");
     assert_eq!(cyl_count, 2, "pipe should have 2 cylindrical surfaces");
@@ -1320,7 +1350,7 @@ fn ball_on_cylinder_surface_selection() {
         .filter(|s| matches!(s, stage2::SelectedSurface::Planar(_)))
         .count();
     let cyl_count = output.selected_surfaces.iter()
-        .filter(|s| matches!(s, stage2::SelectedSurface::Cylindrical(_)))
+        .filter(|s| is_selected_cylinder(s, &output))
         .count();
     let sph_count = output.selected_surfaces.iter()
         .filter(|s| matches!(s, stage2::SelectedSurface::Spherical(_)))
@@ -1410,10 +1440,10 @@ fn cone_cylinder_surface_selection() {
         .filter(|s| matches!(s, stage2::SelectedSurface::Planar(_)))
         .count();
     let cyl_count = output.selected_surfaces.iter()
-        .filter(|s| matches!(s, stage2::SelectedSurface::Cylindrical(_)))
+        .filter(|s| is_selected_cylinder(s, &output))
         .count();
     let cone_count = output.selected_surfaces.iter()
-        .filter(|s| matches!(s, stage2::SelectedSurface::Conical(_)))
+        .filter(|s| is_selected_cone(s, &output))
         .count();
     assert_eq!(planar_count, 2, "cone_cylinder should have 2 planar surfaces");
     assert_eq!(cyl_count, 1, "cone_cylinder should have 1 cylindrical surface");
@@ -1454,7 +1484,7 @@ fn filleted_cylinder_surface_selection() {
         .filter(|s| matches!(s, stage2::SelectedSurface::Planar(_)))
         .count();
     let cyl_count = output.selected_surfaces.iter()
-        .filter(|s| matches!(s, stage2::SelectedSurface::Cylindrical(_)))
+        .filter(|s| is_selected_cylinder(s, &output))
         .count();
     let torus_count = output.selected_surfaces.iter()
         .filter(|s| matches!(s, stage2::SelectedSurface::Toroidal(_)))
@@ -1475,7 +1505,7 @@ fn filleted_hole_block_surface_selection() {
         .filter(|s| matches!(s, stage2::SelectedSurface::Toroidal(_)))
         .count();
     let cyl_count = output.selected_surfaces.iter()
-        .filter(|s| matches!(s, stage2::SelectedSurface::Cylindrical(_)))
+        .filter(|s| is_selected_cylinder(s, &output))
         .count();
     assert!(torus_count >= 2, "filleted_hole_block should have at least 2 toroidal surfaces, got {}", torus_count);
     assert!(cyl_count >= 1, "filleted_hole_block should have at least 1 cylindrical surface, got {}", cyl_count);
@@ -1491,7 +1521,7 @@ fn filleted_pipe_surface_selection() {
         .filter(|s| matches!(s, stage2::SelectedSurface::Toroidal(_)))
         .count();
     let cyl_count = output.selected_surfaces.iter()
-        .filter(|s| matches!(s, stage2::SelectedSurface::Cylindrical(_)))
+        .filter(|s| is_selected_cylinder(s, &output))
         .count();
     assert!(torus_count >= 4, "filleted_pipe should have at least 4 toroidal surfaces, got {}", torus_count);
     assert!(cyl_count >= 2, "filleted_pipe should have at least 2 cylindrical surfaces, got {}", cyl_count);
@@ -1526,9 +1556,8 @@ fn all_faces_covered_by_selection() {
         for s in &output.selected_surfaces {
             let faces = match s {
                 stage2::SelectedSurface::Planar(i) => &output.planar_hypotheses[*i].faces,
-                stage2::SelectedSurface::Cylindrical(i) => &output.cylindrical_hypotheses[*i].faces,
-                stage2::SelectedSurface::Spherical(i) => &output.spherical_hypotheses[*i].faces,
                 stage2::SelectedSurface::Conical(i) => &output.conical_hypotheses[*i].faces,
+                stage2::SelectedSurface::Spherical(i) => &output.spherical_hypotheses[*i].faces,
                 stage2::SelectedSurface::Toroidal(i) => &output.toroidal_hypotheses[*i].faces,
             };
             for &fi in faces {
@@ -1811,7 +1840,7 @@ fn assert_cylinders_match_step(
     step_path: &str,
 ) {
     let step_cylinders = extract_step_cylinders(step_path);
-    let hypotheses = &output.cylindrical_hypotheses;
+    let hypotheses = cylinder_hypotheses(output);
 
     assert_eq!(
         hypotheses.len(), step_cylinders.len(),
@@ -1823,7 +1852,7 @@ fn assert_cylinders_match_step(
         // Find a matching hypothesis
         let matched = hypotheses.iter().any(|h| {
             // Radius match
-            if (h.radius - step_radius).abs() > 0.1 {
+            if (h.radius_at_apex - step_radius).abs() > 0.1 {
                 return false;
             }
             // Axis direction: must be parallel (or anti-parallel)
@@ -1835,9 +1864,9 @@ fn assert_cylinders_match_step(
             }
             // Axis position: distance between axes must be small
             let diff = [
-                h.axis_origin[0] - step_origin[0],
-                h.axis_origin[1] - step_origin[1],
-                h.axis_origin[2] - step_origin[2],
+                h.apex[0] - step_origin[0],
+                h.apex[1] - step_origin[1],
+                h.apex[2] - step_origin[2],
             ];
             let t = diff[0] * h.axis_direction[0]
                   + diff[1] * h.axis_direction[1]

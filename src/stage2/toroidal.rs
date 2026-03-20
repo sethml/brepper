@@ -1611,9 +1611,8 @@ impl SurfaceType for ToroidalSurface {
             return Vec::new();
         }
         // Skip faces already committed to cylindrical, spherical, or conical
-        if mesh.faces[fi].cylindrical_hypothesis >= 0
+        if mesh.faces[fi].conical_hypothesis >= 0
             || mesh.faces[fi].spherical_hypothesis >= 0
-            || mesh.faces[fi].conical_hypothesis >= 0
         {
             return Vec::new();
         }
@@ -1629,9 +1628,8 @@ impl SurfaceType for ToroidalSurface {
                 if contains_vi
                     && face.normal.is_some()
                     && face.toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS
-                    && face.cylindrical_hypothesis < 0
-                    && face.spherical_hypothesis < 0
                     && face.conical_hypothesis < 0
+                    && face.spherical_hypothesis < 0
                 {
                     seed_set.insert(fj);
                 }
@@ -1881,7 +1879,6 @@ mod tests {
                     neighbors: [-1, -1, -1, -1],
                     normal: Some(normals[fidx % normals.len()]),
                     planar_hypothesis: -1,
-                    cylindrical_hypothesis: -1,
                     spherical_hypothesis: -1,
                     conical_hypothesis: -1,
                     toroidal_hypothesis: -2,
@@ -2077,7 +2074,6 @@ mod tests {
             neighbors: [-1, -1, -1, -1],
             normal: Some([0.0, 0.0, 1.0]),
             planar_hypothesis: -1,
-            cylindrical_hypothesis: -1,
             spherical_hypothesis: -1,
             conical_hypothesis: -1,
             toroidal_hypothesis: -2,
