@@ -387,7 +387,7 @@ The `SurfaceType` trait in `bfs.rs` unifies BFS region growing across all 5 surf
 - `fit_surface()` takes face/vertex lists and returns `Option<Fit>` — type-specific fitting logic.
 - `vertex_distance()` computes point-to-surface distance for BFS expansion.
 - `acceptance_test()` validates after BFS (angular coverage, min face count, etc.).
-- `seed_vtol_multiplier()` and `angular_tol_multiplier()` allow per-type tolerance overrides (defaults 1.0).
+- Angular tolerance is used directly from config (no per-type multiplier), matching C++.
 - **Performance regression**: The generic BFS is ~3× slower than per-type BFS because it generates more seeds (it tries all seeds from `generate_seeds()` instead of early-terminating). The per-type code had hand-tuned seed iteration with domain-specific early exit.
 - **Conical BFS regression**: The generic BFS lacks the old cone code's multi-axis LM rescue (6 axis guesses × patience-500 LM) for seeds that include non-conical faces near the apex. Without this, cone seeds get ~3e-5 max error (vs vtol 1e-5), failing seed validation. Adding the rescue back makes it work but is prohibitively slow for the full suite (~600s vs ~80s baseline).
 
