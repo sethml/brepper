@@ -85,6 +85,28 @@ To add or modify these models:
 
 **Important:** `box(w,d,h)` places a corner at the origin, not centered. Use `center_xyz()` to center. Each part file includes analytical surface area and volume in its header comments.
 
+### Interactive Debugging Visualization
+
+Use `--viz-stages` to open a 3D window and step through BFS hypothesis deduction interactively:
+
+```bash
+# Visualize planar and cylindrical hypothesis stages
+brepper input.stl --viz-stages=2.1,2.2
+
+# Visualize all stage 2 hypothesis types with STEP comparison overlay
+brepper input.stl --compare reference.step --viz-stages=2.1,2.2,2.3
+```
+
+At each BFS step, the window shows the STL mesh with highlighted faces: seed faces in green, previously accepted faces in blue, the just-accepted face in dark blue, and BFS queue frontier edges in red. Cylindrical and spherical hypotheses also display translucent geometry overlays. When `--compare` is provided, the STEP surface is shown at 35% opacity for reference.
+
+| Action | Control |
+|--------|:--------|
+| Next BFS step | `Space` |
+| Skip to next seed/hypothesis | `Shift+Space` |
+| Quit visualization | `Q` |
+
+Supported stages: `2.1` (planar), `2.2` (cylindrical), `2.3` (spherical), `2.4` (conical), `2.6` (surface selection), `3.3` (edge curves), `3.4` (faces), `3.5` (shells), `3.6` (solids).
+
 
 ## Viewer
 
@@ -132,28 +154,6 @@ Multiple files can be loaded simultaneously; each is rendered in a distinct colo
 | Toggle hidden-edge removal | `h` |
 
 Rendering uses PBR shading with ambient and two directional lights. Sharp feature edges (boundary edges and edges where the dihedral angle exceeds ~45°) are drawn as a solid wireframe overlay. Softer mesh edges (dihedral angle below ~45°) are drawn at 50% opacity and can be toggled independently with `Shift+E`. Zooming targets the point under the mouse cursor.
-
-### Interactive Debugging Visualization
-
-Use `--viz-stages` to open a 3D window and step through BFS hypothesis deduction interactively:
-
-```bash
-# Visualize planar and cylindrical hypothesis stages
-brepper input.stl --viz-stages=2.1,2.2
-
-# Visualize all stage 2 hypothesis types with STEP comparison overlay
-brepper input.stl --compare reference.step --viz-stages=2.1,2.2,2.3
-```
-
-At each BFS step, the window shows the STL mesh with highlighted faces: seed faces in green, previously accepted faces in blue, the just-accepted face in dark blue, and BFS queue frontier edges in red. Cylindrical and spherical hypotheses also display translucent geometry overlays. When `--compare` is provided, the STEP surface is shown at 35% opacity for reference.
-
-| Action | Control |
-|--------|:--------|
-| Next BFS step | `Space` |
-| Skip to next seed/hypothesis | `Shift+Space` |
-| Quit visualization | `Q` |
-
-Supported stages: `2.1` (planar), `2.2` (cylindrical), `2.3` (spherical), `2.4` (conical), `2.6` (surface selection), `3.3` (edge curves), `3.4` (faces), `3.5` (shells), `3.6` (solids).
 
 ### Running Tests
 

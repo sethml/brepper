@@ -610,6 +610,57 @@ Write constructed solid(s) to a STEP file.
 
 ---
 
+## Visualization (`--viz-stages`)
+
+The `--viz-stages` flag enables interactive 3D visualization for debugging each pipeline stage. The user specifies a stage pattern (e.g. `2.2` for conical BFS, or `2.*` for all stage 2 sub-stages).
+
+### Architecture
+
+The visualization uses a two-thread architecture with synchronous channel communication:
+
+1. **Main thread**: Owns the window, drives the three-d render loop, and displays overlays.
+2. **Pipeline thread**: Runs the brepper pipeline (stages 1–4) in the background.
+
+### Communication pipeline
+
+```
+Pipeline thread                          Main/render thread
+     │                                         │
+     │  VizOverlay (via SyncSender)             │
+     ├────────────────────────────────────────►  │
+     │                                         │ display overlay, wait for keypress
+     │  VizAction (via SyncSender)              │
+     │  ◄────────────────────────────────────────┤
+     │                                         │
+     ▼                                         ▼
+```
+
+- `VizSender::show_and_wait(overlay)` sends a `VizOverlay` to the render thread and blocks.
+- The render thread displays face highlights, translucent geometry overlays (cylinders, spheres), status text, and optionally moves the camera.
+- The user presses **Space** (NextStep), **Shift+Space** (NextSeed/skip to next seed), or **Q** (Quit).
+- The render thread sends back a `VizAction` and the pipeline thread resumes.
+
+### Key types (in `src/viz.rs`)
+
+- `VizSender` / `VizReceiver`: Channel endpoints. Created by `viz_channel()`.
+- `VizOverlay`: A display frame containing face highlights, cylinder/sphere overlays, line overlays, shape meshes, status text, and optional camera focus.
+- `VizAction`: The user's response — `NextStep`, `NextSeed`, or `Quit`.
+- `FaceHighlight`, `CylinderOverlay`, `SphereOverlay`, `LineOverlay`, `ShapeMeshOverlay`: Overlay primitives.
+
+### Integration with generic BFS
+
+The `SurfaceType` trait provides:
+- `viz_overlays(fit, mesh, face_list)`: Returns geometry overlays (e.g., a translucent cylinder for conical fits, a sphere for spherical fits).
+- `viz_fit_description(fit)`: Returns a short text description of the fit parameters for the status bar.
+
+The generic `generate_hypotheses()` function in `src/stage2/bfs.rs` sends viz overlays at two points:
+1. **Seed display**: After a seed is validated, shows the seed faces with the initial fit overlay.
+2. **BFS accept**: After each face accepted during BFS expansion, shows the growing region with the updated fit.
+
+When `viz` is `None` (the common case), all visualization is skipped with zero overhead.
+
+---
+
 ## Source Code Organization
 
 Each stage will be represented by a function which takes a ref to a configuration data structure and consumes an input data structure, and returns an output data structure (or error). That data structure is passed to the next stage:

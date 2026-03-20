@@ -6,6 +6,7 @@ use opencascade_sys::gp;
 
 use crate::config::Config;
 use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_SPHERICAL_HYPOTHESIS};
+use crate::viz;
 
 use super::{
     dot3, eigenvalues_3x3_symmetric, face_area, face_centroid, normalize3,
@@ -516,6 +517,23 @@ impl SurfaceType for SphericalSurface {
         solid_angle_coverage_valid(
             face_list, &fit.center, &mesh.faces, &mesh.vertices,
         )
+    }
+
+    fn viz_overlays(
+        fit: &Self::Fit,
+        _mesh: &ConnectedMesh,
+        _face_list: &[usize],
+    ) -> (Vec<viz::CylinderOverlay>, Vec<viz::SphereOverlay>) {
+        let sphere = viz::SphereOverlay {
+            center: fit.center,
+            radius: fit.radius,
+            color: [0.2, 0.4, 1.0, 0.15],
+        };
+        (Vec::new(), vec![sphere])
+    }
+
+    fn viz_fit_description(fit: &Self::Fit) -> String {
+        format!("r={:.4}", fit.radius)
     }
 
     fn make_hypothesis(

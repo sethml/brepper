@@ -36,7 +36,7 @@ The `/iterate` command triggers the full development cycle below. This is the pr
 
 ## Project Layout
 
-This is a **Rust** project. Key locations:
+This is a Rust project. Key locations:
 
 - `README.md` - Program usage. Read it.
 - `DEVELOPMENT_PLAN.md` - Development plan. Read it.

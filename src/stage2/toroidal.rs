@@ -1722,6 +1722,24 @@ impl SurfaceType for ToroidalSurface {
         )
     }
 
+    fn viz_overlays(
+        fit: &Self::Fit,
+        mesh: &ConnectedMesh,
+        face_list: &[usize],
+    ) -> (Vec<viz::CylinderOverlay>, Vec<viz::SphereOverlay>) {
+        // Show the torus axis as a cylinder at the major radius
+        let cyl = super::centered_cylinder_overlay(
+            fit.center, fit.axis_direction, fit.major_radius,
+            face_list, mesh,
+            [0.2, 0.4, 1.0, 0.3],
+        );
+        (vec![cyl], Vec::new())
+    }
+
+    fn viz_fit_description(fit: &Self::Fit) -> String {
+        format!("R={:.4} r={:.4}", fit.major_radius, fit.minor_radius)
+    }
+
     fn make_hypothesis(
         mesh: &ConnectedMesh,
         faces: Vec<usize>,

@@ -10,9 +10,9 @@
 use std::collections::{HashSet, VecDeque};
 
 use crate::stage1::{ConnectedMesh, MeshFace, NO_HYPOTHESIS};
-use crate::viz::VizSender;
+use crate::viz::{self, VizAction, VizSender};
 
-use super::{dot3, face_area, face_centroid, REFIT_SKIP_MULTIPLIER};
+use super::{dot3, face_area, face_centroid, viz_face_centroid, viz_face_normal, REFIT_SKIP_MULTIPLIER};
 
 // ---------------------------------------------------------------------------
 // BFS configuration
@@ -120,6 +120,22 @@ pub(super) trait SurfaceType {
     /// have inter-strip dihedral angles that exceed the default tolerance.
     fn angular_tol_multiplier() -> f64 { 1.0 }
 
+    /// Generate visualization overlays (cylinder/sphere) from the current fit.
+    /// Default: no overlays (e.g., for planar surfaces).
+    fn viz_overlays(
+        _fit: &Self::Fit,
+        _mesh: &ConnectedMesh,
+        _face_list: &[usize],
+    ) -> (Vec<viz::CylinderOverlay>, Vec<viz::SphereOverlay>) {
+        (Vec::new(), Vec::new())
+    }
+
+    /// Short description of the current fit for viz status text.
+    /// Default: just the surface type name.
+    fn viz_fit_description(_fit: &Self::Fit) -> String {
+        Self::name().to_string()
+    }
+
     /// Construct the final hypothesis from the BFS result.
     fn make_hypothesis(
         mesh: &ConnectedMesh,
@@ -160,7 +176,7 @@ fn dihedral_angle(mesh: &ConnectedMesh, fi: usize, fj: usize) -> f64 {
 pub(super) fn generate_hypotheses<S>(
     mesh: &mut ConnectedMesh,
     config: &BfsConfig,
-    _viz: Option<&VizSender>,
+    viz: Option<&VizSender>,
 ) -> (Vec<S::Hypothesis>, bool)
 where
     S: SurfaceType,
@@ -329,6 +345,44 @@ where
             let mut current_fit = fit;
             S::determine_convexity(mesh, &seed.faces, &mut current_fit);
 
+            // --- Viz: show seed faces ---
+            let mut skip_viz = false;
+            if let Some(viz_sender) = viz {
+                let seed_str: Vec<String> = seed.faces.iter().map(|f| f.to_string()).collect();
+                let (cylinders, spheres) = S::viz_overlays(&current_fit, mesh, &seed.faces);
+                let mut highlights = vec![
+                    viz::FaceHighlight { face_indices: vec![seed.faces[0]], color: [1.0, 0.6, 0.0, 1.0] },
+                ];
+                if seed.faces.len() > 1 {
+                    highlights.push(viz::FaceHighlight { face_indices: seed.faces[1..].to_vec(), color: [1.0, 0.8, 0.4, 1.0] });
+                }
+                // Gray background for already-committed faces
+                let bg_faces: Vec<usize> = (0..mesh.faces.len())
+                    .filter(|f| {
+                        let h = S::hypothesis_field(&mesh.faces[*f]);
+                        h >= 0 && !seed.faces.contains(f)
+                    })
+                    .collect();
+                if !bg_faces.is_empty() {
+                    highlights.push(viz::FaceHighlight { face_indices: bg_faces, color: [0.5, 0.5, 0.5, 1.0] });
+                }
+                let mut overlay = viz::VizOverlay::new();
+                overlay.status_text = format!(
+                    "BFS-{}: seed=({}) {} [space=step, shift+space=skip]",
+                    S::name(), seed_str.join(","), S::viz_fit_description(&current_fit),
+                );
+                overlay.face_highlights = highlights;
+                overlay.cylinders = cylinders;
+                overlay.spheres = spheres;
+                overlay.focus_point = Some(viz_face_centroid(seed.faces[0], mesh));
+                overlay.focus_normal = viz_face_normal(seed.faces[0], mesh);
+                match viz_sender.show_and_wait(overlay) {
+                    VizAction::Quit => return (hypotheses, true),
+                    VizAction::NextSeed => { skip_viz = true; }
+                    VizAction::NextStep => {}
+                }
+            }
+
             // --- BFS expansion ---
             let t_bfs = std::time::Instant::now();
             let mut trial_faces: Vec<usize> = seed.faces.clone();
@@ -454,6 +508,51 @@ where
                         trial_vertices.push(vi);
                     }
                     bfs_queue.push_back(ni);
+
+                    // --- Viz: show accepted face ---
+                    if let Some(viz_sender) = viz {
+                        if !skip_viz {
+                        let accepted_nonseed: Vec<usize> = trial_faces.iter()
+                            .filter(|f| !seed.faces.contains(f) && **f != ni)
+                            .copied().collect();
+                        let (cylinders, spheres) = S::viz_overlays(&current_fit, mesh, &trial_faces);
+                        let mut highlights = vec![
+                            viz::FaceHighlight { face_indices: vec![seed.faces[0]], color: [1.0, 0.6, 0.0, 1.0] },
+                        ];
+                        if seed.faces.len() > 1 {
+                            highlights.push(viz::FaceHighlight { face_indices: seed.faces[1..].to_vec(), color: [1.0, 0.8, 0.4, 1.0] });
+                        }
+                        if !accepted_nonseed.is_empty() {
+                            highlights.push(viz::FaceHighlight { face_indices: accepted_nonseed, color: [0.2, 0.4, 1.0, 1.0] });
+                        }
+                        highlights.push(viz::FaceHighlight { face_indices: vec![ni], color: [0.1, 0.2, 0.7, 1.0] });
+                        // Gray background for already-committed faces
+                        let bg_faces: Vec<usize> = (0..mesh.faces.len())
+                            .filter(|f| {
+                                let h = S::hypothesis_field(&mesh.faces[*f]);
+                                h >= 0 && !trial_face_set.contains(f)
+                            })
+                            .collect();
+                        if !bg_faces.is_empty() {
+                            highlights.push(viz::FaceHighlight { face_indices: bg_faces, color: [0.5, 0.5, 0.5, 1.0] });
+                        }
+                        let mut overlay = viz::VizOverlay::new();
+                        overlay.status_text = format!(
+                            "BFS-{}: accepted fi={} ({} faces) {} [space=step, shift+space=skip]",
+                            S::name(), ni, trial_faces.len(), S::viz_fit_description(&current_fit),
+                        );
+                        overlay.face_highlights = highlights;
+                        overlay.cylinders = cylinders;
+                        overlay.spheres = spheres;
+                        overlay.focus_point = Some(viz_face_centroid(ni, mesh));
+                        overlay.focus_normal = viz_face_normal(ni, mesh);
+                        match viz_sender.show_and_wait(overlay) {
+                            VizAction::Quit => return (hypotheses, true),
+                            VizAction::NextSeed => { skip_viz = true; }
+                            VizAction::NextStep => {}
+                        }
+                        }
+                    }
                 }
             }
             prof_time_bfs += t_bfs.elapsed();

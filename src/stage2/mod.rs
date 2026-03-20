@@ -1031,14 +1031,14 @@ fn compare_selected_surfaces(
 pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz::VizSender>) -> Result<Stage2Output, Stage2Error> {
     // Stage 2.1: Deduce planar hypotheses
     let t = Instant::now();
-    let _viz_21 = if config.viz_active(2, 1) { viz } else { None };
+    let viz_21 = if config.viz_active(2, 1) { viz } else { None };
     let bfs_config = BfsConfig {
         vertex_tol: config.vertex_tolerance_mm,
         surface_tol: config.surface_tolerance_mm,
         angular_tol: config.angular_tolerance_rad,
         verbosity: config.verbosity,
     };
-    let (mut planar_hypotheses, planar_quit) = bfs::generate_hypotheses::<PlanarSurface>(&mut mesh, &bfs_config, None);
+    let (mut planar_hypotheses, planar_quit) = bfs::generate_hypotheses::<PlanarSurface>(&mut mesh, &bfs_config, viz_21);
 
     // Synthesize single-face planar hypotheses for faces not covered by BFS.
     // BFS with acceptance >= 2 only produces multi-face hypotheses; every
@@ -1131,8 +1131,8 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
 
     // Stage 2.2: Deduce conical/cylindrical hypotheses (unified)
     let t = Instant::now();
-    let _viz_22 = if config.viz_active(2, 2) { viz } else { None };
-    let (mut conical_hypotheses, conical_quit) = bfs::generate_hypotheses::<ConicalSurface>(&mut mesh, &bfs_config, None);
+    let viz_22 = if config.viz_active(2, 2) { viz } else { None };
+    let (mut conical_hypotheses, conical_quit) = bfs::generate_hypotheses::<ConicalSurface>(&mut mesh, &bfs_config, viz_22);
 
     if !config.quiet {
         let covered_faces: usize = conical_hypotheses.iter().map(|h| h.faces.len()).sum();
@@ -1214,8 +1214,8 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
     let t = Instant::now();
     let _bb_diag = bounding_box_diagonal(&mesh.vertices);
     let _max_sphere_radius = _bb_diag * MAX_SPHERE_RADIUS_FACTOR;
-    let _viz_23 = if config.viz_active(2, 3) { viz } else { None };
-    let (mut spherical_hypotheses, spherical_quit) = bfs::generate_hypotheses::<SphericalSurface>(&mut mesh, &bfs_config, None);
+    let viz_23 = if config.viz_active(2, 3) { viz } else { None };
+    let (mut spherical_hypotheses, spherical_quit) = bfs::generate_hypotheses::<SphericalSurface>(&mut mesh, &bfs_config, viz_23);
 
     if !config.quiet {
         let covered_faces: usize = spherical_hypotheses.iter().map(|h| h.faces.len()).sum();
@@ -1319,8 +1319,8 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
 
     // Stage 2.5: Deduce toroidal hypotheses
     let t = Instant::now();
-    let _viz_25 = if config.viz_active(2, 5) { viz } else { None };
-    let (mut toroidal_hypotheses, toroidal_quit) = bfs::generate_hypotheses::<ToroidalSurface>(&mut mesh, &bfs_config, None);
+    let viz_25 = if config.viz_active(2, 5) { viz } else { None };
+    let (mut toroidal_hypotheses, toroidal_quit) = bfs::generate_hypotheses::<ToroidalSurface>(&mut mesh, &bfs_config, viz_25);
 
     if !config.quiet {
         let covered_faces: usize = toroidal_hypotheses.iter().map(|h| h.faces.len()).sum();
@@ -1606,12 +1606,6 @@ mod tests {
         mesh.validate_and_populate_topology().expect("should validate");
         stage1::fuse_coplanar_triangles(&mut mesh, 1e-5);
         mesh
-    }
-
-    /// Helper: run planar and conical/cylindrical BFS (prerequisites for spherical detection).
-    fn run_prior_stages(mesh: &mut ConnectedMesh, config: &BfsConfig) {
-        let _ = bfs::generate_hypotheses::<PlanarSurface>(mesh, config, None);
-        let _ = bfs::generate_hypotheses::<ConicalSurface>(mesh, config, None);
     }
 
     #[test]
