@@ -314,6 +314,10 @@ Hypothesis: BFS refitting gradually rotates the cylinder axis when sphere faces 
 - Config has `OwnedPtr<Shape>` which is not Clone — must move Config into the pipeline thread closure, not clone it.
 - `VizOverlay` supports multiple overlay types: `FaceHighlight` (mesh face coloring), `EdgeHighlight` (mesh edge coloring), `CylinderOverlay`/`SphereOverlay` (analytic geometry), `LineOverlay` (polyline segments with optional `no_depth_test`), `ShapeMeshOverlay` (tessellated OCCT shapes with edges).
 - `tessellate_shape()` tessellates a `TopoDS_Shape` via `BRepMesh_IncrementalMesh` for viz display. `sample_curve_for_viz()` samples a `HandleGeomCurve` into polyline segment pairs.
+- **three-d borrow conflict with egui**: `frame_input.screen()` returns a `RenderTarget` that holds an immutable borrow on `frame_input`. `gui.update()` needs `&mut frame_input.events`. Solve by scoping `screen` in a block `{ let screen = frame_input.screen(); ... }` so it drops before `gui.update()` is called.
+- **Depth buffer readback for face label occlusion**: After 3D rendering, call `context.read_pixels(x, y, w, h, DEPTH_COMPONENT, FLOAT, PixelPackData::Slice(&mut buf))` to read the depth buffer. Compare normalized device-coordinate depth of a projected centroid (`ndc.z * 0.5 + 0.5`) against the depth buffer value at that pixel (noting GL's Y-axis flip: `py_flipped = h - (sy - vp.y)`). If centroid depth exceeds buffer depth by > 0.001, the label is occluded.
+- **three-d `MouseMotion` fires for all mouse movement**, including button-free hover (`button: None`). Track `mouse_pos` from the `position` field of `MouseMotion` events. `MousePress`/`MouseRelease` also carry `position` for click detection.
+- **Click vs drag detection**: Record `mouse_down_pos` on `MousePress`, compare with `MouseRelease` position. If `dx² + dy² < 25` (5px radius), it's a click; otherwise a drag. This prevents orbiting from triggering face picks.
 
 
 ### BRepLib::SameParameter corrupts pcurves on closely-spaced edges
