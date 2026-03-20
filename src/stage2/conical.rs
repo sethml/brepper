@@ -744,21 +744,21 @@ impl SurfaceType for ConicalSurface {
         mesh: &ConnectedMesh,
         face_list: &[usize],
         vertex_list: &[usize],
-        _verbosity: u8,
+        verbosity: u8,
     ) -> Option<Self::Fit> {
         let vertex_set: HashSet<usize> = vertex_list.iter().copied().collect();
 
-        // Try cylinder first, then cone, pick the one with lower max vertex error
-        let cyl_result = fit_cylinder(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
+        // Try cone fit
         let cone_result = fit_cone(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
-
-        let cyl_fit = cyl_result.map(|(origin, dir, radius)| {
-            ConeFit { apex: origin, axis_direction: dir, half_angle: 0.0, radius, convex: None }
-        });
-
         let cone_fit = cone_result.and_then(|(apex, dir, ha)| {
             let ha_deg = ha.to_degrees();
             if !(MIN_HALF_ANGLE_DEG..=MAX_HALF_ANGLE_DEG).contains(&ha_deg) {
+                if verbosity >= 3 {
+                    eprintln!(
+                        "      [conical] cone fit rejected: half_angle={:.2}° outside [{:.0}°, {:.0}°]",
+                        ha_deg, MIN_HALF_ANGLE_DEG, MAX_HALF_ANGLE_DEG
+                    );
+                }
                 return None;
             }
             // Reject apex too far from mesh
@@ -777,32 +777,97 @@ impl SurfaceType for ConicalSurface {
                 + (apex[1] - bb_center[1]).powi(2)
                 + (apex[2] - bb_center[2]).powi(2)).sqrt();
             if apex_dist > bb_diag * MAX_APEX_DISTANCE_FACTOR {
+                if verbosity >= 3 {
+                    eprintln!(
+                        "      [conical] cone fit rejected: apex dist {:.4e} > {:.1} * bb_diag {:.4e}",
+                        apex_dist, MAX_APEX_DISTANCE_FACTOR, bb_diag
+                    );
+                }
                 return None;
             }
             Some(ConeFit { apex, axis_direction: dir, half_angle: ha, radius: 0.0, convex: None })
         });
 
-        // Compute max vertex error for each successful fit
-        let cyl_max = cyl_fit.as_ref().map(|fit| {
-            vertex_list.iter().map(|&vi| {
-                let v = &mesh.vertices[vi];
-                vertex_to_cylinder_distance(v, &fit.apex, &fit.axis_direction, fit.radius).abs()
-            }).fold(0.0_f64, f64::max)
-        });
+        if cone_result.is_none() && verbosity >= 3 {
+            eprintln!("      [conical] cone fit failed: fit_cone returned None");
+        }
 
-        let cone_max = cone_fit.as_ref().map(|fit| {
-            vertex_list.iter().map(|&vi| {
+        // Compute max vertex error and max surface (centroid) error for cone fit
+        let (cone_vtx_max, cone_sfc_max) = if let Some(ref fit) = cone_fit {
+            let vtx = vertex_list.iter().map(|&vi| {
                 let v = &mesh.vertices[vi];
                 vertex_to_cone_distance(v, &fit.apex, &fit.axis_direction, fit.half_angle).abs()
-            }).fold(0.0_f64, f64::max)
+            }).fold(0.0_f64, f64::max);
+            let sfc = face_list.iter().map(|&fi| {
+                let c = super::face_centroid(&mesh.faces[fi], &mesh.vertices);
+                let v = MeshVertex::from_xyz(c[0], c[1], c[2]);
+                vertex_to_cone_distance(&v, &fit.apex, &fit.axis_direction, fit.half_angle).abs()
+            }).fold(0.0_f64, f64::max);
+            if verbosity >= 3 {
+                eprintln!(
+                    "      [conical] cone fit: half_angle={:.2}°, max_vtx_err={:.6e}, max_sfc_err={:.6e}",
+                    fit.half_angle.to_degrees(), vtx, sfc
+                );
+            }
+            (Some(vtx), Some(sfc))
+        } else {
+            (None, None)
+        };
+
+        // Try cylinder fit (always, or only if cone failed — per user request,
+        // log cylinder only when cone fails, but still try both for best selection)
+        let cyl_result = fit_cylinder(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
+        let cyl_fit = cyl_result.map(|(origin, dir, radius)| {
+            ConeFit { apex: origin, axis_direction: dir, half_angle: 0.0, radius, convex: None }
         });
 
-        // Pick the better fit
+        if cyl_result.is_none() && verbosity >= 3 && cone_fit.is_none() {
+            eprintln!("      [conical] cylinder fit failed: fit_cylinder returned None");
+        }
+
+        // Compute max vertex error and max surface (centroid) error for cylinder fit
+        let (cyl_vtx_max, cyl_sfc_max) = if let Some(ref fit) = cyl_fit {
+            let vtx = vertex_list.iter().map(|&vi| {
+                let v = &mesh.vertices[vi];
+                vertex_to_cylinder_distance(v, &fit.apex, &fit.axis_direction, fit.radius).abs()
+            }).fold(0.0_f64, f64::max);
+            let sfc = face_list.iter().map(|&fi| {
+                let c = super::face_centroid(&mesh.faces[fi], &mesh.vertices);
+                let v = MeshVertex::from_xyz(c[0], c[1], c[2]);
+                vertex_to_cylinder_distance(&v, &fit.apex, &fit.axis_direction, fit.radius).abs()
+            }).fold(0.0_f64, f64::max);
+            if verbosity >= 3 && cone_fit.is_none() {
+                eprintln!(
+                    "      [conical] cylinder fit: radius={:.6e}, max_vtx_err={:.6e}, max_sfc_err={:.6e}",
+                    fit.radius, vtx, sfc
+                );
+            }
+            (Some(vtx), Some(sfc))
+        } else {
+            (None, None)
+        };
+        let _ = (cone_sfc_max, cyl_sfc_max); // used only for logging above
+
+        // Pick the better fit by max vertex error
         match (cyl_fit, cone_fit) {
             (Some(cf), Some(kf)) => {
-                if cyl_max.unwrap() <= cone_max.unwrap() {
+                let cv = cyl_vtx_max.unwrap();
+                let kv = cone_vtx_max.unwrap();
+                if cv <= kv {
+                    if verbosity >= 3 {
+                        eprintln!(
+                            "      [conical] selected cylinder (vtx_err {:.6e} <= cone {:.6e})",
+                            cv, kv
+                        );
+                    }
                     Some(cf)
                 } else {
+                    if verbosity >= 3 {
+                        eprintln!(
+                            "      [conical] selected cone (vtx_err {:.6e} < cylinder {:.6e})",
+                            kv, cv
+                        );
+                    }
                     Some(kf)
                 }
             }

@@ -258,6 +258,10 @@ where
         let mut best_hypothesis: Option<S::Hypothesis> = None;
 
         for seed in &seeds {
+            if config.verbosity >= 3 {
+                let seed_str: Vec<String> = seed.faces.iter().map(|f| f.to_string()).collect();
+                eprintln!("    [{}-BFS] trying seed ({})", S::name(), seed_str.join(", "));
+            }
             let mut seed_vertex_set: HashSet<usize> = HashSet::new();
             for &sfi in &seed.faces {
                 let vc = mesh.faces[sfi].vertex_count as usize;
@@ -274,6 +278,9 @@ where
                     prof_time_seed_fit += t_fit.elapsed();
                     prof_total_fit_calls += 1;
                     fit_failures += 1;
+                    if config.verbosity >= 3 {
+                        eprintln!("    [{}-BFS] seed fit failed: no valid fit", S::name());
+                    }
                     continue;
                 }
             };
@@ -291,15 +298,14 @@ where
                 if d > seed_max_vtol {
                     seed_max_vtol = d;
                 }
-                if d > seed_vtol {
-                    seed_valid = false;
-                    break;
-                }
+            }
+            if seed_max_vtol > seed_vtol {
+                seed_valid = false;
             }
             if !seed_valid {
                 if config.verbosity >= 3 {
                     eprintln!(
-                        "    [{}-BFS] seed vtol fail: max_vtx={:.6e} (limit {:.6e})",
+                        "    [{}-BFS] seed rejected: vertex err {:.6e} > limit {:.6e}",
                         S::name(), seed_max_vtol, seed_vtol
                     );
                 }
@@ -313,15 +319,14 @@ where
                 if d > seed_max_stol {
                     seed_max_stol = d;
                 }
-                if d > stol {
-                    seed_valid = false;
-                    break;
-                }
+            }
+            if seed_max_stol > stol {
+                seed_valid = false;
             }
             if !seed_valid {
                 if config.verbosity >= 3 {
                     eprintln!(
-                        "    [{}-BFS] seed stol fail: max_ctr={:.6e} (limit {:.6e})",
+                        "    [{}-BFS] seed rejected: surface err {:.6e} > limit {:.6e}",
                         S::name(), seed_max_stol, stol
                     );
                 }
@@ -341,6 +346,9 @@ where
                 }
             }
             if !angle_ok {
+                if config.verbosity >= 3 {
+                    eprintln!("    [{}-BFS] seed rejected: dihedral angle exceeds limit", S::name());
+                }
                 seed_angle_failures += 1;
                 continue;
             }
