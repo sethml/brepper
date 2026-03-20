@@ -4,7 +4,7 @@ This file contains guidelines for AI/LLM coding assistants working on this proje
 
 ## IMPORTANT: Surviving Context Compaction
 
-When the user says `/iterate`, **immediately add the full iteration checklist (steps 1-12) to your todo list before doing any work**. Include steps like "Run clippy", "Commit changes", "Export chat log", "Tell limerick" — not just implementation subtasks. The todo list survives compaction; file contents, verbal instructions, and even the user's original prompt wording do not.
+When the user says `/iterate`, **immediately add the full iteration checklist (steps 1-12) to your todo list before doing any work**. BE SURE to include "Export chat log". The todo list survives compaction; file contents, verbal instructions, and even the user's original prompt wording do not.
 
 When compacting, include the user's prompt in the conversation summary as guidance. Also include the hashline-edit tool usage instructions.
 

@@ -16,12 +16,6 @@ use super::{
 // Planar fitting helpers
 // ---------------------------------------------------------------------------
 
-/// Signed distance from a vertex to a plane defined by (normal, distance).
-#[allow(dead_code)]
-pub(super) fn vertex_to_plane_distance(v: &MeshVertex, normal: &[f64; 3], distance: f64) -> f64 {
-    normal[0] * v.x + normal[1] * v.y + normal[2] * v.z - distance
-}
-
 /// Fit a plane to a set of faces using area-weighted normal averaging and
 /// vertex centroid for the distance.
 pub(super) fn fit_plane(
@@ -54,23 +48,6 @@ pub(super) fn fit_plane(
     let distance = sum_d / vertex_set.len() as f64;
 
     (normal, distance)
-}
-
-/// Check that all vertices in a set are within tolerance of a plane.
-#[allow(dead_code)]
-fn all_vertices_within_tolerance(
-    vertex_set: &HashSet<usize>,
-    normal: &[f64; 3],
-    distance: f64,
-    tolerance: f64,
-    vertices: &[MeshVertex],
-) -> bool {
-    for &vi in vertex_set {
-        if vertex_to_plane_distance(&vertices[vi], normal, distance).abs() > tolerance {
-            return false;
-        }
-    }
-    true
 }
 
 // ---------------------------------------------------------------------------

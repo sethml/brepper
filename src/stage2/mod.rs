@@ -506,31 +506,6 @@ pub(crate) fn viz_face_normal(face_idx: usize, mesh: &ConnectedMesh) -> Option<[
     mesh.faces[face_idx].normal.map(|n| [n[0] as f32, n[1] as f32, n[2] as f32])
 }
 
-/// Send a custom viz overlay with full control over highlights.
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
-pub(crate) fn viz_custom(
-    viz: Option<&VizSender>,
-    highlights: Vec<viz::FaceHighlight>,
-    edge_highlights: Vec<viz::EdgeHighlight>,
-    status: &str,
-    cylinders: Vec<viz::CylinderOverlay>,
-    spheres: Vec<viz::SphereOverlay>,
-    focus_point: Option<[f32; 3]>,
-    focus_normal: Option<[f32; 3]>,
-) -> Option<VizAction> {
-    let viz_sender = viz?;
-    let mut overlay = viz::VizOverlay::new();
-    overlay.status_text = status.to_string();
-    overlay.face_highlights = highlights;
-    overlay.edge_highlights = edge_highlights;
-    overlay.cylinders = cylinders;
-    overlay.spheres = spheres;
-    overlay.focus_point = focus_point;
-    overlay.focus_normal = focus_normal;
-    Some(viz_sender.show_and_wait(overlay))
-}
-
 /// Create a CylinderOverlay centered on the axial extent of the given faces.
 pub(crate) fn centered_cylinder_overlay(
     origin: [f64; 3], direction: [f64; 3], radius: f64,

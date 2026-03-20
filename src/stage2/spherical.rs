@@ -236,23 +236,6 @@ fn fit_sphere(
     Some((center, radius))
 }
 
-/// Check if all vertices are within tolerance of a sphere surface.
-#[allow(dead_code)]
-fn all_vertices_within_sphere_tolerance(
-    vertex_set: &HashSet<usize>,
-    center: &[f64; 3],
-    radius: f64,
-    tolerance: f64,
-    vertices: &[MeshVertex],
-) -> bool {
-    for &vi in vertex_set {
-        if vertex_to_sphere_distance(&vertices[vi], center, radius).abs() > tolerance {
-            return false;
-        }
-    }
-    true
-}
-
 /// Determine convexity for a sphere: does the face normal point away from the center?
 fn determine_sphere_convexity(
     face: &MeshFace,
@@ -322,19 +305,6 @@ fn solid_angle_coverage_valid(
         return false;
     }
     lambda_min / lambda_max >= MIN_SPHERE_EIGENVALUE_RATIO
-}
-
-/// Build a map from vertex index to the set of face indices incident on that vertex.
-#[allow(dead_code)]
-fn build_vertex_to_faces_map(mesh: &ConnectedMesh) -> Vec<Vec<usize>> {
-    let mut vtf: Vec<Vec<usize>> = vec![Vec::new(); mesh.vertices.len()];
-    for (fi, face) in mesh.faces.iter().enumerate() {
-        let vc = face.vertex_count as usize;
-        for &vi in &face.vertex_indices[..vc] {
-            vtf[vi].push(fi);
-        }
-    }
-    vtf
 }
 
 // ---------------------------------------------------------------------------
@@ -409,14 +379,6 @@ pub(super) struct SphereFit {
 
 /// Marker struct for the spherical surface type.
 pub(super) struct SphericalSurface;
-
-impl SphericalSurface {
-    /// Build vertex-to-faces map (needed for seeding).
-    #[allow(dead_code)]
-    fn vertex_to_faces(mesh: &ConnectedMesh) -> Vec<Vec<usize>> {
-        build_vertex_to_faces_map(mesh)
-    }
-}
 
 impl SurfaceType for SphericalSurface {
     type Fit = SphereFit;
