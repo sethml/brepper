@@ -1148,3 +1148,221 @@ impl SurfaceType for CylindricalSurface {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::PI;
+
+    /// Generate points on a cylinder: n_rings rings of n_pts_per_ring points.
+    fn cylinder_points(
+        axis_point: [f64; 3],
+        axis_dir: [f64; 3],
+        radius: f64,
+        n_rings: usize,
+        n_pts_per_ring: usize,
+        h_min: f64,
+        h_max: f64,
+    ) -> Vec<MeshVertex> {
+        let d = {
+            let len = (axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2)).sqrt();
+            [axis_dir[0] / len, axis_dir[1] / len, axis_dir[2] / len]
+        };
+        let (u, w) = super::super::perpendicular_basis(&d);
+        let mut pts = Vec::new();
+        for ring in 0..n_rings {
+            let t = if n_rings == 1 { 0.5 } else { ring as f64 / (n_rings - 1) as f64 };
+            let h = h_min + t * (h_max - h_min);
+            for j in 0..n_pts_per_ring {
+                let theta = 2.0 * PI * j as f64 / n_pts_per_ring as f64;
+                let (sin_t, cos_t) = theta.sin_cos();
+                pts.push(MeshVertex::from_xyz(
+                    axis_point[0] + h * d[0] + radius * (cos_t * u[0] + sin_t * w[0]),
+                    axis_point[1] + h * d[1] + radius * (cos_t * u[1] + sin_t * w[1]),
+                    axis_point[2] + h * d[2] + radius * (cos_t * u[2] + sin_t * w[2]),
+                ));
+            }
+        }
+        pts
+    }
+
+    /// Generate face normals for a cylinder (radially outward).
+    fn cylinder_normals(axis_dir: [f64; 3], n_faces: usize) -> Vec<[f64; 3]> {
+        let d = {
+            let len = (axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2)).sqrt();
+            [axis_dir[0] / len, axis_dir[1] / len, axis_dir[2] / len]
+        };
+        let (u, w) = super::super::perpendicular_basis(&d);
+        (0..n_faces)
+            .map(|i| {
+                let theta = 2.0 * PI * i as f64 / n_faces as f64;
+                let (sin_t, cos_t) = theta.sin_cos();
+                [cos_t * u[0] + sin_t * w[0],
+                 cos_t * u[1] + sin_t * w[1],
+                 cos_t * u[2] + sin_t * w[2]]
+            })
+            .collect()
+    }
+
+    /// Build a synthetic cylinder mesh suitable for fit_cylinder.
+    /// Returns (faces, vertices) where faces have normals and vertex_indices set.
+    fn build_cylinder_mesh(
+        axis_point: [f64; 3],
+        axis_dir: [f64; 3],
+        radius: f64,
+        n_rings: usize,
+        n_pts_per_ring: usize,
+        h_min: f64,
+        h_max: f64,
+    ) -> (Vec<MeshFace>, Vec<MeshVertex>) {
+        let vertices = cylinder_points(axis_point, axis_dir, radius, n_rings, n_pts_per_ring, h_min, h_max);
+        let normals = cylinder_normals(axis_dir, n_rings * n_pts_per_ring);
+        // Create one face per vertex (using adjacent vertices as a triangle)
+        let mut faces = Vec::new();
+        for ring in 0..n_rings.saturating_sub(1) {
+            for j in 0..n_pts_per_ring {
+                let j_next = (j + 1) % n_pts_per_ring;
+                let i0 = ring * n_pts_per_ring + j;
+                let i1 = ring * n_pts_per_ring + j_next;
+                let i2 = (ring + 1) * n_pts_per_ring + j;
+                let fidx = faces.len();
+                faces.push(MeshFace {
+                    vertex_count: 3,
+                    vertex_indices: [i0, i1, i2, 0],
+                    neighbors: [-1, -1, -1, -1],
+                    normal: Some(normals[fidx % normals.len()]),
+                    planar_hypothesis: -1,
+                    cylindrical_hypothesis: -2,
+                    spherical_hypothesis: -2,
+                    conical_hypothesis: -2,
+                    toroidal_hypothesis: -2,
+                });
+            }
+        }
+        (faces, vertices)
+    }
+
+    // ---- Distance tests ----
+
+    #[test]
+    fn distance_to_cylinder_on_surface() {
+        let v = MeshVertex::from_xyz(10.0, 0.0, 5.0);
+        let d = vertex_to_cylinder_distance(&v, &[0.0, 0.0, 0.0], &[0.0, 0.0, 1.0], 10.0);
+        assert!(d.abs() < 1e-10, "on-surface distance should be 0, got {d}");
+    }
+
+    #[test]
+    fn distance_to_cylinder_inside() {
+        let v = MeshVertex::from_xyz(5.0, 0.0, 5.0);
+        let d = vertex_to_cylinder_distance(&v, &[0.0, 0.0, 0.0], &[0.0, 0.0, 1.0], 10.0);
+        assert!((d - (-5.0)).abs() < 1e-10, "inside distance should be -5, got {d}");
+    }
+
+    #[test]
+    fn distance_to_cylinder_outside() {
+        let v = MeshVertex::from_xyz(15.0, 0.0, 5.0);
+        let d = vertex_to_cylinder_distance(&v, &[0.0, 0.0, 0.0], &[0.0, 0.0, 1.0], 10.0);
+        assert!((d - 5.0).abs() < 1e-10, "outside distance should be 5, got {d}");
+    }
+
+    #[test]
+    fn distance_to_cylinder_diagonal() {
+        let s = 10.0 / 2.0_f64.sqrt();
+        let v = MeshVertex::from_xyz(s, s, 0.0);
+        let d = vertex_to_cylinder_distance(&v, &[0.0, 0.0, 0.0], &[0.0, 0.0, 1.0], 10.0);
+        assert!(d.abs() < 1e-3, "diagonal on-surface distance should be ~0, got {d}");
+    }
+
+    #[test]
+    fn distance_to_cylinder_on_axis() {
+        let v = MeshVertex::from_xyz(0.0, 0.0, 5.0);
+        let d = vertex_to_cylinder_distance(&v, &[0.0, 0.0, 0.0], &[0.0, 0.0, 1.0], 10.0);
+        assert!((d - (-10.0)).abs() < 1e-10, "on-axis distance should be -10, got {d}");
+    }
+
+    // ---- Fit tests ----
+
+    #[test]
+    fn cylinder_fit_z_axis() {
+        let (faces, vertices) = build_cylinder_mesh(
+            [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 10.0, 6, 16, 0.0, 30.0,
+        );
+        let face_indices: Vec<usize> = (0..faces.len()).collect();
+        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+
+        let result = fit_cylinder(&face_indices, &vertex_set, &faces, &vertices);
+        assert!(result.is_some(), "cylinder fit should succeed");
+        let (origin, dir, radius) = result.unwrap();
+
+        assert!((radius - 10.0).abs() < 0.05, "radius should be 10, got {radius}");
+        let axis_z = dir[2].abs();
+        assert!((axis_z - 1.0).abs() < 0.01, "axis should be along Z, got z={axis_z}");
+        assert!(origin[0].abs() < 0.05, "origin.x should be near 0, got {}", origin[0]);
+        assert!(origin[1].abs() < 0.05, "origin.y should be near 0, got {}", origin[1]);
+    }
+
+    #[test]
+    fn cylinder_fit_offset() {
+        let (faces, vertices) = build_cylinder_mesh(
+            [5.0, 10.0, -3.0], [1.0, 0.0, 0.0], 7.0, 8, 20, -15.0, 15.0,
+        );
+        let face_indices: Vec<usize> = (0..faces.len()).collect();
+        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+
+        let result = fit_cylinder(&face_indices, &vertex_set, &faces, &vertices);
+        assert!(result.is_some(), "offset cylinder fit should succeed");
+        let (origin, dir, radius) = result.unwrap();
+
+        let axis_x = dir[0].abs();
+        assert!((axis_x - 1.0).abs() < 0.01, "axis should be along X, got x={axis_x}");
+        assert!((radius - 7.0).abs() < 0.05, "radius should be 7, got {radius}");
+        assert!((origin[1] - 10.0).abs() < 0.1, "origin.y should be 10, got {}", origin[1]);
+        assert!((origin[2] - (-3.0)).abs() < 0.1, "origin.z should be -3, got {}", origin[2]);
+    }
+
+    #[test]
+    fn cylinder_fit_tilted() {
+        let (faces, vertices) = build_cylinder_mesh(
+            [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], 5.0, 10, 24, -20.0, 20.0,
+        );
+        let face_indices: Vec<usize> = (0..faces.len()).collect();
+        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+
+        let result = fit_cylinder(&face_indices, &vertex_set, &faces, &vertices);
+        assert!(result.is_some(), "tilted cylinder fit should succeed");
+        let (_origin, dir, radius) = result.unwrap();
+
+        let s3 = 1.0 / 3.0_f64.sqrt();
+        let dot = (dir[0] * s3 + dir[1] * s3 + dir[2] * s3).abs();
+        assert!((dot - 1.0).abs() < 0.01, "axis should be along (1,1,1), dot={dot}");
+        assert!((radius - 5.0).abs() < 0.05, "radius should be 5, got {radius}");
+    }
+
+    #[test]
+    fn cylinder_fit_rejects_degenerate() {
+        // Too few vertices (< 3)
+        let faces = vec![MeshFace {
+            vertex_count: 3,
+            vertex_indices: [0, 1, 0, 0],
+            neighbors: [-1, -1, -1, -1],
+            normal: Some([0.0, 0.0, 1.0]),
+            planar_hypothesis: -1,
+            cylindrical_hypothesis: -2,
+            spherical_hypothesis: -2,
+            conical_hypothesis: -2,
+            toroidal_hypothesis: -2,
+        }];
+        let vertices = vec![
+            MeshVertex::from_xyz(1.0, 0.0, 0.0),
+            MeshVertex::from_xyz(0.0, 1.0, 0.0),
+        ];
+        let vertex_set: HashSet<usize> = (0..2).collect();
+        assert!(fit_cylinder(&[0], &vertex_set, &faces, &vertices).is_none(),
+                "cylinder fit should reject 2 vertices");
+    }
+}
+

@@ -551,3 +551,182 @@ impl SurfaceType for SphericalSurface {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::PI;
+
+    /// Generate points on a sphere.
+    fn sphere_points(
+        center: [f64; 3],
+        radius: f64,
+        n_rings: usize,
+        n_pts_per_ring: usize,
+        elev_min: f64,
+        elev_max: f64,
+    ) -> Vec<MeshVertex> {
+        let mut pts = Vec::new();
+        for ring in 0..n_rings {
+            let t = if n_rings == 1 { 0.5 } else { ring as f64 / (n_rings - 1) as f64 };
+            let elev = elev_min + t * (elev_max - elev_min);
+            let (sin_e, cos_e) = elev.sin_cos();
+            for j in 0..n_pts_per_ring {
+                let theta = 2.0 * PI * j as f64 / n_pts_per_ring as f64;
+                let (sin_t, cos_t) = theta.sin_cos();
+                pts.push(MeshVertex::from_xyz(
+                    center[0] + radius * cos_e * cos_t,
+                    center[1] + radius * cos_e * sin_t,
+                    center[2] + radius * sin_e,
+                ));
+            }
+        }
+        pts
+    }
+
+    // ---- Distance tests ----
+
+    #[test]
+    fn distance_to_sphere_on_surface() {
+        let v = MeshVertex::from_xyz(10.0, 0.0, 0.0);
+        let d = vertex_to_sphere_distance(&v, &[0.0, 0.0, 0.0], 10.0);
+        assert!(d.abs() < 1e-10, "on-surface distance should be 0, got {d}");
+    }
+
+    #[test]
+    fn distance_to_sphere_inside() {
+        let v = MeshVertex::from_xyz(5.0, 0.0, 0.0);
+        let d = vertex_to_sphere_distance(&v, &[0.0, 0.0, 0.0], 10.0);
+        assert!((d - (-5.0)).abs() < 1e-10, "inside distance should be -5, got {d}");
+    }
+
+    #[test]
+    fn distance_to_sphere_outside() {
+        let v = MeshVertex::from_xyz(15.0, 0.0, 0.0);
+        let d = vertex_to_sphere_distance(&v, &[0.0, 0.0, 0.0], 10.0);
+        assert!((d - 5.0).abs() < 1e-10, "outside distance should be 5, got {d}");
+    }
+
+    #[test]
+    fn distance_to_sphere_at_center() {
+        let v = MeshVertex::from_xyz(0.0, 0.0, 0.0);
+        let d = vertex_to_sphere_distance(&v, &[0.0, 0.0, 0.0], 10.0);
+        assert!((d - (-10.0)).abs() < 1e-10, "at-center distance should be -radius, got {d}");
+    }
+
+    #[test]
+    fn distance_to_sphere_arbitrary() {
+        let v = MeshVertex::from_xyz(3.0, 4.0, 0.0);
+        let d = vertex_to_sphere_distance(&v, &[0.0, 0.0, 0.0], 10.0);
+        assert!((d - (-5.0)).abs() < 1e-10, "distance should be -5, got {d}");
+    }
+
+    #[test]
+    fn distance_to_sphere_offset_center() {
+        let v = MeshVertex::from_xyz(1.0, 2.0, 10.0);
+        let d = vertex_to_sphere_distance(&v, &[1.0, 2.0, 3.0], 7.0);
+        assert!(d.abs() < 1e-10, "on-surface distance should be 0, got {d}");
+    }
+
+    // ---- Fit tests ----
+
+    #[test]
+    fn sphere_fit_origin() {
+        let vertices = sphere_points([0.0, 0.0, 0.0], 12.5, 8, 16, -PI / 2.0 + 0.1, PI / 2.0 - 0.1);
+        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+
+        let result = fit_sphere(&vertex_set, &vertices);
+        assert!(result.is_some(), "sphere fit should succeed");
+        let (center, radius) = result.unwrap();
+
+        assert!((radius - 12.5).abs() < 0.01, "radius should be 12.5, got {radius}");
+        assert!(center[0].abs() < 0.01, "center.x should be 0, got {}", center[0]);
+        assert!(center[1].abs() < 0.01, "center.y should be 0, got {}", center[1]);
+        assert!(center[2].abs() < 0.01, "center.z should be 0, got {}", center[2]);
+    }
+
+    #[test]
+    fn sphere_fit_offset() {
+        let vertices = sphere_points([5.0, -3.0, 7.0], 10.0, 10, 20, -PI / 2.0 + 0.1, PI / 2.0 - 0.1);
+        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+
+        let result = fit_sphere(&vertex_set, &vertices);
+        assert!(result.is_some(), "offset sphere fit should succeed");
+        let (center, radius) = result.unwrap();
+
+        assert!((radius - 10.0).abs() < 0.01, "radius should be 10, got {radius}");
+        assert!((center[0] - 5.0).abs() < 0.01, "center.x should be 5, got {}", center[0]);
+        assert!((center[1] - (-3.0)).abs() < 0.01, "center.y should be -3, got {}", center[1]);
+        assert!((center[2] - 7.0).abs() < 0.01, "center.z should be 7, got {}", center[2]);
+    }
+
+    #[test]
+    fn sphere_fit_hemisphere() {
+        let vertices = sphere_points([0.0, 0.0, 0.0], 10.0, 6, 16, 0.05, PI / 2.0 - 0.05);
+        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+
+        let result = fit_sphere(&vertex_set, &vertices);
+        assert!(result.is_some(), "hemisphere fit should succeed");
+        let (center, radius) = result.unwrap();
+
+        assert!((radius - 10.0).abs() < 0.1, "radius should be 10, got {radius}");
+        assert!(center[0].abs() < 0.1, "center.x should be 0, got {}", center[0]);
+        assert!(center[1].abs() < 0.1, "center.y should be 0, got {}", center[1]);
+        assert!(center[2].abs() < 0.1, "center.z should be 0, got {}", center[2]);
+    }
+
+    #[test]
+    fn sphere_fit_small_cap() {
+        // Only a small cap near the north pole: elevation from 60° to 90°.
+        let vertices = sphere_points([0.0, 0.0, 0.0], 25.0, 5, 12, PI / 3.0, PI / 2.0 - 0.05);
+        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+
+        let result = fit_sphere(&vertex_set, &vertices);
+        assert!(result.is_some(), "small cap fit should succeed");
+        let (center, radius) = result.unwrap();
+
+        assert!((radius - 25.0).abs() < 0.5, "radius should be 25, got {radius}");
+        assert!(center[0].abs() < 0.5, "center.x should be 0, got {}", center[0]);
+        assert!(center[1].abs() < 0.5, "center.y should be 0, got {}", center[1]);
+        assert!(center[2].abs() < 0.5, "center.z should be 0, got {}", center[2]);
+    }
+
+    #[test]
+    fn sphere_fit_rejects_degenerate() {
+        let vertices = vec![
+            MeshVertex::from_xyz(1.0, 0.0, 0.0),
+            MeshVertex::from_xyz(0.0, 1.0, 0.0),
+            MeshVertex::from_xyz(0.0, 0.0, 1.0),
+        ];
+        let vertex_set: HashSet<usize> = (0..3).collect();
+        assert!(fit_sphere(&vertex_set, &vertices).is_none(),
+                "sphere fit should reject 3 vertices");
+    }
+
+    #[test]
+    fn sphere_fit_minimum_points() {
+        // 4 points on a unit sphere (regular tetrahedron vertices)
+        let s = 1.0_f64 / 3.0_f64.sqrt();
+        let vertices = vec![
+            MeshVertex::from_xyz(s, s, s),
+            MeshVertex::from_xyz(s, -s, -s),
+            MeshVertex::from_xyz(-s, s, -s),
+            MeshVertex::from_xyz(-s, -s, s),
+        ];
+        let vertex_set: HashSet<usize> = (0..4).collect();
+
+        let result = fit_sphere(&vertex_set, &vertices);
+        assert!(result.is_some(), "4-point sphere fit should succeed");
+        let (center, radius) = result.unwrap();
+
+        assert!((radius - 1.0).abs() < 1e-10, "radius should be 1, got {radius}");
+        assert!(center[0].abs() < 1e-10, "center.x should be 0, got {}", center[0]);
+        assert!(center[1].abs() < 1e-10, "center.y should be 0, got {}", center[1]);
+        assert!(center[2].abs() < 1e-10, "center.z should be 0, got {}", center[2]);
+    }
+}
+

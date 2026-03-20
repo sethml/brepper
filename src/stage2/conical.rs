@@ -1485,3 +1485,221 @@ impl SurfaceType for ConicalSurface {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::PI;
+
+    /// Generate points on a cone surface.
+    fn cone_points(
+        apex: [f64; 3],
+        axis_dir: [f64; 3],
+        half_angle: f64,
+        n_rings: usize,
+        n_pts_per_ring: usize,
+        h_min: f64,
+        h_max: f64,
+    ) -> Vec<MeshVertex> {
+        let d = {
+            let len = (axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2)).sqrt();
+            [axis_dir[0] / len, axis_dir[1] / len, axis_dir[2] / len]
+        };
+        let (u, w) = super::super::perpendicular_basis(&d);
+        let tan_a = half_angle.tan();
+        let mut pts = Vec::new();
+        for ring in 0..n_rings {
+            let t = if n_rings == 1 { 0.5 } else { ring as f64 / (n_rings - 1) as f64 };
+            let h = h_min + t * (h_max - h_min);
+            let r = h * tan_a;
+            for j in 0..n_pts_per_ring {
+                let theta = 2.0 * PI * j as f64 / n_pts_per_ring as f64;
+                let (sin_t, cos_t) = theta.sin_cos();
+                pts.push(MeshVertex::from_xyz(
+                    apex[0] + h * d[0] + r * (cos_t * u[0] + sin_t * w[0]),
+                    apex[1] + h * d[1] + r * (cos_t * u[1] + sin_t * w[1]),
+                    apex[2] + h * d[2] + r * (cos_t * u[2] + sin_t * w[2]),
+                ));
+            }
+        }
+        pts
+    }
+
+    /// Generate face normals for a cone (radially outward, tilted by half_angle).
+    fn cone_normals(axis_dir: [f64; 3], half_angle: f64, n_faces: usize) -> Vec<[f64; 3]> {
+        let d = {
+            let len = (axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2)).sqrt();
+            [axis_dir[0] / len, axis_dir[1] / len, axis_dir[2] / len]
+        };
+        let (u, w) = super::super::perpendicular_basis(&d);
+        let (sin_a, cos_a) = half_angle.sin_cos();
+        (0..n_faces)
+            .map(|i| {
+                let theta = 2.0 * PI * i as f64 / n_faces as f64;
+                let (sin_t, cos_t) = theta.sin_cos();
+                let rad = [cos_t * u[0] + sin_t * w[0],
+                           cos_t * u[1] + sin_t * w[1],
+                           cos_t * u[2] + sin_t * w[2]];
+                // Outward normal on cone: cos(α) * radial - sin(α) * axis
+                [cos_a * rad[0] - sin_a * d[0],
+                 cos_a * rad[1] - sin_a * d[1],
+                 cos_a * rad[2] - sin_a * d[2]]
+            })
+            .collect()
+    }
+
+    /// Build a synthetic cone mesh.
+    fn build_cone_mesh(
+        apex: [f64; 3],
+        axis_dir: [f64; 3],
+        half_angle: f64,
+        n_rings: usize,
+        n_pts_per_ring: usize,
+        h_min: f64,
+        h_max: f64,
+    ) -> (Vec<MeshFace>, Vec<MeshVertex>) {
+        let vertices = cone_points(apex, axis_dir, half_angle, n_rings, n_pts_per_ring, h_min, h_max);
+        let normals = cone_normals(axis_dir, half_angle, n_rings * n_pts_per_ring);
+        let mut faces = Vec::new();
+        for ring in 0..n_rings.saturating_sub(1) {
+            for j in 0..n_pts_per_ring {
+                let j_next = (j + 1) % n_pts_per_ring;
+                let i0 = ring * n_pts_per_ring + j;
+                let i1 = ring * n_pts_per_ring + j_next;
+                let i2 = (ring + 1) * n_pts_per_ring + j;
+                let fidx = faces.len();
+                faces.push(MeshFace {
+                    vertex_count: 3,
+                    vertex_indices: [i0, i1, i2, 0],
+                    neighbors: [-1, -1, -1, -1],
+                    normal: Some(normals[fidx % normals.len()]),
+                    planar_hypothesis: -1,
+                    cylindrical_hypothesis: -1,
+                    spherical_hypothesis: -1,
+                    conical_hypothesis: -2,
+                    toroidal_hypothesis: -2,
+                });
+            }
+        }
+        (faces, vertices)
+    }
+
+    // ---- Distance tests ----
+
+    #[test]
+    fn distance_to_cone_on_surface() {
+        // 45° cone: at (1,0,1), r=1, h=1, so on surface.
+        let v = MeshVertex::from_xyz(1.0, 0.0, 1.0);
+        let d = vertex_to_cone_distance(&v, &[0.0, 0.0, 0.0], &[0.0, 0.0, 1.0], PI / 4.0);
+        assert!(d.abs() < 1e-5, "on-surface distance should be 0, got {d}");
+    }
+
+    #[test]
+    fn distance_to_cone_on_axis() {
+        // 45° cone, point on axis at (0,0,5): r=0, h=5
+        // d = 0*cos(45) - 5*sin(45) = -5/√2
+        let v = MeshVertex::from_xyz(0.0, 0.0, 5.0);
+        let d = vertex_to_cone_distance(&v, &[0.0, 0.0, 0.0], &[0.0, 0.0, 1.0], PI / 4.0);
+        let expected = -5.0 / 2.0_f64.sqrt();
+        assert!((d - expected).abs() < 1e-4, "on-axis distance should be {expected}, got {d}");
+    }
+
+    #[test]
+    fn distance_to_cone_frustum_on_surface() {
+        // Frustum: apex at (0,0,60), axis (0,0,-1), half_angle = atan(1/6)
+        // Point (10,0,0): h from apex = 60 along (0,0,-1), r = 10
+        let ha = (1.0_f64 / 6.0).atan();
+        let v = MeshVertex::from_xyz(10.0, 0.0, 0.0);
+        let d = vertex_to_cone_distance(&v, &[0.0, 0.0, 60.0], &[0.0, 0.0, -1.0], ha);
+        assert!(d.abs() < 1e-4, "frustum on-surface distance should be 0, got {d}");
+    }
+
+    #[test]
+    fn distance_to_cone_off_surface() {
+        // Same frustum, point (11,0,0): r=11, h=60
+        // d = 11*cos(a) - 60*sin(a) where a=atan(1/6)
+        // cos(atan(1/6)) = 6/√37, sin(atan(1/6)) = 1/√37
+        // d = 66/√37 - 60/√37 = 6/√37 ≈ 0.986
+        let ha = (1.0_f64 / 6.0).atan();
+        let v = MeshVertex::from_xyz(11.0, 0.0, 0.0);
+        let d = vertex_to_cone_distance(&v, &[0.0, 0.0, 60.0], &[0.0, 0.0, -1.0], ha);
+        let expected = 6.0 / 37.0_f64.sqrt();
+        assert!((d - expected).abs() < 1e-4, "off-surface distance should be {expected}, got {d}");
+    }
+
+    // ---- Fit tests ----
+
+    #[test]
+    fn cone_fit_z_axis() {
+        // Frustum: r_bottom=10 at z=0, r_top=5 at z=30.
+        // Apex at (0,0,60), axis (0,0,-1), half_angle = atan(1/6).
+        let ha = (1.0_f64 / 6.0).atan();
+        let apex = [0.0, 0.0, 60.0];
+        let axis = [0.0, 0.0, -1.0];
+        let (faces, vertices) = build_cone_mesh(apex, axis, ha, 8, 20, 30.0, 60.0);
+        let face_indices: Vec<usize> = (0..faces.len()).collect();
+        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+
+        let result = fit_cone(&face_indices, &vertex_set, &faces, &vertices);
+        assert!(result.is_some(), "cone fit should succeed");
+        let (fit_apex, fit_dir, fit_ha) = result.unwrap();
+
+        assert!((fit_ha - ha).abs() < 0.01, "half_angle should be ~{:.3}, got {fit_ha:.3}", ha);
+        let axis_z = fit_dir[2].abs();
+        assert!((axis_z - 1.0).abs() < 0.02, "axis should be along Z, got z={axis_z}");
+        assert!(fit_apex[0].abs() < 0.5, "apex.x should be near 0, got {}", fit_apex[0]);
+        assert!(fit_apex[1].abs() < 0.5, "apex.y should be near 0, got {}", fit_apex[1]);
+        assert!((fit_apex[2] - 60.0).abs() < 1.0, "apex.z should be near 60, got {}", fit_apex[2]);
+    }
+
+    #[test]
+    fn cone_fit_conical_hole() {
+        // Cone: bottom r=6 at z=0, top r=4 at z=20.
+        // half_angle = atan(0.1), apex at (0,0,60), axis (0,0,-1).
+        let ha = 0.1_f64.atan();
+        let apex = [0.0, 0.0, 60.0];
+        let axis = [0.0, 0.0, -1.0];
+        // h range: from apex distance 40 (z=20, r=4) to distance 60 (z=0, r=6)
+        let (faces, vertices) = build_cone_mesh(apex, axis, ha, 6, 16, 40.0, 60.0);
+        let face_indices: Vec<usize> = (0..faces.len()).collect();
+        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+
+        let result = fit_cone(&face_indices, &vertex_set, &faces, &vertices);
+        assert!(result.is_some(), "conical hole fit should succeed");
+        let (fit_apex, fit_dir, fit_ha) = result.unwrap();
+
+        assert!((fit_ha - ha).abs() < 0.01, "half_angle should be ~{:.4}, got {fit_ha:.4}", ha);
+        let axis_z = fit_dir[2].abs();
+        assert!((axis_z - 1.0).abs() < 0.02, "axis should be along Z, got z={axis_z}");
+        assert!(fit_apex[0].abs() < 0.5, "apex.x should be near 0, got {}", fit_apex[0]);
+        assert!(fit_apex[1].abs() < 0.5, "apex.y should be near 0, got {}", fit_apex[1]);
+        assert!((fit_apex[2] - 60.0).abs() < 1.5, "apex.z should be near 60, got {}", fit_apex[2]);
+    }
+
+    #[test]
+    fn cone_fit_rejects_degenerate() {
+        let faces = vec![MeshFace {
+            vertex_count: 3,
+            vertex_indices: [0, 1, 2, 0],
+            neighbors: [-1, -1, -1, -1],
+            normal: Some([0.0, 0.0, 1.0]),
+            planar_hypothesis: -1,
+            cylindrical_hypothesis: -1,
+            spherical_hypothesis: -1,
+            conical_hypothesis: -2,
+            toroidal_hypothesis: -2,
+        }];
+        let vertices = vec![
+            MeshVertex::from_xyz(1.0, 0.0, 0.0),
+            MeshVertex::from_xyz(0.0, 1.0, 0.0),
+        ];
+        let vertex_set: HashSet<usize> = (0..2).collect();
+        assert!(fit_cone(&[0], &vertex_set, &faces, &vertices).is_none(),
+                "cone fit should reject degenerate input");
+    }
+}
+

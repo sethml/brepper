@@ -172,22 +172,177 @@ The algorithm operates in three phases: identify merge pairs, apply merges, then
 
 ### Stage 2: Surface Fitting
 
-Stages 2.1–2.5 fit analytic surface hypotheses (planes, cylinders, spheres, cones, tori) to groups of mesh faces using BFS region growing with per-surface seeding strategies and fitting math. Full algorithm descriptions are in [SURFACE_FITTING.md](SURFACE_FITTING.md).
+**Precision note**: Mesh vertex positions, normals, and all hypothesis parameters use double-precision (`f64`) throughout. Surface fitting arithmetic and BFS distance computations are all in double precision.
+
+#### Generic BFS Hypothesis Generation
+
+Stages 2.1–2.5 share a common algorithm structure for deducing surface hypotheses from the mesh. This section describes the generic algorithm; each stage section below describes how it is parameterized. The Rust implementation uses the `SurfaceType` trait in `bfs.rs` to share code across surface types.
+
+The algorithm operates on a single surface type at a time (planar, cylindrical, spherical, conical, toroidal). For each surface type, the algorithm iterates over all faces that don't yet have a hypothesis of that type, attempting to grow a hypothesis from each face.
+
+**Hypothesis data structure:**
+Each surface type defines a hypothesis struct with type-specific parameters (see per-stage sections) plus common fields:
+- `faces: Vec<usize>` — Mesh face indices in this hypothesis.
+- `vertices: Vec<usize>` — Mesh vertex indices on this surface.
+- `error_max: f64` — Maximum absolute distance from any vertex to the fitted surface.
+- `error_abs_sum: f64` — Sum of absolute vertex-to-surface distances.
+
+Each `MeshFace` has a hypothesis index field per surface type (e.g., `planar_hypothesis`, `cylindrical_hypothesis`, `spherical_hypothesis`, `conical_hypothesis`, `toroidal_hypothesis`), initialized to `UNDEDUCED` (-2) at the start of each stage.
+
+**Algorithm: `generate_hypotheses<S: SurfaceType>(mesh, config)` — runs the full hypothesis generation for one surface type:**
+
+1. Initialize all hypothesis fields for this surface type to `UNDEDUCED`.
+2. For each face `fi` in index order where the face is eligible (hypothesis field == `UNDEDUCED`, plus any surface-type-specific eligibility checks):
+    a. **Seed generation**: call `S::generate_seeds()` to find all valid seeds anchored at `fi` (see per-stage sections for seed types). For each candidate seed:
+        - Collect the seed faces' vertices.
+        - Perform a surface fit from the seed vertices using `S::fit_surface()`.
+        - **Seed vertex tolerance**: check all seed face vertices within `--vertex-tolerance` of the fitted surface. If any vertex exceeds this, enter **bootstrapping mode** (see below) rather than rejecting the seed.
+        - **Seed surface tolerance** (skipped in bootstrapping mode): check all seed face centroids within `--surface-tolerance` of the fitted surface. Reject seed if any fails.
+        - **Seed angular tolerance**: check dihedral angles between all pairs of adjacent seed faces. Reject seed if any exceeds `--angular-tolerance`.
+        - Determine convexity from the seed faces (if not bootstrapping).
+    b. **BFS expansion** (per valid seed): using temporary data structures (local face list, vertex set — mesh hypothesis fields are NOT mutated during trials):
+        - Initialize BFS queue with all seed faces.
+        - Pop faces from the queue. For each neighbor `ni` of the popped face:
+            - Skip if `ni` is not eligible for this surface type (already assigned a hypothesis, or fails surface-type-specific eligibility).
+            - Skip if `ni` is already claimed by this trial.
+            - **Angular tolerance check**: for each of `ni`'s mesh neighbors that is already claimed by this trial, compute the dihedral angle. If any exceeds `--angular-tolerance`, skip `ni`.
+            - **Convexity check** (skipped in bootstrapping mode): call `S::convexity_check()`. If it fails, skip `ni`.
+            - **Surface distance check** (skipped in bootstrapping mode): compute distance from each vertex of `ni` to the fitted surface via `S::vertex_distance()`, and from `ni`'s centroid via `S::centroid_distance()`.
+                - If all vertices are within `--vertex-tolerance` and centroid within `--surface-tolerance`: accept directly.
+                - If any vertex exceeds `REFIT_SKIP_MULTIPLIER * vertex_tolerance` or centroid exceeds `REFIT_SKIP_MULTIPLIER * surface_tolerance`: skip `ni` — too far for refitting to help.
+                - Otherwise (between 1× and `REFIT_SKIP_MULTIPLIER`×): attempt a **re-fit** using all current trial faces plus `ni`. If the re-fit satisfies vertex tolerance and surface tolerance for **all** faces (existing and new), accept the re-fit. Otherwise, revert and skip `ni`.
+            - If accepted (or in bootstrapping mode, where all faces passing the angular check are accepted): add `ni` to the trial's face list, add its vertices to the vertex set, push `ni` onto the BFS queue.
+        - After BFS completes: do a final re-fit from all accumulated faces and vertices.
+    c. **Bootstrapping validation** (only for bootstrapped trials): after the final re-fit, check all face vertices within `--vertex-tolerance` and all face centroids within `--surface-tolerance`. If any fail, discard the trial. Re-determine convexity from the final fit.
+    d. **Acceptance tests** (per completed trial): call `S::acceptance_test()` for surface-type-specific post-BFS validation (e.g., angular coverage, solid-angle coverage, minimum face count). If validation fails, discard the trial.
+    e. **Best candidate selection**: among all accepted trials for this starting face `fi`, keep the one with the largest total face area. Only two candidates need to be in memory at a time (current best and trial being evaluated).
+    f. **Commit**: if a best candidate was found, create a hypothesis and assign it to all of its faces (mutating `mesh.faces[].{type}_hypothesis`). Faces assigned here will be skipped by subsequent starting faces.
+3. After all starting faces have been processed: set any remaining `UNDEDUCED` faces to `NO_HYPOTHESIS`.
+
+**Bootstrapping mode**: When the seed fit (from a small number of faces) exceeds vertex tolerance — common for surface types where a few narrow-arc faces give a poorly conditioned fit — the BFS enters "bootstrapping" mode. In this mode, the seed's surface tolerance check is skipped, convexity is not determined, and BFS expansion accepts faces based on angular tolerance only (no vertex/surface tolerance or convexity checks). After BFS completes, a final fit is performed on all accumulated faces and vertices, and the standard tolerance validation is applied. This allows the algorithm to accumulate enough geometric diversity for a well-conditioned fit before validating tolerances.
+
+**Computational cost**: For each starting face, the number of seed trials is typically small (1 for planar/spherical/toroidal, 1–6 for cylindrical). Each trial BFS covers the connected surface region. Since most faces on the same surface will discover the same region, the work is dominated by the first few faces that discover the region before their neighbors get committed.
+
+- With the `--compare` flag (applied to all surface types):
+  - For each hypothesis, compute the centroid of each member face.
+  - Project each centroid onto the fitted surface (nearest point on the surface).
+  - Measure the distance from the projected point to the nearest surface in the reference STEP file using `BRepExtrema_DistShapeShape`.
+  - If any projected centroid exceeds `--surface-tolerance`, report an error.
+  - Note: centroid-to-surface distance measures both fitting accuracy and tessellation sagitta ($\approx h^2 / 8R$ for curvature radius $R$ and chord length $h$). For typical tessellations this is small relative to `--surface-tolerance`.
 
 #### 2.1 Deduce planar hypotheses
-BFS region growing from seed faces, with area-weighted normal averaging and vertex-tolerance acceptance. See [SURFACE_FITTING.md](SURFACE_FITTING.md#21-deduce-planar-hypotheses).
+
+Fit planar hypotheses to all connected sets of coplanar faces. Every face is assigned to exactly one planar hypothesis (including single-face hypotheses for faces on curved surfaces). A planar hypothesis consists of:
+- `normal: [f64; 3]` — Unit normal vector pointing outward from the shell/solid.
+- `distance: f64` — Signed distance from origin to plane along the normal (plane equation: normal · p = distance).
+- `error_max, error_min: f64` — Maximum (positive) and minimum (most negative) signed distance from any vertex to the plane.
+- `error_abs_sum: f64` — Sum of absolute vertex-to-plane distances.
+
+Runs the generic BFS hypothesis generation with the following parameterization:
+
+**Seed type**: The starting face `fi` alone. No additional seed faces are needed — a single face defines a plane.
+
+**Surface fit**: Area-weighted normal averaging. Each face's unit normal is weighted by the face's triangle area, then the weighted sum is normalized. The plane distance is the mean of `normal · vertex` over all vertices. This gives larger faces more influence on the plane orientation. See [SURFACE_FITTING.md](SURFACE_FITTING.md) for detailed fitting math.
+
+**Distance metric**: Signed distance from vertex to plane: `d = normal · vertex - distance`. All vertices must satisfy `|d| ≤ vertex_tolerance`.
+
+Because the vertex tolerance is tight for CAD meshes, the angular tolerance check is redundant for planar hypotheses — any face with all vertices in the tolerance band necessarily has a closely aligned normal. It is still applied for consistency with the generic algorithm.
+
+**Acceptance tests**: `face_count >= 2`. Single-face planes are not kept as hypotheses. Faces that end up in a single-face group are left as `NO_HYPOTHESIS`; stage 2.6 synthesizes single-face planar hypotheses for any faces that received no hypothesis from stages 2.1–2.5.
 
 #### 2.2 Deduce cylindrical hypotheses
-Multi-seed evaluation with 3-face seeds, BFS expansion with cylinder fit qualification, angular coverage validation. Fitting via normal covariance axis estimation + 2D circle fit + LM refinement. See [SURFACE_FITTING.md](SURFACE_FITTING.md#22-deduce-cylindrical-hypotheses).
+
+Fit cylindrical hypotheses to connected sets of faces that lie on a common cylinder. A cylindrical hypothesis consists of:
+- `axis_origin: [f64; 3]` — A point on the cylinder axis.
+- `axis_direction: [f64; 3]` — Unit direction vector along the axis.
+- `radius: f64` — Radius of the cylinder (always positive).
+- `convex: bool` — Whether face normals point away from the axis (convex, like the outside of a pipe) or toward it (concave, like the inside of a hole).
+- `error_max: f64` — Maximum absolute distance from any vertex to the cylinder surface.
+- `error_abs_sum: f64` — Sum of absolute vertex-to-surface distances.
+
+Runs the generic BFS hypothesis generation with the following parameterization:
+
+**Seed type**: Three faces `(fi, n1, n2)` — the starting face `fi`, a pairwise-qualified neighbor `n1` of `fi`, and a neighbor `n2` of `n1` where `n2` is NOT a neighbor of `fi` and is pairwise-qualified with `n1`. This places the seed faces at different circumferential positions, providing angular diversity for the cylinder fit (a single triangle is always planar and cannot determine curvature, and two faces provide minimal angular constraint). Multiple seeds may be generated per starting face (one per valid `(n1, n2)` pair); the best trial by area is kept.
+
+*Pairwise qualification*: Two faces are pairwise qualified if they are neighbors, both unassigned for this surface type (`cylindrical_hypothesis < 0`), have sufficiently different normals (cross product magnitude exceeds `MIN_CROSS_THRESHOLD`, e.g. 0.01), and the dihedral angle does not exceed `--angular-tolerance`. The cross product minimum is a seeding criterion only — during BFS expansion, adjacent faces on a finely tessellated cylinder legitimately have near-parallel normals.
+
+**Surface fit**: Normal covariance axis estimation + 2D circle fit + Levenberg-Marquardt refinement. (1) Axis direction from smallest eigenvector of the area-weighted normal covariance matrix $M = \sum w_i n_i n_i^T$. (2) Project vertices perpendicular to the axis, fit a 2D circle (algebraic least-squares with centering for numerical stability) for axis position and radius. (3) LM refinement of 6 parameters `[alpha, beta, qx, qy, qz, radius]` minimizing vertex-to-cylinder distances. See [SURFACE_FITTING.md](SURFACE_FITTING.md) for detailed fitting math.
+
+**Distance metric**: For axis origin `o`, axis direction `a`, radius `r`: distance from point `p` is $| \|p - o - ((p-o)\cdot a)a\| - r |$.
+
+**BFS-specific check — convexity**: Compute the vector from the axis to the face's centroid. Check that the face's normal agrees with the hypothesis convexity (dot product with radial vector has the expected sign). Reject if inconsistent — this prevents merging the inner and outer surfaces of a thin-walled cylinder.
+
+**Acceptance tests — angular coverage validation**: (1) For each face, compute centroid angular position θ around the axis. (2) Sort θ values. (3) Find the largest gap and compute span = 2π − largest_gap. (4) The second-largest gap must be ≤ span / 3. Ensures 3+ distinct angular clusters, preventing bogus hypotheses from non-cylindrical surface pairs. Also requires minimum face count (`MIN_CYLINDER_FACES`).
 
 #### 2.3 Deduce spherical hypotheses
-Vertex-neighborhood seeding, BFS with solid-angle coverage validation. Algebraic least-squares sphere fitting. See [SURFACE_FITTING.md](SURFACE_FITTING.md#23-deduce-spherical-hypotheses).
+
+Fit spherical hypotheses to connected sets of faces that lie on a common sphere. Faces with cylindrical hypotheses are not excluded — a face can legitimately belong to both a cylinder and a sphere (e.g., equator faces). Stage 2.6 resolves overlapping hypotheses later. A spherical hypothesis consists of:
+- `center: [f64; 3]` — Center of the sphere.
+- `radius: f64` — Radius of the sphere (always positive).
+- `convex: bool` — Whether face normals point away from the center (convex, like the outside of a ball) or toward it (concave, like a bowl).
+- `error_max: f64` — Maximum absolute distance from any vertex to the sphere surface.
+- `error_abs_sum: f64` — Sum of absolute vertex-to-surface distances.
+
+Runs the generic BFS hypothesis generation with the following parameterization:
+
+**Seed type**: The starting face `fi` plus all faces that share at least one vertex with `fi` (the **1-ring vertex neighborhood**). Only faces that are unassigned for this surface type are included. If fewer than 3 eligible faces remain in the seed, skip this starting face (not enough angular diversity for a reliable sphere fit). Returns a single seed per starting face.
+
+A vertex neighborhood on a sphere naturally provides normals spanning 3D, making it a good seed geometry for the 4-DOF sphere fit.
+
+**Surface fit**: Algebraic least-squares sphere fitting. Linearizes $|v - c|^2 = r^2$ as $2c_x x + 2c_y y + 2c_z z + k = x^2 + y^2 + z^2$ and solves via 4×4 normal equations with Gaussian elimination. Extracts center $(c_x, c_y, c_z)$ and radius $r = \sqrt{k + |c|^2}$. Optionally refined with Gauss-Newton minimizing vertex-to-sphere distances. Maximum radius bounded by `bounding_box_diagonal * 1000` as a numerical guard rail. See [SURFACE_FITTING.md](SURFACE_FITTING.md) for detailed fitting math.
+
+**Distance metric**: $| \|p - \text{center}\| - \text{radius} |$.
+
+**BFS-specific check — convexity**: Verify the face normal agrees with the hypothesis convexity (dot product of normal with vector from center to face centroid has the expected sign).
+
+**Acceptance tests — solid-angle coverage validation**: Computes area-weighted 3×3 covariance matrix of unit direction vectors from sphere center to face centroids. Checks eigenvalue ratio ($\lambda_3 / \lambda_1$) to ensure directions span 3D. Fillet faces along a cylinder produce $\lambda_3 \approx 0$ (1D strip), failing this test. Also requires minimum face count (`MIN_SPHERE_FACES`, at least 4 — a sphere needs at least 4 non-coplanar points for a unique fit).
 
 #### 2.4 Deduce conical hypotheses
-Apex-vertex seeding, (h,r) profile fitting and quadric fitting initialization, LM refinement. See [SURFACE_FITTING.md](SURFACE_FITTING.md#24-deduce-conical-hypotheses).
+
+Fit conical hypotheses to connected sets of faces that lie on a common cone. Faces already assigned to cylindrical hypotheses are excluded. A conical hypothesis consists of:
+- `apex: [f64; 3]` — Apex (tip) of the cone.
+- `axis_direction: [f64; 3]` — Unit direction vector along the axis (from apex outward).
+- `half_angle: f64` — Half-angle of the cone (in radians). The angle between the axis and any generator line.
+- `convex: bool` — Whether face normals point away from the axis (convex) or toward it (concave).
+- `error_max: f64` — Maximum absolute distance from any vertex to the cone surface.
+- `error_abs_sum: f64` — Sum of absolute vertex-to-surface distances.
+
+Runs the generic BFS hypothesis generation with the following parameterization:
+
+**Eligibility**: A face is eligible if its conical hypothesis field is `UNDEDUCED` AND its `cylindrical_hypothesis < 0` (not already assigned to a cylinder).
+
+**Seed type**: **Apex-vertex seeding** — for each vertex of `fi`, collect all eligible incident faces around that vertex. Skip if fewer than `MIN_CONE_FACES` incident faces. Check non-coplanarity of the incident face normals via the area-weighted normal covariance matrix: smallest eigenvalue / trace must be ≤ 0.3 (ensuring normals span 3D, not a flat region). Each qualifying vertex produces a seed containing all its eligible incident faces. Multiple seeds may be generated per starting face (one per vertex).
+
+**Surface fit**: (1) Axis direction from smallest eigenvector of the area-weighted face-normal covariance matrix. (2) Linear (h,r) profile regression to get initial apex position and half-angle. (3) Gauss-Newton refinement of 6 parameters `[half_angle, apex_height, qx, qy, delta_u, delta_w]` minimizing vertex-to-cone distances (when ≥10 vertices). Rejects if half-angle outside [2°, 85°] or apex too far from mesh. See [SURFACE_FITTING.md](SURFACE_FITTING.md) for detailed fitting math.
+
+**Distance metric**: $|r_i \cos\theta - h_i \sin\theta|$ where $h_i = (p - A) \cdot \hat{a}$ (axial distance from apex) and $r_i = |(p - A) - h_i \hat{a}|$ (radial distance from axis).
+
+**BFS-specific check — convexity**: Compute the radial vector from axis to face centroid. Check that the face normal's dot product with the radial vector has the expected sign for the hypothesis convexity.
+
+**Acceptance tests — angular coverage validation**: Same algorithm as cylindrical (azimuthal angle coverage around the axis, requiring 3+ distinct angular clusters). Also requires minimum face count (`MIN_CONE_FACES`).
 
 #### 2.5 Deduce toroidal hypotheses
-Face-based seeding, medial axis / tube center method with SOR axis fallback, multi-axis LM rescue. See [SURFACE_FITTING.md](SURFACE_FITTING.md#25-deduce-toroidal-hypotheses).
+
+Fit toroidal hypotheses to connected sets of faces that lie on a common torus. Toroidal surfaces commonly appear as fillets, blends, and pipe elbows. A toroidal hypothesis consists of:
+- `center: [f64; 3]` — Center of the torus (on the axis, in the plane of the major circle).
+- `axis_direction: [f64; 3]` — Unit direction vector along the torus axis.
+- `major_radius: f64` — Distance from center to the tube centerline ($R$).
+- `minor_radius: f64` — Radius of the tube cross-section ($r$).
+- `convex: bool` — Whether the torus patch is on the outer (convex) or inner (concave) surface of the tube.
+- `error_max: f64` — Maximum absolute distance from any vertex to the torus surface.
+- `error_abs_sum: f64` — Sum of absolute vertex-to-surface distances.
+
+Runs the generic BFS hypothesis generation with the following parameterization:
+
+**Seed type**: Same as spherical — the starting face `fi` plus the 1-ring vertex neighborhood. However, faces already assigned to cylindrical, spherical, or conical hypotheses are excluded from the seed. Seeds with fewer than `MIN_TORUS_FACES` (7) faces or fewer than 9 unique vertices are skipped (torus has 7 DOF, needs sufficient data for a reliable fit). Returns a single seed per starting face.
+
+**Surface fit**: Tries **two methods** and keeps whichever achieves the lowest maximum vertex-to-torus distance: (1) **Medial axis / tube center method**: estimates minor radius from normal-line intersections of adjacent face pairs, computes tube centers $k_i = p_i \pm r \cdot n_i$, fits a 3D circle to the tube centers for axis direction and major radius, then LM refinement of 7 parameters $[C_x, C_y, C_z, \alpha, \beta, R, r]$. (2) **SOR axis method**: estimates axis from PCA of vertex positions (smallest eigenvector), center via Kasa circle fit, radii from (h,r) profile circle fit, then same LM refinement. Rejects if minor_radius ≤ 0, major_radius ≤ 0, or minor_radius > major_radius (self-intersecting). See [SURFACE_FITTING.md](SURFACE_FITTING.md) for detailed fitting math.
+
+**Distance metric**: $|\sqrt{(\text{radial} - R)^2 + \text{axial}^2} - r|$ where $\text{axial} = (p - C) \cdot \hat{a}$ and $\text{radial} = |(p - C) - \text{axial} \cdot \hat{a}|$.
+
+**BFS-specific check — convexity**: Compute the vector from the nearest tube center point to the face centroid. The tube center is $c = C + R \cdot \hat{r}$ where $\hat{r}$ is the radial unit vector from the torus axis to the point. Check that the face normal's dot product with this vector has the expected sign.
+
+**Acceptance tests**: (1) Minimum `MIN_TORUS_FACES` (7) — torus has 7 DOF. (2) **Angular coverage around the major circle** (same azimuthal algorithm as cylindrical/conical). (3) **Minor circle coverage**: faces should span multiple angular positions around the tube cross-section (φ = atan2(axial, radial − R)).
 
 #### 2.6 Select surfaces to use for reconstruction
 Assign each mesh face to exactly one "selected surface" for reconstruction. Since stages 2.1–2.5 produce hypotheses that may overlap (a face can belong to one planar, one cylindrical, one spherical, one conical, and one toroidal hypothesis simultaneously), surface selection must resolve these overlaps.
@@ -260,7 +415,7 @@ For groups of adjacent faces that remain as single-face planar hypotheses after 
 
 ### Algorithm Reference
 
-Algorithmic techniques (Unified SOR Framework, Gaussian Map Classification, Medial Axis / Tube Center Method, Quadric Fitting) are documented in [SURFACE_FITTING.md](SURFACE_FITTING.md#algorithm-reference).
+Surface fitting math details (plane fitting, cylinder fitting, sphere fitting, cone fitting, torus fitting) and algorithmic techniques (Unified SOR Framework, Gaussian Map Classification, Medial Axis / Tube Center Method, Quadric Fitting) are documented in [SURFACE_FITTING.md](SURFACE_FITTING.md).
 
 ---
 

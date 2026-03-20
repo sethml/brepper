@@ -1,5 +1,8 @@
 # Foundation
 
+## Port surface fit unit tests from C++
+Added comprehensive unit tests for all four surface fitting modules (cylindrical, conical, spherical, toroidal). Each module now has distance tests and fit tests using synthetic meshes. 53 tests pass.
+
 ## Project setup
 Crates, cargo.toml, dependencies.
 

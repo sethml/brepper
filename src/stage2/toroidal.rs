@@ -1763,3 +1763,336 @@ impl SurfaceType for ToroidalSurface {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::PI;
+
+    /// Generate points on a torus surface.
+    fn torus_points(
+        center: [f64; 3],
+        axis_dir: [f64; 3],
+        major_r: f64,
+        minor_r: f64,
+        n_major: usize,
+        n_minor: usize,
+        theta_min: f64,
+        theta_max: f64,
+        phi_min: f64,
+        phi_max: f64,
+    ) -> Vec<MeshVertex> {
+        let d = {
+            let len = (axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2)).sqrt();
+            [axis_dir[0] / len, axis_dir[1] / len, axis_dir[2] / len]
+        };
+        let (u, w) = super::super::perpendicular_basis(&d);
+        let mut pts = Vec::new();
+        for i in 0..n_major {
+            let theta = theta_min + (theta_max - theta_min) * i as f64 / n_major as f64;
+            let (sin_t, cos_t) = theta.sin_cos();
+            let rad = [cos_t * u[0] + sin_t * w[0],
+                       cos_t * u[1] + sin_t * w[1],
+                       cos_t * u[2] + sin_t * w[2]];
+            let tc = [center[0] + major_r * rad[0],
+                      center[1] + major_r * rad[1],
+                      center[2] + major_r * rad[2]];
+            for j in 0..n_minor {
+                let phi = phi_min + (phi_max - phi_min) * j as f64 / n_minor as f64;
+                let (sin_p, cos_p) = phi.sin_cos();
+                pts.push(MeshVertex::from_xyz(
+                    tc[0] + minor_r * (cos_p * rad[0] + sin_p * d[0]),
+                    tc[1] + minor_r * (cos_p * rad[1] + sin_p * d[1]),
+                    tc[2] + minor_r * (cos_p * rad[2] + sin_p * d[2]),
+                ));
+            }
+        }
+        pts
+    }
+
+    /// Generate normals for a torus.
+    fn torus_normals(
+        axis_dir: [f64; 3],
+        n_major: usize,
+        n_minor: usize,
+        theta_min: f64,
+        theta_max: f64,
+        phi_min: f64,
+        phi_max: f64,
+    ) -> Vec<[f64; 3]> {
+        let d = {
+            let len = (axis_dir[0].powi(2) + axis_dir[1].powi(2) + axis_dir[2].powi(2)).sqrt();
+            [axis_dir[0] / len, axis_dir[1] / len, axis_dir[2] / len]
+        };
+        let (u, w) = super::super::perpendicular_basis(&d);
+        let mut normals = Vec::new();
+        for i in 0..n_major {
+            let theta = theta_min + (theta_max - theta_min) * i as f64 / n_major as f64;
+            let (sin_t, cos_t) = theta.sin_cos();
+            let rad = [cos_t * u[0] + sin_t * w[0],
+                       cos_t * u[1] + sin_t * w[1],
+                       cos_t * u[2] + sin_t * w[2]];
+            for j in 0..n_minor {
+                let phi = phi_min + (phi_max - phi_min) * j as f64 / n_minor as f64;
+                let (sin_p, cos_p) = phi.sin_cos();
+                normals.push([
+                    cos_p * rad[0] + sin_p * d[0],
+                    cos_p * rad[1] + sin_p * d[1],
+                    cos_p * rad[2] + sin_p * d[2],
+                ]);
+            }
+        }
+        normals
+    }
+
+    /// Build a synthetic torus mesh.
+    fn build_torus_mesh(
+        center: [f64; 3],
+        axis_dir: [f64; 3],
+        major_r: f64,
+        minor_r: f64,
+        n_major: usize,
+        n_minor: usize,
+        theta_min: f64,
+        theta_max: f64,
+        phi_min: f64,
+        phi_max: f64,
+    ) -> (Vec<MeshFace>, Vec<MeshVertex>) {
+        let vertices = torus_points(center, axis_dir, major_r, minor_r, n_major, n_minor,
+                                    theta_min, theta_max, phi_min, phi_max);
+        let normals = torus_normals(axis_dir, n_major, n_minor,
+                                   theta_min, theta_max, phi_min, phi_max);
+        let mut faces = Vec::new();
+        for i in 0..n_major {
+            let i_next = (i + 1) % n_major;
+            for j in 0..n_minor {
+                let j_next = (j + 1) % n_minor;
+                let i0 = i * n_minor + j;
+                let i1 = i * n_minor + j_next;
+                let i2 = i_next * n_minor + j;
+                let fidx = faces.len();
+                faces.push(MeshFace {
+                    vertex_count: 3,
+                    vertex_indices: [i0, i1, i2, 0],
+                    neighbors: [-1, -1, -1, -1],
+                    normal: Some(normals[fidx % normals.len()]),
+                    planar_hypothesis: -1,
+                    cylindrical_hypothesis: -1,
+                    spherical_hypothesis: -1,
+                    conical_hypothesis: -1,
+                    toroidal_hypothesis: -2,
+                });
+            }
+        }
+        (faces, vertices)
+    }
+
+    // ---- Distance tests ----
+
+    #[test]
+    fn distance_to_torus_outer_equator() {
+        let r_major = 10.0;
+        let r_minor = 3.0;
+        let v = MeshVertex::from_xyz(r_major + r_minor, 0.0, 0.0);
+        let d = vertex_to_torus_distance(&v, &[0.0, 0.0, 0.0], &[0.0, 0.0, 1.0], r_major, r_minor);
+        assert!(d.abs() < 1e-10, "outer equator distance should be 0, got {d}");
+    }
+
+    #[test]
+    fn distance_to_torus_inner_equator() {
+        let r_major = 10.0;
+        let r_minor = 3.0;
+        let v = MeshVertex::from_xyz(r_major - r_minor, 0.0, 0.0);
+        let d = vertex_to_torus_distance(&v, &[0.0, 0.0, 0.0], &[0.0, 0.0, 1.0], r_major, r_minor);
+        assert!(d.abs() < 1e-10, "inner equator distance should be 0, got {d}");
+    }
+
+    #[test]
+    fn distance_to_torus_top() {
+        let r_major = 10.0;
+        let r_minor = 3.0;
+        let v = MeshVertex::from_xyz(r_major, 0.0, r_minor);
+        let d = vertex_to_torus_distance(&v, &[0.0, 0.0, 0.0], &[0.0, 0.0, 1.0], r_major, r_minor);
+        assert!(d.abs() < 1e-10, "top distance should be 0, got {d}");
+    }
+
+    #[test]
+    fn distance_to_torus_tube_center() {
+        let r_major = 10.0;
+        let r_minor = 3.0;
+        let v = MeshVertex::from_xyz(r_major, 0.0, 0.0);
+        let d = vertex_to_torus_distance(&v, &[0.0, 0.0, 0.0], &[0.0, 0.0, 1.0], r_major, r_minor);
+        assert!((d - (-r_minor)).abs() < 1e-10, "tube center distance should be -{r_minor}, got {d}");
+    }
+
+    #[test]
+    fn distance_to_torus_at_center() {
+        let r_major = 10.0;
+        let r_minor = 3.0;
+        let v = MeshVertex::from_xyz(0.0, 0.0, 0.0);
+        let d = vertex_to_torus_distance(&v, &[0.0, 0.0, 0.0], &[0.0, 0.0, 1.0], r_major, r_minor);
+        assert!((d - (r_major - r_minor)).abs() < 1e-10, "center distance should be R-r, got {d}");
+    }
+
+    #[test]
+    fn distance_to_torus_outside() {
+        let r_major = 10.0;
+        let r_minor = 3.0;
+        let v = MeshVertex::from_xyz(r_major + r_minor + 1.0, 0.0, 0.0);
+        let d = vertex_to_torus_distance(&v, &[0.0, 0.0, 0.0], &[0.0, 0.0, 1.0], r_major, r_minor);
+        assert!((d - 1.0).abs() < 1e-10, "1 unit outside distance should be 1, got {d}");
+    }
+
+    // ---- Fit tests ----
+
+    #[test]
+    fn torus_fit_z_axis() {
+        let (faces, vertices) = build_torus_mesh(
+            [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 7.0, 3.0,
+            24, 12, 0.0, 2.0 * PI, 0.0, 2.0 * PI,
+        );
+        let face_indices: Vec<usize> = (0..faces.len()).collect();
+        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+
+        let result = fit_torus(&face_indices, &vertex_set, &faces, &vertices);
+        assert!(result.is_some(), "torus fit should succeed");
+        let (center, dir, major_r, minor_r) = result.unwrap();
+
+        let axis_z = dir[2].abs();
+        assert!((axis_z - 1.0).abs() < 0.01, "axis should be along Z, got z={axis_z}");
+        assert!((major_r - 7.0).abs() < 0.05, "major_radius should be 7, got {major_r}");
+        assert!((minor_r - 3.0).abs() < 0.05, "minor_radius should be 3, got {minor_r}");
+        assert!(center[0].abs() < 0.05, "center.x should be 0, got {}", center[0]);
+        assert!(center[1].abs() < 0.05, "center.y should be 0, got {}", center[1]);
+        assert!(center[2].abs() < 0.05, "center.z should be 0, got {}", center[2]);
+    }
+
+    #[test]
+    fn torus_fit_offset() {
+        let (faces, vertices) = build_torus_mesh(
+            [5.0, 10.0, -3.0], [0.0, 0.0, 1.0], 9.0, 2.0,
+            24, 12, 0.0, 2.0 * PI, 0.0, 2.0 * PI,
+        );
+        let face_indices: Vec<usize> = (0..faces.len()).collect();
+        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+
+        let result = fit_torus(&face_indices, &vertex_set, &faces, &vertices);
+        assert!(result.is_some(), "offset torus fit should succeed");
+        let (center, dir, major_r, minor_r) = result.unwrap();
+
+        let axis_z = dir[2].abs();
+        assert!((axis_z - 1.0).abs() < 0.01, "axis should be along Z, got z={axis_z}");
+        assert!((major_r - 9.0).abs() < 0.05, "major_radius should be 9, got {major_r}");
+        assert!((minor_r - 2.0).abs() < 0.05, "minor_radius should be 2, got {minor_r}");
+        assert!((center[0] - 5.0).abs() < 0.1, "center.x should be 5, got {}", center[0]);
+        assert!((center[1] - 10.0).abs() < 0.1, "center.y should be 10, got {}", center[1]);
+        assert!((center[2] - (-3.0)).abs() < 0.1, "center.z should be -3, got {}", center[2]);
+    }
+
+    #[test]
+    fn torus_fit_tilted() {
+        let (faces, vertices) = build_torus_mesh(
+            [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], 8.0, 1.5,
+            24, 12, 0.0, 2.0 * PI, 0.0, 2.0 * PI,
+        );
+        let face_indices: Vec<usize> = (0..faces.len()).collect();
+        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+
+        let result = fit_torus(&face_indices, &vertex_set, &faces, &vertices);
+        assert!(result.is_some(), "tilted torus fit should succeed");
+        let (_center, dir, major_r, minor_r) = result.unwrap();
+
+        let s3 = 1.0 / 3.0_f64.sqrt();
+        let dot = (dir[0] * s3 + dir[1] * s3 + dir[2] * s3).abs();
+        assert!((dot - 1.0).abs() < 0.01, "axis should be along (1,1,1), dot={dot}");
+        assert!((major_r - 8.0).abs() < 0.05, "major_radius should be 8, got {major_r}");
+        assert!((minor_r - 1.5).abs() < 0.05, "minor_radius should be 1.5, got {minor_r}");
+    }
+
+    #[test]
+    fn torus_fit_quarter_tube() {
+        // Quarter-tube cross-section (fillet patch).
+        let (faces, vertices) = build_torus_mesh(
+            [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 8.5, 1.5,
+            24, 8, 0.0, 2.0 * PI, 0.0, PI / 2.0,
+        );
+        let face_indices: Vec<usize> = (0..faces.len()).collect();
+        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+
+        let result = fit_torus(&face_indices, &vertex_set, &faces, &vertices);
+        assert!(result.is_some(), "quarter-tube torus fit should succeed");
+        let (_center, dir, major_r, minor_r) = result.unwrap();
+
+        assert!((major_r - 8.5).abs() < 0.1, "major_radius should be 8.5, got {major_r}");
+        assert!((minor_r - 1.5).abs() < 0.1, "minor_radius should be 1.5, got {minor_r}");
+        let axis_z = dir[2].abs();
+        assert!((axis_z - 1.0).abs() < 0.01, "axis should be along Z, got z={axis_z}");
+    }
+
+    #[test]
+    fn torus_fit_half_major() {
+        // Only half the major circle.
+        let (faces, vertices) = build_torus_mesh(
+            [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 7.0, 3.0,
+            12, 12, 0.0, PI, 0.0, 2.0 * PI,
+        );
+        let face_indices: Vec<usize> = (0..faces.len()).collect();
+        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+
+        let result = fit_torus(&face_indices, &vertex_set, &faces, &vertices);
+        assert!(result.is_some(), "half-major torus fit should succeed");
+        let (_center, _dir, major_r, minor_r) = result.unwrap();
+
+        assert!((major_r - 7.0).abs() < 0.1, "major_radius should be 7, got {major_r}");
+        assert!((minor_r - 3.0).abs() < 0.1, "minor_radius should be 3, got {minor_r}");
+    }
+
+    #[test]
+    fn torus_fit_thin_fillet() {
+        // Very thin fillet: large R/r ratio.
+        let (faces, vertices) = build_torus_mesh(
+            [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 50.0, 0.5,
+            36, 12, 0.0, 2.0 * PI, 0.0, 2.0 * PI,
+        );
+        let face_indices: Vec<usize> = (0..faces.len()).collect();
+        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+
+        let result = fit_torus(&face_indices, &vertex_set, &faces, &vertices);
+        assert!(result.is_some(), "thin fillet torus fit should succeed");
+        let (_center, _dir, major_r, minor_r) = result.unwrap();
+
+        assert!((major_r - 50.0).abs() < 0.1, "major_radius should be 50, got {major_r}");
+        assert!((minor_r - 0.5).abs() < 0.05, "minor_radius should be 0.5, got {minor_r}");
+    }
+
+    #[test]
+    fn torus_fit_rejects_degenerate() {
+        let faces = vec![MeshFace {
+            vertex_count: 3,
+            vertex_indices: [0, 1, 2, 0],
+            neighbors: [-1, -1, -1, -1],
+            normal: Some([0.0, 0.0, 1.0]),
+            planar_hypothesis: -1,
+            cylindrical_hypothesis: -1,
+            spherical_hypothesis: -1,
+            conical_hypothesis: -1,
+            toroidal_hypothesis: -2,
+        }];
+        let vertices = vec![
+            MeshVertex::from_xyz(1.0, 0.0, 0.0),
+            MeshVertex::from_xyz(0.0, 1.0, 0.0),
+            MeshVertex::from_xyz(0.0, 0.0, 1.0),
+            MeshVertex::from_xyz(1.0, 1.0, 0.0),
+            MeshVertex::from_xyz(0.0, 1.0, 1.0),
+            MeshVertex::from_xyz(1.0, 0.0, 1.0),
+        ];
+        let vertex_set: HashSet<usize> = (0..6).collect();
+        assert!(fit_torus(&[0], &vertex_set, &faces, &vertices).is_none(),
+                "torus fit should reject degenerate input");
+    }
+}
+
