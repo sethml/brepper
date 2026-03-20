@@ -179,6 +179,10 @@ When writing temporary code for debugging or testing:
 
 2. **Don't delete temporary code** - Leave it in `tmp/` in case it's useful later.
 
+## Library Reuse
+
+Before implementing non-trivial functionality (text rendering, file parsing, data structures, etc.), search for existing open-source libraries that provide that functionality. Evaluate whether using a library will be better for code simplicity and maintainability than writing it from scratch. Consider factors like: compatibility with existing dependencies, maintenance status, API complexity, and how well the library fits the use case. Then go with your decision — either use the library or implement it yourself — and briefly explain why.
+
 ## Chat Log Export
 
 After **every** commit, give a written summary of what you accomplished in this session, then

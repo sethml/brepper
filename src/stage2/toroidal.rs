@@ -1223,7 +1223,7 @@ fn run_torus_trial_bfs(
         ) {
             match action {
                 VizAction::Quit => { viz_quit.set(true); return None; }
-                VizAction::NextSeed => { skip_viz = true; }
+                VizAction::NextSeed | VizAction::SkipToSeed(_) => { skip_viz = true; }
                 VizAction::NextStep => {}
             }
         }
@@ -1406,7 +1406,7 @@ fn run_torus_trial_bfs(
                 ) {
                     match action {
                         VizAction::Quit => { viz_quit.set(true); return None; }
-                        VizAction::NextSeed => { skip_viz = true; }
+                        VizAction::NextSeed | VizAction::SkipToSeed(_) => { skip_viz = true; }
                         VizAction::NextStep => {}
                     }
                 }

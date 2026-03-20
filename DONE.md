@@ -187,3 +187,6 @@ Replaced normal covariance with vertex-position PCA in fit_torus_sor(). The smal
 
 ## Delete legacy deduce_*_hypotheses() functions
 Removed dead code: deduce_planar_hypotheses, deduce_cylindrical_hypotheses, deduce_spherical_hypotheses, deduce_conical_hypotheses, deduce_toroidal_hypotheses. These were superseded by the generic BFS framework.
+
+## Interactive viz features
+Added to `--viz-stages` window: initial zoom with 15% margin, help overlay (`?`), face number labels (`N`) with depth-buffer occlusion testing, hover face info (index/area/normal via ray-cast picking), and click-to-skip-seeding (left-click sends `SkipToSeed(face)` to BFS). Integrated egui for all text overlays. Restructured render loop so egui runs after 3D rendering to enable depth-buffer readback.

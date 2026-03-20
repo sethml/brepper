@@ -222,6 +222,9 @@ where
         S::set_hypothesis_field(&mut mesh.faces[fi], S::undeduced_value());
     }
 
+    // Viz: if the user clicked a face, skip seeds until we reach one containing that face
+    let mut skip_to_face: Option<usize> = None;
+
     for fi in 0..num_faces {
         if !S::face_eligible(&mesh.faces[fi]) {
             continue;
@@ -348,6 +351,15 @@ where
             // --- Viz: show seed faces ---
             let mut skip_viz = false;
             if let Some(viz_sender) = viz {
+                // Auto-skip if we're seeking a specific face
+                if let Some(target) = skip_to_face {
+                    if !seed.faces.contains(&target) {
+                        skip_viz = true;
+                    } else {
+                        skip_to_face = None; // reached target, stop skipping
+                    }
+                }
+                if !skip_viz {
                 let seed_str: Vec<String> = seed.faces.iter().map(|f| f.to_string()).collect();
                 let (cylinders, spheres) = S::viz_overlays(&current_fit, mesh, &seed.faces);
                 let mut highlights = vec![
@@ -368,7 +380,7 @@ where
                 }
                 let mut overlay = viz::VizOverlay::new();
                 overlay.status_text = format!(
-                    "BFS-{}: seed=({}) {} [space=step, shift+space=skip]",
+                    "BFS-{}: seed=({}) {} [space=step, shift+space=skip, click=skip-to-face]",
                     S::name(), seed_str.join(","), S::viz_fit_description(&current_fit),
                 );
                 overlay.face_highlights = highlights;
@@ -379,7 +391,9 @@ where
                 match viz_sender.show_and_wait(overlay) {
                     VizAction::Quit => return (hypotheses, true),
                     VizAction::NextSeed => { skip_viz = true; }
+                    VizAction::SkipToSeed(face) => { skip_viz = true; skip_to_face = Some(face); }
                     VizAction::NextStep => {}
+                }
                 }
             }
 
@@ -549,6 +563,7 @@ where
                         match viz_sender.show_and_wait(overlay) {
                             VizAction::Quit => return (hypotheses, true),
                             VizAction::NextSeed => { skip_viz = true; }
+                            VizAction::SkipToSeed(face) => { skip_viz = true; skip_to_face = Some(face); }
                             VizAction::NextStep => {}
                         }
                         }

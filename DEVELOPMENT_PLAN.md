@@ -644,8 +644,17 @@ Pipeline thread                          Main/render thread
 
 - `VizSender` / `VizReceiver`: Channel endpoints. Created by `viz_channel()`.
 - `VizOverlay`: A display frame containing face highlights, cylinder/sphere overlays, line overlays, shape meshes, status text, and optional camera focus.
-- `VizAction`: The user's response — `NextStep`, `NextSeed`, or `Quit`.
+- `VizAction`: The user's response — `NextStep`, `NextSeed`, `SkipToSeed(face_index)`, or `Quit`.
 - `FaceHighlight`, `CylinderOverlay`, `SphereOverlay`, `LineOverlay`, `ShapeMeshOverlay`: Overlay primitives.
+
+### Interactive features
+
+The render window (powered by three-d with egui overlay) provides:
+- **Camera controls**: Left-drag orbit, right-drag pan, scroll zoom (toward cursor).
+- **Face numbers** (`N` key): Thin black labels at face centroids, subject to depth-buffer occlusion so hidden faces don't show labels.
+- **Hover info**: Ray-cast face picking under the cursor displays face index, vertex count, area, and normal in the bottom-left corner.
+- **Click-to-skip**: Left-clicking a face sends `SkipToSeed(face_index)`, causing the BFS loop to skip ahead to the seed containing that face.
+- **Help overlay** (`?` key): Shows all keyboard and mouse shortcuts.
 
 ### Integration with generic BFS
 

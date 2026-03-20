@@ -8,7 +8,7 @@ opencascade-sys = { path = "../opencascade-rs/crates/opencascade-sys" }
 clap = { version = "4", features = ["derive"] }
 levenberg-marquardt = "0.14"
 nalgebra = "0.33"
-three-d = "0.17"
+three-d = { version = "0.17", features = ["egui-gui"] }
 
 [lib]
 name = "brepper"

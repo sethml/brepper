@@ -157,6 +157,63 @@ fn smooth_step(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Möller–Trumbore ray-triangle intersection. Returns `Some(t)` if the ray
+/// `origin + t * dir` hits the triangle (v0, v1, v2) with `t > 0`.
+fn ray_triangle_intersect(
+    origin: Vector3<f32>,
+    dir: Vector3<f32>,
+    v0: Vector3<f32>,
+    v1: Vector3<f32>,
+    v2: Vector3<f32>,
+) -> Option<f32> {
+    let e1 = v1 - v0;
+    let e2 = v2 - v0;
+    let h = dir.cross(e2);
+    let a = e1.dot(h);
+    if a.abs() < 1e-10 {
+        return None;
+    }
+    let f = 1.0 / a;
+    let s = origin - v0;
+    let u = f * s.dot(h);
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = s.cross(e1);
+    let v = f * dir.dot(q);
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let t = f * e2.dot(q);
+    if t > 1e-6 { Some(t) } else { None }
+}
+
+/// Pick the face under a screen pixel by casting a ray through the mesh triangles.
+/// Returns `(face_index, hit_distance)`.
+fn pick_face(
+    pixel: (f32, f32),
+    camera: &Camera,
+    positions: &[Vector3<f32>],
+    indices: &[u32],
+    tri_to_face: &[usize],
+) -> Option<(usize, f32)> {
+    let origin = camera.position_at_pixel(pixel);
+    let dir = camera.view_direction_at_pixel(pixel);
+    let mut best: Option<(usize, f32)> = None;
+    let num_tris = indices.len() / 3;
+    for ti in 0..num_tris {
+        let i0 = indices[ti * 3] as usize;
+        let i1 = indices[ti * 3 + 1] as usize;
+        let i2 = indices[ti * 3 + 2] as usize;
+        if let Some(t) = ray_triangle_intersect(origin, dir, positions[i0], positions[i1], positions[i2]) {
+            if best.is_none_or(|(_, bt)| t < bt) {
+                best = Some((tri_to_face[ti], t));
+            }
+        }
+    }
+    best
+}
+
 // ---------------------------------------------------------------------------
 // Bounding box
 // ---------------------------------------------------------------------------
@@ -438,6 +495,8 @@ pub enum VizAction {
     NextStep,
     /// Skip to the next seed/hypothesis (shift+space).
     NextSeed,
+    /// Skip forward until a seed containing the given face index is reached.
+    SkipToSeed(usize),
     /// User wants to quit.
     Quit,
 }
@@ -839,9 +898,21 @@ where
     .unwrap();
     let context = window.gl();
 
+    // Compute initial camera distance so shape fits with ≥15% margin on all sides.
+    let fov_rad = std::f32::consts::FRAC_PI_4; // 45°
+    let half_fov = fov_rad / 2.0;
+    let bounding_radius = extent / 2.0;
+    let margin = 0.85; // 15% gap on each side → use 85% of viewport
+    let vp = window.viewport();
+    let aspect = vp.width as f32 / vp.height as f32;
+    let dist_v = bounding_radius / (half_fov.tan() * margin);
+    let dist_h = bounding_radius / (half_fov.tan() * aspect * margin);
+    let init_dist = dist_v.max(dist_h);
+    let cam_dir = vec3(0.5f32, 0.3, 0.5).normalize();
+
     let mut camera = Camera::new_perspective(
-        window.viewport(),
-        center + vec3(extent * 0.5, extent * 0.3, extent * 0.5),
+        vp,
+        center + cam_dir * init_dist,
         center,
         vec3(0.0, 0.0, 1.0),
         degrees(45.0),
@@ -852,7 +923,7 @@ where
     let max_distance = extent * 10.0;
     let z_near = extent * 0.001;
     let z_far = extent * 100.0;
-    let mut ortho_height = 2.0 * extent * (std::f32::consts::FRAC_PI_4 / 2.0).tan();
+    let mut ortho_height = 2.0 * init_dist * half_fov.tan();
 
     // Build base mesh
     let cpu_mesh = CpuMesh {
@@ -896,9 +967,40 @@ where
         None
     };
 
+    let stl_indices = setup.base_mesh.indices;
     let stl_positions = setup.base_mesh.positions;
     let face_indices_arr = setup.face_indices;
     let face_vc_arr = setup.face_vertex_counts;
+
+    // Build triangle-to-face mapping (GPU triangles → face index)
+    let tri_to_face: Vec<usize> = {
+        let mut map = Vec::new();
+        for (fi, &vc) in face_vc_arr.iter().enumerate() {
+            map.push(fi); // first triangle of face
+            if vc >= 4 {
+                map.push(fi); // second triangle (quad)
+            }
+        }
+        map
+    };
+
+    // Precompute face centroids for face-number labels
+    let face_centroids: Vec<[f32; 3]> = face_indices_arr
+        .iter()
+        .zip(face_vc_arr.iter())
+        .map(|(vis, &vc)| {
+            let n = vc as usize;
+            let sum = (0..n).fold([0.0f32; 3], |mut acc, j| {
+                let v = &stl_positions[vis[j]];
+                acc[0] += v.x;
+                acc[1] += v.y;
+                acc[2] += v.z;
+                acc
+            });
+            let inv = 1.0 / n as f32;
+            [sum[0] * inv, sum[1] * inv, sum[2] * inv]
+        })
+        .collect();
 
     // Build compare mesh (translucent)
     let compare_mesh_object = setup.compare_mesh.as_ref().map(|cmp| {
@@ -944,7 +1046,14 @@ where
     let mut show_soft_edges = true;
     let mut perspective = true;
     let mut auto_center = true;
+    let mut show_help = false;
+    let mut show_face_numbers = false;
+    let mut status_text = String::new();
+    let mut mouse_pos: (f32, f32) = (0.0, 0.0);
+    let mut mouse_down_pos: Option<(f32, f32)> = None; // for click detection (no drag)
     let up = vec3(0.0f32, 0.0, 1.0);
+
+    let mut gui = GUI::new(&context);
     // Maximum |Z-component| of the camera-from-target unit vector to keep
     // the camera at least 15° from the +Z and -Z poles.  cos(15°) ≈ 0.9659.
     const COS_15_DEG: f32 = 0.9659258_f32;
@@ -966,7 +1075,7 @@ where
     let mut anim_dist: f32 = 0.0;                        // fixed distance during slew
     let mut anim_t: f32 = 1.0; // 1.0 = no animation
 
-    window.render_loop(move |frame_input| {
+    window.render_loop(move |mut frame_input| {
         // Clear stale GL errors
         unsafe {
             use context::HasContext;
@@ -1078,6 +1187,7 @@ where
                         })
                         .collect();
                     waiting_for_input = true;
+                    status_text = overlay.status_text.clone();
 
                     // Start camera animation if focus_normal is set and auto-center is on.
                     // Slew rotates only: target and distance stay fixed.
@@ -1164,11 +1274,19 @@ where
                     Key::S => show_solid = !show_solid,
                     Key::H => hide_edges = !hide_edges,
                     Key::C => auto_center = !auto_center,
+                    Key::N => show_face_numbers = !show_face_numbers,
                     _ => {}
                 },
+                Event::Text(text) => {
+                    if text == "?" {
+                        show_help = !show_help;
+                    }
+                }
                 Event::MouseMotion {
-                    button, delta, ..
-                } => match button {
+                    button, delta, position, ..
+                } => {
+                    mouse_pos = (position.x, position.y);
+                    match button {
                     Some(MouseButton::Left) => {
                         let angle_h = -delta.0 * 0.005;
                         let angle_v = -delta.1 * 0.005;
@@ -1217,7 +1335,32 @@ where
                         }
                     }
                     _ => {}
+                    }
                 },
+                Event::MousePress {
+                    button: MouseButton::Left,
+                    position,
+                    ..
+                } => {
+                    mouse_down_pos = Some((position.x, position.y));
+                }
+                Event::MouseRelease {
+                    button: MouseButton::Left,
+                    position,
+                    ..
+                } => {
+                    if let Some(down) = mouse_down_pos.take() {
+                        let dx = position.x - down.0;
+                        let dy = position.y - down.1;
+                        if dx * dx + dy * dy < 25.0 {
+                            // Click (not a drag) — pick face and skip to it
+                            let pick_pos = (position.x, position.y);
+                            if let Some((fi, _)) = pick_face(pick_pos, &camera, &stl_positions, &stl_indices, &tri_to_face) {
+                                let _ = receiver.action_tx.send(VizAction::SkipToSeed(fi));
+                            }
+                        }
+                    }
+                }
                 Event::MouseWheel {
                     delta, position, ..
                 } => {
@@ -1256,12 +1399,13 @@ where
         }
 
         // Render
-        let screen = frame_input.screen();
-        if show_solid {
-            screen.clear(ClearState::color_and_depth(0.15, 0.15, 0.18, 1.0, 1.0));
-        } else {
-            screen.clear(ClearState::color_and_depth(1.0, 1.0, 1.0, 1.0, 1.0));
-        }
+        {
+            let screen = frame_input.screen();
+            if show_solid {
+                screen.clear(ClearState::color_and_depth(0.15, 0.15, 0.18, 1.0, 1.0));
+            } else {
+                screen.clear(ClearState::color_and_depth(1.0, 1.0, 1.0, 1.0, 1.0));
+            }
 
         let lights: [&dyn Light; 3] = [&ambient, &dir1, &dir2];
 
@@ -1329,6 +1473,7 @@ where
                 }
             }
         }
+        } // drop screen — releases immutable borrow on frame_input
 
         // Wireframe edges
         if show_edges {
@@ -1368,6 +1513,208 @@ where
         for (wf, color, no_depth) in &line_renderers {
             wf.render(&context, &camera, *color, !no_depth);
         }
+
+        // --- Face picking (hover) via ray-cast after 3D render ---
+        let gui_hover_face = pick_face(mouse_pos, &camera, &stl_positions, &stl_indices, &tri_to_face)
+            .map(|(fi, _)| fi);
+
+        // --- Project face centroids to screen & depth-test for occlusion ---
+        let gui_face_centroids: Vec<(usize, f32, f32)> = if show_face_numbers {
+            // Read depth buffer for occlusion testing
+            let vp = frame_input.viewport;
+            let depth_buf: Vec<f32> = unsafe {
+                use context::HasContext;
+                let w = vp.width as usize;
+                let h = vp.height as usize;
+                let mut buf = vec![0u8; w * h * 4]; // DEPTH_COMPONENT → f32
+                context.read_pixels(
+                    vp.x, vp.y,
+                    vp.width as i32, vp.height as i32,
+                    context::DEPTH_COMPONENT,
+                    context::FLOAT,
+                    context::PixelPackData::Slice(&mut buf),
+                );
+                // Reinterpret bytes as f32
+                let ptr = buf.as_ptr() as *const f32;
+                std::slice::from_raw_parts(ptr, w * h).to_vec()
+            };
+            let dpr = frame_input.device_pixel_ratio;
+
+            face_centroids
+                .iter()
+                .enumerate()
+                .filter_map(|(i, c)| {
+                    let world = vec3(c[0], c[1], c[2]);
+                    let clip = camera.projection() * camera.view() * world.extend(1.0);
+                    if clip.w <= 0.0 {
+                        return None; // behind camera
+                    }
+                    let ndc = clip / clip.w;
+                    let vp = frame_input.viewport;
+                    let sx = (ndc.x * 0.5 + 0.5) * vp.width as f32 + vp.x as f32;
+                    let sy = ((1.0 - ndc.y) * 0.5) * vp.height as f32 + vp.y as f32;
+                    let centroid_depth = ndc.z * 0.5 + 0.5; // NDC [-1,1] → depth [0,1]
+                    // Sample depth buffer at centroid pixel
+                    let px = sx as usize;
+                    let py_flipped = (vp.height as f32 - (sy - vp.y as f32)) as usize; // GL origin is bottom-left
+                    let w = vp.width as usize;
+                    if px < w && py_flipped < vp.height as usize {
+                        let buf_depth = depth_buf[py_flipped * w + px];
+                        // Occluded if something closer is in front (with small tolerance)
+                        if centroid_depth > buf_depth + 0.001 {
+                            return None;
+                        }
+                    }
+                    Some((i, sx / dpr, sy / dpr))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // --- egui overlay: status text, help, face labels, hover info ---
+        let gui_show_help = show_help;
+        let gui_status_text = status_text.clone();
+        let gui_show_face_numbers = show_face_numbers;
+        gui.update(
+            &mut frame_input.events,
+            frame_input.accumulated_time,
+            frame_input.viewport,
+            frame_input.device_pixel_ratio,
+            |ctx| {
+                // Status text (top-left)
+                if !gui_status_text.is_empty() {
+                    egui::Area::new("status")
+                        .fixed_pos(egui::pos2(10.0, 10.0))
+                        .interactable(false)
+                        .show(ctx, |ui| {
+                            egui::Frame::none()
+                                .fill(egui::Color32::from_black_alpha(180))
+                                .inner_margin(egui::Margin::same(6.0))
+                                .rounding(egui::Rounding::same(4.0))
+                                .show(ui, |ui| {
+                                    ui.colored_label(
+                                        egui::Color32::WHITE,
+                                        &gui_status_text,
+                                    );
+                                });
+                        });
+                }
+
+                // Hover info (bottom-left)
+                if let Some(fi) = gui_hover_face {
+                    let vc = face_vc_arr[fi] as usize;
+                    let vis = &face_indices_arr[fi];
+                    // Compute face area and normal from vertices
+                    let v0 = stl_positions[vis[0]];
+                    let v1 = stl_positions[vis[1]];
+                    let v2 = stl_positions[vis[2]];
+                    let e1 = v1 - v0;
+                    let e2 = v2 - v0;
+                    let cross = e1.cross(e2);
+                    let mut area = cross.magnitude() * 0.5;
+                    let normal = if cross.magnitude() > 1e-12 { cross.normalize() } else { vec3(0.0, 0.0, 1.0) };
+                    if vc == 4 {
+                        let v3 = stl_positions[vis[3]];
+                        let e3 = v3 - v0;
+                        area += e2.cross(e3).magnitude() * 0.5;
+                    }
+                    let info = format!(
+                        "Face {}\nVertices: {}\nArea: {:.4}\nNormal: ({:.3}, {:.3}, {:.3})",
+                        fi, vc, area, normal.x, normal.y, normal.z,
+                    );
+                    egui::Area::new("hover_info")
+                        .anchor(egui::Align2::LEFT_BOTTOM, [10.0, -10.0])
+                        .interactable(false)
+                        .show(ctx, |ui| {
+                            egui::Frame::none()
+                                .fill(egui::Color32::from_black_alpha(180))
+                                .inner_margin(egui::Margin::same(6.0))
+                                .rounding(egui::Rounding::same(4.0))
+                                .show(ui, |ui| {
+                                    ui.colored_label(egui::Color32::WHITE, &info);
+                                });
+                        });
+                }
+
+                // Help overlay (centered)
+                if gui_show_help {
+                    egui::Area::new("help")
+                        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                        .interactable(false)
+                        .show(ctx, |ui| {
+                            egui::Frame::none()
+                                .fill(egui::Color32::from_black_alpha(200))
+                                .inner_margin(egui::Margin::same(16.0))
+                                .rounding(egui::Rounding::same(8.0))
+                                .show(ui, |ui| {
+                                    ui.colored_label(egui::Color32::WHITE, egui::RichText::new("Keyboard shortcuts").strong());
+                                    ui.add_space(4.0);
+                                    let shortcuts = [
+                                        ("Space", "Next step"),
+                                        ("Shift+Space", "Next seed"),
+                                        ("Q / Esc", "Quit"),
+                                        ("P", "Toggle perspective/ortho"),
+                                        ("S", "Toggle solid"),
+                                        ("E", "Toggle edges"),
+                                        ("Shift+E", "Toggle soft edges"),
+                                        ("H", "Toggle edge hiding"),
+                                        ("C", "Toggle auto-center"),
+                                        ("N", "Toggle face numbers"),
+                                        ("?", "Toggle this help"),
+                                    ];
+                                    egui::Grid::new("help_grid").show(ui, |ui| {
+                                        for (key, desc) in &shortcuts {
+                                            ui.colored_label(
+                                                egui::Color32::from_rgb(180, 220, 255),
+                                                egui::RichText::new(*key).monospace(),
+                                            );
+                                            ui.colored_label(egui::Color32::WHITE, *desc);
+                                            ui.end_row();
+                                        }
+                                    });
+                                    ui.add_space(4.0);
+                                    ui.colored_label(egui::Color32::WHITE, egui::RichText::new("Mouse").strong());
+                                    ui.add_space(2.0);
+                                    egui::Grid::new("mouse_grid").show(ui, |ui| {
+                                        for (action, desc) in &[
+                                            ("Left drag", "Orbit"),
+                                            ("Right drag", "Pan"),
+                                            ("Scroll", "Zoom (toward cursor)"),
+                                            ("Click", "Skip to face seed"),
+                                        ] {
+                                            ui.colored_label(
+                                                egui::Color32::from_rgb(180, 220, 255),
+                                                egui::RichText::new(*action).monospace(),
+                                            );
+                                            ui.colored_label(egui::Color32::WHITE, *desc);
+                                            ui.end_row();
+                                        }
+                                    });
+                                });
+                        });
+                }
+
+                // Face number labels (thin black text, occlusion-aware)
+                if gui_show_face_numbers {
+                    let painter = ctx.layer_painter(egui::LayerId::background());
+                    for &(idx, sx, sy) in &gui_face_centroids {
+                        let pos = egui::pos2(sx, sy);
+                        let text = format!("{}", idx);
+                        let galley = painter.layout_no_wrap(
+                            text,
+                            egui::FontId::proportional(11.0),
+                            egui::Color32::BLACK,
+                        );
+                        let half = galley.size() / 2.0;
+                        painter.galley(pos - half, galley, egui::Color32::BLACK);
+                    }
+                }
+            },
+        );
+
+        // egui overlay (must be last — renders on top of everything)
+        gui.render().unwrap();
 
         FrameOutput::default()
     });
