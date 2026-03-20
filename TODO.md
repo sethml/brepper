@@ -1,20 +1,5 @@
 # Ports from C++ Implementation
 
-## Port analytic Jacobians for cone LM
-Replace finite-difference Jacobian in cone LM refinement with closed-form partial derivatives. (C++ `surface_fit.cpp` `ConeResidual::df()`.)
-
-## Port analytic Jacobians for torus LM
-Same for torus fitting. (C++ `surface_fit.cpp` `TorusResidual::df()`.)
-
-## Port torus minor-circle acceptance test
-After fitting, verify that minor-circle centers lie on the major circle within tolerance. Rejects false positives. (C++ `stage2.cpp` torus acceptance.)
-
-## Port vertex-position PCA for torus axis estimation
-Use PCA on vertex positions (not just normals) to estimate the torus axis of revolution. May improve robustness for partial tori. (C++ `stage2.cpp` torus seeding.)
-
-## Delete legacy deduce_*_hypotheses() functions
-Currently `#[allow(dead_code)]` in each surface type file — no longer needed now that generic BFS works and comparison is complete.
-
 ## Full pipeline tests for cone and torus models
 All test models including cone and torus models and filleted_cylinder, filleted_hole_block, filleted_pipe pass --compare through stage 4.1. Unblock existing `pipe_elbow_10_fine` (onshape) test.
 

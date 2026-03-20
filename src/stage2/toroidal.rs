@@ -15,7 +15,7 @@ use nalgebra::{Const, Dyn, OMatrix, OVector, Owned};
 use opencascade_sys::gp;
 
 use crate::config::Config;
-use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_TOROIDAL_HYPOTHESIS, NO_HYPOTHESIS};
+use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_TOROIDAL_HYPOTHESIS};
 use crate::viz::{self, VizAction, VizSender};
 
 use super::{
@@ -286,18 +286,68 @@ impl LeastSquaresProblem<f64, Dyn, Const<7>> for TorusLMProblem {
 
     fn jacobian(&self) -> Option<OMatrix<f64, Dyn, Const<7>>> {
         let n = self.points.len();
-        let eps = 1e-8;
         let mut jac = OMatrix::<f64, Dyn, Const<7>>::zeros_generic(Dyn(n), Const::<7>);
-        for j in 0..7 {
-            let mut pp = self.params;
-            pp[j] += eps;
-            let rp = self.compute_residuals_for(&pp);
-            let mut pm = self.params;
-            pm[j] -= eps;
-            let rm = self.compute_residuals_for(&pm);
-            for i in 0..n {
-                jac[(i, j)] = (rp[i] - rm[i]) / (2.0 * eps);
+        let a = self.axis_dir_from_params(&self.params);
+        let center = [self.params[2], self.params[3], self.params[4]];
+        let major_r = self.params[5];
+        let _minor_r = self.params[6];
+
+        // L = |a0 + α*u0 + β*w0| (unnormalized axis length)
+        let alpha = self.params[0];
+        let beta = self.params[1];
+        let vx = self.a0[0] + alpha * self.u0[0] + beta * self.w0[0];
+        let vy = self.a0[1] + alpha * self.u0[1] + beta * self.w0[1];
+        let vz = self.a0[2] + alpha * self.u0[2] + beta * self.w0[2];
+        let big_l = (vx * vx + vy * vy + vz * vz).sqrt().max(1e-15);
+
+        for (i, p) in self.points.iter().enumerate() {
+            let d = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];
+            let h_i = dot3(&d, &a);
+            let lat = [d[0] - h_i * a[0], d[1] - h_i * a[1], d[2] - h_i * a[2]];
+            let rho_i = (lat[0] * lat[0] + lat[1] * lat[1] + lat[2] * lat[2]).sqrt();
+            let dr = rho_i - major_r;
+            let tube_dist = (dr * dr + h_i * h_i).sqrt();
+
+            if tube_dist < 1e-12 {
+                jac.row_mut(i).fill(0.0);
+                jac[(i, 6)] = -1.0; // ∂f/∂r = -1 always
+                continue;
             }
+
+            let s_r = dr / tube_dist;
+            let s_h = h_i / tube_dist;
+
+            let rho_hat = if rho_i > 1e-12 {
+                [lat[0] / rho_i, lat[1] / rho_i, lat[2] / rho_i]
+            } else {
+                [0.0; 3]
+            };
+
+            // ∂f/∂center_k = -(s_r * rho_hat[k] + s_h * a[k])
+            jac[(i, 2)] = -(s_r * rho_hat[0] + s_h * a[0]);
+            jac[(i, 3)] = -(s_r * rho_hat[1] + s_h * a[1]);
+            jac[(i, 4)] = -(s_r * rho_hat[2] + s_h * a[2]);
+
+            // ∂f/∂R = -s_r
+            jac[(i, 5)] = -s_r;
+
+            // ∂f/∂r = -1
+            jac[(i, 6)] = -1.0;
+
+            // ∂f/∂α, ∂f/∂β: axis direction perturbations
+            // ∂h/∂α = lat·u0/L, ∂ρ/∂α = -h_i*lat·u0/(ρ*L)
+            // ∂f/∂α = s_r * ∂ρ/∂α + s_h * ∂h/∂α
+            let lat_u = dot3(&lat, &self.u0);
+            let lat_w = dot3(&lat, &self.w0);
+            let (drho_du, drho_dw) = if rho_i > 1e-12 {
+                (-h_i * lat_u / (rho_i * big_l), -h_i * lat_w / (rho_i * big_l))
+            } else {
+                (0.0, 0.0)
+            };
+            let dh_du = lat_u / big_l;
+            let dh_dw = lat_w / big_l;
+            jac[(i, 0)] = s_r * drho_du + s_h * dh_du;
+            jac[(i, 1)] = s_r * drho_dw + s_h * dh_dw;
         }
         Some(jac)
     }
@@ -526,7 +576,7 @@ fn fit_torus_inner(
 fn fit_torus_sor(
     face_indices: &[usize],
     vertex_set: &HashSet<usize>,
-    faces: &[MeshFace],
+    _faces: &[MeshFace],
     vertices: &[MeshVertex],
 ) -> Option<([f64; 3], [f64; 3], f64, f64)> {
     if vertex_set.len() < 7 || face_indices.len() < 3 {
@@ -540,28 +590,43 @@ fn fit_torus_sor(
         v
     };
 
-    // Estimate axis from normal covariance (smallest eigenvector)
-    let cov = build_normal_covariance(face_indices, faces, vertices);
-    let mut axis = smallest_eigenvector_3x3(&cov);
-    let len = normalize3(&mut axis);
-    if len < 1e-15 {
-        return None;
-    }
-
-    // Compute centroid of vertices
+    // Estimate axis from PCA of vertex positions (smallest eigenvector).
+    // For a torus, axis variance ~ r²/2 while perpendicular variance ~
+    // (R² + r²/2)/2 >> r²/2 for any non-self-intersecting torus (R > r).
+    // Normal covariance doesn't work well here since torus normals have
+    // significant axis components (unlike cylinders/cones).
+    let n = sorted_verts.len();
+    let inv_n = 1.0 / n as f64;
     let mut cx = 0.0_f64;
     let mut cy = 0.0_f64;
     let mut cz = 0.0_f64;
-    let n = sorted_verts.len();
     for &vi in &sorted_verts {
         cx += vertices[vi].x;
         cy += vertices[vi].y;
         cz += vertices[vi].z;
     }
-    let inv_n = 1.0 / n as f64;
     cx *= inv_n;
     cy *= inv_n;
     cz *= inv_n;
+
+    // Build position covariance matrix (symmetric, packed as [xx, xy, xz, yy, yz, zz])
+    let mut pos_cov = [0.0_f64; 6];
+    for &vi in &sorted_verts {
+        let dx = vertices[vi].x - cx;
+        let dy = vertices[vi].y - cy;
+        let dz = vertices[vi].z - cz;
+        pos_cov[0] += dx * dx;
+        pos_cov[1] += dx * dy;
+        pos_cov[2] += dx * dz;
+        pos_cov[3] += dy * dy;
+        pos_cov[4] += dy * dz;
+        pos_cov[5] += dz * dz;
+    }
+    let mut axis = smallest_eigenvector_3x3(&pos_cov);
+    let len = normalize3(&mut axis);
+    if len < 1e-15 {
+        return None;
+    }
 
     // Compute (h, r) coordinates relative to centroid
     let mut hrs: Vec<(f64, f64)> = Vec::with_capacity(n);
@@ -615,21 +680,72 @@ fn fit_torus_sor(
     }
     let minor_r = r_minor_sq.sqrt();
 
-    // Center is at the vertex centroid projected onto the axis plane
-    // Actually center is where the axis passes through the major circle plane.
-    // For the centroid-based coordinate system, center is at centroid + correction.
-    // The mean radial distance should equal the major radius.
-    let mean_r = sum_r / nf;
-    // The center offset from centroid is zero in the plane, but we need to check
-    // if the centroid is already at the axis.
-    let center = [cx, cy, cz];
+    // Center is at the axis lateral position found by Kasa circle fit
+    // on the 2D perpendicular projections of vertices.
+    let (u_basis, w_basis) = perpendicular_basis(&axis);
+    let mut sum_px = 0.0_f64;
+    let mut sum_py = 0.0_f64;
+    let mut sum_px2 = 0.0_f64;
+    let mut sum_py2 = 0.0_f64;
+    let mut sum_pxpy = 0.0_f64;
+    let mut sum_pxs = 0.0_f64;
+    let mut sum_pys = 0.0_f64;
+    let mut sum_ss = 0.0_f64;
+    for &vi in &sorted_verts {
+        let dx = vertices[vi].x - cx;
+        let dy = vertices[vi].y - cy;
+        let dz = vertices[vi].z - cz;
+        let px = dot3(&[dx, dy, dz], &u_basis);
+        let py = dot3(&[dx, dy, dz], &w_basis);
+        let s_val = px * px + py * py;
+        sum_px += px;
+        sum_py += py;
+        sum_px2 += px * px;
+        sum_py2 += py * py;
+        sum_pxpy += px * py;
+        sum_pxs += px * s_val;
+        sum_pys += py * s_val;
+        sum_ss += s_val;
+    }
+    // Kasa circle fit: solve [2px 2py 1] * [cx_2d; cy_2d; c] = px^2+py^2
+    // Normal equations: A^T A x = A^T b
+    let a00 = 4.0 * sum_px2;
+    let a01 = 4.0 * sum_pxpy;
+    let a02 = 2.0 * sum_px;
+    let a11 = 4.0 * sum_py2;
+    let a12 = 2.0 * sum_py;
+    let a22 = nf;
+    let b0 = 2.0 * sum_pxs;
+    let b1 = 2.0 * sum_pys;
+    let b2 = sum_ss;
+    // Solve 3x3 system via Cramer's rule
+    let det = a00 * (a11 * a22 - a12 * a12)
+            - a01 * (a01 * a22 - a12 * a02)
+            + a02 * (a01 * a12 - a11 * a02);
+    let (center_2d_x, center_2d_y) = if det.abs() > 1e-30 {
+        let inv_det = 1.0 / det;
+        let kx = (b0 * (a11 * a22 - a12 * a12)
+                - a01 * (b1 * a22 - a12 * b2)
+                + a02 * (b1 * a12 - a11 * b2)) * inv_det;
+        let ky = (a00 * (b1 * a22 - a12 * b2)
+                - b0 * (a01 * a22 - a12 * a02)
+                + a02 * (a01 * b2 - b1 * a02)) * inv_det;
+        (kx, ky)
+    } else {
+        (0.0, 0.0)
+    };
+    let center = [
+        cx + center_2d_x * u_basis[0] + center_2d_y * w_basis[0],
+        cy + center_2d_x * u_basis[1] + center_2d_y * w_basis[1],
+        cz + center_2d_x * u_basis[2] + center_2d_y * w_basis[2],
+    ];
 
     // LM refinement
     let points: Vec<[f64; 3]> = sorted_verts.iter()
         .map(|&vi| [vertices[vi].x, vertices[vi].y, vertices[vi].z])
         .collect();
 
-    if points.len() >= 7 && mean_r > 1e-10 {
+    if points.len() >= 7 && major_r > 1e-10 {
         let problem = TorusLMProblem::new(points, axis, center, major_r, minor_r);
         let (result, _report) = LevenbergMarquardt::new().with_patience(500).minimize(problem);
         let refined_axis = result.axis_dir_from_params(&result.params);
@@ -710,6 +826,65 @@ fn determine_convexity(
     let n = face.normal.unwrap();
     // Convex: normal points away from tube center (dot > 0)
     dot3(&n, &to_face) > 0.0
+}
+
+/// Validate angular coverage around the torus minor circle (tube cross-section).
+/// For each face centroid, compute the angle φ = atan2(axial, radial - R) in
+/// the tube cross-section plane. Reject if the angular span is too narrow.
+/// This catches false positives where faces lie on a strip of the torus
+/// (e.g., just the outer equator) without wrapping around the tube.
+fn minor_circle_coverage_valid(
+    face_list: &[usize],
+    center: &[f64; 3],
+    axis_direction: &[f64; 3],
+    major_radius: f64,
+    faces: &[MeshFace],
+    vertices: &[MeshVertex],
+) -> bool {
+    if face_list.len() < MIN_TORUS_FACES {
+        return false;
+    }
+
+    let mut minor_angles: Vec<f64> = Vec::with_capacity(face_list.len());
+    for &fi in face_list {
+        let c = face_centroid(&faces[fi], vertices);
+        let d = [c[0] - center[0], c[1] - center[1], c[2] - center[2]];
+        let axial = dot3(&d, axis_direction);
+        let radial_vec = [
+            d[0] - axial * axis_direction[0],
+            d[1] - axial * axis_direction[1],
+            d[2] - axial * axis_direction[2],
+        ];
+        let radial_dist = (radial_vec[0] * radial_vec[0]
+            + radial_vec[1] * radial_vec[1]
+            + radial_vec[2] * radial_vec[2]).sqrt();
+        if radial_dist < 1e-10 {
+            continue;
+        }
+        let dr = radial_dist - major_radius;
+        let phi = f64::atan2(axial, dr);
+        minor_angles.push(phi);
+    }
+
+    if minor_angles.len() < MIN_TORUS_FACES {
+        return false;
+    }
+
+    minor_angles.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = minor_angles.len();
+
+    // Compute largest gap
+    let mut largest_gap = minor_angles[0] + 2.0 * std::f64::consts::PI - minor_angles[n - 1];
+    for i in 1..n {
+        let gap = minor_angles[i] - minor_angles[i - 1];
+        if gap > largest_gap {
+            largest_gap = gap;
+        }
+    }
+
+    let span = 2.0 * std::f64::consts::PI - largest_gap;
+    // Require meaningful angular coverage around the minor circle
+    span >= 0.1
 }
 
 /// Validate angular coverage around the torus (same gap-based check as cylindrical).
@@ -1314,280 +1489,6 @@ fn run_torus_trial_bfs(
         error_abs_sum,
     })
 }
-
-// ---------------------------------------------------------------------------
-// Stage 2.5: Toroidal hypothesis deduction
-// ---------------------------------------------------------------------------
-
-/// Deduce toroidal hypotheses from the mesh.
-///
-/// Seeding strategy: every-face seeding. For each unclaimed face, build a
-/// seed consisting of that face plus all faces sharing any vertex with it.
-/// This typically produces 7+ faces with 9+ unique vertices — enough data
-/// for an unambiguous 7-DOF torus fit. BFS then expands from the seed.
-///
-/// Cylinder hypotheses are deliberately ignored — torus fitting operates
-/// independently of cylinder fitting.
-#[allow(dead_code)]
-pub(super) fn deduce_toroidal_hypotheses(
-    mesh: &mut ConnectedMesh,
-    planar_hypotheses: &[super::PlanarHypothesis],
-    vertex_tol: f64,
-    surface_tol: f64,
-    angular_tol: f64,
-    verbosity: u8,
-    viz: Option<&VizSender>,
-) -> (Vec<ToroidalHypothesis>, bool) {
-    let num_faces = mesh.faces.len();
-    let num_vertices = mesh.vertices.len();
-    let mut hypotheses: Vec<ToroidalHypothesis> = Vec::new();
-    let viz_quit = std::cell::Cell::new(false);
-
-    // Identify faces committed to multi-face planar, spherical, conical, or
-    // cylindrical hypotheses (ineligible for torus seeding).
-    // NOTE: Cylindrical faces are excluded from seeds but are still eligible
-    // for BFS absorption (checked via toroidal_hypothesis field).
-    let mut committed = vec![false; num_faces];
-    for (fi, face) in mesh.faces.iter().enumerate() {
-        // Multi-face planar
-        if face.planar_hypothesis >= 0 {
-            let pi = face.planar_hypothesis as usize;
-            if pi < planar_hypotheses.len() && planar_hypotheses[pi].faces.len() > 1 {
-                committed[fi] = true;
-            }
-        }
-        // Cylindrical
-        if face.cylindrical_hypothesis >= 0 {
-            committed[fi] = true;
-        }
-        // Spherical
-        if face.spherical_hypothesis >= 0 {
-            committed[fi] = true;
-        }
-        // Conical
-        if face.conical_hypothesis >= 0 {
-            committed[fi] = true;
-        }
-    }
-
-    // Build vertex → face adjacency for uncommitted faces with normals
-    let mut vertex_faces: Vec<Vec<usize>> = vec![Vec::new(); num_vertices];
-    for (fi, face) in mesh.faces.iter().enumerate() {
-        if committed[fi] || face.normal.is_none() {
-            continue;
-        }
-        let vc = face.vertex_count as usize;
-        for &vi in &face.vertex_indices[..vc] {
-            vertex_faces[vi].push(fi);
-        }
-    }
-
-    // Collect candidate seed faces: uncommitted, with normals, not yet assigned a torus.
-    // For each candidate face, the seed is that face + all faces sharing any vertex.
-    let candidate_faces: Vec<usize> = (0..num_faces)
-        .filter(|&fi| {
-            !committed[fi]
-                && mesh.faces[fi].normal.is_some()
-                && mesh.faces[fi].toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS
-        })
-        .collect();
-
-    if verbosity >= 2 {
-        let uncommitted_faces: usize = committed.iter().filter(|&&c| !c).count();
-        eprintln!(
-            "  [torus] {} uncommitted faces, {} candidate seed faces",
-            uncommitted_faces,
-            candidate_faces.len(),
-        );
-    }
-
-    for &fi in &candidate_faces {
-        if viz_quit.get() {
-            break;
-        }
-
-        // Skip if this face already got a toroidal hypothesis from a previous seed
-        if mesh.faces[fi].toroidal_hypothesis != UNDEDUCED_TOROIDAL_HYPOTHESIS {
-            continue;
-        }
-
-        // Build seed: fi + all faces sharing any vertex with fi
-        let vc = mesh.faces[fi].vertex_count as usize;
-        let mut seed_face_set: HashSet<usize> = HashSet::new();
-        seed_face_set.insert(fi);
-        for &vi in &mesh.faces[fi].vertex_indices[..vc] {
-            for &neighbor_fi in &vertex_faces[vi] {
-                if mesh.faces[neighbor_fi].toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS {
-                    seed_face_set.insert(neighbor_fi);
-                }
-            }
-        }
-
-        // Need enough faces and vertices for a 7-DOF fit
-        let seed_faces: Vec<usize> = {
-            let mut v: Vec<usize> = seed_face_set.into_iter().collect();
-            v.sort_unstable();
-            v
-        };
-        let mut seed_vertex_set: HashSet<usize> = HashSet::new();
-        for &sfi in &seed_faces {
-            let svc = mesh.faces[sfi].vertex_count as usize;
-            for &vi in &mesh.faces[sfi].vertex_indices[..svc] {
-                seed_vertex_set.insert(vi);
-            }
-        }
-        if seed_faces.len() < MIN_TORUS_FACES || seed_vertex_set.len() < 9 {
-            continue;
-        }
-
-        if verbosity >= 3 {
-            eprintln!("  [torus] trying face {} seed with {} faces, {} vertices", fi, seed_faces.len(), seed_vertex_set.len());
-        }
-
-        // Run BFS trial from this vertex's neighborhood
-        let trial = run_torus_trial_bfs(
-            &seed_faces,
-            mesh,
-            vertex_tol,
-            surface_tol,
-            angular_tol,
-            verbosity,
-            viz,
-            &viz_quit,
-        );
-
-        if viz_quit.get() {
-            return (hypotheses, true);
-        }
-
-        // Validate angular coverage
-        let trial = trial.and_then(|t| {
-            if angular_coverage_valid(
-                &t.faces,
-                &t.center,
-                &t.axis_direction,
-                &mesh.faces,
-                &mesh.vertices,
-            ) {
-                Some(t)
-            } else {
-                if verbosity >= 3 {
-                    eprintln!("  [torus] angular coverage failed: {} faces", t.faces.len());
-                }
-                None
-            }
-        });
-
-        // Validate error and radii
-        let trial = trial.and_then(|t| {
-            if t.error_max > vertex_tol {
-                if verbosity >= 3 {
-                    eprintln!(
-                        "  [torus] rejected: error_max={:.2e} > tol={:.2e}",
-                        t.error_max, vertex_tol
-                    );
-                }
-                return None;
-            }
-            if t.minor_radius <= 0.0 || t.major_radius <= 0.0 {
-                if verbosity >= 3 {
-                    eprintln!(
-                        "  [torus] rejected: degenerate radii R={:.4} r={:.4}",
-                        t.major_radius, t.minor_radius
-                    );
-                }
-                return None;
-            }
-            // Reject if minor_radius > major_radius (self-intersecting torus)
-            if t.minor_radius > t.major_radius {
-                if verbosity >= 3 {
-                    eprintln!(
-                        "  [torus] rejected: r={:.4} > R={:.4}",
-                        t.minor_radius, t.major_radius
-                    );
-                }
-                return None;
-            }
-            Some(t)
-        });
-
-        if let Some(candidate) = trial {
-            if verbosity >= 2 {
-                eprintln!(
-                    "  [torus] ACCEPTED: {} faces, R={:.4}, r={:.4}, {}, err_max={:.2e}",
-                    candidate.faces.len(),
-                    candidate.major_radius,
-                    candidate.minor_radius,
-                    if candidate.convex { "convex" } else { "concave" },
-                    candidate.error_max
-                );
-            }
-
-            // Viz: show accepted hypothesis
-            if !viz_quit.get() {
-                if let Some(action) = viz_custom(
-                    viz,
-                    vec![viz::FaceHighlight {
-                        face_indices: candidate.faces.clone(),
-                        color: [0.0, 0.8, 0.0, 1.0],
-                    }],
-                    Vec::new(),
-                    &format!(
-                        "BFS-torus ACCEPTED: {} faces R={:.3} r={:.3} {} [space=next]",
-                        candidate.faces.len(),
-                        candidate.major_radius,
-                        candidate.minor_radius,
-                        if candidate.convex { "convex" } else { "concave" }
-                    ),
-                    Vec::new(),
-                    Vec::new(),
-                    Some(viz_face_centroid(candidate.faces[0], mesh)),
-                    viz_face_normal(candidate.faces[0], mesh),
-                ) {
-                    match action {
-                        VizAction::Quit => {
-                            return (hypotheses, true);
-                        }
-                        VizAction::NextSeed | VizAction::NextStep => {}
-                    }
-                }
-            }
-
-            // Commit
-            let hi = hypotheses.len() as i32;
-            for &f in &candidate.faces {
-                mesh.faces[f].toroidal_hypothesis = hi;
-            }
-
-            hypotheses.push(ToroidalHypothesis {
-                center: candidate.center,
-                axis_direction: candidate.axis_direction,
-                major_radius: candidate.major_radius,
-                minor_radius: candidate.minor_radius,
-                convex: candidate.convex,
-                faces: candidate.faces,
-                vertices: {
-                    let mut v: Vec<usize> = candidate.vertices.into_iter().collect();
-                    v.sort_unstable();
-                    v
-                },
-                error_max: candidate.error_max,
-                centroid_error_max: candidate.centroid_error_max,
-                error_abs_sum: candidate.error_abs_sum,
-            });
-        }
-    }
-
-    // Set remaining UNDEDUCED faces to NO_HYPOTHESIS
-    for fi in 0..num_faces {
-        if mesh.faces[fi].toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS {
-            mesh.faces[fi].toroidal_hypothesis = NO_HYPOTHESIS;
-        }
-    }
-
-    (hypotheses, false)
-}
-
 // ---------------------------------------------------------------------------
 // Stage 2.5: Compare check
 // ---------------------------------------------------------------------------
@@ -1809,8 +1710,16 @@ impl SurfaceType for ToroidalSurface {
         if face_list.len() < MIN_TORUS_FACES {
             return false;
         }
-        angular_coverage_valid(
+        // Major circle angular coverage (azimuthal)
+        if !angular_coverage_valid(
             face_list, &fit.center, &fit.axis_direction,
+            &mesh.faces, &mesh.vertices,
+        ) {
+            return false;
+        }
+        // Minor circle angular coverage (tube cross-section)
+        minor_circle_coverage_valid(
+            face_list, &fit.center, &fit.axis_direction, fit.major_radius,
             &mesh.faces, &mesh.vertices,
         )
     }

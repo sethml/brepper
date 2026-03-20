@@ -7,11 +7,11 @@ use nalgebra::{Const, Dyn, OMatrix, OVector, Owned};
 use opencascade_sys::gp;
 
 use crate::config::Config;
-use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_CONICAL_HYPOTHESIS, NO_HYPOTHESIS};
+use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_CONICAL_HYPOTHESIS};
 use crate::viz::{self, VizAction, VizSender};
 
 use super::{
-    bounding_box_diagonal, build_normal_covariance, cross3, dot3, face_area, face_centroid,
+    build_normal_covariance, cross3, dot3, face_area, face_centroid,
     normalize3, perpendicular_basis, smallest_eigenvector_3x3, viz_custom, viz_face_centroid,
     viz_face_normal, ConicalHypothesis, Stage2CompareError,
     MIN_CONE_FACES, REFIT_SKIP_MULTIPLIER,
@@ -270,20 +270,41 @@ impl LeastSquaresProblem<f64, Dyn, Const<6>> for ConeLMProblem {
 
     fn jacobian(&self) -> Option<OMatrix<f64, Dyn, Const<6>>> {
         let n = self.points.len();
-        let eps = 1e-8;
         let mut jac = OMatrix::<f64, Dyn, Const<6>>::zeros_generic(
             Dyn(n), Const::<6>,
         );
-        for j in 0..6 {
-            let mut pp = self.params;
-            pp[j] += eps;
-            let rp = self.compute_residuals_for(&pp);
-            let mut pm = self.params;
-            pm[j] -= eps;
-            let rm = self.compute_residuals_for(&pm);
-            for i in 0..n {
-                jac[(i, j)] = (rp[i] - rm[i]) / (2.0 * eps);
-            }
+        let a = self.axis_dir_from_params(&self.params);
+        let apex = [self.params[2], self.params[3], self.params[4]];
+        let half_angle = self.params[5];
+        let (sa, ca) = half_angle.sin_cos();
+
+        // L = |a0 + α*u0 + β*w0| (unnormalized axis length)
+        let alpha = self.params[0];
+        let beta = self.params[1];
+        let vx = self.a0[0] + alpha * self.u0[0] + beta * self.w0[0];
+        let vy = self.a0[1] + alpha * self.u0[1] + beta * self.w0[1];
+        let vz = self.a0[2] + alpha * self.u0[2] + beta * self.w0[2];
+        let big_l = (vx * vx + vy * vy + vz * vz).sqrt().max(1e-15);
+
+        for (i, p) in self.points.iter().enumerate() {
+            let d = [p[0] - apex[0], p[1] - apex[1], p[2] - apex[2]];
+            let h = dot3(&d, &a);
+            let lat = [d[0] - h * a[0], d[1] - h * a[1], d[2] - h * a[2]];
+            let r = (lat[0] * lat[0] + lat[1] * lat[1] + lat[2] * lat[2]).sqrt().max(1e-15);
+            let lat_u = dot3(&lat, &self.u0);
+            let lat_w = dot3(&lat, &self.w0);
+            let axis_sens = ca * h / r + sa;
+
+            // ∂f/∂α
+            jac[(i, 0)] = -lat_u * axis_sens / big_l;
+            // ∂f/∂β
+            jac[(i, 1)] = -lat_w * axis_sens / big_l;
+            // ∂f/∂apex_x, ∂f/∂apex_y, ∂f/∂apex_z
+            jac[(i, 2)] = -ca * lat[0] / r + sa * a[0];
+            jac[(i, 3)] = -ca * lat[1] / r + sa * a[1];
+            jac[(i, 4)] = -ca * lat[2] / r + sa * a[2];
+            // ∂f/∂half_angle
+            jac[(i, 5)] = -r * sa - h * ca;
         }
         Some(jac)
     }
@@ -1201,267 +1222,6 @@ fn run_cone_trial_bfs(
         error_abs_sum,
         _total_area: total_area,
     })
-}
-
-// ---------------------------------------------------------------------------
-// Stage 2.4: Conical hypothesis deduction
-// ---------------------------------------------------------------------------
-
-/// Deduce conical hypotheses from the mesh using apex-vertex seeding.
-///
-/// Instead of triple-seed (which fails for cones because 3 adjacent apex faces
-/// don't give enough geometric spread), we identify potential apex vertices —
-/// vertices shared by many non-coplanar faces — and use all faces incident to
-/// each apex vertex as the seed set. This gives robust axis estimation.
-#[allow(dead_code)]
-pub(super) fn deduce_conical_hypotheses(
-    mesh: &mut ConnectedMesh,
-    vertex_tol: f64,
-    surface_tol: f64,
-    angular_tol: f64,
-    verbosity: u8,
-    viz: Option<&VizSender>,
-) -> (Vec<ConicalHypothesis>, bool) {
-    let num_faces = mesh.faces.len();
-    let num_vertices = mesh.vertices.len();
-    let mut hypotheses: Vec<ConicalHypothesis> = Vec::new();
-    let viz_quit = std::cell::Cell::new(false);
-
-    // Compute bounding box diagonal and center for apex distance sanity check
-    let bb_diag = bounding_box_diagonal(&mesh.vertices);
-    let bb_center = {
-        let mut min = [f64::INFINITY; 3];
-        let mut max = [f64::NEG_INFINITY; 3];
-        for v in &mesh.vertices {
-            min[0] = min[0].min(v.x); max[0] = max[0].max(v.x);
-            min[1] = min[1].min(v.y); max[1] = max[1].max(v.y);
-            min[2] = min[2].min(v.z); max[2] = max[2].max(v.z);
-        }
-        [(min[0]+max[0])/2.0, (min[1]+max[1])/2.0, (min[2]+max[2])/2.0]
-    };
-
-    // Build vertex → face adjacency
-    let mut vertex_faces: Vec<Vec<usize>> = vec![Vec::new(); num_vertices];
-    for fi in 0..num_faces {
-        let vc = mesh.faces[fi].vertex_count as usize;
-        for &vi in &mesh.faces[fi].vertex_indices[..vc] {
-            vertex_faces[vi].push(fi);
-        }
-    }
-
-    // Collect apex candidates: vertices with many incident faces that have
-    // non-coplanar normals (indicating a cone tip, not a flat fan).
-    // Sort by face count descending so we try the best candidates first.
-    let mut apex_candidates: Vec<(usize, usize)> = Vec::new(); // (vertex_index, face_count)
-    for (vi, vi_faces) in vertex_faces.iter().enumerate() {
-        let incident: Vec<usize> = vi_faces.iter()
-            .copied()
-            .filter(|&fi| {
-                mesh.faces[fi].conical_hypothesis == UNDEDUCED_CONICAL_HYPOTHESIS
-                    && mesh.faces[fi].normal.is_some()
-                    && mesh.faces[fi].cylindrical_hypothesis < 0
-            })
-            .collect();
-        if incident.len() < MIN_CONE_FACES {
-            continue;
-        }
-        // Check that normals are non-coplanar: compute normal covariance and
-        // check that the smallest eigenvalue is nonzero (normals span 3D).
-        let cov = build_normal_covariance(&incident, &mesh.faces, &mesh.vertices);
-        let axis = smallest_eigenvector_3x3(&cov);
-        // cov is packed symmetric [m00, m01, m02, m11, m12, m22]
-        let eigenval = cov[0] * axis[0] * axis[0]
-            + cov[3] * axis[1] * axis[1]
-            + cov[5] * axis[2] * axis[2]
-            + 2.0 * cov[1] * axis[0] * axis[1]
-            + 2.0 * cov[2] * axis[0] * axis[2]
-            + 2.0 * cov[4] * axis[1] * axis[2];
-        // For a cone apex, the smallest eigenvalue should be significantly smaller
-        // than the others (normals spread in a plane perpendicular to axis).
-        // For a flat region, all eigenvalues are ~0 or normals are parallel.
-        let trace = cov[0] + cov[3] + cov[5];
-        if trace < 1e-10 || eigenval / trace > 0.3 {
-            continue; // Normals too parallel or too isotropic
-        }
-        apex_candidates.push((vi, incident.len()));
-    }
-    apex_candidates.sort_by(|a, b| b.1.cmp(&a.1));
-
-    if verbosity >= 3 {
-        eprintln!("  [cone] {} apex candidates (from {} vertices)",
-            apex_candidates.len(), num_vertices);
-    }
-
-    for &(apex_vi, _) in &apex_candidates {
-        // Collect all undeduced faces incident to this apex vertex
-        let seed_faces: Vec<usize> = vertex_faces[apex_vi].iter()
-            .copied()
-            .filter(|&fi| mesh.faces[fi].conical_hypothesis == UNDEDUCED_CONICAL_HYPOTHESIS
-                && mesh.faces[fi].normal.is_some()
-                && mesh.faces[fi].cylindrical_hypothesis < 0)
-            .collect();
-        if seed_faces.len() < MIN_CONE_FACES {
-            continue;
-        }
-
-        if verbosity >= 3 {
-            eprintln!("  [cone] trying apex vertex {} with {} incident faces",
-                apex_vi, seed_faces.len());
-        }
-
-        let trial = run_cone_trial_bfs(
-            &seed_faces, mesh,
-            vertex_tol, surface_tol, angular_tol,
-            verbosity,
-            viz, &viz_quit,
-        );
-
-        if viz_quit.get() {
-            return (hypotheses, true);
-        }
-
-        // Check angular coverage
-        let trial = trial.and_then(|t| {
-            if angular_coverage_valid(
-                &t.faces, &t.apex, &t.axis_direction,
-                &mesh.faces, &mesh.vertices,
-            ) {
-                Some(t)
-            } else {
-                if verbosity >= 3 {
-                    eprintln!("  [cone] apex vertex {} angular coverage failed: {} faces",
-                        apex_vi, t.faces.len());
-                }
-                None
-            }
-        });
-
-        // Reject degenerate/false-positive cones
-        let trial = trial.and_then(|t| {
-            let ha_deg = t.half_angle.to_degrees();
-            if !(MIN_HALF_ANGLE_DEG..=MAX_HALF_ANGLE_DEG).contains(&ha_deg) {
-                if verbosity >= 3 {
-                    eprintln!("  [cone] apex vertex {} rejected: half_angle={:.2}° outside [{},{}]",
-                        apex_vi, ha_deg, MIN_HALF_ANGLE_DEG, MAX_HALF_ANGLE_DEG);
-                }
-                return None;
-            }
-            if t.error_max > vertex_tol {
-                if verbosity >= 3 {
-                    eprintln!("  [cone] apex vertex {} rejected: error_max={:.2e} > vertex_tol={:.2e}",
-                        apex_vi, t.error_max, vertex_tol);
-                }
-                return None;
-            }
-            // Reject cones whose apex is absurdly far from the mesh
-            let dx = t.apex[0] - bb_center[0];
-            let dy = t.apex[1] - bb_center[1];
-            let dz = t.apex[2] - bb_center[2];
-            let apex_dist = (dx*dx + dy*dy + dz*dz).sqrt();
-            let max_apex_dist = bb_diag * MAX_APEX_DISTANCE_FACTOR;
-            if apex_dist > max_apex_dist {
-                if verbosity >= 3 {
-                    eprintln!("  [cone] apex vertex {} rejected: apex_dist={:.1} > max={:.1} ({}x bb_diag)",
-                        apex_vi, apex_dist, max_apex_dist, MAX_APEX_DISTANCE_FACTOR);
-                }
-                return None;
-            }
-            // Normal-axis consistency: on a true cone, every face normal makes
-            // angle (90° - half_angle) with the axis. Compute the standard
-            // deviation of acos(|n·axis|) and reject if too large.
-            let mut angle_sum = 0.0_f64;
-            let mut angle_sq_sum = 0.0_f64;
-            let mut n_count = 0usize;
-            for &fi in &t.faces {
-                if let Some(n) = mesh.faces[fi].normal {
-                    let cos_na = dot3(&n, &t.axis_direction).clamp(-1.0, 1.0);
-                    let angle = cos_na.abs().acos(); // angle between normal and axis
-                    angle_sum += angle;
-                    angle_sq_sum += angle * angle;
-                    n_count += 1;
-                }
-            }
-            if n_count >= 2 {
-                let mean = angle_sum / n_count as f64;
-                let variance = angle_sq_sum / n_count as f64 - mean * mean;
-                let std_dev = variance.max(0.0).sqrt();
-                // For a true cone, std_dev should be ~0. For a sphere patch
-                // approximated as a cone, normals vary and std_dev is larger.
-                // Use angular_tol as the threshold (17.5° = 0.305 rad).
-                let max_std_dev = angular_tol * 0.5;
-                if std_dev > max_std_dev {
-                    if verbosity >= 3 {
-                        eprintln!("  [cone] apex vertex {} rejected: normal-axis std_dev={:.4} rad ({:.2}°) > max={:.4}",
-                            apex_vi, std_dev, std_dev.to_degrees(), max_std_dev);
-                    }
-                    return None;
-                }
-            }
-            Some(t)
-        });
-
-        if let Some(candidate) = trial {
-            // Viz: post-BFS pause — show accepted hypothesis
-            if !viz_quit.get() {
-                if let Some(viz) = viz {
-                    if verbosity >= 2 {
-                        eprintln!("  [BFS-cone] ACCEPTED: {} faces, θ={:.4}°, err_max={:.2e}",
-                            candidate.faces.len(), candidate.half_angle.to_degrees(), candidate.error_max);
-                    }
-                    let mut highlights = vec![
-                        viz::FaceHighlight { face_indices: candidate.faces.clone(), color: [0.0, 0.8, 0.0, 1.0] },
-                    ];
-                    let bg_faces: Vec<usize> = (0..mesh.faces.len())
-                        .filter(|f| mesh.faces[*f].conical_hypothesis >= 0 && !candidate.faces.contains(f))
-                        .collect();
-                    if !bg_faces.is_empty() {
-                        highlights.push(viz::FaceHighlight { face_indices: bg_faces, color: [0.5, 0.5, 0.5, 1.0] });
-                    }
-                    if let Some(action) = viz_custom(
-                        Some(viz), highlights,
-                        Vec::new(),
-                        &format!("BFS-cone result: ACCEPTED {} faces θ={:.2}° [space=next]",
-                            candidate.faces.len(), candidate.half_angle.to_degrees()),
-                        Vec::new(), Vec::new(),
-                        Some(viz_face_centroid(candidate.faces[0], mesh)),
-                        viz_face_normal(candidate.faces[0], mesh),
-                    ) {
-                        match action {
-                            VizAction::Quit => { return (hypotheses, true); }
-                            VizAction::NextSeed | VizAction::NextStep => {}
-                        }
-                    }
-                }
-            }
-
-            // Commit: assign all faces to this hypothesis
-            let hi = hypotheses.len() as i32;
-            for &f in &candidate.faces {
-                mesh.faces[f].conical_hypothesis = hi;
-            }
-
-            hypotheses.push(ConicalHypothesis {
-                apex: candidate.apex,
-                axis_direction: candidate.axis_direction,
-                half_angle: candidate.half_angle,
-                convex: candidate.convex,
-                faces: candidate.faces,
-                vertices: candidate.vertices.into_iter().collect(),
-                error_max: candidate.error_max,
-                centroid_error_max: candidate.centroid_error_max,
-                error_abs_sum: candidate.error_abs_sum,
-            });
-        }
-    }
-
-    // Set remaining UNDEDUCED faces to NO_HYPOTHESIS
-    for fi in 0..num_faces {
-        if mesh.faces[fi].conical_hypothesis == UNDEDUCED_CONICAL_HYPOTHESIS {
-            mesh.faces[fi].conical_hypothesis = NO_HYPOTHESIS;
-        }
-    }
-
-    (hypotheses, false)
 }
 
 // ---------------------------------------------------------------------------

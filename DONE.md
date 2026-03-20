@@ -169,3 +169,18 @@ Evaluated all surface types. Recommendations: keep Rust for all, port sphere Gau
 
 ## Port sphere Gauss-Newton refinement
 After algebraic least-squares sphere fit, runs iterative Gauss-Newton to minimize vertex distance residuals. Up to 20 iterations, convergence at delta_norm < 1e-14, requires ≥6 vertices.
+
+## Port analytic Jacobians for cone LM
+Replaced finite-difference Jacobian in ConeLMProblem with closed-form partial derivatives for all 6 parameters (apex position, axis tilt, half-angle).
+
+## Port analytic Jacobians for torus LM
+Replaced finite-difference Jacobian in TorusLMProblem with closed-form partial derivatives for all 7 parameters (center, axis tilt, major/minor radii).
+
+## Port torus minor-circle acceptance test
+Added angular coverage validation around the torus minor circle (tube cross-section). Computes φ = atan2(axial, radial-R) for each face centroid and requires the angular span ≥ 0.1 rad. Prevents false positives from strips that don't wrap around the tube.
+
+## Port vertex-position PCA for torus axis estimation
+Replaced normal covariance with vertex-position PCA in fit_torus_sor(). The smallest eigenvector of the position covariance matrix gives the torus axis — works because axial variance ~ r²/2 while perpendicular variance ~ (R² + r²/2)/2. Also added Kasa circle fit for center location.
+
+## Delete legacy deduce_*_hypotheses() functions
+Removed dead code: deduce_planar_hypotheses, deduce_cylindrical_hypotheses, deduce_spherical_hypotheses, deduce_conical_hypotheses, deduce_toroidal_hypotheses. These were superseded by the generic BFS framework.

@@ -295,6 +295,7 @@ After fitting both a cylinder and a cone to the same face set, compare RMS resid
 **LM refinement:**
 Optimize $[A_x, A_y, A_z, \alpha, \beta, \theta]$ (6 parameters: apex position 3, axis tilt angles 2, half-angle 1).
 Residual: $d_i = r_i \cos\theta - h_i \sin\theta$.
+Analytic Jacobian with closed-form partial derivatives for all 6 parameters.
 
 - With the `--compare` flag:
     - Same centroid-projection validation as cylinder/sphere.
@@ -354,10 +355,10 @@ Key insight: for a surface with constant positive principal curvature $\kappa_1 
 **Step 5: LM refinement.**
 - Optimize $[C_x, C_y, C_z, \alpha, \beta, R, r]$ (7 parameters: center 3, axis tilt 2, major radius 1, minor radius 1).
 - Residual: $d_i = \sqrt{(\text{radial}_i - R)^2 + \text{axial}_i^2} - r$.
-- LM patience 500, minimum 7 data points. Numerical Jacobian via central differences (eps=1e-8).
+- LM patience 500, minimum 7 data points. Analytic Jacobian with closed-form partial derivatives for all 7 parameters (center, axis tilt, major and minor radii).
 
 **Alternative fitting: SOR axis method (`fit_torus_sor`).**
-When the tube center method fails (e.g., too few tube centers above threshold or quality gate failure), a surface-of-revolution axis estimation is used as fallback. Estimates torus axis from the smallest eigenvector of normal covariance, projects vertices to (h,r) coordinates, fits a shifted circle to deduce R and r. Same LM refinement follows. `fit_torus` tries **both** methods (tube center and SOR) and keeps whichever achieves the lowest maximum vertex-to-torus distance.
+When the tube center method fails (e.g., too few tube centers above threshold or quality gate failure), a surface-of-revolution axis estimation is used as fallback. Estimates torus axis from PCA of vertex positions (smallest eigenvector of position covariance matrix) — for a torus, axial variance is ~$r^2/2$ while perpendicular variance is ~$(R^2 + r^2/2)/2$, so the axis has minimum positional variance for any non-self-intersecting torus ($R > r$). Note: face-normal covariance does NOT give the axis as its smallest eigenvector for a torus — unlike cylinders where normals are perpendicular to the axis, torus normals have significant axial components. Center found via Kasa circle fit on 2D projections of vertices perpendicular to axis. Projects vertices to (h,r) coordinates, fits a shifted circle to deduce R and r. Same LM refinement follows. `fit_torus` tries **both** methods (tube center and SOR) and keeps whichever achieves the lowest maximum vertex-to-torus distance.
 
 **Deterministic iteration.**
 All vertex set iterations (HashSet) are sorted before use to ensure deterministic results regardless of hash ordering. Without this, the fitting results can vary between runs due to floating-point non-associativity.
