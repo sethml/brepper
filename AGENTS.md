@@ -1,6 +1,6 @@
 # Instructions for LLM Coding Assistants
 
-This file contains guidelines for AI/LLM coding assistants working on this project.
+This file contains guidelines for AI/LLM coding assistants working on this project. Read ALL of AGENTS.md - no just the first 100 lines.
 
 ## IMPORTANT: Surviving Context Compaction
 

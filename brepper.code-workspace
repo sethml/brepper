@@ -7,9 +7,6 @@
     {
       "name": "opencascade-sys",
       "path": "../opencascade-rs/crates/opencascade-sys"
-    },
-    {
-      "path": "../brepper-cpp2"
     }
   ],
   "settings": {

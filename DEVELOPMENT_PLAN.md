@@ -196,30 +196,27 @@ Each `MeshFace` has a hypothesis index field per surface type (e.g., `planar_hyp
     a. **Seed generation**: call `S::generate_seeds()` to find all valid seeds anchored at `fi` (see per-stage sections for seed types). For each candidate seed:
         - Collect the seed faces' vertices.
         - Perform a surface fit from the seed vertices using `S::fit_surface()`.
-        - **Seed vertex tolerance**: check all seed face vertices within `--vertex-tolerance` of the fitted surface. If any vertex exceeds this, enter **bootstrapping mode** (see below) rather than rejecting the seed.
-        - **Seed surface tolerance** (skipped in bootstrapping mode): check all seed face centroids within `--surface-tolerance` of the fitted surface. Reject seed if any fails.
+        - **Seed vertex tolerance**: check all seed face vertices within `--vertex-tolerance` of the fitted surface. Reject seed if any vertex exceeds this.
+        - **Seed surface tolerance**: check all seed face centroids within `--surface-tolerance` of the fitted surface. Reject seed if any fails.
         - **Seed angular tolerance**: check dihedral angles between all pairs of adjacent seed faces. Reject seed if any exceeds `--angular-tolerance`.
-        - Determine convexity from the seed faces (if not bootstrapping).
+        - Determine convexity from the seed faces.
     b. **BFS expansion** (per valid seed): using temporary data structures (local face list, vertex set — mesh hypothesis fields are NOT mutated during trials):
         - Initialize BFS queue with all seed faces.
         - Pop faces from the queue. For each neighbor `ni` of the popped face:
             - Skip if `ni` is not eligible for this surface type (already assigned a hypothesis, or fails surface-type-specific eligibility).
             - Skip if `ni` is already claimed by this trial.
             - **Angular tolerance check**: for each of `ni`'s mesh neighbors that is already claimed by this trial, compute the dihedral angle. If any exceeds `--angular-tolerance`, skip `ni`.
-            - **Convexity check** (skipped in bootstrapping mode): call `S::convexity_check()`. If it fails, skip `ni`.
-            - **Surface distance check** (skipped in bootstrapping mode): compute distance from each vertex of `ni` to the fitted surface via `S::vertex_distance()`, and from `ni`'s centroid via `S::centroid_distance()`.
+            - **Convexity check**: call `S::convexity_check()`. If it fails, skip `ni`.
+            - **Surface distance check**: compute distance from each vertex of `ni` to the fitted surface via `S::vertex_distance()`, and from `ni`'s centroid via `S::centroid_distance()`.
                 - If all vertices are within `--vertex-tolerance` and centroid within `--surface-tolerance`: accept directly.
                 - If any vertex exceeds `REFIT_SKIP_MULTIPLIER * vertex_tolerance` or centroid exceeds `REFIT_SKIP_MULTIPLIER * surface_tolerance`: skip `ni` — too far for refitting to help.
                 - Otherwise (between 1× and `REFIT_SKIP_MULTIPLIER`×): attempt a **re-fit** using all current trial faces plus `ni`. If the re-fit satisfies vertex tolerance and surface tolerance for **all** faces (existing and new), accept the re-fit. Otherwise, revert and skip `ni`.
-            - If accepted (or in bootstrapping mode, where all faces passing the angular check are accepted): add `ni` to the trial's face list, add its vertices to the vertex set, push `ni` onto the BFS queue.
+            - If accepted: add `ni` to the trial's face list, add its vertices to the vertex set, push `ni` onto the BFS queue.
         - After BFS completes: do a final re-fit from all accumulated faces and vertices.
-    c. **Bootstrapping validation** (only for bootstrapped trials): after the final re-fit, check all face vertices within `--vertex-tolerance` and all face centroids within `--surface-tolerance`. If any fail, discard the trial. Re-determine convexity from the final fit.
-    d. **Acceptance tests** (per completed trial): call `S::acceptance_test()` for surface-type-specific post-BFS validation (e.g., angular coverage, solid-angle coverage, minimum face count). If validation fails, discard the trial.
-    e. **Best candidate selection**: among all accepted trials for this starting face `fi`, keep the one with the largest total face area. Only two candidates need to be in memory at a time (current best and trial being evaluated).
-    f. **Commit**: if a best candidate was found, create a hypothesis and assign it to all of its faces (mutating `mesh.faces[].{type}_hypothesis`). Faces assigned here will be skipped by subsequent starting faces.
+    c. **Acceptance tests** (per completed trial): call `S::acceptance_test()` for surface-type-specific post-BFS validation (e.g., angular coverage, solid-angle coverage, minimum face count). If validation fails, discard the trial.
+    d. **Best candidate selection**: among all accepted trials for this starting face `fi`, keep the one with the largest total face area. Only two candidates need to be in memory at a time (current best and trial being evaluated).
+    e. **Commit**: if a best candidate was found, create a hypothesis and assign it to all of its faces (mutating `mesh.faces[].{type}_hypothesis`). Faces assigned here will be skipped by subsequent starting faces.
 3. After all starting faces have been processed: set any remaining `UNDEDUCED` faces to `NO_HYPOTHESIS`.
-
-**Bootstrapping mode**: When the seed fit (from a small number of faces) exceeds vertex tolerance — common for surface types where a few narrow-arc faces give a poorly conditioned fit — the BFS enters "bootstrapping" mode. In this mode, the seed's surface tolerance check is skipped, convexity is not determined, and BFS expansion accepts faces based on angular tolerance only (no vertex/surface tolerance or convexity checks). After BFS completes, a final fit is performed on all accumulated faces and vertices, and the standard tolerance validation is applied. This allows the algorithm to accumulate enough geometric diversity for a well-conditioned fit before validating tolerances.
 
 **Computational cost**: For each starting face, the number of seed trials is typically small (1 for planar/spherical/toroidal, 1–6 for conical/cylindrical). Each trial BFS covers the connected surface region. Since most faces on the same surface will discover the same region, the work is dominated by the first few faces that discover the region before their neighbors get committed.
 
