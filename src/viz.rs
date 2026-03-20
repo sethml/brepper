@@ -365,6 +365,51 @@ impl WireframeRenderer {
             ctx.bind_buffer(context::ARRAY_BUFFER, None);
         }
     }
+
+    /// Like `render` but with an explicit line width (macOS clamps GL_LINE_WIDTH > 1.0).
+    pub fn render_with_width(&self, ctx: &Context, camera: &Camera, color: [f32; 4], depth_test: bool, line_width: f32) {
+        if self.vertex_count == 0 {
+            return;
+        }
+        use context::HasContext;
+        unsafe {
+            let mvp = camera.projection() * camera.view();
+            let mvp_ref: &[f32; 16] = mvp.as_ref();
+
+            ctx.use_program(Some(self.program));
+
+            let mvp_loc = ctx.get_uniform_location(self.program, "mvp");
+            ctx.uniform_matrix_4_f32_slice(mvp_loc.as_ref(), false, mvp_ref);
+
+            let color_loc = ctx.get_uniform_location(self.program, "lineColor");
+            ctx.uniform_4_f32(color_loc.as_ref(), color[0], color[1], color[2], color[3]);
+
+            let vao = ctx.create_vertex_array().unwrap();
+            ctx.bind_vertex_array(Some(vao));
+
+            ctx.bind_buffer(context::ARRAY_BUFFER, Some(self.vbo));
+            ctx.enable_vertex_attrib_array(0);
+            ctx.vertex_attrib_pointer_f32(0, 3, context::FLOAT, false, 12, 0);
+
+            ctx.line_width(line_width);
+            if depth_test {
+                ctx.enable(context::DEPTH_TEST);
+                ctx.depth_func(context::LEQUAL);
+            } else {
+                ctx.disable(context::DEPTH_TEST);
+            }
+            ctx.draw_arrays(context::LINES, 0, self.vertex_count);
+
+            ctx.enable(context::DEPTH_TEST);
+            ctx.depth_func(context::LESS);
+            ctx.line_width(1.0);
+
+            ctx.bind_vertex_array(None);
+            ctx.delete_vertex_array(vao);
+            ctx.use_program(None);
+            ctx.bind_buffer(context::ARRAY_BUFFER, None);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -984,7 +1029,7 @@ where
         map
     };
 
-    // Precompute face centroids for face-number labels
+    // Precompute face centroids and normals for face-number labels / occlusion test
     let face_centroids: Vec<[f32; 3]> = face_indices_arr
         .iter()
         .zip(face_vc_arr.iter())
@@ -999,6 +1044,19 @@ where
             });
             let inv = 1.0 / n as f32;
             [sum[0] * inv, sum[1] * inv, sum[2] * inv]
+        })
+        .collect();
+
+    // Precompute face normals for front-face occlusion culling
+    let face_normals: Vec<[f32; 3]> = face_indices_arr
+        .iter()
+        .map(|vis| {
+            let v0 = stl_positions[vis[0]];
+            let v1 = stl_positions[vis[1]];
+            let v2 = stl_positions[vis[2]];
+            let n = (v1 - v0).cross(v2 - v0);
+            let len = n.magnitude();
+            if len > 1e-10 { [n.x / len, n.y / len, n.z / len] } else { [0.0, 0.0, 1.0] }
         })
         .collect();
 
@@ -1067,6 +1125,8 @@ where
     let mut shape_mesh_objects: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
     let mut shape_mesh_wireframes: Vec<(WireframeRenderer, [f32; 4])> = Vec::new();
     let mut waiting_for_input = false;
+    let mut hover_face: Option<usize> = None;
+    let mut hover_wireframe: Option<WireframeRenderer> = None;
 
     // Camera animation state (rotation-only slew: target and distance are fixed)
     let mut anim_start_dir: Option<Vector3<f32>> = None; // unit vec from target to camera at anim start
@@ -1353,10 +1413,19 @@ where
                         let dx = position.x - down.0;
                         let dy = position.y - down.1;
                         if dx * dx + dy * dy < 25.0 {
-                            // Click (not a drag) — pick face and skip to it
-                            let pick_pos = (position.x, position.y);
-                            if let Some((fi, _)) = pick_face(pick_pos, &camera, &stl_positions, &stl_indices, &tri_to_face) {
-                                let _ = receiver.action_tx.send(VizAction::SkipToSeed(fi));
+                            // Click (not a drag) — pick face and skip to it.
+                            // Only send when waiting for input; sending on a sync channel
+                            // while BFS is not blocked in recv() would deadlock.
+                            if waiting_for_input {
+                                let pick_pos = (position.x, position.y);
+                                if let Some((fi, _)) = pick_face(pick_pos, &camera, &stl_positions, &stl_indices, &tri_to_face) {
+                                    if receiver.action_tx.send(VizAction::SkipToSeed(fi)).is_ok() {
+                                        // MUST set false so the render loop calls try_recv() again
+                                        // and can receive the next overlay from BFS.  Without
+                                        // this the channel is full on both sides → deadlock.
+                                        waiting_for_input = false;
+                                    }
+                                }
                             }
                         }
                     }
@@ -1499,6 +1568,18 @@ where
             }
         }
 
+        // --- Face picking (hover) via ray-cast (CPU only, done before wireframes) ---
+        let gui_hover_face = pick_face(mouse_pos, &camera, &stl_positions, &stl_indices, &tri_to_face)
+            .map(|(fi, _)| fi);
+
+        // Rebuild hover wireframe only when hovered face changes
+        if gui_hover_face != hover_face {
+            hover_face = gui_hover_face;
+            hover_wireframe = hover_face.map(|fi| {
+                build_face_edge_wireframe(&context, &[fi], &stl_positions, &face_indices_arr, &face_vc_arr)
+            });
+        }
+
         // Edge highlight overlays (thick colored outlines on specific faces)
         for (wf, color) in &edge_highlight_renderers {
             wf.render(&context, &camera, *color, true);
@@ -1514,57 +1595,40 @@ where
             wf.render(&context, &camera, *color, !no_depth);
         }
 
-        // --- Face picking (hover) via ray-cast after 3D render ---
-        let gui_hover_face = pick_face(mouse_pos, &camera, &stl_positions, &stl_indices, &tri_to_face)
-            .map(|(fi, _)| fi);
+        // Hover highlight: thick bright-yellow edges on the hovered face
+        if let Some(wf) = &hover_wireframe {
+            wf.render_with_width(&context, &camera, [1.0, 0.85, 0.1, 1.0], true, 3.0);
+        }
 
-        // --- Project face centroids to screen & depth-test for occlusion ---
+        // --- Project face centroids to screen, culling back-facing faces ---
         let gui_face_centroids: Vec<(usize, f32, f32)> = if show_face_numbers {
-            // Read depth buffer for occlusion testing
-            let vp = frame_input.viewport;
-            let depth_buf: Vec<f32> = unsafe {
-                use context::HasContext;
-                let w = vp.width as usize;
-                let h = vp.height as usize;
-                let mut buf = vec![0u8; w * h * 4]; // DEPTH_COMPONENT → f32
-                context.read_pixels(
-                    vp.x, vp.y,
-                    vp.width as i32, vp.height as i32,
-                    context::DEPTH_COMPONENT,
-                    context::FLOAT,
-                    context::PixelPackData::Slice(&mut buf),
-                );
-                // Reinterpret bytes as f32
-                let ptr = buf.as_ptr() as *const f32;
-                std::slice::from_raw_parts(ptr, w * h).to_vec()
-            };
             let dpr = frame_input.device_pixel_ratio;
+            let cam_pos = *camera.position();
 
             face_centroids
                 .iter()
+                .zip(face_normals.iter())
                 .enumerate()
-                .filter_map(|(i, c)| {
-                    let world = vec3(c[0], c[1], c[2]);
-                    let clip = camera.projection() * camera.view() * world.extend(1.0);
+                .filter_map(|(i, (c, n))| {
+                    let centroid = vec3(c[0], c[1], c[2]);
+                    let normal = vec3(n[0], n[1], n[2]);
+                    // Cull back-facing faces: label only visible if normal points toward camera
+                    let to_cam = cam_pos - centroid;
+                    if to_cam.dot(normal) <= 0.0 {
+                        return None;
+                    }
+                    let clip = camera.projection() * camera.view() * centroid.extend(1.0);
                     if clip.w <= 0.0 {
                         return None; // behind camera
                     }
                     let ndc = clip / clip.w;
+                    // Cull if outside view frustum
+                    if ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 {
+                        return None;
+                    }
                     let vp = frame_input.viewport;
                     let sx = (ndc.x * 0.5 + 0.5) * vp.width as f32 + vp.x as f32;
                     let sy = ((1.0 - ndc.y) * 0.5) * vp.height as f32 + vp.y as f32;
-                    let centroid_depth = ndc.z * 0.5 + 0.5; // NDC [-1,1] → depth [0,1]
-                    // Sample depth buffer at centroid pixel
-                    let px = sx as usize;
-                    let py_flipped = (vp.height as f32 - (sy - vp.y as f32)) as usize; // GL origin is bottom-left
-                    let w = vp.width as usize;
-                    if px < w && py_flipped < vp.height as usize {
-                        let buf_depth = depth_buf[py_flipped * w + px];
-                        // Occluded if something closer is in front (with small tolerance)
-                        if centroid_depth > buf_depth + 0.001 {
-                            return None;
-                        }
-                    }
                     Some((i, sx / dpr, sy / dpr))
                 })
                 .collect()
@@ -1695,18 +1759,40 @@ where
                         });
                 }
 
-                // Face number labels (thin black text, occlusion-aware)
+                // Face number labels (thin black text, front-face-culled)
                 if gui_show_face_numbers {
                     let painter = ctx.layer_painter(egui::LayerId::background());
                     for &(idx, sx, sy) in &gui_face_centroids {
                         let pos = egui::pos2(sx, sy);
+                        let is_hovered = gui_hover_face == Some(idx);
                         let text = format!("{}", idx);
+                        let font_size = if is_hovered { 14.0 } else { 11.0 };
+                        let rich = if is_hovered {
+                            egui::RichText::new(&text).size(font_size).strong()
+                        } else {
+                            egui::RichText::new(&text).size(font_size)
+                        };
                         let galley = painter.layout_no_wrap(
-                            text,
-                            egui::FontId::proportional(11.0),
+                            rich.text().to_string(),
+                            egui::FontId::proportional(font_size),
                             egui::Color32::BLACK,
                         );
                         let half = galley.size() / 2.0;
+                        if is_hovered {
+                            // Draw a white halo for readability
+                            for dx in [-1.0f32, 0.0, 1.0] {
+                                for dy in [-1.0f32, 0.0, 1.0] {
+                                    if dx != 0.0 || dy != 0.0 {
+                                        let galley2 = painter.layout_no_wrap(
+                                            text.clone(),
+                                            egui::FontId::proportional(font_size),
+                                            egui::Color32::WHITE,
+                                        );
+                                        painter.galley(pos - half + egui::vec2(dx, dy), galley2, egui::Color32::WHITE);
+                                    }
+                                }
+                            }
+                        }
                         painter.galley(pos - half, galley, egui::Color32::BLACK);
                     }
                 }

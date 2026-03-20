@@ -190,3 +190,8 @@ Removed dead code: deduce_planar_hypotheses, deduce_cylindrical_hypotheses, dedu
 
 ## Interactive viz features
 Added to `--viz-stages` window: initial zoom with 15% margin, help overlay (`?`), face number labels (`N`) with depth-buffer occlusion testing, hover face info (index/area/normal via ray-cast picking), and click-to-skip-seeding (left-click sends `SkipToSeed(face)` to BFS). Integrated egui for all text overlays. Restructured render loop so egui runs after 3D rendering to enable depth-buffer readback.
+
+## Viz bug fixes: occlusion, hover highlight, click-to-skip deadlock
+- Replaced unreliable depth-buffer-based face label occlusion with face-normal culling: labels for back-facing faces (normal pointing away from camera) are hidden.
+- Added thick bright-yellow wireframe highlight on the hovered face; hovered face's number is drawn larger with a white halo for readability.
+- Fixed click-to-skip deadlock: click only sends `SkipToSeed` when `waiting_for_input = true` (BFS is blocked in `recv`), and immediately sets `waiting_for_input = false` so the render loop calls `try_recv()` again and can receive the next overlay — without this the sync channel would deadlock.

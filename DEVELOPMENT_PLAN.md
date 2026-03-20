@@ -651,9 +651,9 @@ Pipeline thread                          Main/render thread
 
 The render window (powered by three-d with egui overlay) provides:
 - **Camera controls**: Left-drag orbit, right-drag pan, scroll zoom (toward cursor).
-- **Face numbers** (`N` key): Thin black labels at face centroids, subject to depth-buffer occlusion so hidden faces don't show labels.
-- **Hover info**: Ray-cast face picking under the cursor displays face index, vertex count, area, and normal in the bottom-left corner.
-- **Click-to-skip**: Left-clicking a face sends `SkipToSeed(face_index)`, causing the BFS loop to skip ahead to the seed containing that face.
+- **Face numbers** (`N` key): Thin black labels at face centroids, culled by face-normal direction (back-facing labels are hidden). The hovered face number is displayed larger with a white halo.
+- **Hover info**: Ray-cast face picking under the cursor displays face index, vertex count, area, and normal in the bottom-left corner. Thick bright-yellow edges are drawn around the hovered face.
+- **Click-to-skip**: Left-clicking a face sends `SkipToSeed(face_index)`, causing the BFS loop to skip ahead to the seed containing that face. Click is only processed while the window is paused waiting for user input (`waiting_for_input = true`) to avoid a deadlock where the BFS thread would block trying to send the next overlay while the render loop also blocks waiting for input.
 - **Help overlay** (`?` key): Shows all keyboard and mouse shortcuts.
 
 ### Integration with generic BFS
