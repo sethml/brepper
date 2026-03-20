@@ -230,21 +230,25 @@ impl bfs::HypothesisFaces for ToroidalHypothesis {
 // ---------------------------------------------------------------------------
 
 /// The output of Stage 2: the mesh with all hypotheses populated and surfaces selected.
+///
+/// After stage 2.6 (surface selection), the hypothesis vectors contain only the
+/// hypotheses that were actually selected. Unselected hypotheses are pruned.
 #[derive(Debug)]
 pub struct Stage2Output {
     /// The mesh from stage 1 with per-face hypothesis indices populated.
     pub mesh: ConnectedMesh,
-    /// All planar hypotheses deduced in stage 2.1.
+    /// Selected planar hypotheses (after stage 2.6 pruning).
     pub planar_hypotheses: Vec<PlanarHypothesis>,
-    /// All conical/cylindrical hypotheses deduced in stage 2.2.
+    /// Selected conical/cylindrical hypotheses (after stage 2.6 pruning).
     /// Cylinders are represented as cones with half_angle == 0.
     pub conical_hypotheses: Vec<ConicalHypothesis>,
-    /// All spherical hypotheses deduced in stage 2.3.
+    /// Selected spherical hypotheses (after stage 2.6 pruning).
     pub spherical_hypotheses: Vec<SphericalHypothesis>,
-    /// All toroidal hypotheses deduced in stage 2.4.
+    /// Selected toroidal hypotheses (after stage 2.6 pruning).
     pub toroidal_hypotheses: Vec<ToroidalHypothesis>,
-    /// Surfaces selected in stage 2.5 for reconstruction. Each face should be
-    /// covered by exactly one selected surface.
+    /// Surfaces selected in stage 2.6 for reconstruction. Each face is
+    /// covered by exactly one selected surface. Indices point into the
+    /// (pruned) hypothesis vectors above.
     pub selected_surfaces: Vec<SelectedSurface>,
 }
 
@@ -441,6 +445,15 @@ pub(crate) fn smallest_eigenvector_3x3(m: &[f64; 6]) -> [f64; 3] {
         .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
         .unwrap();
     eigenvector_for_eigenvalue(m, eigenvalues[min_idx])
+}
+
+/// Given a 3x3 symmetric matrix, return the eigenvector for the largest eigenvalue.
+pub(crate) fn largest_eigenvector_3x3(m: &[f64; 6]) -> [f64; 3] {
+    let eigenvalues = eigenvalues_3x3_symmetric(m);
+    let (max_idx, _) = eigenvalues.iter().enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .unwrap();
+    eigenvector_for_eigenvalue(m, eigenvalues[max_idx])
 }
 
 /// Build the area-weighted normal covariance matrix M = Σ wᵢ nᵢ nᵢᵀ.
@@ -830,6 +843,64 @@ fn select_surfaces(
     }
 
     selected
+}
+
+/// Remove unselected hypotheses from the hypothesis vectors and remap
+/// `SelectedSurface` indices to match the new, compacted vectors.
+///
+/// After this, hypotheses vectors contain only the hypotheses that were
+/// actually selected during surface selection.
+fn prune_unselected_hypotheses(
+    planar_hypotheses: &mut Vec<PlanarHypothesis>,
+    conical_hypotheses: &mut Vec<ConicalHypothesis>,
+    spherical_hypotheses: &mut Vec<SphericalHypothesis>,
+    toroidal_hypotheses: &mut Vec<ToroidalHypothesis>,
+    selected_surfaces: &mut [SelectedSurface],
+) {
+    // Collect which old indices are selected for each type.
+    let mut planar_used = vec![false; planar_hypotheses.len()];
+    let mut conical_used = vec![false; conical_hypotheses.len()];
+    let mut spherical_used = vec![false; spherical_hypotheses.len()];
+    let mut toroidal_used = vec![false; toroidal_hypotheses.len()];
+
+    for s in selected_surfaces.iter() {
+        match s {
+            SelectedSurface::Planar(i) => planar_used[*i] = true,
+            SelectedSurface::Conical(i) => conical_used[*i] = true,
+            SelectedSurface::Spherical(i) => spherical_used[*i] = true,
+            SelectedSurface::Toroidal(i) => toroidal_used[*i] = true,
+        }
+    }
+
+    // Build old→new index maps and compact each vector.
+    fn compact<H>(hypotheses: &mut Vec<H>, used: &[bool]) -> Vec<usize> {
+        let mut old_to_new = vec![usize::MAX; hypotheses.len()];
+        let mut new_vec = Vec::new();
+        let old_vec = std::mem::take(hypotheses);
+        for (old_idx, hyp) in old_vec.into_iter().enumerate() {
+            if used[old_idx] {
+                old_to_new[old_idx] = new_vec.len();
+                new_vec.push(hyp);
+            }
+        }
+        *hypotheses = new_vec;
+        old_to_new
+    }
+
+    let planar_map = compact(planar_hypotheses, &planar_used);
+    let conical_map = compact(conical_hypotheses, &conical_used);
+    let spherical_map = compact(spherical_hypotheses, &spherical_used);
+    let toroidal_map = compact(toroidal_hypotheses, &toroidal_used);
+
+    // Remap all SelectedSurface indices.
+    for s in selected_surfaces.iter_mut() {
+        match s {
+            SelectedSurface::Planar(i) => *i = planar_map[*i],
+            SelectedSurface::Conical(i) => *i = conical_map[*i],
+            SelectedSurface::Spherical(i) => *i = spherical_map[*i],
+            SelectedSurface::Toroidal(i) => *i = toroidal_map[*i],
+        }
+    }
 }
 
 /// Validate selected surfaces against a reference STEP file.
@@ -1358,9 +1429,16 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
     // Stage 2.6: Select surfaces for reconstruction
     let t = Instant::now();
     let viz_26 = if config.viz_active(2, 6) { viz } else { None };
-    let selected_surfaces = select_surfaces(
+    let mut selected_surfaces = select_surfaces(
         &mesh, &mut planar_hypotheses, &mut conical_hypotheses,
         &mut spherical_hypotheses, &mut toroidal_hypotheses, viz_26,
+    );
+
+    // Prune hypotheses that were not selected, keeping only the winning ones.
+    prune_unselected_hypotheses(
+        &mut planar_hypotheses, &mut conical_hypotheses,
+        &mut spherical_hypotheses, &mut toroidal_hypotheses,
+        &mut selected_surfaces,
     );
 
     if !config.quiet {

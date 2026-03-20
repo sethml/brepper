@@ -11,9 +11,10 @@ use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_CONICAL
 use crate::viz;
 
 use super::{
-    build_normal_covariance, centered_cylinder_overlay, cross3, dot3, face_area, face_centroid,
-    normalize3, perpendicular_basis, smallest_eigenvector_3x3, ConicalHypothesis,
-    Stage2CompareError, MIN_CROSS_THRESHOLD, MIN_CONE_FACES, MIN_CYLINDER_FACES,
+    build_normal_covariance, centered_cylinder_overlay, cross3, dot3, face_centroid,
+    largest_eigenvector_3x3, normalize3, perpendicular_basis, smallest_eigenvector_3x3,
+    ConicalHypothesis, Stage2CompareError, MIN_CROSS_THRESHOLD, MIN_CONE_FACES,
+    MIN_CYLINDER_FACES,
 };
 use super::cylindrical::{vertex_to_cylinder_distance, fit_cylinder};
 
@@ -25,7 +26,12 @@ const MAX_HALF_ANGLE_DEG: f64 = 85.0;
 const MAX_APEX_DISTANCE_FACTOR: f64 = 10.0;
 
 // ---------------------------------------------------------------------------
-// Conical fitting helpers
+// Conical fitting: 4-step algorithm
+//
+// Step 1: Estimate apex from least-squares line intersection of normal lines.
+// Step 2: Estimate axis as eigenvector of smallest eigenvalue of normal covariance.
+// Step 3: Estimate half-angle from median of atan(r_i/h_i).
+// Step 4: LM refinement of all parameters.
 // ---------------------------------------------------------------------------
 
 /// Compute the signed distance from a vertex to a cone surface.
@@ -53,33 +59,309 @@ pub(super) fn vertex_to_cone_distance(
     r * cos_a - h * sin_a
 }
 
-/// Given an axis direction and a set of vertices, project them to (h, r) coordinates
-/// relative to the centroid, then fit a linear profile r = m·h + b.
-/// Returns (apex, half_angle) or None if degenerate.
+// ---------------------------------------------------------------------------
+// Step 1: Apex estimation via least-squares line intersection
+// ---------------------------------------------------------------------------
+
+/// Estimate the cone apex as the point minimizing sum of squared distances
+/// to lines L_i(t) = p_i + t * n_i (one line per face centroid + normal).
 ///
-/// The cone axis goes through the centroid. We compute:
-///   h_i = (v_i - centroid) · â
-///   r_i = |(v_i - centroid) - h_i·â|
-/// Then linear regression r = m·h + b gives:
-///   half_angle = atan(|m|)
-///   apex = centroid - (b/m)·â  (if m != 0)
-///
-/// If the linear regression is degenerate (e.g., all vertices at same height),
-/// we fall back to a normal-based approach using face normals to determine the
-/// half-angle and vertex positions to locate the apex.
-fn fit_cone_profile(
-    axis_dir: &[f64; 3],
-    vertex_set: &HashSet<usize>,
-    vertices: &[MeshVertex],
+/// The optimal point minimizes  Σ ||(I - n_i n_i^T)(a - p_i)||^2
+/// Leading to normal equations: (Σ (I - n_i n_i^T)) a = Σ (I - n_i n_i^T) p_i
+#[cfg(test)]
+fn estimate_apex(
     face_indices: &[usize],
     faces: &[MeshFace],
+    vertices: &[MeshVertex],
+) -> Option<[f64; 3]> {
+    // Check if there is a vertex shared by ALL faces — it's the apex.
+    // This gives an exact result for pointed cones and avoids an ill-conditioned system.
+    let n_faces = face_indices.len();
+    let mut vertex_face_count = std::collections::HashMap::<usize, usize>::new();
+    for &fi in face_indices {
+        let vc = faces[fi].vertex_count as usize;
+        for &vi in &faces[fi].vertex_indices[..vc] {
+            *vertex_face_count.entry(vi).or_insert(0) += 1;
+        }
+    }
+    if n_faces >= 3 {
+        for (&vi, &count) in &vertex_face_count {
+            if count == n_faces {
+                return Some([vertices[vi].x, vertices[vi].y, vertices[vi].z]);
+            }
+        }
+    }
+
+    // General case: least-squares intersection of normal lines.
+    // Build 3x3 system: A a = b  where A = Σ (I - n n^T), b = Σ (I - n n^T) p
+    let mut a_mat = [0.0_f64; 9]; // row-major 3x3
+    let mut b_vec = [0.0_f64; 3];
+
+    for &fi in face_indices {
+        let n = match faces[fi].normal {
+            Some(n) => n,
+            None => continue,
+        };
+        let c = face_centroid(&faces[fi], vertices);
+
+        // (I - n n^T) is the projection matrix perpendicular to n
+        for row in 0..3 {
+            for col in 0..3 {
+                let ident = if row == col { 1.0 } else { 0.0 };
+                let proj = ident - n[row] * n[col];
+                a_mat[row * 3 + col] += proj;
+                b_vec[row] += proj * c[col];
+            }
+        }
+    }
+
+    // Solve 3x3 system via Gaussian elimination with partial pivoting
+    solve_3x3(&a_mat, &b_vec)
+}
+
+/// Solve a 3x3 linear system Ax = b. Returns None if singular.
+#[cfg(test)]
+fn solve_3x3(a: &[f64; 9], b: &[f64; 3]) -> Option<[f64; 3]> {
+    let mut aug = [[0.0_f64; 4]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            aug[i][j] = a[i * 3 + j];
+        }
+        aug[i][3] = b[i];
+    }
+
+    for col in 0..3 {
+        // Partial pivoting
+        let mut max_row = col;
+        let mut max_val = aug[col][col].abs();
+        for row in (col + 1)..3 {
+            if aug[row][col].abs() > max_val {
+                max_val = aug[row][col].abs();
+                max_row = row;
+            }
+        }
+        if max_val < 1e-30 {
+            return None;
+        }
+        aug.swap(col, max_row);
+
+        let pivot = aug[col][col];
+        for row in (col + 1)..3 {
+            let factor = aug[row][col] / pivot;
+            for j in col..4 {
+                aug[row][j] -= factor * aug[col][j];
+            }
+        }
+    }
+
+    // Back-substitution
+    let mut x = [0.0_f64; 3];
+    for i in (0..3).rev() {
+        x[i] = aug[i][3];
+        for j in (i + 1)..3 {
+            x[i] -= aug[i][j] * x[j];
+        }
+        if aug[i][i].abs() < 1e-30 {
+            return None;
+        }
+        x[i] /= aug[i][i];
+    }
+    Some(x)
+}
+
+// ---------------------------------------------------------------------------
+// Step 2: Axis estimation from normal covariance
+// ---------------------------------------------------------------------------
+
+/// Estimate axis direction as the eigenvector with smallest eigenvalue of
+/// the normal covariance matrix. On a cone, normals have constant dot product
+/// with the axis, so the variance of n·u is minimized along the true axis.
+/// Works best with many faces spanning a full azimuthal range.
+fn estimate_axis_from_normals(
+    face_indices: &[usize],
+    faces: &[MeshFace],
+    vertices: &[MeshVertex],
+) -> Option<[f64; 3]> {
+    let cov = build_normal_covariance(face_indices, faces, vertices);
+    let mut axis = smallest_eigenvector_3x3(&cov);
+    let len = normalize3(&mut axis);
+    if len > 1e-15 {
+        Some(axis)
+    } else {
+        None
+    }
+}
+
+/// Multi-strategy axis estimation for truncated cones.
+///
+/// Strategy 1 (≥8 faces): covariance smallest-eigenvector.
+/// Strategy 2 (few faces, shared vertex): apex→base-centroid direction.
+/// Strategy 3 (few faces, no shared vertex): cross product of normal diffs.
+fn compute_truncated_cone_axis(
+    face_indices: &[usize],
+    vertex_set: &HashSet<usize>,
+    faces: &[MeshFace],
+    vertices: &[MeshVertex],
+) -> Option<[f64; 3]> {
+    // With many faces, covariance is robust.
+    if face_indices.len() >= 8 {
+        return estimate_axis_from_normals(face_indices, faces, vertices);
+    }
+
+    // Strategy 2: vertex shared by most faces → axis from that vertex to centroid.
+    let mut vertex_face_count = std::collections::HashMap::<usize, usize>::new();
+    for &fi in face_indices {
+        let vc = faces[fi].vertex_count as usize;
+        for &vi in &faces[fi].vertex_indices[..vc] {
+            *vertex_face_count.entry(vi).or_insert(0) += 1;
+        }
+    }
+    let threshold = face_indices.len().max(2) - 1;
+    let mut apex_candidates: Vec<usize> = vertex_face_count.iter()
+        .filter(|(_, &c)| c >= threshold)
+        .map(|(&vi, _)| vi)
+        .collect();
+    apex_candidates.sort(); // deterministic
+
+    for &apex_vi in &apex_candidates {
+        let other_verts: Vec<usize> = vertex_set.iter()
+            .filter(|&&vi| vi != apex_vi)
+            .copied()
+            .collect();
+        if other_verts.is_empty() { continue; }
+        let mut bx = 0.0_f64;
+        let mut by = 0.0_f64;
+        let mut bz = 0.0_f64;
+        for &vi in &other_verts {
+            bx += vertices[vi].x;
+            by += vertices[vi].y;
+            bz += vertices[vi].z;
+        }
+        let n = other_verts.len() as f64;
+        bx /= n; by /= n; bz /= n;
+        let mut axis = [
+            bx - vertices[apex_vi].x,
+            by - vertices[apex_vi].y,
+            bz - vertices[apex_vi].z,
+        ];
+        let len = normalize3(&mut axis);
+        if len > 1e-10 {
+            return Some(axis);
+        }
+    }
+
+    // Strategy 3: cross product of normal differences.
+    estimate_axis_from_normal_diffs(face_indices, faces)
+}
+
+/// Estimate axis from cross product of normal differences.
+///
+/// On a cone, n_i · axis = sin(ha) = constant for all face normals.
+/// Therefore (n_i - n_j) · axis = 0 — all normal differences are perpendicular
+/// to the axis. The cross product of two independent differences gives the
+/// exact axis direction. Works with as few as 3 faces.
+fn estimate_axis_from_normal_diffs(
+    face_indices: &[usize],
+    faces: &[MeshFace],
+) -> Option<[f64; 3]> {
+    let normals: Vec<[f64; 3]> = face_indices.iter()
+        .filter_map(|&fi| faces[fi].normal)
+        .collect();
+    if normals.len() < 3 {
+        return None;
+    }
+
+    // Compute differences from first normal
+    let diffs: Vec<[f64; 3]> = normals[1..].iter()
+        .map(|n| [n[0] - normals[0][0], n[1] - normals[0][1], n[2] - normals[0][2]])
+        .collect();
+
+    // Find the pair of differences whose cross product is largest (most independent)
+    let mut best_cross_sq = 0.0_f64;
+    let mut best_axis = [0.0_f64; 3];
+    for i in 0..diffs.len() {
+        for j in (i + 1)..diffs.len() {
+            let c = cross3(&diffs[i], &diffs[j]);
+            let csq = c[0] * c[0] + c[1] * c[1] + c[2] * c[2];
+            if csq > best_cross_sq {
+                best_cross_sq = csq;
+                best_axis = c;
+            }
+        }
+    }
+
+    let len = normalize3(&mut best_axis);
+    if len > 1e-15 {
+        Some(best_axis)
+    } else {
+        None
+    }
+}
+
+/// Estimate axis from vertex directions relative to a known apex.
+/// The axis is the largest eigenvector of Σ d̂_i⊗d̂_i where d̂_i = (v_i - apex)/|v_i - apex|.
+/// This works because all vertex directions cluster around the axis for narrow cones.
+fn estimate_axis_from_apex(
+    apex: &[f64; 3],
+    vertex_set: &HashSet<usize>,
+    vertices: &[MeshVertex],
+) -> Option<[f64; 3]> {
+    let mut cov = [0.0_f64; 6]; // upper triangle: [xx, xy, xz, yy, yz, zz]
+    let mut count = 0;
+    for &vi in vertex_set {
+        let v = &vertices[vi];
+        let mut d = [v.x - apex[0], v.y - apex[1], v.z - apex[2]];
+        let len = normalize3(&mut d);
+        if len < 1e-10 {
+            continue; // skip the apex vertex itself
+        }
+        cov[0] += d[0] * d[0];
+        cov[1] += d[0] * d[1];
+        cov[2] += d[0] * d[2];
+        cov[3] += d[1] * d[1];
+        cov[4] += d[1] * d[2];
+        cov[5] += d[2] * d[2];
+        count += 1;
+    }
+    if count < 2 {
+        return None;
+    }
+    let mut axis = largest_eigenvector_3x3(&cov);
+    let len = normalize3(&mut axis);
+    if len > 1e-15 {
+        Some(axis)
+    } else {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Step 2+3 alternative: profile-based apex and half-angle estimation
+// ---------------------------------------------------------------------------
+
+/// Estimate apex and half-angle by projecting vertices to (h, r) along the axis
+/// and fitting a linear profile r = m*h + b.
+///
+/// For a cone: r_i = tan(θ) * (h_i - h_apex), so the linear regression gives:
+/// - slope m = tan(θ), i.e. half_angle = atan(|m|)
+/// - apex offset along axis = -b/m from the centroid
+///
+/// This approach is more robust than normal-line intersection for small
+/// half-angles, since it doesn't require nearly-parallel normal lines to
+/// intersect reliably.
+///
+/// Also orients the axis so that h increases away from the apex.
+fn estimate_apex_and_angle_from_profile(
+    axis: &mut [f64; 3],
+    vertex_set: &HashSet<usize>,
+    vertices: &[MeshVertex],
 ) -> Option<([f64; 3], f64)> {
     let n = vertex_set.len();
     if n < 3 {
         return None;
     }
 
-    // Compute centroid of all vertices
+    // Compute centroid of vertex set
     let mut cx = 0.0_f64;
     let mut cy = 0.0_f64;
     let mut cz = 0.0_f64;
@@ -94,110 +376,236 @@ fn fit_cone_profile(
     cy *= inv_n;
     cz *= inv_n;
 
-    // Project vertices to (h, r) coordinates
-    let mut sum_h = 0.0_f64;
-    let mut sum_r = 0.0_f64;
-    let mut sum_hh = 0.0_f64;
-    let mut sum_hr = 0.0_f64;
-    let mut h_min = f64::MAX;
-    let mut h_max = f64::MIN;
-
+    // Project vertices into (h, r) space relative to centroid
+    let mut h_vals = Vec::with_capacity(n);
+    let mut r_vals = Vec::with_capacity(n);
     for &vi in vertex_set {
         let v = &vertices[vi];
         let dx = v.x - cx;
         let dy = v.y - cy;
         let dz = v.z - cz;
-        let h = dx * axis_dir[0] + dy * axis_dir[1] + dz * axis_dir[2];
-        let rx = dx - h * axis_dir[0];
-        let ry = dy - h * axis_dir[1];
-        let rz = dz - h * axis_dir[2];
+        let h = dx * axis[0] + dy * axis[1] + dz * axis[2];
+        let rx = dx - h * axis[0];
+        let ry = dy - h * axis[1];
+        let rz = dz - h * axis[2];
         let r = (rx * rx + ry * ry + rz * rz).sqrt();
-        sum_h += h;
-        sum_r += r;
-        sum_hh += h * h;
-        sum_hr += h * r;
-        h_min = h_min.min(h);
-        h_max = h_max.max(h);
+        h_vals.push(h);
+        r_vals.push(r);
     }
 
-    let nf = n as f64;
-    let denom = nf * sum_hh - sum_h * sum_h;
-
-    // Try linear regression first (works when vertices span different heights)
-    if denom.abs() > 1e-30 {
-        let m = (nf * sum_hr - sum_h * sum_r) / denom;
-        let b = (sum_r - m * sum_h) / nf;
-
-        // Reject if nearly cylindrical (|m| < 0.01) or nearly flat (half-angle > 85°)
-        if m.abs() >= 0.01 {
-            let half_angle = m.abs().atan();
-            if half_angle <= 85.0_f64.to_radians() {
-                // Apex position: distance from centroid along axis = -b/m
-                let apex_t = -b / m;
-                let apex = [
-                    cx + apex_t * axis_dir[0],
-                    cy + apex_t * axis_dir[1],
-                    cz + apex_t * axis_dir[2],
-                ];
-                return Some((apex, half_angle));
-            }
-        }
+    // Linear regression: r = m*h + b
+    let h_mean: f64 = h_vals.iter().sum::<f64>() * inv_n;
+    let r_mean: f64 = r_vals.iter().sum::<f64>() * inv_n;
+    let mut num = 0.0_f64;
+    let mut den = 0.0_f64;
+    for i in 0..n {
+        let dh = h_vals[i] - h_mean;
+        num += dh * (r_vals[i] - r_mean);
+        den += dh * dh;
     }
-
-    // Fallback: determine half-angle from face normals.
-    // For a cone with half-angle θ, the normal at any surface point satisfies:
-    //   |n · axis| = sin(θ)
-    // We average this over all seed faces (area-weighted) to get a robust estimate.
-    let mut weighted_sin = 0.0_f64;
-    let mut total_area = 0.0_f64;
-    for &fi in face_indices {
-        if let Some(normal) = faces[fi].normal {
-            let area = face_area(&faces[fi], vertices);
-            let sin_theta = dot3(&normal, axis_dir).abs();
-            weighted_sin += sin_theta * area;
-            total_area += area;
-        }
-    }
-    if total_area < 1e-30 {
+    if den < 1e-30 {
         return None;
     }
-    let avg_sin = weighted_sin / total_area;
-    // sin(θ) must be in (0, 1) for a valid cone (not cylinder or plane)
-    if !(0.01..=0.999).contains(&avg_sin) {
+    let m = num / den;
+    let b = r_mean - m * h_mean;
+
+    // half_angle = atan(|m|)
+    let half_angle = m.abs().atan();
+    if half_angle < 0.01 || half_angle > 85.0_f64.to_radians() {
         return None;
     }
-    let half_angle = avg_sin.asin();
 
-    // Determine apex: for each vertex, the apex is at distance r/tan(θ)
-    // below the vertex along the axis. We average over all vertices.
-    // Use axis-projected centroid and average radius to find apex.
-    let mean_h = sum_h / nf;
-    let mean_r = sum_r / nf;
-    // On a cone: r = (h - h_apex) * tan(θ), so h_apex = h - r/tan(θ)
-    // The sign depends on which side of the apex we're on. Try both orientations.
-    let tan_theta = half_angle.tan();
-    if tan_theta.abs() < 1e-10 {
+    // Apex = centroid + apex_offset * axis, where apex_offset = -b/m
+    if m.abs() < 1e-15 {
         return None;
     }
-    let apex_h_candidate = mean_h - mean_r / tan_theta;
-
-    // Apex in world coordinates: centroid + apex_h * axis
+    let apex_offset = -b / m;
     let apex = [
-        cx + apex_h_candidate * axis_dir[0],
-        cy + apex_h_candidate * axis_dir[1],
-        cz + apex_h_candidate * axis_dir[2],
+        cx + apex_offset * axis[0],
+        cy + apex_offset * axis[1],
+        cz + apex_offset * axis[2],
     ];
+
+    // Orient axis so it points away from the apex (increasing h from apex)
+    // If m > 0, r increases with h, meaning h increases away from apex → axis is correct
+    // If m < 0, r decreases with h, meaning apex is on the h+ side → flip axis
+    if m < 0.0 {
+        axis[0] = -axis[0];
+        axis[1] = -axis[1];
+        axis[2] = -axis[2];
+    }
 
     Some((apex, half_angle))
 }
 
 // ---------------------------------------------------------------------------
-// LM refinement for conical fitting
+// Step 3: Half-angle estimation (for pointed cone path)
 // ---------------------------------------------------------------------------
 
-/// LM problem for cone fitting.
+/// Estimate half-angle from apex and axis using median of atan(r_i / h_i).
+/// Also orients the axis so that h_i > 0 for the majority of points.
+fn estimate_half_angle(
+    apex: &[f64; 3],
+    axis: &mut [f64; 3],
+    vertex_set: &HashSet<usize>,
+    vertices: &[MeshVertex],
+) -> Option<f64> {
+    // Orient axis so most points have positive h (away from apex)
+    let mut h_sum = 0.0_f64;
+    for &vi in vertex_set {
+        let v = &vertices[vi];
+        h_sum += (v.x - apex[0]) * axis[0]
+               + (v.y - apex[1]) * axis[1]
+               + (v.z - apex[2]) * axis[2];
+    }
+    if h_sum < 0.0 {
+        axis[0] = -axis[0];
+        axis[1] = -axis[1];
+        axis[2] = -axis[2];
+    }
+
+    // Compute r_i / h_i for each vertex
+    let mut ratios: Vec<f64> = Vec::with_capacity(vertex_set.len());
+    for &vi in vertex_set {
+        let v = &vertices[vi];
+        let dx = v.x - apex[0];
+        let dy = v.y - apex[1];
+        let dz = v.z - apex[2];
+        let h = dx * axis[0] + dy * axis[1] + dz * axis[2];
+        let rx = dx - h * axis[0];
+        let ry = dy - h * axis[1];
+        let rz = dz - h * axis[2];
+        let r = (rx * rx + ry * ry + rz * rz).sqrt();
+        // Skip points very close to the apex (h ≈ 0) — they don't constrain θ
+        if h.abs() > 1e-10 {
+            ratios.push(r / h);
+        }
+    }
+
+    if ratios.is_empty() {
+        return None;
+    }
+
+    // Median for robustness
+    ratios.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = if ratios.len() % 2 == 1 {
+        ratios[ratios.len() / 2]
+    } else {
+        (ratios[ratios.len() / 2 - 1] + ratios[ratios.len() / 2]) / 2.0
+    };
+
+    if median <= 0.0 {
+        return None;
+    }
+
+    Some(median.atan())
+}
+
+// ---------------------------------------------------------------------------
+// Step 4: LM refinement
+// ---------------------------------------------------------------------------
+
+/// LM problem for cone fitting with fixed apex.
+/// Parameters: [alpha, beta, half_angle]
+/// Only optimizes axis direction and half-angle; apex is fixed.
+/// Used when the apex is known exactly (e.g., shared vertex in pointed cone).
+struct ConeFixedApexLMProblem {
+    points: Vec<[f64; 3]>,
+    apex: [f64; 3],
+    a0: [f64; 3],
+    u0: [f64; 3],
+    w0: [f64; 3],
+    params: OVector<f64, Const<3>>,
+}
+
+impl ConeFixedApexLMProblem {
+    fn new(
+        points: Vec<[f64; 3]>,
+        apex: [f64; 3],
+        initial_axis: [f64; 3],
+        initial_half_angle: f64,
+    ) -> Self {
+        let (u0, w0) = perpendicular_basis(&initial_axis);
+        let params = OVector::<f64, Const<3>>::new(0.0, 0.0, initial_half_angle);
+        Self { points, apex, a0: initial_axis, u0, w0, params }
+    }
+
+    fn axis_dir_from_params(&self, params: &OVector<f64, Const<3>>) -> [f64; 3] {
+        let (alpha, beta) = (params[0], params[1]);
+        let mut v = [
+            self.a0[0] + alpha * self.u0[0] + beta * self.w0[0],
+            self.a0[1] + alpha * self.u0[1] + beta * self.w0[1],
+            self.a0[2] + alpha * self.u0[2] + beta * self.w0[2],
+        ];
+        normalize3(&mut v);
+        v
+    }
+}
+
+impl LeastSquaresProblem<f64, Dyn, Const<3>> for ConeFixedApexLMProblem {
+    type ParameterStorage = Owned<f64, Const<3>>;
+    type ResidualStorage = Owned<f64, Dyn>;
+    type JacobianStorage = Owned<f64, Dyn, Const<3>>;
+
+    fn set_params(&mut self, x: &OVector<f64, Const<3>>) {
+        self.params.copy_from(x);
+    }
+
+    fn params(&self) -> OVector<f64, Const<3>> {
+        self.params
+    }
+
+    fn residuals(&self) -> Option<OVector<f64, Dyn>> {
+        let a = self.axis_dir_from_params(&self.params);
+        let half_angle = self.params[2];
+        let (sin_a, cos_a) = half_angle.sin_cos();
+        let n = self.points.len();
+        let mut residuals = OVector::<f64, Dyn>::zeros_generic(Dyn(n), Const::<1>);
+        for (i, p) in self.points.iter().enumerate() {
+            let d = [p[0] - self.apex[0], p[1] - self.apex[1], p[2] - self.apex[2]];
+            let h = dot3(&d, &a);
+            let radial = [d[0] - h * a[0], d[1] - h * a[1], d[2] - h * a[2]];
+            let r = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+            residuals[i] = r * cos_a - h * sin_a;
+        }
+        Some(residuals)
+    }
+
+    fn jacobian(&self) -> Option<OMatrix<f64, Dyn, Const<3>>> {
+        let n = self.points.len();
+        let mut jac = OMatrix::<f64, Dyn, Const<3>>::zeros_generic(Dyn(n), Const::<3>);
+        let a = self.axis_dir_from_params(&self.params);
+        let half_angle = self.params[2];
+        let (sa, ca) = half_angle.sin_cos();
+
+        let alpha = self.params[0];
+        let beta = self.params[1];
+        let vx = self.a0[0] + alpha * self.u0[0] + beta * self.w0[0];
+        let vy = self.a0[1] + alpha * self.u0[1] + beta * self.w0[1];
+        let vz = self.a0[2] + alpha * self.u0[2] + beta * self.w0[2];
+        let big_l = (vx * vx + vy * vy + vz * vz).sqrt().max(1e-15);
+
+        for (i, p) in self.points.iter().enumerate() {
+            let d = [p[0] - self.apex[0], p[1] - self.apex[1], p[2] - self.apex[2]];
+            let h = dot3(&d, &a);
+            let lat = [d[0] - h * a[0], d[1] - h * a[1], d[2] - h * a[2]];
+            let r = (lat[0] * lat[0] + lat[1] * lat[1] + lat[2] * lat[2]).sqrt().max(1e-15);
+            let lat_u = dot3(&lat, &self.u0);
+            let lat_w = dot3(&lat, &self.w0);
+            let axis_sens = ca * h / r + sa;
+
+            jac[(i, 0)] = -lat_u * axis_sens / big_l; // ∂f/∂α
+            jac[(i, 1)] = -lat_w * axis_sens / big_l; // ∂f/∂β
+            jac[(i, 2)] = -r * sa - h * ca;           // ∂f/∂half_angle
+        }
+        Some(jac)
+    }
+}
+
+/// LM problem for cone fitting (full 6-parameter).
 /// Parameters: [alpha, beta, apex_x, apex_y, apex_z, half_angle]
-/// alpha, beta: tilt of axis from initial direction in perpendicular directions
+/// alpha, beta: tilt of axis from initial direction in perpendicular directions.
+/// Residual: r_i * cos(θ) - h_i * sin(θ)  (signed distance to cone surface).
 struct ConeLMProblem {
     points: Vec<[f64; 3]>,
     a0: [f64; 3],
@@ -310,130 +718,22 @@ impl LeastSquaresProblem<f64, Dyn, Const<6>> for ConeLMProblem {
     }
 }
 
-/// Compute the cone axis direction from face normals and/or vertex positions.
-///
-/// Strategy 1 (many faces): covariance smallest-eigenvector.
-/// Strategy 2 (few faces with shared vertex): apex→base-centroid direction.
-/// Strategy 3 (few faces, no shared vertex): cross product of normal differences.
-fn compute_cone_axis(
-    face_indices: &[usize],
-    vertex_set: &HashSet<usize>,
-    faces: &[MeshFace],
-    vertices: &[MeshVertex],
-) -> Option<[f64; 3]> {
-    // With many faces, covariance is robust.
-    if face_indices.len() >= 8 {
-        let cov = build_normal_covariance(face_indices, faces, vertices);
-        let mut axis = smallest_eigenvector_3x3(&cov);
-        let len = normalize3(&mut axis);
-        if len > 1e-15 {
-            return Some(axis);
-        }
-    }
-
-    // Strategy 2: check if faces share a common vertex (likely the apex).
-    // Count how many faces each vertex appears in.
-    let mut vertex_face_count = std::collections::HashMap::<usize, usize>::new();
-    for &fi in face_indices {
-        let vc = faces[fi].vertex_count as usize;
-        for &vi in &faces[fi].vertex_indices[..vc] {
-            *vertex_face_count.entry(vi).or_insert(0) += 1;
-        }
-    }
-    // If a vertex appears in all (or most) faces, treat it as the potential apex
-    let threshold = face_indices.len().max(2) - 1;
-    let mut apex_candidates: Vec<usize> = vertex_face_count.iter()
-        .filter(|(_, &c)| c >= threshold)
-        .map(|(&vi, _)| vi)
-        .collect();
-    apex_candidates.sort(); // deterministic
-
-    for &apex_vi in &apex_candidates {
-        // Compute centroid of NON-apex vertices
-        let other_verts: Vec<usize> = vertex_set.iter()
-            .filter(|&&vi| vi != apex_vi)
-            .copied()
-            .collect();
-        if other_verts.is_empty() { continue; }
-        let mut bx = 0.0_f64;
-        let mut by = 0.0_f64;
-        let mut bz = 0.0_f64;
-        for &vi in &other_verts {
-            bx += vertices[vi].x;
-            by += vertices[vi].y;
-            bz += vertices[vi].z;
-        }
-        let n = other_verts.len() as f64;
-        bx /= n; by /= n; bz /= n;
-        // Axis from apex to base centroid
-        let mut axis = [
-            bx - vertices[apex_vi].x,
-            by - vertices[apex_vi].y,
-            bz - vertices[apex_vi].z,
-        ];
-        let len = normalize3(&mut axis);
-        if len > 1e-10 {
-            return Some(axis);
-        }
-    }
-
-    // Strategy 3: cross product of normal differences.
-    let normals: Vec<[f64; 3]> = face_indices.iter()
-        .filter_map(|&fi| faces[fi].normal)
-        .collect();
-    if normals.len() < 2 {
-        return None;
-    }
-    // Find the two most different normals
-    let mut best_diff_sq = 0.0_f64;
-    let mut best_i = 0;
-    let mut best_j = 1;
-    for i in 0..normals.len() {
-        for j in (i+1)..normals.len() {
-            let d = [normals[i][0]-normals[j][0], normals[i][1]-normals[j][1], normals[i][2]-normals[j][2]];
-            let dsq = d[0]*d[0] + d[1]*d[1] + d[2]*d[2];
-            if dsq > best_diff_sq {
-                best_diff_sq = dsq;
-                best_i = i;
-                best_j = j;
-            }
-        }
-    }
-    if best_diff_sq < 1e-10 {
-        return None;
-    }
-    let d1 = [normals[best_i][0]-normals[best_j][0],
-               normals[best_i][1]-normals[best_j][1],
-               normals[best_i][2]-normals[best_j][2]];
-
-    // Try cross(d1, d2) for a third normal
-    for k in 0..normals.len() {
-        if k == best_i || k == best_j { continue; }
-        let d2 = [normals[best_i][0]-normals[k][0],
-                   normals[best_i][1]-normals[k][1],
-                   normals[best_i][2]-normals[k][2]];
-        let mut c = cross3(&d1, &d2);
-        let len = normalize3(&mut c);
-        if len > 1e-10 {
-            return Some(c);
-        }
-    }
-
-    // Only 2 distinct normals: axis perpendicular to d1, in mean normal plane
-    let avg = [normals[best_i][0]+normals[best_j][0],
-               normals[best_i][1]+normals[best_j][1],
-               normals[best_i][2]+normals[best_j][2]];
-    let mut axis = cross3(&d1, &avg);
-    let len = normalize3(&mut axis);
-    if len > 1e-15 {
-        Some(axis)
-    } else {
-        None
-    }
-}
-
 /// Fit cone parameters (axis direction, apex, half-angle) from a set of faces.
 /// Returns (apex, axis_direction, half_angle).
+///
+/// Two estimation paths depending on cone topology:
+///
+/// **Pointed cone** (a vertex shared by all faces = apex):
+/// 1. Apex = shared vertex (exact).
+/// 2. Axis = cross product of normal differences (exact for ideal cones).
+/// 3. Half-angle from median of atan(r_i / h_i).
+/// 4. Fixed-apex LM refinement (3 params: axis tilt + half_angle).
+///
+/// **Truncated cone** (no shared vertex):
+/// 1. Axis = smallest eigenvector of normal covariance.
+/// 2. Apex from normal-line intersection.
+/// 3. Half-angle from median of atan(r_i / h_i).
+/// 4. Full LM refinement (6 params).
 fn fit_cone(
     face_indices: &[usize],
     vertex_set: &HashSet<usize>,
@@ -444,49 +744,120 @@ fn fit_cone(
         return None;
     }
 
-    // Determine initial axis direction using multiple strategies.
-    let mut axis_dir = compute_cone_axis(face_indices, vertex_set, faces, vertices)?;
+    // Check for pointed cone: a vertex present in ALL seed faces.
+    let shared_apex = find_shared_apex_vertex(face_indices, faces, vertices);
 
-    // Fit cone profile to get initial apex and half-angle.
-    let (mut apex, half_angle) = fit_cone_profile(&axis_dir, vertex_set, vertices, face_indices, faces)?;
+    let points: Vec<[f64; 3]> = vertex_set.iter()
+        .map(|&vi| [vertices[vi].x, vertices[vi].y, vertices[vi].z])
+        .collect();
 
-    // Ensure axis points from apex toward the bulk of vertices (positive h side).
-    // vertex_to_cone_distance assumes h = (v - apex) · axis > 0 for points on the cone.
-    let mut h_sum = 0.0_f64;
-    for &vi in vertex_set.iter() {
-        let v = &vertices[vi];
-        h_sum += (v.x - apex[0]) * axis_dir[0]
-               + (v.y - apex[1]) * axis_dir[1]
-               + (v.z - apex[2]) * axis_dir[2];
-    }
-    if h_sum < 0.0 {
-        axis_dir = [-axis_dir[0], -axis_dir[1], -axis_dir[2]];
-        // Re-fit profile with corrected axis (apex position may adjust)
-        if let Some((new_apex, new_ha)) = fit_cone_profile(&axis_dir, vertex_set, vertices, face_indices, faces) {
-            apex = new_apex;
-            // half_angle should be the same
-            let _ = new_ha;
+    if let Some(apex) = shared_apex {
+        // --- Pointed cone path ---
+        let mut axis = estimate_axis_from_normal_diffs(face_indices, faces)
+            .or_else(|| estimate_axis_from_apex(&apex, vertex_set, vertices))?;
+        let half_angle = estimate_half_angle(&apex, &mut axis, vertex_set, vertices)?;
+
+        let problem = ConeFixedApexLMProblem::new(points, apex, axis, half_angle);
+        let (result, _report) = LevenbergMarquardt::new().minimize(problem);
+        let refined_dir = result.axis_dir_from_params(&result.params);
+        let refined_ha = result.params[2];
+        if refined_ha > 0.01 && refined_ha < 85.0_f64.to_radians() {
+            Some((apex, refined_dir, refined_ha))
+        } else {
+            Some((apex, axis, half_angle))
         }
-    }
+    } else {
+        // --- Truncated cone path ---
+        // Multi-strategy axis: covariance for ≥8 faces, vertex-based for seeds
+        let mut axis = compute_truncated_cone_axis(
+            face_indices, vertex_set, faces, vertices)?;
 
-    // Only use LM refinement when we have enough vertices for the 6-param problem.
-    // With < 10 vertices, the LM is underconstrained and produces bad results.
-    if vertex_set.len() >= 10 {
-        let points: Vec<[f64; 3]> = vertex_set.iter()
-            .map(|&vi| [vertices[vi].x, vertices[vi].y, vertices[vi].z])
-            .collect();
-        let problem = ConeLMProblem::new(points, axis_dir, apex, half_angle);
+        // Step 2+3: Apex and half-angle from linear regression of vertex projections.
+        let (apex, half_angle) = estimate_apex_and_angle_from_profile(
+            &mut axis, vertex_set, vertices)?;
+
+        // Full LM refinement
+        let problem = ConeLMProblem::new(points, axis, apex, half_angle);
         let (result, _report) = LevenbergMarquardt::new().minimize(problem);
         let refined_dir = result.axis_dir_from_params(&result.params);
         let refined_apex = [result.params[2], result.params[3], result.params[4]];
-        let refined_half_angle = result.params[5];
+        let refined_ha = result.params[5];
+        let (final_apex, final_dir, final_ha) =
+            if refined_ha > 0.01 && refined_ha < 85.0_f64.to_radians() {
+                (refined_apex, refined_dir, refined_ha)
+            } else {
+                (apex, axis, half_angle)
+            };
 
-        if refined_half_angle > 0.005 && refined_half_angle < 85.0_f64.to_radians() {
-            return Some((refined_apex, refined_dir, refined_half_angle));
+        // DEBUG: normal consistency variance
+        let dots: Vec<f64> = face_indices.iter()
+            .filter_map(|&fi| faces[fi].normal.map(|n| {
+                n[0] * final_dir[0] + n[1] * final_dir[1] + n[2] * final_dir[2]
+            }))
+            .collect();
+        if dots.len() >= 2 {
+            let mean = dots.iter().sum::<f64>() / dots.len() as f64;
+            let var = dots.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / dots.len() as f64;
+            eprintln!("[DEBUG fit_cone truncated] n_faces={} half_angle={:.2}° n·axis var={:.6} std={:.4}",
+                face_indices.len(), final_ha.to_degrees(), var, var.sqrt());
+        }
+
+        Some((final_apex, final_dir, final_ha))
+    }
+}
+
+/// Find a vertex that appears in all faces (the apex of a pointed cone).
+fn find_shared_apex_vertex(
+    face_indices: &[usize],
+    faces: &[MeshFace],
+    vertices: &[MeshVertex],
+) -> Option<[f64; 3]> {
+    let n_faces = face_indices.len();
+    if n_faces < 3 {
+        return None;
+    }
+    let mut vertex_face_count = std::collections::HashMap::<usize, usize>::new();
+    for &fi in face_indices {
+        let vc = faces[fi].vertex_count as usize;
+        for &vi in &faces[fi].vertex_indices[..vc] {
+            *vertex_face_count.entry(vi).or_insert(0) += 1;
         }
     }
-
-    Some((apex, axis_dir, half_angle))
+    for (&vi, &count) in &vertex_face_count {
+        if count == n_faces {
+            let apex = [vertices[vi].x, vertices[vi].y, vertices[vi].z];
+            // Verify that non-apex vertices are at roughly equal distances from the apex,
+            // as expected for a cone base. Without this check, any 3 triangles sharing
+            // a vertex (common in regular triangle meshes) falsely trigger the pointed-cone path.
+            let mut dists: Vec<f64> = Vec::new();
+            for &fi in face_indices {
+                let vc = faces[fi].vertex_count as usize;
+                for &vj in &faces[fi].vertex_indices[..vc] {
+                    if vj != vi {
+                        let dx = vertices[vj].x - apex[0];
+                        let dy = vertices[vj].y - apex[1];
+                        let dz = vertices[vj].z - apex[2];
+                        dists.push((dx * dx + dy * dy + dz * dz).sqrt());
+                    }
+                }
+            }
+            if dists.len() < 2 {
+                return Some(apex);
+            }
+            let mean_dist = dists.iter().sum::<f64>() / dists.len() as f64;
+            if mean_dist < 1e-12 {
+                return Some(apex);
+            }
+            // Coefficient of variation: std_dev / mean. For a cone base, distances
+            // should be nearly equal (CV < 0.15). For random mesh topology, they vary widely.
+            let var = dists.iter().map(|d| (d - mean_dist).powi(2)).sum::<f64>() / dists.len() as f64;
+            let cv = var.sqrt() / mean_dist;
+            if cv < 0.15 {
+                return Some(apex);
+            }
+        }
+    }
+    None
 }
 
 /// Determine convexity: does the face normal point away from the axis (convex) or toward it (concave)?
@@ -708,6 +1079,13 @@ impl SurfaceType for ConicalSurface {
 
     fn undeduced_value() -> i32 { UNDEDUCED_CONICAL_HYPOTHESIS }
 
+    /// Cone/cylinder seeds fit from few faces have higher vertex error than
+    /// the base vertex tolerance due to tessellation sagitta and limited
+    /// data for the 6-parameter LM fit.  A 5× multiplier accommodates
+    /// typical onshape/ccad medium-resolution meshes while still rejecting
+    /// grossly wrong fits.
+    fn seed_vtol_multiplier() -> f64 { 5.0 }
+
     fn generate_seeds(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig) -> Vec<Seed> {
         if mesh.faces[fi].normal.is_none() {
             return Vec::new();
@@ -727,14 +1105,61 @@ impl SurfaceType for ConicalSurface {
             .filter(|&ni| conical_pairwise_qualified(mesh, fi, ni, angular_tol))
             .collect();
 
-        // Generate 3-face seeds: fi + n1 + n2 where n1 and n2 are qualified
-        // neighbors of fi but not neighbors of each other
+        // Generate 3-face seeds: fi + f1 + f2 where f1 and f2 are qualified
+        // neighbors of fi but not neighbors of each other.
+        // If the seed has only 5 unique vertices (all triangles), optionally
+        // add f3 adjacent to f2 (not sharing an edge with fi or f1) to get
+        // at least 6 vertices for reliable cone fitting.
         let mut seeds = Vec::new();
-        for (i, &n1) in qualified_neighbors.iter().enumerate() {
-            for &n2 in &qualified_neighbors[(i + 1)..] {
-                // n2 must not be a neighbor of n1
-                if super::bfs::is_neighbor(mesh, n1, n2) { continue; }
-                seeds.push(Seed { faces: vec![fi, n1, n2] });
+        for (i, &f1) in qualified_neighbors.iter().enumerate() {
+            for &f2 in &qualified_neighbors[(i + 1)..] {
+                // f2 must not be a neighbor of f1
+                if super::bfs::is_neighbor(mesh, f1, f2) { continue; }
+
+                // Count unique vertices across fi, f1, f2
+                let mut vset: HashSet<usize> = HashSet::new();
+                for &face_idx in &[fi, f1, f2] {
+                    let fvc = mesh.faces[face_idx].vertex_count as usize;
+                    for &vi in &mesh.faces[face_idx].vertex_indices[..fvc] {
+                        vset.insert(vi);
+                    }
+                }
+
+                if vset.len() >= 6 {
+                    // Enough vertices for a reliable cone fit
+                    seeds.push(Seed { faces: vec![fi, f1, f2] });
+                } else {
+                    // Need an f3 adjacent to f2, not sharing an edge with fi, f1, or f2
+                    let f2_vc = mesh.faces[f2].vertex_count as usize;
+                    let mut found_f3 = false;
+                    for &f3n in &mesh.faces[f2].neighbors[..f2_vc] {
+                        if f3n < 0 { continue; }
+                        let f3 = f3n as usize;
+                        if f3 == fi || f3 == f1 || f3 == f2 { continue; }
+                        if super::bfs::is_neighbor(mesh, f3, fi) { continue; }
+                        if super::bfs::is_neighbor(mesh, f3, f1) { continue; }
+                        if mesh.faces[f3].conical_hypothesis != UNDEDUCED_CONICAL_HYPOTHESIS {
+                            continue;
+                        }
+                        if mesh.faces[f3].normal.is_none() { continue; }
+                        // Count vertices with f3 added
+                        let mut vset4 = vset.clone();
+                        let f3_vc = mesh.faces[f3].vertex_count as usize;
+                        for &vi in &mesh.faces[f3].vertex_indices[..f3_vc] {
+                            vset4.insert(vi);
+                        }
+                        if vset4.len() >= 6 {
+                            seeds.push(Seed { faces: vec![fi, f1, f2, f3] });
+                            found_f3 = true;
+                            break;
+                        }
+                    }
+                    if !found_f3 {
+                        // Still emit the 3-face seed even with only 5 vertices;
+                        // fit_surface may succeed for cylinders (4 DOF)
+                        seeds.push(Seed { faces: vec![fi, f1, f2] });
+                    }
+                }
             }
         }
         seeds
@@ -915,10 +1340,39 @@ impl SurfaceType for ConicalSurface {
         if face_list.len() < min_faces {
             return false;
         }
-        angular_coverage_valid(
+        // Reject cones with very large half-angle (nearly a plane).
+        // On a sphere, a near-tangent cone patch has half_angle ≈ 85° and
+        // passes the normal consistency check because all normals are similar.
+        if fit.half_angle > 80.0_f64.to_radians() {
+            return false;
+        }
+        // Normal consistency: on a cone, n·axis = sin(half_angle) is constant.
+        // Reject hypotheses where normal dot products with the axis vary too much,
+        // which indicates the faces lie on a sphere or torus, not a cone.
+        let dots: Vec<f64> = face_list.iter()
+            .filter_map(|&fi| mesh.faces[fi].normal.map(|n| {
+                n[0] * fit.axis_direction[0]
+                    + n[1] * fit.axis_direction[1]
+                    + n[2] * fit.axis_direction[2]
+            }))
+            .collect();
+        if dots.len() >= 3 {
+            let mean = dots.iter().sum::<f64>() / dots.len() as f64;
+            let var = dots.iter().map(|d| (d - mean).powi(2)).sum::<f64>()
+                / dots.len() as f64;
+            if var > 0.0005 {
+                return false;
+            }
+        }
+        let angular_ok = angular_coverage_valid(
             face_list, &fit.apex, &fit.axis_direction,
             &mesh.faces, &mesh.vertices,
-        )
+        );
+        if angular_ok {
+            eprintln!("[DEBUG acceptance PASS] n_faces={} half_angle={:.2}°",
+                face_list.len(), fit.half_angle.to_degrees());
+        }
+        angular_ok
     }
 
     fn viz_overlays(
@@ -1188,6 +1642,194 @@ mod tests {
         let vertex_set: HashSet<usize> = (0..2).collect();
         assert!(fit_cone(&[0], &vertex_set, &faces, &vertices).is_none(),
                 "cone fit should reject degenerate input");
+    }
+
+    /// Build a pointed cone mesh (comes to a point at the apex).
+    /// The cone has `n_slices` triangular faces, radius `base_radius` at height
+    /// `height` from the apex, axis along (0,0,1), apex at origin.
+    fn build_pointed_cone_mesh(
+        n_slices: usize,
+        base_radius: f64,
+        height: f64,
+    ) -> (Vec<MeshFace>, Vec<MeshVertex>) {
+        // Vertex 0 is the apex at origin.
+        // Vertices 1..=n_slices are base ring.
+        let mut vertices = Vec::with_capacity(n_slices + 1);
+        vertices.push(MeshVertex::from_xyz(0.0, 0.0, 0.0)); // apex
+
+        for i in 0..n_slices {
+            let theta = 2.0 * PI * i as f64 / n_slices as f64;
+            let x = base_radius * theta.cos();
+            let y = base_radius * theta.sin();
+            vertices.push(MeshVertex::from_xyz(x, y, height));
+        }
+
+        let mut faces = Vec::with_capacity(n_slices);
+        let _half_angle: f64 = (base_radius / height).atan();
+
+        for i in 0..n_slices {
+            let v1 = 1 + i;
+            let v2 = 1 + (i + 1) % n_slices;
+
+            // Compute outward normal: average of the two edge normals.
+            // For a triangular face (apex, v1, v2), the outward normal is:
+            //   n = normalize((v1 + v2) / 2 projected outward)
+            // More precisely, the face normal from cross product.
+            let a = [vertices[v1].x, vertices[v1].y, vertices[v1].z];
+            let b = [vertices[v2].x, vertices[v2].y, vertices[v2].z];
+            let edge1 = [a[0], a[1], a[2]]; // apex to v1
+            let edge2 = [b[0], b[1], b[2]]; // apex to v2
+            let mut normal = cross3(&edge1, &edge2);
+            normalize3(&mut normal);
+            // Ensure normal points outward (radially away from axis).
+            // Use radial direction of base midpoint, ignoring axial component.
+            let mid_base = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, 0.0];
+            if dot3(&normal, &mid_base) < 0.0 {
+                normal = [-normal[0], -normal[1], -normal[2]];
+            }
+
+            let prev = if i == 0 { n_slices - 1 } else { i - 1 };
+            let next = (i + 1) % n_slices;
+
+            faces.push(MeshFace {
+                vertex_count: 3,
+                vertex_indices: [0, v1, v2, 0],
+                neighbors: [prev as i32, next as i32, -1, -1],
+                normal: Some(normal),
+                planar_hypothesis: -1,
+                spherical_hypothesis: -1,
+                conical_hypothesis: -2,
+                toroidal_hypothesis: -2,
+            });
+        }
+
+        (faces, vertices)
+    }
+
+    #[test]
+    fn cone_fit_pointed_cone() {
+        // Pointed cone: 10 triangular faces, base radius 5, height 15.
+        // Apex at origin, axis (0,0,1), half_angle = atan(5/15) = atan(1/3).
+        let n_slices = 10;
+        let base_radius: f64 = 5.0;
+        let height: f64 = 15.0;
+        let expected_ha = (base_radius / height).atan();
+
+        let (faces, vertices) = build_pointed_cone_mesh(n_slices, base_radius, height);
+        let face_indices: Vec<usize> = (0..faces.len()).collect();
+        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+
+        let result = fit_cone(&face_indices, &vertex_set, &faces, &vertices);
+        assert!(result.is_some(), "pointed cone fit should succeed");
+        let (fit_apex, fit_dir, fit_ha) = result.unwrap();
+
+        // Half-angle check
+        assert!(
+            (fit_ha - expected_ha).abs() < 0.05,
+            "half_angle should be ~{:.4} rad, got {:.4}",
+            expected_ha, fit_ha
+        );
+        // Axis should be along Z
+        let axis_z = fit_dir[2].abs();
+        assert!(
+            (axis_z - 1.0).abs() < 0.05,
+            "axis should be along Z, got dir=({:.3},{:.3},{:.3})",
+            fit_dir[0], fit_dir[1], fit_dir[2]
+        );
+        // Apex should be near origin
+        let apex_dist = (fit_apex[0] * fit_apex[0]
+            + fit_apex[1] * fit_apex[1]
+            + fit_apex[2] * fit_apex[2]).sqrt();
+        assert!(
+            apex_dist < 1.0,
+            "apex should be near origin, got ({:.3},{:.3},{:.3}), dist={:.3}",
+            fit_apex[0], fit_apex[1], fit_apex[2], apex_dist
+        );
+    }
+
+    #[test]
+    fn debug_axis_estimation() {
+        let n_slices = 10;
+        let base_radius: f64 = 5.0;
+        let height: f64 = 15.0;
+        let (faces, vertices) = build_pointed_cone_mesh(n_slices, base_radius, height);
+
+        // Print normals for first few faces
+        for i in 0..3 {
+            let n = faces[i].normal.unwrap();
+            eprintln!("face {i} normal: ({:.4}, {:.4}, {:.4})", n[0], n[1], n[2]);
+        }
+
+        // Test normal-diff axis for faces 0,1,2
+        let fi = vec![0, 1, 2];
+        let axis = estimate_axis_from_normal_diffs(&fi, &faces);
+        eprintln!("axis from normal diffs (0,1,2): {:?}", axis);
+
+        // Also test apex estimation
+        let apex = estimate_apex(&fi, &faces, &vertices);
+        eprintln!("apex (0,1,2): {:?}", apex);
+
+        // Also test half-angle
+        if let (Some(a), Some(mut ax)) = (apex, axis) {
+            let mut vset = HashSet::new();
+            for &f in &fi {
+                let vc = faces[f].vertex_count as usize;
+                for &vi in &faces[f].vertex_indices[..vc] { vset.insert(vi); }
+            }
+            let ha = estimate_half_angle(&a, &mut ax, &vset, &vertices);
+            eprintln!("half_angle (0,1,2): {:?} (expected {:.4})", ha, (base_radius/height).atan());
+            eprintln!("axis after orient: ({:.4}, {:.4}, {:.4})", ax[0], ax[1], ax[2]);
+        }
+    }
+
+    #[test]
+    fn cone_fit_pointed_cone_subset() {
+        // Fit any 3 or 4 consecutive faces of the pointed cone;
+        // the fit should still match the reference cone.
+        let n_slices = 10;
+        let base_radius: f64 = 5.0;
+        let height: f64 = 15.0;
+        let expected_ha = (base_radius / height).atan();
+
+        let (faces, vertices) = build_pointed_cone_mesh(n_slices, base_radius, height);
+
+        for window_size in [3, 4] {
+            for start in 0..n_slices {
+                let face_indices: Vec<usize> = (0..window_size)
+                    .map(|i| (start + i) % n_slices)
+                    .collect();
+                let mut vertex_set = HashSet::new();
+                for &fi in &face_indices {
+                    let vc = faces[fi].vertex_count as usize;
+                    for &vi in &faces[fi].vertex_indices[..vc] {
+                        vertex_set.insert(vi);
+                    }
+                }
+
+                let result = fit_cone(&face_indices, &vertex_set, &faces, &vertices);
+                assert!(
+                    result.is_some(),
+                    "pointed cone subset fit failed for window_size={window_size} start={start}"
+                );
+                let (fit_apex, fit_dir, fit_ha) = result.unwrap();
+
+                assert!(
+                    (fit_ha - expected_ha).abs() < 0.1,
+                    "subset({window_size},{start}): half_angle {:.4} vs expected {:.4}",
+                    fit_ha, expected_ha,
+                );
+                let axis_z = fit_dir[2].abs();
+                assert!(
+                    (axis_z - 1.0).abs() < 0.1,
+                    "subset({window_size},{start}): axis z={axis_z:.3}",
+                );
+                let apex_dist = (fit_apex[0].powi(2) + fit_apex[1].powi(2) + fit_apex[2].powi(2)).sqrt();
+                assert!(
+                    apex_dist < 2.0,
+                    "subset({window_size},{start}): apex dist={apex_dist:.3}",
+                );
+            }
+        }
     }
 }
 

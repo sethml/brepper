@@ -346,8 +346,9 @@ The algorithm selects hypotheses greedily by total mesh face area, largest first
    - `hypothesis_index: usize` — index into the appropriate hypothesis vector in Stage2Output.
    - `faces: Vec<usize>` — mesh face indices assigned to this surface.
    - `vertices: Vec<usize>` — mesh vertex indices on this surface (union of face vertices).
-6. Validate: every face is assigned to exactly one selected surface.
-7. Print a summary: count of selected surfaces by type, total faces covered.
+6. **Prune unselected hypotheses**: remove any hypothesis that was not selected from the hypothesis vectors in `Stage2Output`. Remap `SelectedSurface` indices to match the compacted vectors. After this step, `Stage2Output.conical_hypotheses` (etc.) contain only selected hypotheses.
+7. Validate: every face is assigned to exactly one selected surface.
+8. Print a summary: count of selected surfaces by type, total faces covered.
 
 **Why this works better than a fixed type-priority rule:** A fixed priority (e.g., spherical > cylindrical > multi-face planar) fails when a bogus hypothesis of a high-priority type (3-face r=139mm sphere) competes with a correct hypothesis of a lower-priority type (35-face r=2mm cylinder). Area-based greedy selection naturally picks the correct hypothesis because it covers vastly more area.
 

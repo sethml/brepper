@@ -326,6 +326,10 @@ Hypothesis: BFS refitting gradually rotates the cylinder axis when sphere faces 
 Calling `BRepLib::SameParameter(shape, 1.0, true)` with a large tolerance (1.0mm) and `forced=true` recomputes all pcurves, which can corrupt pcurves on faces with closely-spaced edges (e.g., sphere faces at sphere-cylinder tangent junctions). This manifests as BRepCheck_Wire self-intersection failures. The fix is to use `forced=false` (skip edges already flagged as SameParameter) and a tight tolerance (`vertex_tolerance_mm`, typically 1e-5). This allows edges that were correctly constructed to keep their pcurves while only fixing genuinely misaligned ones.
 
 
+### Cone/cylinder seed face selection: fan topology with optional f3
+
+Cone and cylinder seeds use a "fan" topology: initial face fi, neighbor f1, and another face f2 that is a neighbor of fi but NOT an edge-wise neighbor of f1. This puts fi in between f1 and f2 for better angular coverage. Pairwise qualification checks normals of f1 and f2 against fi's normal (not against each other). When fi+f1+f2 yield only 5 unique vertices (insufficient for 6-DOF cone fitting), an optional f3 is added — a face adjacent to f2 that doesn't share an edge with fi or f1, giving at least 6 vertices.
+
 ### Conical surface detection: apex-vertex seeding
 
 Triple-seed (3 adjacent faces) fails for cones because apex-adjacent faces share the apex vertex and only span ~12° of the cone base — this gives a biased centroid, tilted axis, and wrong half-angle (~2° instead of true ~20°). Instead, use **apex-vertex seeding**: identify vertices with many incident non-coplanar-normal faces (eigenval/trace ratio < 0.3 from normal covariance), then use ALL faces incident to each apex vertex as the seed set. This gives robust axis estimation.
@@ -348,6 +352,14 @@ Sphere and cylinder patches can be approximately fitted as cones because locally
 1. **Half-angle bounds**: ha < 2° → cylindrical, ha > 85° → planar. Reject both.
 2. **Apex distance**: If apex is > 10× mesh bounding-box diagonal from mesh center, the fit is degenerate (distant apex = near-cylindrical).
 3. **Normal-axis consistency**: On a true cone, every face normal makes the same angle with the axis (= 90° - half_angle). Compute std-dev of `acos(|n·axis|)` across all faces — if it exceeds `angular_tol / 2`, the surface isn't a cone (likely a sphere).
+
+### Pointed cone fitting: fixed-apex LM
+
+For pointed cones (all faces share a single apex vertex), the general 7-parameter cone LM (apex_x, apex_y, apex_z, axis_alpha, axis_beta, half_angle, unused) is underdetermined — the apex has zero residual regardless of parameters, so the LM Jacobian rows for apex vertices are near-zero, causing poor convergence. Solution: use a fixed-apex 3-parameter LM (axis_alpha, axis_beta, half_angle) that only optimizes axis direction and half-angle while keeping the apex pinned at the shared vertex position.
+
+### Post-selection pruning of hypotheses
+
+After `select_surfaces` assigns faces to hypotheses, unselected hypotheses should be removed from the hypothesis vectors in `Stage2Output` (planes, cylinders, spheres, cones, tori). This requires remapping `SelectedSurface` indices to match the compacted vectors. Benefits: downstream code (stage 3) can index directly into hypothesis vectors without gaps; `Stage2Output` accurately represents only the surfaces used for reconstruction.
 4. **Error_max after final re-fit**: BFS may accept faces within tolerance during expansion, but the final re-fit can shift parameters — must verify `error_max ≤ surface_tol` after the final fit.
 - Stage 3 viz (3.3/3.4/3.5/3.6): stage 3.3 uses `FaceHighlight` for surface context and `LineOverlay` for edge curves; stage 3.4 uses `ShapeMeshOverlay` for OCCT faces; stages 3.5/3.6 use `ShapeMeshOverlay` for shells/solids.
 
@@ -395,7 +407,6 @@ The `SurfaceType` trait in `bfs.rs` unifies BFS region growing across all 5 surf
 - `acceptance_test()` validates after BFS (angular coverage, min face count, etc.).
 - `seed_vtol_multiplier()` and `angular_tol_multiplier()` allow per-type tolerance overrides (defaults 1.0).
 - **Performance regression**: The generic BFS is ~3× slower than per-type BFS because it generates more seeds (it tries all seeds from `generate_seeds()` instead of early-terminating). The per-type code had hand-tuned seed iteration with domain-specific early exit.
-- **Conical BFS regression**: The generic BFS lacks the old cone code's multi-axis LM rescue (6 axis guesses × patience-500 LM) for seeds that include non-conical faces near the apex. Without this, cone seeds get ~3e-5 max error (vs vtol 1e-5), failing seed validation. Adding the rescue back makes it work but is prohibitively slow for the full suite (~600s vs ~80s baseline).
 
 ### Multi-axis LM rescue for small torus patches
 
@@ -412,15 +423,9 @@ The onshape pipe_elbow model's torus surface is tessellated into many narrow str
 
 When fitting algorithms iterate over a `HashSet<usize>` of vertex indices, the iteration order varies between runs (Rust's default hasher uses per-process random keys). Since floating-point addition is non-associative, different iteration orders produce slightly different intermediate sums, which can change the final fitted parameters enough to make a marginal hypothesis pass or fail tolerance checks. Fix: collect HashSet into a Vec and sort before iterating in any computation that feeds into fitting (vertex positions, normals, tube centers). This is essential for reproducible test results.
 
-### Wide-angle cone: compute_cone_axis failure
+### Wide-angle cone: axis estimation uses both eigenvectors
 
-`compute_cone_axis` uses the smallest eigenvector of the face-normal covariance matrix. For a cone with half-angle ha, face normals make angle (90°−ha) with the axis. The covariance eigenvalue along the axis is proportional to sin²(ha), while the radial eigenvalues are proportional to cos²(ha)/2. For ha > ~35°, sin²(ha) > cos²(ha)/2, so the axis is the **largest** eigenvector, not the smallest. This causes `fit_cone()` to produce completely wrong results for wide cones (ha > 35°).
-
-Fix: after the final `fit_cone()` re-fit, compare post-refit error against pre-refit (rescued) error. When the re-fit degrades the error by >100x and the pre-refit was tight (<vertex_tol/2), fall back to LM refinement seeded from the rescued params. A height check (h_max > surface_tol) filters sphere-cap false positives.
-
-### Mean direction as cone axis estimator
-
-For a cone with azimuthal coverage, the mean of the unit direction vectors from apex to face centroids equals cos(ha) × axis. This provides a simple, robust axis estimate that works for all half-angles, unlike the normal-covariance smallest-eigenvector method. Added as a 6th rescue axis candidate.
+For a cone with half-angle ha, face normals make angle (90°−ha) with the axis. The covariance eigenvalue along the axis is proportional to sin²(ha), while the radial eigenvalues are proportional to cos²(ha)/2. For ha > ~35°, the axis corresponds to the **largest** eigenvector, not the smallest. The current `compute_truncated_cone_axis` tries both smallest and largest eigenvectors of the normal covariance matrix, plus mean-direction from centroid, keeping whichever gives the lowest fitting error.
 
 
 The `Geom_ToroidalSurface` binding was present in opencascade-sys all along (`geom::ToroidalSurface::new_ax3_real2`), but workspace-scoped search tools (grep_search, file_search, semantic_search, and Explore agent searches) cannot find content in `../opencascade-rs/` because it's outside the workspace root. Use terminal `grep` to search files outside the workspace. Don't assume a binding is missing just because workspace search tools return no results.

@@ -4,7 +4,7 @@ This file contains guidelines for AI/LLM coding assistants working on this proje
 
 ## IMPORTANT: Surviving Context Compaction
 
-When the user says `/iterate`, **immediately add the full iteration checklist (steps 1-12) to your todo list before doing any work**. BE SURE to include "Export chat log". The todo list survives compaction; file contents, verbal instructions, and even the user's original prompt wording do not.
+When the user says `/iterate`, **immediately add the full iteration checklist (steps 1-13) to your todo list before doing any work**. BE SURE to include step 10 Final chat log export. The todo list survives compaction; file contents, verbal instructions, and even the user's original prompt wording do not.
 
 When compacting, include the user's prompt in the conversation summary as guidance. Also include the hashline-edit tool usage instructions.
 
@@ -15,23 +15,24 @@ If you notice a `<conversation-summary>` in your context, that means compaction 
 The `/iterate` command triggers the full development cycle below. This is the primary workflow command — when you see it, follow this checklist IN ORDER. Do not skip steps. Do not reorder.
 
 1. Read LEARNINGS.md, README.md, and DEVELOPMENT_PLAN.md.
-2. If given instructions on work to do, follow them. Otherwise find the first item in TODO.md and implement it.
+2. If given instructions on work to do, add them as an item to the top of TODO.me then follow them. Otherwise find the first item in TODO.md and implement it.
 3. Don't worry about running tests for now. We're making changes such that a bunch of tests are broken.
 4. Update README.md (if user-facing behavior changed) and DEVELOPMENT_PLAN.md to reflect your changes. When updating DEVELOPMENT_PLAN.md, ensure the algorithm descriptions in the Architecture section accurately describe the code as implemented — if the implementation differs from the original plan, update the plan to match reality.
 5. When complete, move the item from TODO.md to the end of DONE.md.
-6. Think about whether items in LEARNINGS.md are obsolete - if so, delete or rewrite them.
-7. Think about whether you've learned things that may be useful to a future AI agent editing the code - if so, add them to LEARNINGS.md.
-8. Commit your changes (see Commit Messages and Commit Checklist below), including any pre-existing staged files.
-9. Think about whether you encountered code that would be clearer or more correct if refactored or improved. If so, make the improvements, test, and commit.
-10. Run the chat log export command (see Chat Log Export below).
-11. Tell the user a limerick inspired by your work this session.
-12. Stop. Do not continue to the next iteration unless the user says to.
+6. Do an initial chat log export by running `../vscode-export-chat-log/export-chat-log.py`. Then read the **full output** of `git diff agent-logs/` to understand all of the work completed in this session, not just what's in your current context window.
+7. Think about whether items in LEARNINGS.md are obsolete - if so, delete or rewrite them.
+8. Think about whether you've learned things that may be useful to a future AI agent editing the code - if so, add them to LEARNINGS.md.
+9. Commit your changes (see Commit Messages and Commit Checklist below), including any pre-existing staged files.
+10. Think about whether you encountered code that would be clearer or more correct if refactored or improved. If so, make the improvements, test, and commit.
+11. Do a final chat log export by running `( ../vscode-export-chat-log/export-chat-log.py --wait && git add agent-logs/ && git commit --amend --no-edit ) &`.
+12. Tell the user a limerick inspired by your work this session.
+13. Stop. Do not continue to the next iteration unless the user says to.
 
 ### Commit Checklist (MANDATORY — verify before every commit)
 
 - `cargo clippy` emits no warnings.
 - Build passes with no errors or warnings.
-- Commit message uses heredoc format with model name and user prompts (see Commit Messages)
+- Commit message uses a temporary file with model name and user prompts (see Commit Messages)
 - Chat log exported after commit (see Chat Log Export)
 
 ## Project Layout
@@ -93,23 +94,7 @@ User prompt(s):
   (include context for prompts that reference previous options/decisions)
 ```
 
-**Shell Quoting**: Use heredoc quoting for commit messages and when writing test scripts to avoid shell parsing issues:
-
-```bash
-# Good: heredoc (recommended)
-git commit -F - <<'EOF'
-Fix UV bounds for spheres
-
-- Detailed change 1
-- Detailed change 2
-
----
-Generated with assistance from Model Name (Provider, 2026)
-
-User prompt(s):
-- 'Prompt with "quotes" and other special chars'
-EOF
-```
+**Always** use a temporary file and `git commit -F tmp/COMMITMSG` rather than shell quoting to avoid shell parsing issues.
 
 ## Development Plan Maintenance
 
@@ -182,12 +167,6 @@ When writing temporary code for debugging or testing:
 ## Library Reuse
 
 Before implementing non-trivial functionality (text rendering, file parsing, data structures, etc.), search for existing open-source libraries that provide that functionality. Evaluate whether using a library will be better for code simplicity and maintainability than writing it from scratch. Consider factors like: compatibility with existing dependencies, maintenance status, API complexity, and how well the library fits the use case. Then go with your decision — either use the library or implement it yourself — and briefly explain why.
-
-## Chat Log Export
-
-After **every** commit, give a written summary of what you accomplished in this session, then
-export the current chat session to `agent-logs/`. Use this command exactly:
-`( ../vscode-export-chat-log/export-chat-log.py --wait && git add agent-logs/ && git commit --amend --no-edit ) &`
 
 ## Generating CodeCAD Test Models
 

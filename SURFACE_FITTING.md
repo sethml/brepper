@@ -25,7 +25,19 @@ For the overall pipeline architecture, BFS region growing algorithm, and per-sta
 
 ---
 
-## 2.2 Cylindrical fitting math
+## 2.2 Conical and cylindrical fitting math
+
+Cones and cylinders share a single BFS pass. A cylinder is a degenerate cone with half-angle = 0. Both fits are attempted for every seed, and the better one is kept. The seed selection, acceptance test, and BFS parameters are common; the fitting algorithms differ.
+
+### Seed selection
+
+Cone/cylinder seeds use a "fan" topology: initial face $f_i$, neighbor $f_1$, and another face $f_2$ that is a neighbor of $f_i$ but NOT an edge-wise neighbor of $f_1$. This puts $f_i$ in between $f_1$ and $f_2$ for better angular/circumferential coverage than a linear chain. Pairwise qualification checks the normals of $f_1$ and $f_2$ against $f_i$'s normal (not against each other): cross product magnitude must exceed MIN_CROSS_THRESHOLD (0.01) and dihedral angle must be ≤ angular tolerance.
+
+When $f_i + f_1 + f_2$ yield only 5 unique vertices (all triangles sharing edges), this is insufficient for 6-DOF cone fitting. An optional $f_3$ is added — a face adjacent to $f_2$ that doesn't share an edge with $f_i$ or $f_1$ — to bring the count to at least 6 vertices. If no qualifying $f_3$ is found, the 3-face seed is still emitted (sufficient for 4-DOF cylinder fitting).
+
+Seed tolerance multiplier: `seed_vtol_multiplier = 5.0` because fits from 3–4 faces have higher vertex error than fits from large face sets, due to tessellation sagitta and limited data for the 6-parameter LM.
+
+### Cylinder fitting
 
 **Cylinder fitting** (used for seeding and re-fitting):
 
@@ -40,7 +52,7 @@ The normal covariance matrix `M` can be maintained incrementally during BFS (add
 
 **Subtleties and edge cases:**
 - **Near-parallel seed normals**: Pairwise qualification requires cross product magnitude > `MIN_CROSS_THRESHOLD` (e.g. 0.01, ~0.6° between normals) for each consecutive pair in the seed chain (fi↔n1 and n1↔n2). This ensures each pair contributes meaningful angular information. Note that fi and n2 need NOT have different normals — on a cylinder, faces at the same circumferential position but different axial positions have identical normals. The angular diversity comes from the intermediate face n1 having a different circumferential position.
-- **Cones vs cylinders**: A cone has varying radius along the axis. If we fit a cylinder to conical faces, vertex distances near the ends will exceed tolerance, so cone faces will be naturally rejected. Cone fitting is handled separately in stage 2.4.
+- **Cones vs cylinders**: A cone has varying radius along the axis. If we fit a cylinder to conical faces, vertex distances near the ends will exceed tolerance, so cone faces will be naturally rejected. Both cone and cylinder fits are attempted for every seed; see the cone fitting subsection below.
 - **Large-radius cylinders**: A cylinder with very large radius looks locally planar. Such faces will belong to multi-face planar hypotheses from stage 2.1 (since vertices on a nearly-flat cylinder are nearly coplanar within tolerance). Multi-face planar faces CAN seed cylinders — the angular coverage validation, minimum face count, and other checks prevent bogus large-radius cylinder fits. Stage 2.6 resolves any ambiguity between cylindrical and planar assignments.
 - **Cylinder wrapping >180°**: This works naturally with BFS. The convexity check ensures we don't accidentally merge inner and outer surfaces.
 - **Multiple cylinders sharing an axis**: E.g. stepped bore holes with different radii. These will form separate hypotheses because vertices at different radii will exceed the vertex tolerance.
@@ -69,6 +81,57 @@ This ensures the hypothesis has at least 3 distinct angular clusters of faces ar
   - Measure the distance from the projected point to the nearest surface in the reference STEP file using `BRepExtrema_DistShapeShape`.
   - If any projected centroid exceeds `--surface-tolerance`, report an error.
   - Note: centroid-to-surface distance measures both fitting accuracy and tessellation sagitta (the flat triangle's centroid lies inside/outside the curved surface by approximately $h^2 / 8R$ where $h$ is the chord length). For typical tessellations this is small relative to `--surface-tolerance`, but it could become significant for very coarse meshes on tight-radius cylinders.
+
+### Cone fitting
+
+**Cone parameterization:**
+A cone with apex $A$, axis direction $\hat{a}$, and half-angle $\theta$ satisfies: for any point $p$ on the surface, the angle between $(p - A)$ and $\hat{a}$ equals $\theta$. Equivalently, in (h,r) coordinates where $h = (p - A) \cdot \hat{a}$ (signed axial distance from apex) and $r = |(p - A) - h\hat{a}|$ (radial distance from axis), the surface satisfies $r = h \tan\theta$.
+
+The signed distance from a point $p$ to the cone surface (for LM residual) is:
+$$d = r_i \cos\theta - h_i \sin\theta$$
+where $h_i = (p_i - A) \cdot \hat{a}$ and $r_i = |(p_i - A) - h_i \hat{a}|$.
+
+**Two-path fitting algorithm:**
+
+The fitting algorithm detects the cone topology and uses different strategies for pointed vs. truncated cones:
+
+**Pointed cone path** (a vertex shared by ALL seed faces = apex):
+1. **Apex** = shared vertex (exact). Validated by checking that non-apex vertex distances from the apex have low coefficient of variation (< 0.5), confirming a conical rather than arbitrary fan pattern.
+2. **Axis** = cross product of normal differences. On a cone, $n_i \cdot \hat{a} = \sin\theta$ is constant, so $(n_i - n_j) \cdot \hat{a} = 0$ — all normal differences are perpendicular to the axis. The cross product of two independent normal differences gives the exact axis. Falls back to the largest eigenvector of $\sum \hat{d}_i \hat{d}_i^T$ where $\hat{d}_i = (v_i - \text{apex}) / |v_i - \text{apex}|$ (vertex directions cluster around the axis for narrow cones).
+3. **Half-angle** from median of $\arctan(r_i / h_i)$ over all non-apex vertices. The axis is oriented so that $h > 0$ for the majority of vertices (away from apex).
+4. **Fixed-apex LM** refinement: 3 parameters (axis tilt $\alpha$, $\beta$ + half-angle $\theta$), keeping the apex pinned. The general 6-parameter LM is underdetermined for pointed cones because the apex vertex has zero residual regardless of parameters, producing near-zero Jacobian rows.
+
+**Truncated cone path** (no shared vertex):
+1. **Axis** via multi-strategy estimation:
+   - ≥8 faces: smallest eigenvector of area-weighted normal covariance $M = \sum w_i n_i n_i^T$ (same as cylinder).
+   - <8 faces with a vertex shared by most faces: direction from that vertex to the centroid of remaining vertices.
+   - <8 faces, no dominant vertex: cross product of normal differences (as in pointed path).
+2. **Apex and half-angle** from linear regression of vertex projections in (h,r) space: $r_i = m \cdot h_i + b$ where $h_i = (v_i - \text{centroid}) \cdot \hat{a}$ and $r_i$ is radial distance. Then $\theta = \arctan|m|$ and apex offset along axis $= -b/m$.
+3. **Full LM** refinement: 6 parameters ($\alpha$, $\beta$, apex $x,y,z$, half-angle). Analytic Jacobian.
+
+**Fit selection (cone vs. cylinder):**
+
+Both cone and cylinder fits are attempted for every seed. Max vertex error and max surface (centroid) error are computed for each; the fit with lower max vertex error is selected. The rejection criteria (half-angle bounds, apex distance check, angular coverage) are applied independently.
+
+### Acceptance test (cones and cylinders)
+
+1. **Minimum face count**: cones require MIN_CONE_FACES, cylinders require MIN_CYLINDER_FACES.
+2. **Half-angle bounds**: reject cones with $\theta > 80°$ (nearly planar).
+3. **Normal-axis consistency**: on a true cone, $n_i \cdot \hat{a} = \sin\theta$ is constant across all faces. Compute the variance of $n_i \cdot \hat{a}$ — reject if variance $> 0.0005$. This discriminates cones from sphere/torus patches where the dot product varies systematically.
+4. **Angular coverage**: faces must be distributed around the cone/cylinder circumference (algorithm described above).
+
+### BFS parameters
+
+Cone BFS uses `angular_tol * 2.0` because tessellated cones with $N$ circumferential divisions have inter-strip dihedral angles $\approx 360°/N$. For $N=20$ (typical), that's ~18°, which exceeds the default angular tolerance of 17.5°. Vertex-to-surface distance is the primary discriminator for cones, not angular similarity.
+
+### Performance notes
+
+1. **Filter by cylindrical hypothesis**: Skip faces already committed to cylindrical hypotheses when building apex candidates, collecting seed faces, and during BFS expansion.
+2. **Early half-angle rejection**: After initial cone fit but before seed tolerance check and BFS, reject cones with half-angle outside [2°, 85°].
+3. **Do NOT filter by spherical hypothesis**: Cone faces can have spurious spherical hypotheses (e.g., `block_with_conical_hole`: all 94 cone faces get spherical hypotheses). Only cylindrical filtering is safe because cones and cylinders are geometrically distinct, while cones and spheres overlap locally.
+
+- With the `--compare` flag:
+    - Same centroid-projection validation as cylinder/sphere.
 
 ---
 
@@ -126,52 +189,7 @@ Algorithm:
 
 ---
 
-## 2.4 Conical fitting math
-
-**Cone parameterization:**
-A cone with apex $A$, axis direction $\hat{a}$, and half-angle $\theta$ satisfies: for any point $p$ on the surface, the angle between $(p - A)$ and $\hat{a}$ equals $\theta$. Equivalently, in (h,r) coordinates where $h = (p - A) \cdot \hat{a}$ (signed axial distance from apex) and $r = |(p - A) - h\hat{a}|$ (radial distance from axis), the surface satisfies $r = h \tan\theta$.
-
-The signed distance from a point $p$ to the cone surface (for LM residual) is:
-$$d = r_i \cos\theta - h_i \sin\theta$$
-where $h_i = (p_i - A) \cdot \hat{a}$ and $r_i = |(p_i - A) - h_i \hat{a}|$.
-
-**Initialization via (h,r) profile fitting:**
-This exploits the key insight from the unified SOR framework (see Algorithm Reference below): all surfaces of revolution reduce to a 2D profile fitting problem once the axis is estimated.
-
-1. **Axis estimation** from normal covariance (same as cylinder): compute weighted covariance $M = \sum w_i n_i n_i^T$ where $n_i$ are face normals and $w_i$ are face areas. The eigenvector with smallest eigenvalue is the axis direction estimate.
-2. **Reduce to (h,r) coordinates**: $h_i = (v_i - \text{centroid}) \cdot \hat{a}$, $r_i = |(v_i - \text{centroid}) - h_i \hat{a}|$.
-3. **Fit linear profile** $r = m \cdot h + b$ via weighted linear regression (weights = vertex area).
-4. **Extract cone parameters**: half-angle $\theta = \arctan(m)$, apex at distance $-b/m$ from centroid along axis.
-5. **Reject if cylindrical**: if $|m| < 0.01$ (nearly constant radius), this is a cylinder, not a cone. Also reject if $\theta > 85°$ (nearly planar).
-
-**Alternative initialization via quadric fitting:**
-A cone is a quadric surface: $x^T A x + b^T x + c = 0$ with specific eigenvalue structure. This approach is useful as a cross-check or when the axis is poorly estimated.
-
-1. Build the 10-coefficient quadric feature matrix: for each vertex $p_i = (x,y,z)$, construct row $[x^2, y^2, z^2, xy, xz, yz, x, y, z, 1]$.
-2. SVD of the feature matrix. The right singular vector with smallest singular value gives the quadric coefficients.
-3. Convert to matrix form: $Q(x) = x^T \mathbf{A} x + b^T x + c$.
-4. Extract cone parameters:
-   - Apex: $A = -\frac{1}{2} \mathbf{A}^{-1} b$ (gradient of Q is zero at apex).
-   - Axis: eigenvector of $\mathbf{A}$ corresponding to the distinct eigenvalue (for a cone, two eigenvalues are equal and one is different).
-   - Half-angle: from the eigenvalue ratio.
-5. Validate: eigenvalue pattern must match a cone (two eigenvalues approximately equal, one distinct, with specific sign relationships). If the pattern matches a cylinder (one eigenvalue ≈ 0), sphere (all equal), or ellipsoid, skip.
-
-**Distinguishing cones from cylinders:**
-After fitting both a cylinder and a cone to the same face set, compare RMS residuals. If the cone fit is not significantly better than the cylinder fit (< 20% RMS improvement), prefer the simpler cylinder interpretation. This prevents noisy flat-profile data from being misclassified as a very gentle cone.
-
-**LM refinement:**
-Optimize $[A_x, A_y, A_z, \alpha, \beta, \theta]$ (6 parameters: apex position 3, axis tilt angles 2, half-angle 1).
-Residual: $d_i = r_i \cos\theta - h_i \sin\theta$.
-Analytic Jacobian with closed-form partial derivatives for all 6 parameters.
-
-- With the `--compare` flag:
-    - Same centroid-projection validation as cylinder/sphere.
-
-*Comment: The (h,r) profile approach is elegant because it handles the cylinder/cone ambiguity naturally: a horizontal line in (h,r) is a cylinder, a sloped line is a cone, and the distinction is just the slope parameter. This is described in the SOR reduction technique. The quadric approach provides an independent validation path.*
-
----
-
-## 2.5 Toroidal fitting math
+## 2.4 Toroidal fitting math
 
 **Torus parameterization:**
 A torus with center $C$, axis $\hat{a}$, major radius $R$, minor radius $r$ satisfies: for any point $p$, let $v = p - C$, $\text{axial} = v \cdot \hat{a}$, $\text{radial} = |v - \text{axial} \cdot \hat{a}|$. Then:
@@ -250,7 +268,7 @@ All surfaces of revolution — cylinder, cone, sphere, torus — share a common 
 
 This framework naturally handles ambiguous cases: a very gentle cone looks like a cylinder (slope $\approx 0$); a sphere with very large radius looks like a plane ($R \to \infty$); a torus with large major radius looks like a cylinder ($R \gg r$).
 
-The current implementation uses separate fitting algorithms for each surface type (stages 2.2–2.5), which is appropriate for incremental development. A future refactoring pass (see Implementation Phases in DEVELOPMENT_PLAN.md) will unify these into the SOR framework to improve accuracy on ambiguous cases and simplify the codebase.
+The current implementation uses separate fitting algorithms for each surface type (stages 2.2–2.4), which is appropriate for incremental development. A future refactoring pass (see Implementation Phases in DEVELOPMENT_PLAN.md) will unify these into the SOR framework to improve accuracy on ambiguous cases and simplify the codebase.
 
 ### Gaussian Map (Normal Covariance) Classification
 
@@ -276,7 +294,7 @@ The geometry of the medial axis reveals the surface type:
 - **Torus**: medial axis is a circle (the major circle) — $k_i$ points lie on a circle.
 - **Cone**: medial axis is a point (the apex) for one direction of curvature.
 
-This is used in stage 2.5 (torus fitting): estimate $r$ from normal-line intersections between adjacent faces, compute tube centers $k_i$, fit a 3D circle to get the major circle, and extract the torus parameters.
+This is used in stage 2.4 (torus fitting): estimate $r$ from normal-line intersections between adjacent faces, compute tube centers $k_i$, fit a 3D circle to get the major circle, and extract the torus parameters.
 
 ### Quadric Fitting
 
@@ -289,4 +307,4 @@ Fitting: construct the $N \times 10$ feature matrix and find its null space via 
 - **Cone**: three nonzero eigenvalues with $\det(\mathbf{A}) \approx 0$ (passes through apex).
 - **Plane**: $\mathbf{A} = 0$ (all eigenvalues zero).
 
-Quadric fitting is fast (SVD of an $N \times 10$ matrix, $O(N)$) and provides a good initialization for specialized fitters. It's used as an alternative initialization for cone fitting (stage 2.4).
+Quadric fitting is fast (SVD of an $N \times 10$ matrix, $O(N)$) and provides a good initialization for specialized fitters. It could be used as an alternative initialization for cone fitting (stage 2.2).
