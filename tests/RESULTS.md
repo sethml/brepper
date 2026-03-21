@@ -20,45 +20,45 @@ Tests last run: 2026-03-20.
 
 | Test File | Status | Time | Notes |
 |-----------|--------|------|-------|
-| cube_on_plane.stl | FAIL | 0.60s | Error: stage 1.2 (compare): comparison failed: vertex 7 is 9.000000e0 mm from ne |
+| cube_on_plane.stl | FAIL | 0.08s | Error: stage 1.2 (compare): comparison failed: vertex 7 is 9.000000e0 mm from ne |
 | cube_shifted.stl | FAIL | 0.04s | Error: stage 1.2 (compare): comparison failed: vertex 7 is 6.928203e0 mm from ne |
-| degenerate_face.stl | FAIL | 0.03s | Error: stage 1.2 (validation): mesh contains 1 degenerate face(s): [0] |
-| inconsistent_winding.stl | FAIL | 0.03s | Error: stage 1.2 (validation): mesh contains 3 edge(s) with flipped orientation |
-| non_manifold_edge.stl | FAIL | 0.03s | Error: stage 1.2 (validation): mesh contains 1 non-manifold edge(s) with >2 inci |
+| degenerate_face.stl | FAIL | 0.04s | Error: stage 1.2 (validation): mesh contains 1 degenerate face(s): [0] |
+| inconsistent_winding.stl | FAIL | 0.04s | Error: stage 1.2 (validation): mesh contains 3 edge(s) with flipped orientation |
+| non_manifold_edge.stl | FAIL | 0.04s | Error: stage 1.2 (validation): mesh contains 1 non-manifold edge(s) with >2 inci |
 
 ## ccad/generated
 
 | Test File | Status | Time | Notes |
 |-----------|--------|------|-------|
-| ball_on_cylinder.stl | ✓ | 1.18s | |
+| ball_on_cylinder.stl | ✓ | 1.11s | |
 | block_corner_hole.stl | ✓ | 0.08s | |
-| block_with_conical_hole.stl | FAIL | 0.41s | Error: stage 3.1 compare: edge 10 is 9.362857e0 mm from nearest STEP edge (toler |
-| block_with_hole.stl | ✓ | 0.36s | |
+| block_with_conical_hole.stl | FAIL | 0.37s | Error: stage 3.1 compare: edge 10 is 9.362857e0 mm from nearest STEP edge (toler |
+| block_with_hole.stl | ✓ | 0.34s | |
 | cone_cylinder.stl | ✓ | 0.14s | |
 | cube.stl | ✓ | 0.05s | |
-| filleted_cylinder.stl | FAIL | 3.15s | Error: stage 3.5 compare: shell 0 is inf mm from nearest STEP edge (tolerance: 1 |
-| filleted_hole_block.stl | FAIL | 3.64s | Error: stage 3.1 compare: edge 20 is 3.920688e-1 mm from nearest STEP edge (tole |
-| filleted_pipe.stl | FAIL | 5.84s | Error: stage 3.1 compare: edge 17 is 5.852706e-1 mm from nearest STEP edge (tole |
-| hemisphere.stl | ✓ | 1.00s | |
-| nosecone.stl | ✓ | 0.85s | |
-| pipe.stl | ✓ | 0.11s | |
+| filleted_cylinder.stl | ✓ | 2.95s | |
+| filleted_hole_block.stl | FAIL | 3.46s | Error: stage 3.1 compare: edge 20 is 3.920688e-1 mm from nearest STEP edge (tole |
+| filleted_pipe.stl | FAIL | 5.51s | Error: stage 3.1 compare: edge 17 is 5.852706e-1 mm from nearest STEP edge (tole |
+| hemisphere.stl | ✓ | 0.96s | |
+| nosecone.stl | ✓ | 0.79s | |
+| pipe.stl | ✓ | 0.10s | |
 | simple_cone.stl | ✓ | 0.12s | |
-| simple_cylinder.stl | ✓ | 0.05s | |
-| simple_sphere.stl | ✓ | 1.65s | |
-| spherical_pocket.stl | ✓ | 1.47s | |
-| staircase.stl | ✓ | 0.14s | |
-| stepped_cylinder.stl | ✓ | 0.11s | |
-| t_shape.stl | ✓ | 0.09s | |
-| two_holes.stl | ✓ | 0.30s | |
+| simple_cylinder.stl | ✓ | 0.06s | |
+| simple_sphere.stl | ✓ | 1.59s | |
+| spherical_pocket.stl | ✓ | 1.30s | |
+| staircase.stl | ✓ | 0.12s | |
+| stepped_cylinder.stl | ✓ | 0.10s | |
+| t_shape.stl | ✓ | 0.08s | |
+| two_holes.stl | ✓ | 0.26s | |
 | wedge.stl | ✓ | 0.05s | |
 
 ## fusion
 
 | Test File | Status | Time | Notes |
 |-----------|--------|------|-------|
-| plate_with_hole_100x50_high.stl | ✓ | 0.30s | |
-| plate_with_hole_100x50_low.stl | ✓ | 0.14s | |
-| plate_with_hole_100x50_medium.stl | ✓ | 0.19s | |
+| plate_with_hole_100x50_high.stl | ✓ | 0.24s | |
+| plate_with_hole_100x50_low.stl | ✓ | 0.12s | |
+| plate_with_hole_100x50_medium.stl | ✓ | 0.16s | |
 
 ## manual
 
@@ -71,34 +71,34 @@ Tests last run: 2026-03-20.
 | Test File | Status | Time | Notes |
 |-----------|--------|------|-------|
 | chamfered_cube_10_c1_medium.ascii.stl | FAIL | 0.06s | Error: stage 1.2 (compare): comparison failed: vertex 3 is 4.836335e-5 mm from n |
-| chamfered_cube_10_c1_medium.stl | ✓ | 0.17s | |
-| cone_15x20_medium.stl | ✓ | 0.64s | |
-| cone_tangent_planes_medium.stl | FAIL | 2.20s | Error: stage 3.1 compare: vertex 6 is 1.567394e-1 mm from nearest STEP vertex (t |
+| chamfered_cube_10_c1_medium.stl | ✓ | 0.14s | |
+| cone_15x20_medium.stl | ✓ | 0.50s | |
+| cone_tangent_planes_medium.stl | FAIL | 2.14s | Error: stage 3.1 compare: vertex 6 is 1.567394e-1 mm from nearest STEP vertex (t |
 | cone_truncated_medium.stl | FAIL | 0.07s | Error: stage 1.2 (compare): comparison failed: vertex 66 is 1.056633e-5 mm from  |
-| cylinder_10_r2_fine.stl | ✓ | 0.16s | |
+| cylinder_10_r2_fine.stl | ✓ | 0.15s | |
 | cylinder_10x30_medium.stl | ✓ | 0.08s | |
-| dome_hemisphere_20_fine.stl | ✓ | 5.20s | |
-| l_bracket_simple_medium.stl | ✓ | 0.65s | |
-| nosecone_medium.stl | FAIL | 4.15s | Error: stage 3.1 compare: edge 3 is 1.794056e-1 mm from nearest STEP edge (toler |
-| nosecone_truncated_medium.stl | FAIL | 0.29s | Error: stage 1.2 (compare): comparison failed: vertex 130 is 1.170384e-5 mm from |
-| part_rounded_cube_10_r2_coarse.stl | ✓ | 0.20s | |
-| part_rounded_cube_10_r2_fine.stl | ✓ | 0.65s | |
-| pill_coarse.stl | ✓ | 1.80s | |
-| pill_fine.stl | ✓ | 17.14s | |
-| pipe_elbow_10_fine.stl | FAIL | 6.10s | Error: stage 3.1 compare: edge 18 is 7.933532e0 mm from nearest STEP edge (toler |
-| pipe_elbow_10_medium.stl | FAIL | 3.12s | Error: stage 3.1 adjacency error: Edge 0: no curve and no vertex endpoints |
-| plate_with_hole_100x50_coarse.stl | ✓ | 0.17s | |
-| rounded_cube_10_r2_coarse.stl | ✓ | 2.18s | |
-| rounded_cube_10_r2_fine.stl | ✓ | 29.60s | |
-| rounded_cube_10_r2_medium.stl | ✓ | 8.43s | |
-| sphere_25_fine.stl | ✓ | 4.32s | |
-| stepped_block_coarse.stl | ✓ | 0.16s | |
-| stepped_block_toroidal_fillets_fine.stl | FAIL | 60.04s | Error: stage 1.2 (compare): comparison failed: vertex 22408 is 1.234127e-5 mm fr |
-| stepped_block_toroidal_fillets_medium.stl | FAIL | 5.50s | Error: stage 1.2 (compare): comparison failed: vertex 1727 is 1.129611e-5 mm fro |
+| dome_hemisphere_20_fine.stl | ✓ | 4.43s | |
+| l_bracket_simple_medium.stl | ✓ | 0.50s | |
+| nosecone_medium.stl | FAIL | 3.91s | Error: stage 3.1 compare: edge 3 is 1.794056e-1 mm from nearest STEP edge (toler |
+| nosecone_truncated_medium.stl | FAIL | 0.27s | Error: stage 1.2 (compare): comparison failed: vertex 130 is 1.170384e-5 mm from |
+| part_rounded_cube_10_r2_coarse.stl | ✓ | 0.17s | |
+| part_rounded_cube_10_r2_fine.stl | ✓ | 0.52s | |
+| pill_coarse.stl | ✓ | 1.74s | |
+| pill_fine.stl | ✓ | 15.80s | |
+| pipe_elbow_10_fine.stl | FAIL | 5.77s | Error: stage 3.1 compare: edge 18 is 7.933532e0 mm from nearest STEP edge (toler |
+| pipe_elbow_10_medium.stl | FAIL | 3.01s | Error: stage 3.1 adjacency error: Edge 0: no curve and no vertex endpoints |
+| plate_with_hole_100x50_coarse.stl | ✓ | 0.14s | |
+| rounded_cube_10_r2_coarse.stl | ✓ | 1.95s | |
+| rounded_cube_10_r2_fine.stl | ✓ | 26.11s | |
+| rounded_cube_10_r2_medium.stl | ✓ | 8.23s | |
+| sphere_25_fine.stl | ✓ | 4.12s | |
+| stepped_block_coarse.stl | ✓ | 0.14s | |
+| stepped_block_toroidal_fillets_fine.stl | FAIL | 47.19s | Error: stage 1.2 (compare): comparison failed: vertex 22408 is 1.234127e-5 mm fr |
+| stepped_block_toroidal_fillets_medium.stl | FAIL | 4.23s | Error: stage 1.2 (compare): comparison failed: vertex 1727 is 1.129611e-5 mm fro |
 
 ## Summary
 
 - **Total test files**: 55
-- **Passing**: 37 / 55
+- **Passing**: 38 / 55
 - **Expected failures (bad/)**: 5
-- **Failing non-bad tests**: 13
+- **Failing non-bad tests**: 12

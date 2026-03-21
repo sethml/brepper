@@ -213,3 +213,12 @@ Added torus overlay rendering to the interactive viz. Toroidal hypotheses now di
 
 ## Rework cone/cylinder fitting parameters and LM refinement
 Overhauled cone and cylinder fitting for robustness: set `REFIT_SKIP_MULTIPLIER` to 10.0 for aggressive refitting, set `seed_vtol_multiplier` to 1.0 (vertices lie precisely on the surface), removed normal-axis consistency check for cones (surface selection resolves overlaps), added vertex recentering around centroid before LM for numerical stability, and increased LM patience to 500 for both cone and cylinder fits. Updated SURFACE_FITTING.md and DEVELOPMENT_PLAN.md to reflect changes.
+
+
+## Overhaul stage 2 debug output and add --viz-stages-level
+
+Changed default `--vertex-tolerance` from 1e-5 to 5e-5 to better match typical Onshape STL export precision. 
+
+Overhauled BFS debug printing: removed all `[prefix]` tags (e.g. `[spherical-BFS]`), switched to consistent indentation levels (stage summary at 0 indent, per-hypothesis at 2, seed attempts at 4+, per-face BFS at 6+). Split verbosity into 5 levels: 1=stage summaries, 2=per-hypothesis details, 3=per-committed-hypothesis progress/stats, 4=per-seed-attempt details, 5=per-BFS-face exploration.
+
+Added `--viz-stages-level` flag (default 1) to control how often `--viz-stages` pauses: level 1 pauses at committed hypotheses and stage 2.6 selections, level 2 also pauses at accepted seeds, level 3 also pauses at each individual BFS face acceptance. The `viz_level` field is now propagated through `BfsConfig`.

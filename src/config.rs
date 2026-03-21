@@ -140,7 +140,7 @@ struct CliArgs {
     pub compare_step: Option<String>,
 
     /// Fitting tolerance for vertex-to-surface distance, in STL units.
-    #[arg(long, default_value = "1e-5")]
+    #[arg(long, default_value = "5e-5")]
     pub vertex_tolerance: f64,
 
     /// Tolerance for surface-to-triangle-face offset, in STL units.
@@ -155,8 +155,12 @@ struct CliArgs {
     #[arg(short = 'v', action = ArgAction::Count)]
     pub verbose_short: u8,
 
-    /// Set verbosity to an explicit level: --verbose=1 (summaries),
-    /// --verbose=2 (per-face details), --verbose=3 (full BFS trace).
+    /// Set verbosity to an explicit level:
+    /// --verbose=1 (stage summaries),
+    /// --verbose=2 (per-hypothesis details),
+    /// --verbose=3 (per-committed-hypothesis seed/count info, stats, profiles),
+    /// --verbose=4 (per-seed-attempt details),
+    /// --verbose=5 (per-BFS-face exploration details).
     /// Bare --verbose sets level 1.
     #[arg(long = "verbose", value_name = "LEVEL", default_missing_value = "1", num_args = 0..=1)]
     pub verbose_level: Option<u8>,
@@ -176,6 +180,13 @@ struct CliArgs {
     /// Comma-separated list of stages for interactive visualization (e.g. "2.2,3.1").
     #[arg(long = "viz-stages", value_parser = parse_stage, value_delimiter = ',')]
     pub viz_stages: Option<Vec<Stage>>,
+
+    /// Detail level for viz-stages visualization pauses:
+    /// 1 = pause at committed hypotheses and stage 2.6 selections (default),
+    /// 2 = also pause at each accepted seed,
+    /// 3 = also pause at each BFS face acceptance.
+    #[arg(long = "viz-stages-level", default_value = "1")]
+    pub viz_stages_level: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -204,7 +215,7 @@ pub struct Config {
     pub surface_tolerance_mm: f64,
     /// Max dihedral angle (radians) between adjacent triangles on the same surface.
     pub angular_tolerance_rad: f64,
-    /// Verbosity level (0 = quiet-ish, 1 = verbose, 2 = very verbose, 3 = BFS trace).
+    /// Verbosity level (0 = quiet, 1 = summaries, 2 = hypotheses, 3 = commit details, 4 = seed details, 5 = BFS trace).
     pub verbosity: u8,
     /// Convenience: verbosity >= 1.
     pub verbose: bool,
@@ -216,6 +227,8 @@ pub struct Config {
     pub stage: Stage,
     /// Stages to visualize interactively.
     pub viz_stages: Vec<Stage>,
+    /// Detail level for viz-stages visualization (1=commits, 2=seeds, 3=BFS faces).
+    pub viz_stages_level: u8,
 }
 
 impl std::fmt::Debug for Config {
@@ -236,6 +249,7 @@ impl std::fmt::Debug for Config {
             .field("debug", &self.debug)
             .field("stage", &self.stage)
             .field("viz_stages", &self.viz_stages)
+            .field("viz_stages_level", &self.viz_stages_level)
             .finish()
     }
 }
@@ -260,6 +274,7 @@ impl Config {
             debug: args.debug,
             stage: args.stage.unwrap_or_default(),
             viz_stages: args.viz_stages.unwrap_or_default(),
+            viz_stages_level: args.viz_stages_level,
         }
     }
 

@@ -569,6 +569,7 @@ pub(crate) fn centered_cylinder_overlay(
 }
 
 /// Create a ConeOverlay spanning the axial extent of the given faces (with padding).
+/// Ensures the cone is at least 2x the maximum model dimension in length.
 pub(crate) fn centered_cone_overlay(
     apex: [f64; 3], direction: [f64; 3], half_angle: f64,
     face_list: &[usize], mesh: &ConnectedMesh,
@@ -584,15 +585,19 @@ pub(crate) fn centered_cone_overlay(
         t_min = t_min.min(t);
         t_max = t_max.max(t);
     }
-    // Pad by 20% of the axial span for visual clarity
-    let span = t_max - t_min;
-    let pad = span * 0.2;
+    // Ensure the cone is at least 2x the maximum model dimension in length
+    let bb_diag = bounding_box_diagonal(&mesh.vertices);
+    let min_half_length = bb_diag; // 2x max dimension means full length = 2 * bb_diag, so half_length = bb_diag
+    let center_t = (t_min + t_max) * 0.5;
+    let half_span = ((t_max - t_min) * 0.5).max(min_half_length);
+    // Pad by 20% for visual clarity
+    let pad = half_span * 0.2;
     viz::ConeOverlay {
         apex,
         direction,
         half_angle,
-        t_min: t_min - pad,
-        t_max: t_max + pad,
+        t_min: center_t - half_span - pad,
+        t_max: center_t + half_span + pad,
         color,
     }
 }
@@ -1146,6 +1151,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
         surface_tol: config.surface_tolerance_mm,
         angular_tol: config.angular_tolerance_rad,
         verbosity: config.verbosity,
+        viz_level: config.viz_stages_level,
     };
     let (mut planar_hypotheses, planar_quit) = bfs::generate_hypotheses::<PlanarSurface>(&mut mesh, &bfs_config, viz_21);
 
@@ -1179,7 +1185,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
         }
     }
 
-    if !config.quiet {
+    if config.verbosity >= 1 {
         let multi_face_count = planar_hypotheses.iter().filter(|h| h.faces.len() > 1).count();
         let single_face_count = planar_hypotheses.len() - multi_face_count;
         let covered_faces: usize = planar_hypotheses.iter().map(|h| h.faces.len()).sum();
@@ -1192,7 +1198,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
             covered_faces,
             mesh.faces.len(),
         );
-        if config.verbose {
+        if config.verbosity >= 2 {
             for (i, h) in planar_hypotheses.iter().enumerate() {
                 if h.faces.len() > 1 {
                     eprintln!(
@@ -1209,7 +1215,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
     // Compare against STEP file if --compare was specified
     if config.compare_shape.is_some() {
         compare_planar_hypotheses(&planar_hypotheses, &mesh, config)?;
-        if !config.quiet {
+        if config.verbosity >= 1 {
             eprintln!("  Compare: all planar hypothesis centroids within tolerance");
         }
     }
@@ -1243,7 +1249,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
     let viz_22 = if config.viz_active(2, 2) { viz } else { None };
     let (mut conical_hypotheses, conical_quit) = bfs::generate_hypotheses::<ConicalSurface>(&mut mesh, &bfs_config, viz_22);
 
-    if !config.quiet {
+    if config.verbosity >= 1 {
         let covered_faces: usize = conical_hypotheses.iter().map(|h| h.faces.len()).sum();
         let cylinder_count = conical_hypotheses.iter().filter(|h| h.is_cylinder()).count();
         let cone_count = conical_hypotheses.len() - cylinder_count;
@@ -1259,7 +1265,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
             concave_count,
             covered_faces,
         );
-        if config.verbose {
+        if config.verbosity >= 2 {
             for (i, h) in conical_hypotheses.iter().enumerate() {
                 if h.is_cylinder() {
                     eprintln!(
@@ -1274,7 +1280,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
                     );
                 } else {
                     eprintln!(
-                        "  Cone {}: {} faces, half_angle={:.4}°, apex=[{:.4},{:.4},{:.4}], {}, err_max={:.2e}",
+                        "  Cone {}: {} faces, half_angle={:.4}\u{00b0}, apex=[{:.4},{:.4},{:.4}], {}, err_max={:.2e}",
                         i,
                         h.faces.len(),
                         h.half_angle.to_degrees(),
@@ -1290,7 +1296,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
     // Compare against STEP file if --compare was specified
     if config.compare_shape.is_some() {
         compare_conical_hypotheses(&conical_hypotheses, &mesh, config)?;
-        if !config.quiet {
+        if config.verbosity >= 1 {
             eprintln!("  Compare: all conical/cylindrical hypothesis centroids within tolerance");
         }
     }
@@ -1326,7 +1332,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
     let viz_23 = if config.viz_active(2, 3) { viz } else { None };
     let (mut spherical_hypotheses, spherical_quit) = bfs::generate_hypotheses::<SphericalSurface>(&mut mesh, &bfs_config, viz_23);
 
-    if !config.quiet {
+    if config.verbosity >= 1 {
         let covered_faces: usize = spherical_hypotheses.iter().map(|h| h.faces.len()).sum();
         let convex_count = spherical_hypotheses.iter().filter(|h| h.convex).count();
         let concave_count = spherical_hypotheses.len() - convex_count;
@@ -1338,7 +1344,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
             concave_count,
             covered_faces,
         );
-        if config.verbose {
+        if config.verbosity >= 2 {
             for (i, h) in spherical_hypotheses.iter().enumerate() {
                 eprintln!(
                     "  Sphere {}: {} faces, {} vertices, r={:.4}, {}, center=[{:.4}, {:.4}, {:.4}], \
@@ -1348,7 +1354,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
                     h.center[0], h.center[1], h.center[2],
                     h.error_max, h.centroid_error_max,
                 );
-                if config.verbosity >= 2 {
+                if config.verbosity >= 3 {
                     for &fi in &h.faces {
                         let face = &mesh.faces[fi];
                         let vc = face.vertex_count as usize;
@@ -1384,7 +1390,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
     // Compare against STEP file if --compare was specified
     if config.compare_shape.is_some() {
         compare_spherical_hypotheses(&spherical_hypotheses, &mesh, config)?;
-        if !config.quiet {
+        if config.verbosity >= 1 {
             eprintln!("  Compare: all spherical hypothesis centroids within tolerance");
         }
     }
@@ -1431,7 +1437,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
     let viz_25 = if config.viz_active(2, 5) { viz } else { None };
     let (mut toroidal_hypotheses, toroidal_quit) = bfs::generate_hypotheses::<ToroidalSurface>(&mut mesh, &bfs_config, viz_25);
 
-    if !config.quiet {
+    if config.verbosity >= 1 {
         let covered_faces: usize = toroidal_hypotheses.iter().map(|h| h.faces.len()).sum();
         let convex_count = toroidal_hypotheses.iter().filter(|h| h.convex).count();
         let concave_count = toroidal_hypotheses.len() - convex_count;
@@ -1443,7 +1449,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             concave_count,
             covered_faces,
         );
-        if config.verbose {
+        if config.verbosity >= 2 {
             for (i, h) in toroidal_hypotheses.iter().enumerate() {
                 eprintln!(
                     "  Torus {}: {} faces, {} vertices, R={:.4}, r={:.4}, {}, \
@@ -1462,7 +1468,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
 
     if config.compare_shape.is_some() {
         compare_toroidal_hypotheses(&toroidal_hypotheses, &mesh, config)?;
-        if !config.quiet {
+        if config.verbosity >= 1 {
             eprintln!("  Compare: all toroidal hypothesis centroids within tolerance");
         }
     }
@@ -1504,7 +1510,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
         &mut selected_surfaces,
     );
 
-    if !config.quiet {
+    if config.verbosity >= 1 {
         let mut planar_count = 0;
         let mut cylindrical_count = 0;
         let mut spherical_count = 0;
@@ -1543,7 +1549,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
             &selected_surfaces, &planar_hypotheses, &conical_hypotheses,
             &spherical_hypotheses, &toroidal_hypotheses, &mesh, config,
         )?;
-        if !config.quiet {
+        if config.verbosity >= 1 {
             eprintln!("  Compare: all selected surface centroids within tolerance");
         }
     }
@@ -1598,6 +1604,7 @@ mod tests {
             surface_tol: 0.4,
             angular_tol: 17.5_f64.to_radians(),
             verbosity: 0,
+            viz_level: 1,
         }
     }
 
@@ -1607,6 +1614,7 @@ mod tests {
             surface_tol: 0.4,
             angular_tol: angular_tol_deg.to_radians(),
             verbosity: 0,
+            viz_level: 1,
         }
     }
 

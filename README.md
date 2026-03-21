@@ -18,14 +18,16 @@ GENERAL OPTIONS:
     --stl-units=<units>      Units used by the STL file (mm, cm, m, in, ft, um; default: mm)
     --step-units=<units>     Units to use in exported STEP file (default: mm)
     --compare=<step>         STEP file to compare to at each step
-    --vertex-tolerance=<value>  Fitting tolerance in STL units (default: 1e-5)
+    --vertex-tolerance=<value>  Fitting tolerance in STL units (default: 5e-5)
     --surface-tolerance=<value> Surface-to-face offset tolerance in STL units (default: 0.4)
     --angular-tolerance=<deg>   Max dihedral angle between adjacent triangles on the same surface (default: 17.5)
-    -v, --verbose[=LEVEL]    Verbosity level: 1 (or bare -v) = summaries, -vv or --verbose=2 = per-face details, -vvv or --verbose=3 = full BFS trace
+    -v, --verbose[=LEVEL]    Verbosity level: 1 = stage summaries, 2 = per-hypothesis details,
+                             3 = commit details/stats/profiles, 4 = per-seed details, 5 = BFS face trace
     -q, --quiet              Suppress non-error output
     --debug                  Enable debug output and intermediate files
     --stage=<stage>          Stop after stage, e.g. 2.2 (default: 4.1). --stage=2 stops after all of stage2
     --viz-stages=<stages>    Open interactive 3D visualization at specified stages (e.g. 2.1,2.2,2.3)
+    --viz-stages-level=<N>   Viz detail level: 1 = committed hypotheses (default), 2 = seeds, 3 = BFS faces
 ```
 
 ### Examples
@@ -87,11 +89,18 @@ To add or modify these models:
 
 ### Interactive Debugging Visualization
 
-Use `--viz-stages` to open a 3D window and step through BFS hypothesis deduction interactively:
+Use `--viz-stages` to open a 3D window and step through BFS hypothesis deduction interactively.
+Use `--viz-stages-level` to control how often the visualization pauses:
+- Level 1 (default): Pauses at each committed hypothesis
+- Level 2: Also pauses at each accepted seed before BFS expansion
+- Level 3: Also pauses at each face accepted during BFS expansion
 
 ```bash
-# Visualize planar and cylindrical hypothesis stages
+# Visualize planar and cylindrical hypothesis stages (committed hypotheses only)
 brepper input.stl --viz-stages=2.1,2.2
+
+# Visualize with seed-level detail
+brepper input.stl --viz-stages=2.2 --viz-stages-level=2
 
 # Visualize all stage 2 hypothesis types with STEP comparison overlay
 brepper input.stl --compare reference.step --viz-stages=2.1,2.2,2.3
@@ -101,8 +110,9 @@ At each BFS step, the window shows the STL mesh with highlighted faces: seed fac
 
 | Action | Control |
 |--------|:--------|
-| Next BFS step | `Space` |
+| Next step | `Space` |
 | Skip to next seed/hypothesis | `Shift+Space` |
+| Skip to face seed | `Click` on a face |
 | Quit visualization | `Q` |
 
 Supported stages: `2.1` (planar), `2.2` (cylindrical), `2.3` (spherical), `2.4` (conical), `2.6` (surface selection), `3.3` (edge curves), `3.4` (faces), `3.5` (shells), `3.6` (solids).

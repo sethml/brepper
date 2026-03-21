@@ -267,7 +267,7 @@ Runs the generic BFS hypothesis generation with the following parameterization:
 
 *Pairwise qualification*: Two faces are pairwise qualified if they are neighbors, both unassigned for this surface type (`conical_hypothesis < 0`), have sufficiently different normals (cross product magnitude exceeds `MIN_CROSS_THRESHOLD`, e.g. 0.01), and the dihedral angle does not exceed `--angular-tolerance`. The cross product minimum is a seeding criterion only — during BFS expansion, adjacent faces on a finely tessellated cylinder legitimately have near-parallel normals.
 
-**Surface fit**: Attempts both a cone fit (5-parameter) and a cylinder fit (4-parameter) independently, then selects whichever achieves the lower maximum vertex-to-surface distance. If the cone's fitted half-angle is outside the valid range (2°–85°) or its apex is too far from the mesh, the cone fit is rejected. The fits use: (1) Axis direction from smallest eigenvector of the area-weighted normal covariance matrix $M = \sum w_i n_i n_i^T$. (2) For cylinders: project vertices perpendicular to the axis, fit a 2D circle for axis position and radius. For cones: estimate half-angle and apex from vertex positions along the axis. (3) LM refinement minimizing vertex-to-surface distances, with vertices **recentered** around their centroid for numerical stability (parameters shifted back after fitting), and `patience=500` to ensure convergence well below vertex tolerance. With `--verbose 3` or higher, each seed fit logs both the cone and cylinder fit attempts along with their max vertex/surface errors and rejection reasons. See [SURFACE_FITTING.md](SURFACE_FITTING.md) for detailed fitting math.
+**Surface fit**: Attempts both a cone fit (5-parameter) and a cylinder fit (4-parameter) independently, then selects whichever achieves the lower maximum vertex-to-surface distance. If the cone's fitted half-angle is outside the valid range (2°–85°) or its apex is too far from the mesh, the cone fit is rejected. The fits use: (1) Axis direction from smallest eigenvector of the area-weighted normal covariance matrix $M = \sum w_i n_i n_i^T$. (2) For cylinders: project vertices perpendicular to the axis, fit a 2D circle for axis position and radius. For cones: estimate half-angle and apex from vertex positions along the axis. (3) LM refinement minimizing vertex-to-surface distances, with vertices **recentered** around their centroid for numerical stability (parameters shifted back after fitting), and `patience=500` to ensure convergence well below vertex tolerance. With `--verbose 4` or higher, each seed fit logs both the cone and cylinder fit attempts along with their max vertex/surface errors and rejection reasons. See [SURFACE_FITTING.md](SURFACE_FITTING.md) for detailed fitting math.
 
 **Distance metric**: For cylinders (axis origin `o`, axis direction `a`, radius `r`): distance from point `p` is $| \|p - o - ((p-o)\cdot a)a\| - r |$. For cones (apex, axis, half_angle): distance is the point-to-cone-surface distance along the radial direction.
 
@@ -615,7 +615,7 @@ Write constructed solid(s) to a STEP file.
 
 ## Visualization (`--viz-stages`)
 
-The `--viz-stages` flag enables interactive 3D visualization for debugging each pipeline stage. The user specifies a stage pattern (e.g. `2.2` for conical BFS, or `2.*` for all stage 2 sub-stages).
+The `--viz-stages` flag enables interactive 3D visualization for debugging each pipeline stage. The user specifies a stage pattern (e.g. `2.2` for conical BFS, or `2.*` for all stage 2 sub-stages). The companion `--viz-stages-level` flag (default 1) controls how often the visualization pauses: level 1 pauses at committed hypotheses and stage 2.6 selections, level 2 also pauses at each accepted seed, and level 3 also pauses at each individual BFS face acceptance.
 
 ### Architecture
 
@@ -665,11 +665,17 @@ The `SurfaceType` trait provides:
 - `viz_overlays(fit, mesh, face_list)`: Returns geometry overlays (e.g., a translucent cylinder for conical fits, a sphere for spherical fits).
 - `viz_fit_description(fit)`: Returns a short text description of the fit parameters for the status bar.
 
-The generic `generate_hypotheses()` function in `src/stage2/bfs.rs` sends viz overlays at two points:
-1. **Seed display**: After a seed is validated, shows the seed faces with the initial fit overlay.
-2. **BFS accept**: After each face accepted during BFS expansion, shows the growing region with the updated fit.
+The generic `generate_hypotheses()` function in `src/stage2/bfs.rs` sends viz overlays controlled by `--viz-stages-level`:
+- **Level 1** (default): Pause only after a hypothesis is committed (best trial selected and assigned to faces); also pause at stage 2.6 selection overlays. Least disruptive — good for checking overall results.
+- **Level 2**: Also pause after each accepted seed (before BFS expansion begins). Useful to inspect initial fit quality.
+- **Level 3**: Also pause after each individual BFS face acceptance during region growing. Very granular; use for tracing specific expansion decisions.
 
-When `viz` is `None` (the common case), all visualization is skipped with zero overhead.
+BFS debug verbosity (controlled by `--verbose`) uses consistent indentation (no `[prefix]` tags):
+- **Level 1**: Stage summaries (hypothesis counts, timing).
+- **Level 2**: Per-hypothesis details (seed face list, final fit parameters).
+- **Level 3**: Per-committed-hypothesis progress (seed/fit counts, profiling stats).
+- **Level 4**: Per-seed-attempt details (seed rejected/accepted with error values, fit descriptions).
+- **Level 5**: Per-BFS-face exploration details (each face accepted, rejected, or skipped with error values).
 
 ---
 

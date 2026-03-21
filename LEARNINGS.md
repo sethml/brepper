@@ -433,3 +433,19 @@ For a cone with half-angle ha, face normals make angle (90°−ha) with the axis
 
 
 The `Geom_ToroidalSurface` binding was present in opencascade-sys all along (`geom::ToroidalSurface::new_ax3_real2`), but workspace-scoped search tools (grep_search, file_search, semantic_search, and Explore agent searches) cannot find content in `../opencascade-rs/` because it's outside the workspace root. Use terminal `grep` to search files outside the workspace. Don't assume a binding is missing just because workspace search tools return no results.
+
+### BFS verbosity levels and viz_level
+
+Verbosity in `generate_hypotheses()` (in `bfs.rs`) uses consistent indentation — no `[prefix]` tags:
+- Level 1: stage summary output (in `stage2/mod.rs`)
+- Level 2: per-hypothesis detail
+- Level 3: per-committed-hypothesis progress/stats (2s interval profiling reports, seed/fit counts)
+- Level 4: per-seed-attempt details (seed accepted/rejected with error values, fit descriptions)
+- Level 5: per-BFS-face exploration (each face accepted/rejected/skipped with error values)
+
+Viz pause granularity in BFS is controlled by `BfsConfig.viz_level` (set from `Config.viz_stages_level` → `--viz-stages-level` CLI flag):
+- Level 1: pause only at committed hypotheses and stage 2.6 selections (default, least intrusive)
+- Level 2: also pause after each accepted seed, before BFS expansion
+- Level 3: also pause after each individual BFS face acceptance
+
+Both `verbosity` and `viz_level` are fields in `BfsConfig` (defined in `src/stage2/bfs.rs`) and set in `stage2/mod.rs` when building `BfsConfig` from `Config`.

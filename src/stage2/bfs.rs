@@ -24,6 +24,8 @@ pub(super) struct BfsConfig {
     pub surface_tol: f64,
     pub angular_tol: f64,
     pub verbosity: u8,
+    /// Viz detail level: 1=commits, 2=seeds, 3=BFS faces
+    pub viz_level: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -231,10 +233,10 @@ where
         }
 
         prof_faces_visited += 1;
-        // PROFILING: periodic progress report every 2 seconds
-        if prof_last_report.elapsed().as_secs_f64() > 2.0 {
+        // Periodic progress report every 2 seconds
+        if config.verbosity >= 3 && prof_last_report.elapsed().as_secs_f64() > 2.0 {
             eprintln!(
-                "  [{}-BFS PROFILE] fi={}/{} ({:.1}%), elapsed={:.1}s, seeds_so_far={}, fits={}, refits={}, committed={}",
+                "    {} fi={}/{} ({:.1}%), elapsed={:.1}s, seeds={}, fits={}, refits={}, committed={}",
                 S::name(), fi, num_faces, 100.0 * fi as f64 / num_faces as f64,
                 prof_start.elapsed().as_secs_f64(),
                 prof_total_seed_count, prof_total_fit_calls, prof_total_refit_calls, committed,
@@ -256,11 +258,14 @@ where
 
         let mut best_area = -1.0_f64;
         let mut best_hypothesis: Option<S::Hypothesis> = None;
+        let mut best_seed_faces: Vec<usize> = Vec::new();
+        let mut best_fit_desc = String::new();
+        let mut best_fit: Option<S::Fit> = None;
 
         for seed in &seeds {
-            if config.verbosity >= 3 {
+            if config.verbosity >= 4 {
                 let seed_str: Vec<String> = seed.faces.iter().map(|f| f.to_string()).collect();
-                eprintln!("    [{}-BFS] trying seed ({})", S::name(), seed_str.join(", "));
+                eprintln!("      trying seed ({})", seed_str.join(", "));
             }
             let mut seed_vertex_set: HashSet<usize> = HashSet::new();
             for &sfi in &seed.faces {
@@ -278,8 +283,8 @@ where
                     prof_time_seed_fit += t_fit.elapsed();
                     prof_total_fit_calls += 1;
                     fit_failures += 1;
-                    if config.verbosity >= 3 {
-                        eprintln!("    [{}-BFS] seed fit failed: no valid fit", S::name());
+                    if config.verbosity >= 4 {
+                        eprintln!("      seed fit failed: no valid fit");
                     }
                     continue;
                 }
@@ -303,10 +308,10 @@ where
                 seed_valid = false;
             }
             if !seed_valid {
-                if config.verbosity >= 3 {
+                if config.verbosity >= 4 {
                     eprintln!(
-                        "    [{}-BFS] seed rejected: vertex err {:.6e} > limit {:.6e}",
-                        S::name(), seed_max_vtol, seed_vtol
+                        "      seed rejected: max vertex err {:.6e} > limit {:.6e}",
+                        seed_max_vtol, seed_vtol
                     );
                 }
                 continue;
@@ -324,10 +329,10 @@ where
                 seed_valid = false;
             }
             if !seed_valid {
-                if config.verbosity >= 3 {
+                if config.verbosity >= 4 {
                     eprintln!(
-                        "    [{}-BFS] seed rejected: surface err {:.6e} > limit {:.6e}",
-                        S::name(), seed_max_stol, stol
+                        "      seed rejected: max surface err {:.6e} > limit {:.6e}",
+                        seed_max_stol, stol
                     );
                 }
                 seed_stol_failures += 1;
@@ -346,8 +351,8 @@ where
                 }
             }
             if !angle_ok {
-                if config.verbosity >= 3 {
-                    eprintln!("    [{}-BFS] seed rejected: dihedral angle exceeds limit", S::name());
+                if config.verbosity >= 4 {
+                    eprintln!("      seed rejected: dihedral angle exceeds limit");
                 }
                 seed_angle_failures += 1;
                 continue;
@@ -356,8 +361,19 @@ where
             let mut current_fit = fit;
             S::determine_convexity(mesh, &seed.faces, &mut current_fit);
 
-            // --- Viz: show seed faces ---
+            if config.verbosity >= 4 {
+                let seed_str: Vec<String> = seed.faces.iter().map(|f| f.to_string()).collect();
+                eprintln!(
+                    "      seed accepted ({}): {} vertices, max_vtx_err={:.6e}, max_sfc_err={:.6e}, {}",
+                    seed_str.join(","), seed_vertices.len(),
+                    seed_max_vtol, seed_max_stol,
+                    S::viz_fit_description(&current_fit),
+                );
+            }
+
+            // --- Viz: show seed faces (viz_level >= 2) ---
             let mut skip_viz = false;
+            if config.viz_level >= 2 {
             if let Some(viz_sender) = viz {
                 // Auto-skip if we're seeking a specific face
                 if let Some(target) = skip_to_face {
@@ -406,6 +422,7 @@ where
                 }
                 }
             }
+            }
 
             // --- BFS expansion ---
             let t_bfs = std::time::Instant::now();
@@ -447,10 +464,16 @@ where
                         }
                     }
                     if angle_reject {
+                        if config.verbosity >= 5 {
+                            eprintln!("        face {}: rejected (dihedral angle exceeds limit)", ni);
+                        }
                         continue;
                     }
 
                     if !S::convexity_check(&current_fit, mesh, ni) {
+                        if config.verbosity >= 5 {
+                            eprintln!("        face {}: rejected (convexity mismatch)", ni);
+                        }
                         continue;
                     }
 
@@ -475,7 +498,19 @@ where
 
                     if max_vtx_dist <= vtol && ctr_dist <= stol {
                         // Accept directly
+                        if config.verbosity >= 5 {
+                            eprintln!(
+                                "        face {}: accepted (vtx_err={:.6e}, sfc_err={:.6e})",
+                                ni, max_vtx_dist, ctr_dist,
+                            );
+                        }
                     } else if max_vtx_dist > skip_vtol || ctr_dist > skip_stol {
+                        if config.verbosity >= 5 {
+                            eprintln!(
+                                "        face {}: skipped (vtx_err={:.6e}, sfc_err={:.6e}, beyond refit range)",
+                                ni, max_vtx_dist, ctr_dist,
+                            );
+                        }
                         continue;
                     } else {
                         let t_refit = std::time::Instant::now();
@@ -488,7 +523,12 @@ where
 
                         let mut refit = match S::fit_surface(mesh, &test_faces, &test_verts, 0) {
                             Some(f) => f,
-                            None => { prof_time_refit += t_refit.elapsed(); prof_total_refit_calls += 1; continue; },
+                            None => {
+                                if config.verbosity >= 5 {
+                                    eprintln!("        face {}: refit failed (no valid fit)", ni);
+                                }
+                                prof_time_refit += t_refit.elapsed(); prof_total_refit_calls += 1; continue;
+                            },
                         };
                         prof_total_refit_calls += 1;
 
@@ -515,6 +555,9 @@ where
                             }
                         }
                         if !refit_ok {
+                            if config.verbosity >= 5 {
+                                eprintln!("        face {}: rejected after refit (tolerance exceeded)", ni);
+                            }
                             prof_time_refit += t_refit.elapsed();
                             continue;
                         }
@@ -523,6 +566,28 @@ where
                         S::determine_convexity(mesh, &trial_faces, &mut refit);
                         current_fit = refit;
                         prof_time_refit += t_refit.elapsed();
+                        if config.verbosity >= 5 {
+                            // Compute refit max errors for logging
+                            let mut refit_max_vtx = 0.0_f64;
+                            let mut refit_max_ctr = 0.0_f64;
+                            for &tfi in &test_faces {
+                                let tf = &mesh.faces[tfi];
+                                let tvc = tf.vertex_count as usize;
+                                for &vi in &tf.vertex_indices[..tvc] {
+                                    let v = &mesh.vertices[vi];
+                                    let d = S::vertex_distance(&current_fit, &[v.x, v.y, v.z]);
+                                    refit_max_vtx = refit_max_vtx.max(d);
+                                }
+                                let tc = face_centroid(&mesh.faces[tfi], &mesh.vertices);
+                                let td = S::centroid_distance(&current_fit, &tc);
+                                refit_max_ctr = refit_max_ctr.max(td);
+                            }
+                            eprintln!(
+                                "        face {}: accepted after refit (vtx_err={:.6e}, sfc_err={:.6e}, {})",
+                                ni, refit_max_vtx, refit_max_ctr,
+                                S::viz_fit_description(&current_fit),
+                            );
+                        }
                     }
 
                     trial_faces.push(ni);
@@ -533,7 +598,8 @@ where
                     }
                     bfs_queue.push_back(ni);
 
-                    // --- Viz: show accepted face ---
+                    // --- Viz: show accepted face (viz_level >= 3) ---
+                    if config.viz_level >= 3 {
                     if let Some(viz_sender) = viz {
                         if !skip_viz {
                         let accepted_nonseed: Vec<usize> = trial_faces.iter()
@@ -580,6 +646,7 @@ where
                         }
                         }
                     }
+                    }
                 }
             }
             prof_time_bfs += t_bfs.elapsed();
@@ -618,6 +685,9 @@ where
 
             if total_area > best_area {
                 best_area = total_area;
+                best_seed_faces = seed.faces.clone();
+                best_fit_desc = S::viz_fit_description(&current_fit);
+                best_fit = Some(current_fit.clone());
                 let mut sorted_verts: Vec<usize> = trial_vertex_set.into_iter().collect();
                 sorted_verts.sort_unstable();
                 best_hypothesis =
@@ -632,12 +702,58 @@ where
             for &tfi in hyp.faces() {
                 S::set_hypothesis_field(&mut mesh.faces[tfi], hyp_idx);
             }
-            if config.verbosity >= 1 {
+            if config.verbosity >= 3 {
+                let seed_str: Vec<String> = best_seed_faces.iter().map(|f| f.to_string()).collect();
                 eprintln!(
-                    "  [{}-BFS] committed hyp {} from fi={}: {} faces",
-                    S::name(), hyp_idx, fi, hyp.faces().len()
+                    "    committed {} hyp {}: {} faces, seed=({}), {}",
+                    S::name(), hyp_idx, hyp.faces().len(), seed_str.join(","), best_fit_desc,
                 );
             }
+
+            // --- Viz: show committed hypothesis (viz_level >= 1) ---
+            if config.viz_level >= 1 {
+                if let Some(viz_sender) = viz {
+                    let hyp_faces: Vec<usize> = hyp.faces().to_vec();
+                    let (cylinders, cones, spheres, tori) = if let Some(ref fit) = best_fit {
+                        S::viz_overlays(fit, mesh, &hyp_faces)
+                    } else {
+                        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+                    };
+                    let mut highlights = vec![
+                        viz::FaceHighlight { face_indices: hyp_faces.clone(), color: [0.2, 0.8, 0.2, 1.0] },
+                    ];
+                    // Gray background for all other committed faces
+                    let bg_faces: Vec<usize> = (0..mesh.faces.len())
+                        .filter(|f| {
+                            let h = S::hypothesis_field(&mesh.faces[*f]);
+                            h >= 0 && !hyp_faces.contains(f)
+                        })
+                        .collect();
+                    if !bg_faces.is_empty() {
+                        highlights.push(viz::FaceHighlight { face_indices: bg_faces, color: [0.5, 0.5, 0.5, 1.0] });
+                    }
+                    let mut overlay = viz::VizOverlay::new();
+                    overlay.status_text = format!(
+                        "BFS-{}: committed hyp {} ({} faces) {} [space=next, click=skip-to-face]",
+                        S::name(), hyp_idx, hyp.faces().len(), best_fit_desc,
+                    );
+                    overlay.face_highlights = highlights;
+                    overlay.cylinders = cylinders;
+                    overlay.cones = cones;
+                    overlay.spheres = spheres;
+                    overlay.tori = tori;
+                    if !hyp_faces.is_empty() {
+                        overlay.focus_point = Some(viz_face_centroid(hyp_faces[0], mesh));
+                        overlay.focus_normal = viz_face_normal(hyp_faces[0], mesh);
+                    }
+                    match viz_sender.show_and_wait(overlay) {
+                        VizAction::Quit => return (hypotheses, true),
+                        VizAction::SkipToSeed(face) => { skip_to_face = Some(face); }
+                        _ => {}
+                    }
+                }
+            }
+
             hypotheses.push(hyp);
         }
     }
@@ -649,38 +765,40 @@ where
         }
     }
 
-    if config.verbosity >= 2 {
+    if config.verbosity >= 3 {
         eprintln!(
-            "  [{}-BFS] stats: {} seeds generated, {} fit failures, {} tried",
+            "    {} stats: {} seeds generated, {} fit failures, {} tried",
             S::name(), seeds_generated, fit_failures, seeds_tried
         );
         eprintln!(
-            "    stol fail: {}, angle fail: {}, accept fail: {}, committed: {}",
+            "      stol fail: {}, angle fail: {}, accept fail: {}, committed: {}",
             seed_stol_failures, seed_angle_failures, acceptance_failures, committed
         );
     }
 
     // PROFILING: final summary
     let prof_total = prof_start.elapsed();
+    if config.verbosity >= 3 {
     eprintln!(
-        "  [{}-BFS PROFILE SUMMARY] total={:.3}s, faces_visited={}, total_seeds={}, max_seeds_per_face={}",
+        "    {} profile: total={:.3}s, faces_visited={}, total_seeds={}, max_seeds_per_face={}",
         S::name(), prof_total.as_secs_f64(), prof_faces_visited, prof_total_seed_count, prof_max_seeds_per_face,
     );
     eprintln!(
-        "    seed_gen={:.3}s, seed_fit={:.3}s ({} calls), bfs={:.3}s (total_bfs_faces={}, max={})",
+        "      seed_gen={:.3}s, seed_fit={:.3}s ({} calls), bfs={:.3}s (total_bfs_faces={}, max={})",
         prof_time_seed_gen.as_secs_f64(), prof_time_seed_fit.as_secs_f64(), prof_total_fit_calls,
         prof_time_bfs.as_secs_f64(), prof_total_bfs_faces, prof_max_bfs_faces,
     );
     eprintln!(
-        "    refit={:.3}s ({} calls), final_fit={:.3}s, acceptance={:.3}s",
+        "      refit={:.3}s ({} calls), final_fit={:.3}s, acceptance={:.3}s",
         prof_time_refit.as_secs_f64(), prof_total_refit_calls,
         prof_time_final_fit.as_secs_f64(), prof_time_acceptance.as_secs_f64(),
     );
     eprintln!(
-        "    avg_seed_fit={:.3}ms, avg_refit={:.3}ms",
+        "      avg_seed_fit={:.3}ms, avg_refit={:.3}ms",
         if prof_total_fit_calls > 0 { prof_time_seed_fit.as_secs_f64() * 1000.0 / prof_total_fit_calls as f64 } else { 0.0 },
         if prof_total_refit_calls > 0 { prof_time_refit.as_secs_f64() * 1000.0 / prof_total_refit_calls as f64 } else { 0.0 },
     );
+    }
 
     (hypotheses, false)
 }

@@ -820,7 +820,7 @@ fn fit_cone(
                 (apex, axis, half_angle)
             };
 
-        // DEBUG: normal consistency variance
+        /* // DEBUG: normal consistency variance
         let dots: Vec<f64> = face_indices.iter()
             .filter_map(|&fi| faces[fi].normal.map(|n| {
                 n[0] * final_dir[0] + n[1] * final_dir[1] + n[2] * final_dir[2]
@@ -831,7 +831,7 @@ fn fit_cone(
             let var = dots.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / dots.len() as f64;
             eprintln!("[DEBUG fit_cone truncated] n_faces={} half_angle={:.2}° n·axis var={:.6} std={:.4}",
                 face_indices.len(), final_ha.to_degrees(), var, var.sqrt());
-        }
+        } */
 
         Some((final_apex, final_dir, final_ha))
     }
@@ -1206,9 +1206,9 @@ impl SurfaceType for ConicalSurface {
         let cone_fit = cone_result.and_then(|(apex, dir, ha)| {
             let ha_deg = ha.to_degrees();
             if !(MIN_HALF_ANGLE_DEG..=MAX_HALF_ANGLE_DEG).contains(&ha_deg) {
-                if verbosity >= 3 {
+            if verbosity >= 4 {
                     eprintln!(
-                        "      [conical] cone fit rejected: half_angle={:.2}° outside [{:.0}°, {:.0}°]",
+                        "      cone fit rejected: half_angle={:.2}\u{00b0} outside [{:.0}\u{00b0}, {:.0}\u{00b0}]",
                         ha_deg, MIN_HALF_ANGLE_DEG, MAX_HALF_ANGLE_DEG
                     );
                 }
@@ -1230,9 +1230,9 @@ impl SurfaceType for ConicalSurface {
                 + (apex[1] - bb_center[1]).powi(2)
                 + (apex[2] - bb_center[2]).powi(2)).sqrt();
             if apex_dist > bb_diag * MAX_APEX_DISTANCE_FACTOR {
-                if verbosity >= 3 {
+                if verbosity >= 4 {
                     eprintln!(
-                        "      [conical] cone fit rejected: apex dist {:.4e} > {:.1} * bb_diag {:.4e}",
+                        "      cone fit rejected: apex dist {:.4e} > {:.1} * bb_diag {:.4e}",
                         apex_dist, MAX_APEX_DISTANCE_FACTOR, bb_diag
                     );
                 }
@@ -1241,8 +1241,8 @@ impl SurfaceType for ConicalSurface {
             Some(ConeFit { apex, axis_direction: dir, half_angle: ha, radius: 0.0, convex: None })
         });
 
-        if cone_result.is_none() && verbosity >= 3 {
-            eprintln!("      [conical] cone fit failed: fit_cone returned None");
+        if cone_result.is_none() && verbosity >= 4 {
+            eprintln!("      cone fit failed: fit_cone returned None");
         }
 
         // Compute max vertex error and max surface (centroid) error for cone fit
@@ -1256,9 +1256,9 @@ impl SurfaceType for ConicalSurface {
                 let v = MeshVertex::from_xyz(c[0], c[1], c[2]);
                 vertex_to_cone_distance(&v, &fit.apex, &fit.axis_direction, fit.half_angle).abs()
             }).fold(0.0_f64, f64::max);
-            if verbosity >= 3 {
+            if verbosity >= 4 {
                 eprintln!(
-                    "      [conical] cone fit: half_angle={:.2}°, max_vtx_err={:.6e}, max_sfc_err={:.6e}",
+                    "      cone fit: half_angle={:.2}\u{00b0}, max_vtx_err={:.6e}, max_sfc_err={:.6e}",
                     fit.half_angle.to_degrees(), vtx, sfc
                 );
             }
@@ -1274,8 +1274,8 @@ impl SurfaceType for ConicalSurface {
             ConeFit { apex: origin, axis_direction: dir, half_angle: 0.0, radius, convex: None }
         });
 
-        if cyl_result.is_none() && verbosity >= 3 && cone_fit.is_none() {
-            eprintln!("      [conical] cylinder fit failed: fit_cylinder returned None");
+        if cyl_result.is_none() && verbosity >= 4 && cone_fit.is_none() {
+            eprintln!("      cylinder fit failed: fit_cylinder returned None");
         }
 
         // Compute max vertex error and max surface (centroid) error for cylinder fit
@@ -1289,9 +1289,9 @@ impl SurfaceType for ConicalSurface {
                 let v = MeshVertex::from_xyz(c[0], c[1], c[2]);
                 vertex_to_cylinder_distance(&v, &fit.apex, &fit.axis_direction, fit.radius).abs()
             }).fold(0.0_f64, f64::max);
-            if verbosity >= 3 && cone_fit.is_none() {
+            if verbosity >= 4 && cone_fit.is_none() {
                 eprintln!(
-                    "      [conical] cylinder fit: radius={:.6e}, max_vtx_err={:.6e}, max_sfc_err={:.6e}",
+                    "      cylinder fit: radius={:.6e}, max_vtx_err={:.6e}, max_sfc_err={:.6e}",
                     fit.radius, vtx, sfc
                 );
             }
@@ -1307,17 +1307,17 @@ impl SurfaceType for ConicalSurface {
                 let cv = cyl_vtx_max.unwrap();
                 let kv = cone_vtx_max.unwrap();
                 if cv <= kv {
-                    if verbosity >= 3 {
+                    if verbosity >= 4 {
                         eprintln!(
-                            "      [conical] selected cylinder (vtx_err {:.6e} <= cone {:.6e})",
+                            "      selected cylinder (vtx_err {:.6e} <= cone {:.6e})",
                             cv, kv
                         );
                     }
                     Some(cf)
                 } else {
-                    if verbosity >= 3 {
+                    if verbosity >= 4 {
                         eprintln!(
-                            "      [conical] selected cone (vtx_err {:.6e} < cylinder {:.6e})",
+                            "      selected cone (vtx_err {:.6e} < cylinder {:.6e})",
                             kv, cv
                         );
                     }
@@ -1377,15 +1377,10 @@ impl SurfaceType for ConicalSurface {
         // Normal-axis consistency check removed: it's OK to detect cones on
         // spheres — the surface selection phase (stage 2.5) will pick the sphere
         // hypothesis over the conical hypotheses because spheres cover more area.
-        let angular_ok = angular_coverage_valid(
+        angular_coverage_valid(
             face_list, &fit.apex, &fit.axis_direction,
             &mesh.faces, &mesh.vertices,
-        );
-        if angular_ok {
-            eprintln!("[DEBUG acceptance PASS] n_faces={} half_angle={:.2}°",
-                face_list.len(), fit.half_angle.to_degrees());
-        }
-        angular_ok
+        )
     }
 
     fn viz_overlays(
