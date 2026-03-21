@@ -754,7 +754,14 @@ fn select_surfaces(
                             ));
                         }
                         4 => {
-                            // Toroidal competing — no viz overlay yet
+                            let hyp = &toroidal_hypotheses[other.hypothesis_index];
+                            overlay.tori.push(viz::TorusOverlay {
+                                center: hyp.center,
+                                direction: hyp.axis_direction,
+                                major_radius: hyp.major_radius,
+                                minor_radius: hyp.minor_radius,
+                                color: [0.5, 0.5, 0.5, 0.25],
+                            });
                         }
                         _ => {}
                     }
@@ -796,7 +803,17 @@ fn select_surfaces(
                             ));
                             "conical"
                         }
-                        4 => "toroidal",
+                        4 => {
+                            let hyp = &toroidal_hypotheses[candidates[ci].hypothesis_index];
+                            overlay.tori.push(viz::TorusOverlay {
+                                center: hyp.center,
+                                direction: hyp.axis_direction,
+                                major_radius: hyp.major_radius,
+                                minor_radius: hyp.minor_radius,
+                                color: [0.0, 0.8, 0.0, 0.3],
+                            });
+                            "toroidal"
+                        }
                         _ => "unknown",
                     }
                 }

@@ -207,3 +207,6 @@ Moved the test cases table from DEVELOPMENT_PLAN.md into a new script-generated 
 
 ## Conical hypothesis visualization
 Added cone overlay rendering to the interactive viz. Conical hypotheses (half_angle > 0) now display as translucent cone surfaces instead of cylinders. Added `ConeOverlay` struct, `generate_cone_mesh` function, and `centered_cone_overlay` helper. Updated BFS viz, stage 2.6 competing/winning hypothesis viz, and the render loop to handle cone overlays.
+
+## Toroidal hypothesis visualization
+Added torus overlay rendering to the interactive viz. Toroidal hypotheses now display as translucent torus surfaces instead of cylinders at the major radius. Added `TorusOverlay` struct, `generate_torus_mesh` function, and `build_torus_overlay_mesh`. Updated BFS trait, all `viz_overlays` implementations, stage 2.6 competing/winning hypothesis viz, and the render loop.

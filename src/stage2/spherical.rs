@@ -485,13 +485,13 @@ impl SurfaceType for SphericalSurface {
         fit: &Self::Fit,
         _mesh: &ConnectedMesh,
         _face_list: &[usize],
-    ) -> (Vec<viz::CylinderOverlay>, Vec<viz::ConeOverlay>, Vec<viz::SphereOverlay>) {
+    ) -> (Vec<viz::CylinderOverlay>, Vec<viz::ConeOverlay>, Vec<viz::SphereOverlay>, Vec<viz::TorusOverlay>) {
         let sphere = viz::SphereOverlay {
             center: fit.center,
             radius: fit.radius,
             color: [0.2, 0.4, 1.0, 0.15],
         };
-        (Vec::new(), Vec::new(), vec![sphere])
+        (Vec::new(), Vec::new(), vec![sphere], Vec::new())
     }
 
     fn viz_fit_description(fit: &Self::Fit) -> String {

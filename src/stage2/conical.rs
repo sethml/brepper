@@ -1379,7 +1379,7 @@ impl SurfaceType for ConicalSurface {
         fit: &Self::Fit,
         mesh: &ConnectedMesh,
         face_list: &[usize],
-    ) -> (Vec<viz::CylinderOverlay>, Vec<viz::ConeOverlay>, Vec<viz::SphereOverlay>) {
+    ) -> (Vec<viz::CylinderOverlay>, Vec<viz::ConeOverlay>, Vec<viz::SphereOverlay>, Vec<viz::TorusOverlay>) {
         if fit.half_angle.abs() < 1e-6 {
             // Cylinder
             let cyl = centered_cylinder_overlay(
@@ -1387,7 +1387,7 @@ impl SurfaceType for ConicalSurface {
                 face_list, mesh,
                 [0.2, 0.4, 1.0, 0.3],
             );
-            (vec![cyl], Vec::new(), Vec::new())
+            (vec![cyl], Vec::new(), Vec::new(), Vec::new())
         } else {
             // True cone
             let cone = centered_cone_overlay(
@@ -1395,7 +1395,7 @@ impl SurfaceType for ConicalSurface {
                 face_list, mesh,
                 [0.2, 0.4, 1.0, 0.3],
             );
-            (Vec::new(), vec![cone], Vec::new())
+            (Vec::new(), vec![cone], Vec::new(), Vec::new())
         }
     }
 

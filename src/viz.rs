@@ -607,6 +607,91 @@ fn generate_sphere_mesh(
     (positions, normals, indices)
 }
 
+/// Generate a triangulated torus mesh for visualization.
+/// The torus is defined by center, axis direction, major radius R, and minor radius r.
+fn generate_torus_mesh(
+    center: [f64; 3],
+    direction: [f64; 3],
+    major_radius: f64,
+    minor_radius: f64,
+    major_segments: usize,
+    minor_segments: usize,
+) -> (Vec<Vector3<f32>>, Vec<Vector3<f32>>, Vec<u32>) {
+    let d = direction;
+    let arbitrary = if d[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let u = [
+        d[1] * arbitrary[2] - d[2] * arbitrary[1],
+        d[2] * arbitrary[0] - d[0] * arbitrary[2],
+        d[0] * arbitrary[1] - d[1] * arbitrary[0],
+    ];
+    let u_len = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt();
+    let u = [u[0] / u_len, u[1] / u_len, u[2] / u_len];
+    let w = [
+        d[1] * u[2] - d[2] * u[1],
+        d[2] * u[0] - d[0] * u[2],
+        d[0] * u[1] - d[1] * u[0],
+    ];
+
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut indices = Vec::new();
+
+    for i in 0..=major_segments {
+        let theta = 2.0 * std::f64::consts::PI * (i as f64) / (major_segments as f64);
+        let cos_th = theta.cos();
+        let sin_th = theta.sin();
+        // Radial direction in the major circle plane
+        let radial = [
+            u[0] * cos_th + w[0] * sin_th,
+            u[1] * cos_th + w[1] * sin_th,
+            u[2] * cos_th + w[2] * sin_th,
+        ];
+        // Center of the tube cross-section
+        let tube_center = [
+            center[0] + major_radius * radial[0],
+            center[1] + major_radius * radial[1],
+            center[2] + major_radius * radial[2],
+        ];
+
+        for j in 0..=minor_segments {
+            let phi = 2.0 * std::f64::consts::PI * (j as f64) / (minor_segments as f64);
+            let cos_ph = phi.cos();
+            let sin_ph = phi.sin();
+            // Normal: outward from tube center = cos(phi)*radial + sin(phi)*axis
+            let nx = cos_ph * radial[0] + sin_ph * d[0];
+            let ny = cos_ph * radial[1] + sin_ph * d[1];
+            let nz = cos_ph * radial[2] + sin_ph * d[2];
+            let px = tube_center[0] + minor_radius * nx;
+            let py = tube_center[1] + minor_radius * ny;
+            let pz = tube_center[2] + minor_radius * nz;
+            positions.push(vec3(px as f32, py as f32, pz as f32));
+            normals.push(vec3(nx as f32, ny as f32, nz as f32));
+        }
+    }
+
+    let ring_size = (minor_segments + 1) as u32;
+    for i in 0..major_segments {
+        for j in 0..minor_segments {
+            let i0 = (i as u32) * ring_size + (j as u32);
+            let i1 = i0 + 1;
+            let i2 = i0 + ring_size;
+            let i3 = i2 + 1;
+            indices.push(i0);
+            indices.push(i2);
+            indices.push(i1);
+            indices.push(i1);
+            indices.push(i2);
+            indices.push(i3);
+        }
+    }
+
+    (positions, normals, indices)
+}
+
 // ---------------------------------------------------------------------------
 // VizAction / VizOverlay: communication types
 // ---------------------------------------------------------------------------
@@ -662,6 +747,15 @@ pub struct SphereOverlay {
     pub color: [f32; 4],
 }
 
+/// A translucent torus overlay for visualization.
+pub struct TorusOverlay {
+    pub center: [f64; 3],
+    pub direction: [f64; 3],
+    pub major_radius: f64,
+    pub minor_radius: f64,
+    pub color: [f32; 4],
+}
+
 /// Arbitrary 3D line segments drawn in a specific color.
 pub struct LineOverlay {
     /// Pairs of points: [p0, p1, p0, p1, ...]
@@ -689,6 +783,7 @@ pub struct VizOverlay {
     pub cylinders: Vec<CylinderOverlay>,
     pub cones: Vec<ConeOverlay>,
     pub spheres: Vec<SphereOverlay>,
+    pub tori: Vec<TorusOverlay>,
     pub lines: Vec<LineOverlay>,
     pub shape_meshes: Vec<ShapeMeshOverlay>,
     pub status_text: String,
@@ -712,6 +807,7 @@ impl VizOverlay {
             cylinders: Vec::new(),
             cones: Vec::new(),
             spheres: Vec::new(),
+            tori: Vec::new(),
             lines: Vec::new(),
             shape_meshes: Vec::new(),
             status_text: String::new(),
@@ -961,6 +1057,38 @@ fn build_sphere_overlay_mesh(
     ov: &SphereOverlay,
 ) -> Gm<Mesh, PhysicalMaterial> {
     let (pos, nor, idx) = generate_sphere_mesh(ov.center, ov.radius, 24, 48);
+    let cpu_mesh = CpuMesh {
+        positions: Positions::F32(pos),
+        indices: Indices::U32(idx),
+        normals: Some(nor),
+        ..Default::default()
+    };
+    let albedo = Srgba::new(
+        (ov.color[0] * 255.0) as u8,
+        (ov.color[1] * 255.0) as u8,
+        (ov.color[2] * 255.0) as u8,
+        (ov.color[3] * 255.0) as u8,
+    );
+    Gm::new(
+        Mesh::new(ctx, &cpu_mesh),
+        PhysicalMaterial::new_transparent(
+            ctx,
+            &CpuMaterial {
+                albedo,
+                roughness: 0.3,
+                metallic: 0.0,
+                ..Default::default()
+            },
+        ),
+    )
+}
+
+fn build_torus_overlay_mesh(
+    ctx: &Context,
+    ov: &TorusOverlay,
+) -> Gm<Mesh, PhysicalMaterial> {
+    let (pos, nor, idx) =
+        generate_torus_mesh(ov.center, ov.direction, ov.major_radius, ov.minor_radius, 48, 24);
     let cpu_mesh = CpuMesh {
         positions: Positions::F32(pos),
         indices: Indices::U32(idx),
@@ -1244,6 +1372,7 @@ where
     let mut cylinder_meshes: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
     let mut cone_meshes: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
     let mut sphere_meshes: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
+    let mut torus_meshes: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
     let mut line_renderers: Vec<(WireframeRenderer, [f32; 4], bool)> = Vec::new(); // (renderer, color, no_depth_test)
     let mut shape_mesh_objects: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
     let mut shape_mesh_wireframes: Vec<(WireframeRenderer, [f32; 4])> = Vec::new();
@@ -1342,6 +1471,11 @@ where
                         .spheres
                         .iter()
                         .map(|s| build_sphere_overlay_mesh(&context, s))
+                        .collect();
+                    torus_meshes = overlay
+                        .tori
+                        .iter()
+                        .map(|t| build_torus_overlay_mesh(&context, t))
                         .collect();
                     line_renderers = overlay
                         .lines
@@ -1648,8 +1782,8 @@ where
                 }
             }
 
-            // Translucent cylinder/cone/sphere/shape mesh overlays
-            if !cylinder_meshes.is_empty() || !cone_meshes.is_empty() || !sphere_meshes.is_empty() || !shape_mesh_objects.is_empty() {
+            // Translucent cylinder/cone/sphere/torus/shape mesh overlays
+            if !cylinder_meshes.is_empty() || !cone_meshes.is_empty() || !sphere_meshes.is_empty() || !torus_meshes.is_empty() || !shape_mesh_objects.is_empty() {
                 unsafe {
                     use context::HasContext;
                     context.enable(context::BLEND);
@@ -1663,6 +1797,9 @@ where
                 }
                 for sm in &sphere_meshes {
                     screen.render(&camera, std::iter::once(sm as &dyn Object), &lights);
+                }
+                for tm in &torus_meshes {
+                    screen.render(&camera, std::iter::once(tm as &dyn Object), &lights);
                 }
                 for smo in &shape_mesh_objects {
                     screen.render(&camera, std::iter::once(smo as &dyn Object), &lights);

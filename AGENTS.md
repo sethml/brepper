@@ -19,7 +19,7 @@ The `/iterate` command triggers the full development cycle below. This is the pr
 3. Don't worry about running tests for now. We're making changes such that a bunch of tests are broken.
 4. Update README.md (if user-facing behavior changed) and DEVELOPMENT_PLAN.md to reflect your changes. When updating DEVELOPMENT_PLAN.md, ensure the algorithm descriptions in the Architecture section accurately describe the code as implemented — if the implementation differs from the original plan, update the plan to match reality.
 5. When complete, move the item from TODO.md to the end of DONE.md.
-6. Do an initial chat log export by running `../vscode-export-chat-log/export-chat-log.py`. Then read the **full output** of `git diff agent-logs/` to understand all of the work completed in this session, not just what's in your current context window.
+6. Do an initial chat log export by running `../vscode-export-chat-log/export-chat-log.py`. Then read the **full output** of `git diff agent-logs/` (not piped through head or tail) to understand all of the work completed in this session, not just what's in your current context window.
 7. Think about whether items in LEARNINGS.md are obsolete - if so, delete or rewrite them. If you modified surface fitting code, update SURFACE_FITTING.md.
 8. Think about whether you've learned things that may be useful to a future AI agent editing the code - if so, add them to LEARNINGS.md.
 9. Commit your changes (see Commit Messages and Commit Checklist below), including any pre-existing staged files.
@@ -94,7 +94,7 @@ User prompt(s):
   (include context for prompts that reference previous options/decisions)
 ```
 
-**Always** use a temporary file and `git commit -F tmp/COMMITMSG` rather than shell quoting to avoid shell parsing issues.
+**Always** write the commit message to a temporary file using your file editing tools (not a shell command!) and `git commit -F tmp/COMMITMSG` to avoid shell parsing issues.
 
 ## Development Plan Maintenance
 
