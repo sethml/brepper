@@ -201,3 +201,6 @@ Removed 1,305 lines of dead code left over from the pre-generic BFS implementati
 
 ## Robust cone fitting for pointed cones + prune unselected hypotheses
 Rewrote cone fitting algorithm to handle both pointed and truncated cones. For pointed cones (all faces share a single apex vertex), uses apex-vertex seeding with fixed-apex LM refinement. For truncated cones, uses multi-strategy axis estimation from normal differences. Added acceptance test with normal-axis variance threshold and half-angle bounds check to prevent false positive cones on spherical/cylindrical patches. Implemented post-selection pruning of unselected hypotheses with index remapping in `Stage2Output`.
+
+## Move test table to tests/RESULTS.md
+Moved the test cases table from DEVELOPMENT_PLAN.md into a new script-generated tests/RESULTS.md. Rewrote scripts/run_test_table.sh to generate the markdown file directly with header, per-directory tables, and summary. The script auto-discovers all STL files under tests/ so new models are picked up automatically. DEVELOPMENT_PLAN.md now references tests/RESULTS.md instead of embedding the table.

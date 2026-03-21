@@ -20,7 +20,7 @@ The `/iterate` command triggers the full development cycle below. This is the pr
 4. Update README.md (if user-facing behavior changed) and DEVELOPMENT_PLAN.md to reflect your changes. When updating DEVELOPMENT_PLAN.md, ensure the algorithm descriptions in the Architecture section accurately describe the code as implemented — if the implementation differs from the original plan, update the plan to match reality.
 5. When complete, move the item from TODO.md to the end of DONE.md.
 6. Do an initial chat log export by running `../vscode-export-chat-log/export-chat-log.py`. Then read the **full output** of `git diff agent-logs/` to understand all of the work completed in this session, not just what's in your current context window.
-7. Think about whether items in LEARNINGS.md are obsolete - if so, delete or rewrite them.
+7. Think about whether items in LEARNINGS.md are obsolete - if so, delete or rewrite them. If you modified surface fitting code, update SURFACE_FITTING.md.
 8. Think about whether you've learned things that may be useful to a future AI agent editing the code - if so, add them to LEARNINGS.md.
 9. Commit your changes (see Commit Messages and Commit Checklist below), including any pre-existing staged files.
 10. Think about whether you encountered code that would be clearer or more correct if refactored or improved. If so, make the improvements, test, and commit.
