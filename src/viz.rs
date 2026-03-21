@@ -483,6 +483,84 @@ fn generate_cylinder_mesh(
     (positions, normals, indices)
 }
 
+/// Generate a triangulated cone mesh for visualization.
+/// The cone is defined by apex, axis direction, half-angle, and axial extent
+/// (t_min, t_max) measured from the apex along the axis direction.
+fn generate_cone_mesh(
+    apex: [f64; 3],
+    direction: [f64; 3],
+    half_angle: f64,
+    t_min: f64,
+    t_max: f64,
+    segments: usize,
+) -> (Vec<Vector3<f32>>, Vec<Vector3<f32>>, Vec<u32>) {
+    let d = direction;
+    let arbitrary = if d[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let u = [
+        d[1] * arbitrary[2] - d[2] * arbitrary[1],
+        d[2] * arbitrary[0] - d[0] * arbitrary[2],
+        d[0] * arbitrary[1] - d[1] * arbitrary[0],
+    ];
+    let u_len = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt();
+    let u = [u[0] / u_len, u[1] / u_len, u[2] / u_len];
+    let w = [
+        d[1] * u[2] - d[2] * u[1],
+        d[2] * u[0] - d[0] * u[2],
+        d[0] * u[1] - d[1] * u[0],
+    ];
+
+    let sin_a = half_angle.sin();
+    let cos_a = half_angle.cos();
+
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut indices = Vec::new();
+
+    // Two rings: one at t_min, one at t_max
+    for ring in 0..2usize {
+        let t = if ring == 0 { t_min } else { t_max };
+        let radius = t * half_angle.tan();
+        for seg in 0..segments {
+            let angle = 2.0 * std::f64::consts::PI * (seg as f64) / (segments as f64);
+            let cos_th = angle.cos();
+            let sin_th = angle.sin();
+
+            let px = apex[0] + d[0] * t + radius * (u[0] * cos_th + w[0] * sin_th);
+            let py = apex[1] + d[1] * t + radius * (u[1] * cos_th + w[1] * sin_th);
+            let pz = apex[2] + d[2] * t + radius * (u[2] * cos_th + w[2] * sin_th);
+            positions.push(vec3(px as f32, py as f32, pz as f32));
+
+            // Normal: perpendicular to cone surface, pointing outward
+            // The normal has radial component cos(half_angle) and axial component -sin(half_angle)
+            let radial = [u[0] * cos_th + w[0] * sin_th, u[1] * cos_th + w[1] * sin_th, u[2] * cos_th + w[2] * sin_th];
+            let nx = radial[0] * cos_a - d[0] * sin_a;
+            let ny = radial[1] * cos_a - d[1] * sin_a;
+            let nz = radial[2] * cos_a - d[2] * sin_a;
+            normals.push(vec3(nx as f32, ny as f32, nz as f32));
+        }
+    }
+
+    for seg in 0..segments {
+        let next = (seg + 1) % segments;
+        let i0 = seg as u32;
+        let i1 = next as u32;
+        let i2 = (segments + seg) as u32;
+        let i3 = (segments + next) as u32;
+        indices.push(i0);
+        indices.push(i1);
+        indices.push(i2);
+        indices.push(i1);
+        indices.push(i3);
+        indices.push(i2);
+    }
+
+    (positions, normals, indices)
+}
+
 fn generate_sphere_mesh(
     center: [f64; 3],
     radius: f64,
@@ -567,6 +645,16 @@ pub struct CylinderOverlay {
     pub color: [f32; 4],
 }
 
+/// A translucent cone overlay for visualization.
+pub struct ConeOverlay {
+    pub apex: [f64; 3],
+    pub direction: [f64; 3],
+    pub half_angle: f64,
+    pub t_min: f64,
+    pub t_max: f64,
+    pub color: [f32; 4],
+}
+
 /// A translucent sphere overlay for visualization.
 pub struct SphereOverlay {
     pub center: [f64; 3],
@@ -599,6 +687,7 @@ pub struct VizOverlay {
     pub face_highlights: Vec<FaceHighlight>,
     pub edge_highlights: Vec<EdgeHighlight>,
     pub cylinders: Vec<CylinderOverlay>,
+    pub cones: Vec<ConeOverlay>,
     pub spheres: Vec<SphereOverlay>,
     pub lines: Vec<LineOverlay>,
     pub shape_meshes: Vec<ShapeMeshOverlay>,
@@ -621,6 +710,7 @@ impl VizOverlay {
             face_highlights: Vec::new(),
             edge_highlights: Vec::new(),
             cylinders: Vec::new(),
+            cones: Vec::new(),
             spheres: Vec::new(),
             lines: Vec::new(),
             shape_meshes: Vec::new(),
@@ -808,6 +898,38 @@ fn build_cylinder_overlay_mesh(
 ) -> Gm<Mesh, PhysicalMaterial> {
     let (pos, nor, idx) =
         generate_cylinder_mesh(ov.origin, ov.direction, ov.radius, ov.half_length, 48);
+    let cpu_mesh = CpuMesh {
+        positions: Positions::F32(pos),
+        indices: Indices::U32(idx),
+        normals: Some(nor),
+        ..Default::default()
+    };
+    let albedo = Srgba::new(
+        (ov.color[0] * 255.0) as u8,
+        (ov.color[1] * 255.0) as u8,
+        (ov.color[2] * 255.0) as u8,
+        (ov.color[3] * 255.0) as u8,
+    );
+    Gm::new(
+        Mesh::new(ctx, &cpu_mesh),
+        PhysicalMaterial::new_transparent(
+            ctx,
+            &CpuMaterial {
+                albedo,
+                roughness: 0.3,
+                metallic: 0.0,
+                ..Default::default()
+            },
+        ),
+    )
+}
+
+fn build_cone_overlay_mesh(
+    ctx: &Context,
+    ov: &ConeOverlay,
+) -> Gm<Mesh, PhysicalMaterial> {
+    let (pos, nor, idx) =
+        generate_cone_mesh(ov.apex, ov.direction, ov.half_angle, ov.t_min, ov.t_max, 48);
     let cpu_mesh = CpuMesh {
         positions: Positions::F32(pos),
         indices: Indices::U32(idx),
@@ -1120,6 +1242,7 @@ where
     let mut highlight_meshes: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
     let mut edge_highlight_renderers: Vec<(WireframeRenderer, [f32; 4])> = Vec::new();
     let mut cylinder_meshes: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
+    let mut cone_meshes: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
     let mut sphere_meshes: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
     let mut line_renderers: Vec<(WireframeRenderer, [f32; 4], bool)> = Vec::new(); // (renderer, color, no_depth_test)
     let mut shape_mesh_objects: Vec<Gm<Mesh, PhysicalMaterial>> = Vec::new();
@@ -1209,6 +1332,11 @@ where
                         .cylinders
                         .iter()
                         .map(|c| build_cylinder_overlay_mesh(&context, c))
+                        .collect();
+                    cone_meshes = overlay
+                        .cones
+                        .iter()
+                        .map(|c| build_cone_overlay_mesh(&context, c))
                         .collect();
                     sphere_meshes = overlay
                         .spheres
@@ -1520,14 +1648,17 @@ where
                 }
             }
 
-            // Translucent cylinder/sphere/shape mesh overlays
-            if !cylinder_meshes.is_empty() || !sphere_meshes.is_empty() || !shape_mesh_objects.is_empty() {
+            // Translucent cylinder/cone/sphere/shape mesh overlays
+            if !cylinder_meshes.is_empty() || !cone_meshes.is_empty() || !sphere_meshes.is_empty() || !shape_mesh_objects.is_empty() {
                 unsafe {
                     use context::HasContext;
                     context.enable(context::BLEND);
                     context.blend_func(context::SRC_ALPHA, context::ONE_MINUS_SRC_ALPHA);
                 }
                 for cm in &cylinder_meshes {
+                    screen.render(&camera, std::iter::once(cm as &dyn Object), &lights);
+                }
+                for cm in &cone_meshes {
                     screen.render(&camera, std::iter::once(cm as &dyn Object), &lights);
                 }
                 for sm in &sphere_meshes {

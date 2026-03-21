@@ -566,6 +566,35 @@ pub(crate) fn centered_cylinder_overlay(
     }
 }
 
+/// Create a ConeOverlay spanning the axial extent of the given faces (with padding).
+pub(crate) fn centered_cone_overlay(
+    apex: [f64; 3], direction: [f64; 3], half_angle: f64,
+    face_list: &[usize], mesh: &ConnectedMesh,
+    color: [f32; 4],
+) -> viz::ConeOverlay {
+    // Compute axial extent of face centroids relative to apex
+    let mut t_min = f64::INFINITY;
+    let mut t_max = f64::NEG_INFINITY;
+    for &fi in face_list {
+        let c = face_centroid(&mesh.faces[fi], &mesh.vertices);
+        let d = [c[0] - apex[0], c[1] - apex[1], c[2] - apex[2]];
+        let t = dot3(&d, &direction);
+        t_min = t_min.min(t);
+        t_max = t_max.max(t);
+    }
+    // Pad by 20% of the axial span for visual clarity
+    let span = t_max - t_min;
+    let pad = span * 0.2;
+    viz::ConeOverlay {
+        apex,
+        direction,
+        half_angle,
+        t_min: t_min - pad,
+        t_max: t_max + pad,
+        color,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Stage 2.6: Select surfaces for reconstruction
 // ---------------------------------------------------------------------------
@@ -716,8 +745,16 @@ fn select_surfaces(
                                 color: [0.5, 0.5, 0.5, 0.25],
                             });
                         }
-                        3 | 4 => {
-                            // Conical/toroidal competing — no viz overlay yet
+                        3 => {
+                            let hyp = &conical_hypotheses[other.hypothesis_index];
+                            overlay.cones.push(centered_cone_overlay(
+                                hyp.apex, hyp.axis_direction, hyp.half_angle,
+                                &other.faces, mesh,
+                                [0.5, 0.5, 0.5, 0.25],
+                            ));
+                        }
+                        4 => {
+                            // Toroidal competing — no viz overlay yet
                         }
                         _ => {}
                     }
@@ -749,9 +786,16 @@ fn select_surfaces(
                     "spherical"
                 }
                 _ => {
-                    // Conical/toroidal — no viz overlay yet
                     match candidates[ci].surface_type {
-                        3 => "conical",
+                        3 => {
+                            let hyp = &conical_hypotheses[candidates[ci].hypothesis_index];
+                            overlay.cones.push(centered_cone_overlay(
+                                hyp.apex, hyp.axis_direction, hyp.half_angle,
+                                &sel_faces, mesh,
+                                [0.0, 0.8, 0.0, 0.3],
+                            ));
+                            "conical"
+                        }
                         4 => "toroidal",
                         _ => "unknown",
                     }

@@ -204,3 +204,6 @@ Rewrote cone fitting algorithm to handle both pointed and truncated cones. For p
 
 ## Move test table to tests/RESULTS.md
 Moved the test cases table from DEVELOPMENT_PLAN.md into a new script-generated tests/RESULTS.md. Rewrote scripts/run_test_table.sh to generate the markdown file directly with header, per-directory tables, and summary. The script auto-discovers all STL files under tests/ so new models are picked up automatically. DEVELOPMENT_PLAN.md now references tests/RESULTS.md instead of embedding the table.
+
+## Conical hypothesis visualization
+Added cone overlay rendering to the interactive viz. Conical hypotheses (half_angle > 0) now display as translucent cone surfaces instead of cylinders. Added `ConeOverlay` struct, `generate_cone_mesh` function, and `centered_cone_overlay` helper. Updated BFS viz, stage 2.6 competing/winning hypothesis viz, and the render loop to handle cone overlays.

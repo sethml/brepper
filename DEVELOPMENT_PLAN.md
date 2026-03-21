@@ -637,16 +637,16 @@ Pipeline thread                          Main/render thread
 ```
 
 - `VizSender::show_and_wait(overlay)` sends a `VizOverlay` to the render thread and blocks.
-- The render thread displays face highlights, translucent geometry overlays (cylinders, spheres), status text, and optionally moves the camera.
+- The render thread displays face highlights, translucent geometry overlays (cylinders, cones, spheres), status text, and optionally moves the camera.
 - The user presses **Space** (NextStep), **Shift+Space** (NextSeed/skip to next seed), or **Q** (Quit).
 - The render thread sends back a `VizAction` and the pipeline thread resumes.
 
 ### Key types (in `src/viz.rs`)
 
 - `VizSender` / `VizReceiver`: Channel endpoints. Created by `viz_channel()`.
-- `VizOverlay`: A display frame containing face highlights, cylinder/sphere overlays, line overlays, shape meshes, status text, and optional camera focus.
+- `VizOverlay`: A display frame containing face highlights, cylinder/cone/sphere overlays, line overlays, shape meshes, status text, and optional camera focus.
 - `VizAction`: The user's response — `NextStep`, `NextSeed`, `SkipToSeed(face_index)`, or `Quit`.
-- `FaceHighlight`, `CylinderOverlay`, `SphereOverlay`, `LineOverlay`, `ShapeMeshOverlay`: Overlay primitives.
+- `FaceHighlight`, `CylinderOverlay`, `ConeOverlay`, `SphereOverlay`, `LineOverlay`, `ShapeMeshOverlay`: Overlay primitives.
 
 ### Interactive features
 

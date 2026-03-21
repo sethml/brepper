@@ -11,7 +11,7 @@ use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_CONICAL
 use crate::viz;
 
 use super::{
-    build_normal_covariance, centered_cylinder_overlay, cross3, dot3, face_centroid,
+    build_normal_covariance, centered_cone_overlay, centered_cylinder_overlay, cross3, dot3, face_centroid,
     largest_eigenvector_3x3, normalize3, perpendicular_basis, smallest_eigenvector_3x3,
     ConicalHypothesis, Stage2CompareError, MIN_CROSS_THRESHOLD, MIN_CONE_FACES,
     MIN_CYLINDER_FACES,
@@ -1379,13 +1379,24 @@ impl SurfaceType for ConicalSurface {
         fit: &Self::Fit,
         mesh: &ConnectedMesh,
         face_list: &[usize],
-    ) -> (Vec<viz::CylinderOverlay>, Vec<viz::SphereOverlay>) {
-        let cyl = centered_cylinder_overlay(
-            fit.apex, fit.axis_direction, fit.radius,
-            face_list, mesh,
-            [0.2, 0.4, 1.0, 0.3],
-        );
-        (vec![cyl], Vec::new())
+    ) -> (Vec<viz::CylinderOverlay>, Vec<viz::ConeOverlay>, Vec<viz::SphereOverlay>) {
+        if fit.half_angle.abs() < 1e-6 {
+            // Cylinder
+            let cyl = centered_cylinder_overlay(
+                fit.apex, fit.axis_direction, fit.radius,
+                face_list, mesh,
+                [0.2, 0.4, 1.0, 0.3],
+            );
+            (vec![cyl], Vec::new(), Vec::new())
+        } else {
+            // True cone
+            let cone = centered_cone_overlay(
+                fit.apex, fit.axis_direction, fit.half_angle,
+                face_list, mesh,
+                [0.2, 0.4, 1.0, 0.3],
+            );
+            (Vec::new(), vec![cone], Vec::new())
+        }
     }
 
     fn viz_fit_description(fit: &Self::Fit) -> String {
