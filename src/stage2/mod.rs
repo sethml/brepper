@@ -56,7 +56,9 @@ pub(crate) const MIN_CROSS_THRESHOLD: f64 = 0.01;
 /// has a vertex farther than `REFIT_SKIP_MULTIPLIER × vertex_tol` from the
 /// current fitted surface, the distance is too large for a re-fit to absorb and
 /// the face is rejected immediately without attempting re-fitting.
-pub(crate) const REFIT_SKIP_MULTIPLIER: f64 = 2.0;
+/// Set to 10.0 to allow aggressive refitting — the refit itself validates all
+/// faces, so the only cost of a high multiplier is more refit attempts.
+pub(crate) const REFIT_SKIP_MULTIPLIER: f64 = 10.0;
 
 /// Minimum number of mesh faces required to accept a cylindrical hypothesis.
 /// Any real CAD tessellation of a cylinder produces at least 3 facets around

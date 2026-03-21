@@ -747,18 +747,40 @@ fn fit_cone(
     // Check for pointed cone: a vertex present in ALL seed faces.
     let shared_apex = find_shared_apex_vertex(face_indices, faces, vertices);
 
-    let points: Vec<[f64; 3]> = vertex_set.iter()
-        .map(|&vi| [vertices[vi].x, vertices[vi].y, vertices[vi].z])
+    // Recenter vertices around their centroid for numerical stability.
+    let n_pts = vertex_set.len() as f64;
+    let mut centroid = [0.0_f64; 3];
+    for &vi in vertex_set.iter() {
+        centroid[0] += vertices[vi].x;
+        centroid[1] += vertices[vi].y;
+        centroid[2] += vertices[vi].z;
+    }
+    centroid[0] /= n_pts;
+    centroid[1] /= n_pts;
+    centroid[2] /= n_pts;
+
+    let centered_points: Vec<[f64; 3]> = vertex_set.iter()
+        .map(|&vi| [
+            vertices[vi].x - centroid[0],
+            vertices[vi].y - centroid[1],
+            vertices[vi].z - centroid[2],
+        ])
         .collect();
 
     if let Some(apex) = shared_apex {
         // --- Pointed cone path ---
+        // For fixed-apex LM, recenter both points and apex.
+        let centered_apex = [
+            apex[0] - centroid[0],
+            apex[1] - centroid[1],
+            apex[2] - centroid[2],
+        ];
         let mut axis = estimate_axis_from_normal_diffs(face_indices, faces)
             .or_else(|| estimate_axis_from_apex(&apex, vertex_set, vertices))?;
         let half_angle = estimate_half_angle(&apex, &mut axis, vertex_set, vertices)?;
 
-        let problem = ConeFixedApexLMProblem::new(points, apex, axis, half_angle);
-        let (result, _report) = LevenbergMarquardt::new().minimize(problem);
+        let problem = ConeFixedApexLMProblem::new(centered_points, centered_apex, axis, half_angle);
+        let (result, _report) = LevenbergMarquardt::new().with_patience(500).minimize(problem);
         let refined_dir = result.axis_dir_from_params(&result.params);
         let refined_ha = result.params[2];
         if refined_ha > 0.01 && refined_ha < 85.0_f64.to_radians() {
@@ -776,11 +798,20 @@ fn fit_cone(
         let (apex, half_angle) = estimate_apex_and_angle_from_profile(
             &mut axis, vertex_set, vertices)?;
 
-        // Full LM refinement
-        let problem = ConeLMProblem::new(points, axis, apex, half_angle);
-        let (result, _report) = LevenbergMarquardt::new().minimize(problem);
+        // Full LM refinement with recentered coordinates
+        let centered_apex = [
+            apex[0] - centroid[0],
+            apex[1] - centroid[1],
+            apex[2] - centroid[2],
+        ];
+        let problem = ConeLMProblem::new(centered_points, axis, centered_apex, half_angle);
+        let (result, _report) = LevenbergMarquardt::new().with_patience(500).minimize(problem);
         let refined_dir = result.axis_dir_from_params(&result.params);
-        let refined_apex = [result.params[2], result.params[3], result.params[4]];
+        let refined_apex = [
+            result.params[2] + centroid[0],
+            result.params[3] + centroid[1],
+            result.params[4] + centroid[2],
+        ];
         let refined_ha = result.params[5];
         let (final_apex, final_dir, final_ha) =
             if refined_ha > 0.01 && refined_ha < 85.0_f64.to_radians() {
@@ -1079,12 +1110,9 @@ impl SurfaceType for ConicalSurface {
 
     fn undeduced_value() -> i32 { UNDEDUCED_CONICAL_HYPOTHESIS }
 
-    /// Cone/cylinder seeds fit from few faces have higher vertex error than
-    /// the base vertex tolerance due to tessellation sagitta and limited
-    /// data for the 6-parameter LM fit.  A 5× multiplier accommodates
-    /// typical onshape/ccad medium-resolution meshes while still rejecting
-    /// grossly wrong fits.
-    fn seed_vtol_multiplier() -> f64 { 5.0 }
+    /// Vertices should lie precisely on the conical surface, so
+    /// the seed vertex tolerance matches the base vertex tolerance.
+    fn seed_vtol_multiplier() -> f64 { 1.0 }
 
     fn generate_seeds(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig) -> Vec<Seed> {
         if mesh.faces[fi].normal.is_none() {
@@ -1346,24 +1374,9 @@ impl SurfaceType for ConicalSurface {
         if fit.half_angle > 80.0_f64.to_radians() {
             return false;
         }
-        // Normal consistency: on a cone, n·axis = sin(half_angle) is constant.
-        // Reject hypotheses where normal dot products with the axis vary too much,
-        // which indicates the faces lie on a sphere or torus, not a cone.
-        let dots: Vec<f64> = face_list.iter()
-            .filter_map(|&fi| mesh.faces[fi].normal.map(|n| {
-                n[0] * fit.axis_direction[0]
-                    + n[1] * fit.axis_direction[1]
-                    + n[2] * fit.axis_direction[2]
-            }))
-            .collect();
-        if dots.len() >= 3 {
-            let mean = dots.iter().sum::<f64>() / dots.len() as f64;
-            let var = dots.iter().map(|d| (d - mean).powi(2)).sum::<f64>()
-                / dots.len() as f64;
-            if var > 0.0005 {
-                return false;
-            }
-        }
+        // Normal-axis consistency check removed: it's OK to detect cones on
+        // spheres — the surface selection phase (stage 2.5) will pick the sphere
+        // hypothesis over the conical hypotheses because spheres cover more area.
         let angular_ok = angular_coverage_valid(
             face_list, &fit.apex, &fit.axis_direction,
             &mesh.faces, &mesh.vertices,

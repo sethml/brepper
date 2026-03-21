@@ -210,3 +210,6 @@ Added cone overlay rendering to the interactive viz. Conical hypotheses (half_an
 
 ## Toroidal hypothesis visualization
 Added torus overlay rendering to the interactive viz. Toroidal hypotheses now display as translucent torus surfaces instead of cylinders at the major radius. Added `TorusOverlay` struct, `generate_torus_mesh` function, and `build_torus_overlay_mesh`. Updated BFS trait, all `viz_overlays` implementations, stage 2.6 competing/winning hypothesis viz, and the render loop.
+
+## Rework cone/cylinder fitting parameters and LM refinement
+Overhauled cone and cylinder fitting for robustness: set `REFIT_SKIP_MULTIPLIER` to 10.0 for aggressive refitting, set `seed_vtol_multiplier` to 1.0 (vertices lie precisely on the surface), removed normal-axis consistency check for cones (surface selection resolves overlaps), added vertex recentering around centroid before LM for numerical stability, and increased LM patience to 500 for both cone and cylinder fits. Updated SURFACE_FITTING.md and DEVELOPMENT_PLAN.md to reflect changes.

@@ -262,14 +262,40 @@ pub(super) fn fit_cylinder(
     // Initial circle fit to get starting origin and radius.
     let (axis_origin, radius) = fit_circle_for_axis(&axis_dir, vertex_set, vertices)?;
 
-    // Refine with Levenberg-Marquardt optimization on radial residuals.
+    // Recenter vertices around their centroid for numerical stability.
+    let n_pts = vertex_set.len() as f64;
+    let mut centroid = [0.0_f64; 3];
+    for &vi in vertex_set.iter() {
+        centroid[0] += vertices[vi].x;
+        centroid[1] += vertices[vi].y;
+        centroid[2] += vertices[vi].z;
+    }
+    centroid[0] /= n_pts;
+    centroid[1] /= n_pts;
+    centroid[2] /= n_pts;
+
     let points: Vec<[f64; 3]> = vertex_set.iter()
-        .map(|&vi| [vertices[vi].x, vertices[vi].y, vertices[vi].z])
+        .map(|&vi| [
+            vertices[vi].x - centroid[0],
+            vertices[vi].y - centroid[1],
+            vertices[vi].z - centroid[2],
+        ])
         .collect();
-    let problem = CylinderLMProblem::new(points, axis_dir, axis_origin, radius);
-    let (result, _report) = LevenbergMarquardt::new().minimize(problem);
+    let centered_origin = [
+        axis_origin[0] - centroid[0],
+        axis_origin[1] - centroid[1],
+        axis_origin[2] - centroid[2],
+    ];
+
+    // Refine with Levenberg-Marquardt optimization on radial residuals.
+    let problem = CylinderLMProblem::new(points, axis_dir, centered_origin, radius);
+    let (result, _report) = LevenbergMarquardt::new().with_patience(500).minimize(problem);
     let refined_dir = result.axis_dir_from_params(&result.params);
-    let refined_origin = [result.params[2], result.params[3], result.params[4]];
+    let refined_origin = [
+        result.params[2] + centroid[0],
+        result.params[3] + centroid[1],
+        result.params[4] + centroid[2],
+    ];
     let refined_radius = result.params[5];
 
     if refined_radius > 0.0 {

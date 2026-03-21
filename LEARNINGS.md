@@ -351,11 +351,15 @@ In stage 3, conical faces are periodic (full-revolution) like cylindrical and sp
 Sphere and cylinder patches can be approximately fitted as cones because locally any smooth surface looks conical. Key discriminators:
 1. **Half-angle bounds**: ha < 2° → cylindrical, ha > 85° → planar. Reject both.
 2. **Apex distance**: If apex is > 10× mesh bounding-box diagonal from mesh center, the fit is degenerate (distant apex = near-cylindrical).
-3. **Normal-axis consistency**: On a true cone, every face normal makes the same angle with the axis (= 90° - half_angle). Compute std-dev of `acos(|n·axis|)` across all faces — if it exceeds `angular_tol / 2`, the surface isn't a cone (likely a sphere).
+3. ~~**Normal-axis consistency**~~ (REMOVED): Previously checked that face normals make a consistent angle with the cone axis. Removed because surface selection (stage 2.6) resolves overlapping hypotheses by area — it’s acceptable for cones to be detected on spherical patches since sphere hypotheses will win on area.
 
 ### Pointed cone fitting: fixed-apex LM
 
 For pointed cones (all faces share a single apex vertex), the general 7-parameter cone LM (apex_x, apex_y, apex_z, axis_alpha, axis_beta, half_angle, unused) is underdetermined — the apex has zero residual regardless of parameters, so the LM Jacobian rows for apex vertices are near-zero, causing poor convergence. Solution: use a fixed-apex 3-parameter LM (axis_alpha, axis_beta, half_angle) that only optimizes axis direction and half-angle while keeping the apex pinned at the shared vertex position.
+
+### LM recentering and patience for cone/cylinder fits
+
+Both cone and cylinder LM refinement **recenter** all vertex positions around their centroid before optimization, then shift fitted parameters (apex, axis origin) back afterward. This improves numerical stability when vertex coordinates are large relative to the surface feature size. LM patience is set to 500 (up from default ~100) to ensure convergence well below vertex tolerance. `seed_vtol_multiplier` is 1.0 for cones/cylinders since CAD mesh vertices lie precisely on the surface.
 
 ### Post-selection pruning of hypotheses
 

@@ -35,7 +35,7 @@ Cone/cylinder seeds use a "fan" topology: initial face $f_i$, neighbor $f_1$, an
 
 When $f_i + f_1 + f_2$ yield only 5 unique vertices (all triangles sharing edges), this is insufficient for 6-DOF cone fitting. An optional $f_3$ is added — a face adjacent to $f_2$ that doesn't share an edge with $f_i$ or $f_1$ — to bring the count to at least 6 vertices. If no qualifying $f_3$ is found, the 3-face seed is still emitted (sufficient for 4-DOF cylinder fitting).
 
-Seed tolerance multiplier: `seed_vtol_multiplier = 5.0` because fits from 3–4 faces have higher vertex error than fits from large face sets, due to tessellation sagitta and limited data for the 6-parameter LM.
+Seed tolerance multiplier: `seed_vtol_multiplier = 1.0`. Vertices should lie precisely on the conical surface, so the seed vertex tolerance matches the base vertex tolerance.
 
 ### Cylinder fitting
 
@@ -46,7 +46,7 @@ The fitting proceeds in three steps:
 1. **Axis direction estimation from face normals.** On a cylinder, every face normal is perpendicular to the axis: `n · a = 0`. So the axis direction `a` minimizes $\sum w_i (n_i \cdot a)^2$ subject to $\|a\| = 1$, where $w_i$ is the area of face $i$. This is the eigenvector corresponding to the *smallest* eigenvalue of the 3×3 weighted covariance matrix $M = \sum w_i \, n_i \, n_i^T$. For the three-face seed, this is the full 3×3 eigenvector computation (the cross-product shortcut `a = normalize(n1 × n2)` that works for two-face seeds is not used, since we want the axis estimate that best fits all three faces' normals).
 
 2. **Axis position and radius via 2D circle fitting.** Given the axis direction `a`, choose two orthogonal unit vectors `u`, `w` perpendicular to `a`. Project each vertex onto the 2D plane: `(x_i, y_i) = (v_i · u, v_i · w)`. **Center the 2D coordinates** by subtracting the mean: `x_i' = x_i - mean_x`, `y_i' = y_i - mean_y`. Fit a circle to the centered 2D points using the algebraic least-squares method: fit the linear model $x^2 + y^2 + Dx + Ey + F = 0$ via least squares, then `center' = (-D/2, -E/2)` and `radius = sqrt(center_x'² + center_y'² - F)`. The axis origin in 3D is `(center_x' + mean_x) * u + (center_y' + mean_y) * w` (the component along `a` is arbitrary). Centering is essential for numerical stability: without it, the normal equations matrix becomes ill-conditioned when absolute vertex coordinates are large relative to the arc span (e.g., vertices at (15mm, 12.5mm) spanning 2.5° of a r=2mm cylinder produce sums-of-squares ~1350 that dwarf the r=2 signal, causing wildly wrong radii).
-3. **Levenberg-Marquardt refinement.** The initial axis + circle fit provides a good starting point but can have ~0.4° axis error when faces span a narrow arc (<15°). LM refines all 6 parameters simultaneously: `[alpha, beta, qx, qy, qz, radius]` where alpha/beta are tilt angles from the initial axis in two perpendicular directions. The residual for each vertex is `||cross(p - q, a)|| - r` (signed distance to cylinder surface). Numerical Jacobian via central differences (eps=1e-8). Uses `levenberg-marquardt` crate v0.14 with `nalgebra` v0.33 types. Falls back to the step-2 estimate if LM produces a negative radius.
+3. **Levenberg-Marquardt refinement.** The initial axis + circle fit provides a good starting point but can have ~0.4° axis error when faces span a narrow arc (<15°). LM refines all 6 parameters simultaneously: `[alpha, beta, qx, qy, qz, radius]` where alpha/beta are tilt angles from the initial axis in two perpendicular directions. **Vertices are recentered** around their centroid before LM to improve numerical conditioning (subtracting the centroid makes the axis origin parameters small, improving Jacobian precision). The residual for each vertex is `||cross(p - q, a)|| - r` (signed distance to cylinder surface). Numerical Jacobian via central differences (eps=1e-8). Uses `levenberg-marquardt` crate v0.14 with `nalgebra` v0.33 types, with `patience=500` for thorough convergence. Falls back to the step-2 estimate if LM produces a negative radius. After optimization, the centroid offset is added back to the refined origin.
 
 The normal covariance matrix `M` can be maintained incrementally during BFS (add $w_i \, n_i \, n_i^T$ when accepting a face), but the eigenvector solve, circle fit, and LM refinement must be recomputed from scratch when re-fitting, since a change in axis direction invalidates the 2D projection. Steps 1-2 are O(n) in vertices with simple arithmetic; step 3 adds ~5-10 LM iterations (typically <1ms per hypothesis).
 
@@ -99,7 +99,7 @@ The fitting algorithm detects the cone topology and uses different strategies fo
 1. **Apex** = shared vertex (exact). Validated by checking that non-apex vertex distances from the apex have low coefficient of variation (< 0.5), confirming a conical rather than arbitrary fan pattern.
 2. **Axis** = cross product of normal differences. On a cone, $n_i \cdot \hat{a} = \sin\theta$ is constant, so $(n_i - n_j) \cdot \hat{a} = 0$ — all normal differences are perpendicular to the axis. The cross product of two independent normal differences gives the exact axis. Falls back to the largest eigenvector of $\sum \hat{d}_i \hat{d}_i^T$ where $\hat{d}_i = (v_i - \text{apex}) / |v_i - \text{apex}|$ (vertex directions cluster around the axis for narrow cones).
 3. **Half-angle** from median of $\arctan(r_i / h_i)$ over all non-apex vertices. The axis is oriented so that $h > 0$ for the majority of vertices (away from apex).
-4. **Fixed-apex LM** refinement: 3 parameters (axis tilt $\alpha$, $\beta$ + half-angle $\theta$), keeping the apex pinned. The general 6-parameter LM is underdetermined for pointed cones because the apex vertex has zero residual regardless of parameters, producing near-zero Jacobian rows.
+4. **Fixed-apex LM** refinement: 3 parameters (axis tilt $\alpha$, $\beta$ + half-angle $\theta$), keeping the apex pinned. **Vertices are recentered** around their centroid and the apex is shifted accordingly before LM for numerical stability. Uses `patience=500` for thorough convergence. The general 6-parameter LM is underdetermined for pointed cones because the apex vertex has zero residual regardless of parameters, producing near-zero Jacobian rows.
 
 **Truncated cone path** (no shared vertex):
 1. **Axis** via multi-strategy estimation:
@@ -107,7 +107,7 @@ The fitting algorithm detects the cone topology and uses different strategies fo
    - <8 faces with a vertex shared by most faces: direction from that vertex to the centroid of remaining vertices.
    - <8 faces, no dominant vertex: cross product of normal differences (as in pointed path).
 2. **Apex and half-angle** from linear regression of vertex projections in (h,r) space: $r_i = m \cdot h_i + b$ where $h_i = (v_i - \text{centroid}) \cdot \hat{a}$ and $r_i$ is radial distance. Then $\theta = \arctan|m|$ and apex offset along axis $= -b/m$.
-3. **Full LM** refinement: 6 parameters ($\alpha$, $\beta$, apex $x,y,z$, half-angle). Analytic Jacobian.
+3. **Full LM** refinement: 6 parameters ($\alpha$, $\beta$, apex $x,y,z$, half-angle). Analytic Jacobian. **Vertices are recentered** around their centroid before LM (apex parameters are also shifted), then the centroid offset is added back to the refined apex. Uses `patience=500` for thorough convergence.
 
 **Fit selection (cone vs. cylinder):**
 
@@ -117,8 +117,9 @@ Both cone and cylinder fits are attempted for every seed. Max vertex error and m
 
 1. **Minimum face count**: cones require MIN_CONE_FACES, cylinders require MIN_CYLINDER_FACES.
 2. **Half-angle bounds**: reject cones with $\theta > 80°$ (nearly planar).
-3. **Normal-axis consistency**: on a true cone, $n_i \cdot \hat{a} = \sin\theta$ is constant across all faces. Compute the variance of $n_i \cdot \hat{a}$ — reject if variance $> 0.0005$. This discriminates cones from sphere/torus patches where the dot product varies systematically.
-4. **Angular coverage**: faces must be distributed around the cone/cylinder circumference (algorithm described above).
+3. **Angular coverage**: faces must be distributed around the cone/cylinder circumference (algorithm described above).
+
+*Note: A normal-axis consistency check was previously used (rejecting hypotheses where the variance of $n_i \cdot \hat{a}$ exceeded 0.0005), but was removed. It's acceptable for cone hypotheses to be detected on spherical patches — the surface selection phase (stage 2.6) picks the sphere hypothesis over conical hypotheses because spheres cover more area.*
 
 ### BFS parameters
 
