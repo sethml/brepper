@@ -26,6 +26,19 @@ pub(super) struct BfsConfig {
     pub verbosity: u8,
     /// Viz detail level: 1=commits, 2=seeds, 3=BFS faces
     pub viz_level: u8,
+    /// Per-face flag: true if the face belongs to a multi-face planar
+    /// hypothesis from stage 2.1. Curved-surface seed gathering excludes
+    /// such faces — a flat facet in a small torus/sphere seed poisons the
+    /// fit (e.g. top-face quads pulled into corner vertex-blend seeds).
+    /// Empty means "no information" (unit tests).
+    pub multiface_planar: Vec<bool>,
+    /// Per-face flag: true if the face belongs to a LARGE spherical
+    /// hypothesis from stage 2.3. Torus seed gathering excludes only these:
+    /// small spurious spheres (a corner vertex-blend patch locally fits a
+    /// sphere of the tube radius) must not block torus seeding — the real
+    /// torus beats them in selection once it exists. Empty means "no
+    /// information" (unit tests).
+    pub large_sphere: Vec<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +134,20 @@ pub(super) trait SurfaceType {
     /// Defaults to 1.0.  Cones override to 2.0 because tessellated cone tips
     /// have inter-strip dihedral angles that exceed the default tolerance.
     fn angular_tol_multiplier() -> f64 { 1.0 }
+
+    /// Number of seeding passes over the mesh. Defaults to 1. Tori override
+    /// to 2: corner vertex-blend patches seed before the adjacent larger
+    /// fillets commit, so their 1-ring seeds are contaminated; a second pass
+    /// over still-undeduced faces retries them with clean exclusions.
+    fn seeding_passes() -> usize { 1 }
+
+    /// Whether failed seed fits should retry after trimming relative-outlier
+    /// faces. Defaults to false: for surface types with strong acceptance
+    /// gates this salvages spurious mini-hypotheses from junk seeds (e.g.
+    /// 10-face spheres on cone apex fans that then block cone seeding).
+    /// Tori override to true — their vertex-neighborhood seeds legitimately
+    /// mix faces from two adjacent fillet patches.
+    fn seed_outlier_trimming() -> bool { false }
 
     /// Generate visualization overlays (cylinder/cone/sphere/torus) from the current fit.
     /// Default: no overlays (e.g., for planar surfaces).
@@ -227,6 +254,17 @@ where
     // Viz: if the user clicked a face, skip seeds until we reach one containing that face
     let mut skip_to_face: Option<usize> = None;
 
+    // Two seeding passes: seeds tried early in pass 1 can be contaminated by
+    // neighboring faces that belong to a *different* surface which has not
+    // been committed yet (e.g. corner vertex-blend torus patches whose 1-ring
+    // pulls in faces of the adjacent, larger fillet torus — the corner faces
+    // have lower indices and seed first). Pass 2 revisits only faces still
+    // undeduced, whose seed gathering now excludes everything committed in
+    // pass 1.
+    'passes: for pass in 0..S::seeding_passes() {
+        if pass > 0 && config.verbosity >= 3 {
+            eprintln!("    {} pass 2: retrying remaining undeduced faces", S::name());
+        }
     for fi in 0..num_faces {
         if !S::face_eligible(&mesh.faces[fi]) {
             continue;
@@ -267,58 +305,113 @@ where
                 let seed_str: Vec<String> = seed.faces.iter().map(|f| f.to_string()).collect();
                 eprintln!("      trying seed ({})", seed_str.join(", "));
             }
-            let mut seed_vertex_set: HashSet<usize> = HashSet::new();
-            for &sfi in &seed.faces {
-                let vc = mesh.faces[sfi].vertex_count as usize;
-                for &vi in &mesh.faces[sfi].vertex_indices[..vc] {
-                    seed_vertex_set.insert(vi);
+            let collect_vertices = |faces: &[usize]| -> Vec<usize> {
+                let mut verts: Vec<usize> = Vec::new();
+                for &sfi in faces {
+                    let vc = mesh.faces[sfi].vertex_count as usize;
+                    verts.extend_from_slice(&mesh.faces[sfi].vertex_indices[..vc]);
                 }
-            }
-            let seed_vertices: Vec<usize> = seed_vertex_set.iter().copied().collect();
+                verts.sort_unstable();
+                verts.dedup();
+                verts
+            };
 
-            let t_fit = std::time::Instant::now();
-            let fit = match S::fit_surface(mesh, &seed.faces, &seed_vertices, config.verbosity) {
+            // Fit with outlier pruning: seeds gathered from vertex
+            // neighborhoods can mix faces from two adjacent surfaces (e.g.
+            // two tangent corner-fillet tori, where the leftover faces of
+            // both patches interleave). When the fit fails vertex tolerance,
+            // drop the faces whose vertices exceed it and refit from the
+            // inliers, up to two pruning rounds.
+            let seed_vtol = vtol * S::seed_vtol_multiplier();
+            let mut seed_faces: Vec<usize> = seed.faces.clone();
+            let mut seed_vertices = collect_vertices(&seed_faces);
+            let mut fit_result: Option<S::Fit> = None;
+            let mut seed_max_vtol = 0.0_f64;
+            let max_rounds = if S::seed_outlier_trimming() { 4 } else { 1 };
+            for _round in 0..max_rounds {
+                let t_fit = std::time::Instant::now();
+                let fit = S::fit_surface(mesh, &seed_faces, &seed_vertices, config.verbosity);
+                prof_time_seed_fit += t_fit.elapsed();
+                prof_total_fit_calls += 1;
+                let fit = match fit {
+                    Some(f) => f,
+                    None => break,
+                };
+                seed_max_vtol = seed_vertices
+                    .iter()
+                    .map(|&vi| {
+                        let v = &mesh.vertices[vi];
+                        S::vertex_distance(&fit, &[v.x, v.y, v.z])
+                    })
+                    .fold(0.0_f64, f64::max);
+                if seed_max_vtol <= seed_vtol {
+                    fit_result = Some(fit);
+                    break;
+                }
+                // Trim relative outliers: a contaminated seed produces a
+                // compromise fit under which even the true-surface faces sit
+                // above the (very tight) vertex tolerance, so absolute
+                // thresholding finds no inliers. Instead drop the faces whose
+                // error is a large fraction of the worst error and refit; a
+                // genuinely bad seed has uniform errors, trims to nothing,
+                // and is rejected. Only the final acceptance check above uses
+                // the strict tolerance.
+                let face_errs: Vec<f64> = seed_faces
+                    .iter()
+                    .map(|&sfi| {
+                        let vc = mesh.faces[sfi].vertex_count as usize;
+                        mesh.faces[sfi].vertex_indices[..vc]
+                            .iter()
+                            .map(|&vi| {
+                                let v = &mesh.vertices[vi];
+                                S::vertex_distance(&fit, &[v.x, v.y, v.z])
+                            })
+                            .fold(0.0_f64, f64::max)
+                    })
+                    .collect();
+                let max_face_err = face_errs.iter().copied().fold(0.0_f64, f64::max);
+                let keep_thresh = seed_vtol.max(max_face_err * 0.5);
+                let inliers: Vec<usize> = seed_faces
+                    .iter()
+                    .copied()
+                    .zip(face_errs.iter())
+                    .filter(|&(_, &e)| e <= keep_thresh)
+                    .map(|(f, _)| f)
+                    .collect();
+                if inliers.len() < 3 || inliers.len() == seed_faces.len() {
+                    break;
+                }
+                if config.verbosity >= 4 {
+                    eprintln!(
+                        "      seed pruned {} outlier face(s), refitting from {}",
+                        seed_faces.len() - inliers.len(),
+                        inliers.len(),
+                    );
+                }
+                seed_faces = inliers;
+                seed_vertices = collect_vertices(&seed_faces);
+            }
+            seeds_tried += 1;
+            let fit = match fit_result {
                 Some(f) => f,
                 None => {
-                    prof_time_seed_fit += t_fit.elapsed();
-                    prof_total_fit_calls += 1;
                     fit_failures += 1;
                     if config.verbosity >= 4 {
-                        eprintln!("      seed fit failed: no valid fit");
+                        if seed_max_vtol > 0.0 {
+                            eprintln!(
+                                "      seed rejected: max vertex err {:.6e} > limit {:.6e}",
+                                seed_max_vtol, seed_vtol
+                            );
+                        } else {
+                            eprintln!("      seed fit failed: no valid fit");
+                        }
                     }
                     continue;
                 }
             };
-            prof_time_seed_fit += t_fit.elapsed();
-            prof_total_fit_calls += 1;
-            seeds_tried += 1;
-
-            // Validate seed: vertex tolerance (using surface-specific multiplier)
-            let seed_vtol = vtol * S::seed_vtol_multiplier();
-            let mut seed_valid = true;
-            let mut seed_max_vtol = 0.0_f64;
-            for &vi in &seed_vertices {
-                let v = &mesh.vertices[vi];
-                let d = S::vertex_distance(&fit, &[v.x, v.y, v.z]);
-                if d > seed_max_vtol {
-                    seed_max_vtol = d;
-                }
-            }
-            if seed_max_vtol > seed_vtol {
-                seed_valid = false;
-            }
-            if !seed_valid {
-                if config.verbosity >= 4 {
-                    eprintln!(
-                        "      seed rejected: max vertex err {:.6e} > limit {:.6e}",
-                        seed_max_vtol, seed_vtol
-                    );
-                }
-                continue;
-            }
 
             let mut seed_max_stol = 0.0_f64;
-            for &sfi in &seed.faces {
+            for &sfi in &seed_faces {
                 let c = face_centroid(&mesh.faces[sfi], &mesh.vertices);
                 let d = S::centroid_distance(&fit, &c);
                 if d > seed_max_stol {
@@ -326,9 +419,6 @@ where
                 }
             }
             if seed_max_stol > stol {
-                seed_valid = false;
-            }
-            if !seed_valid {
                 if config.verbosity >= 4 {
                     eprintln!(
                         "      seed rejected: max surface err {:.6e} > limit {:.6e}",
@@ -340,10 +430,10 @@ where
             }
 
             let mut angle_ok = true;
-            'angle_check: for i in 0..seed.faces.len() {
-                for j in (i + 1)..seed.faces.len() {
-                    if is_neighbor(mesh, seed.faces[i], seed.faces[j])
-                        && dihedral_angle(mesh, seed.faces[i], seed.faces[j]) > angular_tol
+            'angle_check: for i in 0..seed_faces.len() {
+                for j in (i + 1)..seed_faces.len() {
+                    if is_neighbor(mesh, seed_faces[i], seed_faces[j])
+                        && dihedral_angle(mesh, seed_faces[i], seed_faces[j]) > angular_tol
                     {
                         angle_ok = false;
                         break 'angle_check;
@@ -359,7 +449,7 @@ where
             }
 
             let mut current_fit = fit;
-            S::determine_convexity(mesh, &seed.faces, &mut current_fit);
+            S::determine_convexity(mesh, &seed_faces, &mut current_fit);
 
             if config.verbosity >= 4 {
                 let seed_str: Vec<String> = seed.faces.iter().map(|f| f.to_string()).collect();
@@ -426,13 +516,13 @@ where
 
             // --- BFS expansion ---
             let t_bfs = std::time::Instant::now();
-            let mut trial_faces: Vec<usize> = seed.faces.clone();
-            let mut trial_face_set: HashSet<usize> = seed.faces.iter().copied().collect();
-            let mut trial_vertex_set: HashSet<usize> = seed_vertex_set.clone();
+            let mut trial_faces: Vec<usize> = seed_faces.clone();
+            let mut trial_face_set: HashSet<usize> = seed_faces.iter().copied().collect();
+            let mut trial_vertex_set: HashSet<usize> = seed_vertices.iter().copied().collect();
             let mut trial_vertices: Vec<usize> = seed_vertices.clone();
 
             let mut bfs_queue = VecDeque::new();
-            for &sfi in &seed.faces {
+            for &sfi in &seed_faces {
                 bfs_queue.push_back(sfi);
             }
 
@@ -655,7 +745,13 @@ where
                 prof_max_bfs_faces = trial_faces.len();
             }
 
-            // Final re-fit
+            // Final re-fit. Keep the refit only if it still satisfies the
+            // vertex tolerance for the accumulated trial: LM from a
+            // contaminated or marginal trial can drift to a fit whose
+            // error is orders of magnitude above tolerance (observed:
+            // tilted r=3.37 "cylinders" with 2.6e-3 mm error committed on
+            // corner wall patches, which then poisoned all torus seeding
+            // in the region).
             let t_final = std::time::Instant::now();
             if let Some(final_fit) = S::fit_surface(
                 mesh,
@@ -669,6 +765,25 @@ where
             // (Re-)determine convexity after final refit
             S::determine_convexity(mesh, &trial_faces, &mut current_fit);
             prof_time_final_fit += t_final.elapsed();
+
+            let final_max_err = trial_vertices
+                .iter()
+                .map(|&vi| {
+                    let v = &mesh.vertices[vi];
+                    S::vertex_distance(&current_fit, &[v.x, v.y, v.z])
+                })
+                .fold(0.0_f64, f64::max);
+            if final_max_err > vtol * S::seed_vtol_multiplier() {
+                if config.verbosity >= 4 {
+                    eprintln!(
+                        "      trial rejected after final refit: max vertex err {:.6e} > {:.6e}",
+                        final_max_err,
+                        vtol * S::seed_vtol_multiplier(),
+                    );
+                }
+                acceptance_failures += 1;
+                continue;
+            }
 
             let t_accept = std::time::Instant::now();
             if !S::acceptance_test(mesh, &trial_faces, &current_fit, config) {
@@ -685,7 +800,7 @@ where
 
             if total_area > best_area {
                 best_area = total_area;
-                best_seed_faces = seed.faces.clone();
+                best_seed_faces = seed_faces.clone();
                 best_fit_desc = S::viz_fit_description(&current_fit);
                 best_fit = Some(current_fit.clone());
                 let mut sorted_verts: Vec<usize> = trial_vertex_set.into_iter().collect();
@@ -755,6 +870,12 @@ where
             }
 
             hypotheses.push(hyp);
+        }
+    }
+
+        // Skip pass 2 when pass 1 covered every face (common case).
+        if (0..num_faces).all(|fi| !S::face_eligible(&mesh.faces[fi])) {
+            break 'passes;
         }
     }
 

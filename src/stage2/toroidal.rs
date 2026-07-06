@@ -364,30 +364,275 @@ impl LeastSquaresProblem<f64, Dyn, Const<7>> for TorusLMProblem {
 /// 4. LM refinement.
 ///
 /// Returns (center, axis_direction, major_radius, minor_radius) or None.
+/// A torus fit result: (center, axis_direction, major_radius, minor_radius).
+type TorusFitTuple = ([f64; 3], [f64; 3], f64, f64);
+
+/// Algebraic (Kasa) circle fit to 2D points. Coordinates are mean-centered
+/// internally for conditioning. Returns ((cx, cy), radius).
+fn fit_circle_2d(coords: &[(f64, f64)]) -> Option<((f64, f64), f64)> {
+    let n = coords.len();
+    if n < 3 {
+        return None;
+    }
+    let nf = n as f64;
+    let mx = coords.iter().map(|c| c.0).sum::<f64>() / nf;
+    let my = coords.iter().map(|c| c.1).sum::<f64>() / nf;
+
+    let mut sx = 0.0_f64;
+    let mut sy = 0.0_f64;
+    let mut sxx = 0.0_f64;
+    let mut syy = 0.0_f64;
+    let mut sxy = 0.0_f64;
+    let mut sxr = 0.0_f64;
+    let mut syr = 0.0_f64;
+    let mut sr = 0.0_f64;
+    for &(x0, y0) in coords {
+        let x = x0 - mx;
+        let y = y0 - my;
+        let r2 = x * x + y * y;
+        sx += x;
+        sy += y;
+        sxx += x * x;
+        syy += y * y;
+        sxy += x * y;
+        sxr += x * r2;
+        syr += y * r2;
+        sr += r2;
+    }
+
+    let a11 = sxx; let a12 = sxy; let a13 = sx;
+    let a21 = sxy; let a22 = syy; let a23 = sy;
+    let a31 = sx;  let a32 = sy;  let a33 = nf;
+    let b1 = -sxr; let b2 = -syr; let b3 = -sr;
+
+    let det = a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31)
+        + a13 * (a21 * a32 - a22 * a31);
+    if det.abs() < 1e-30 {
+        return None;
+    }
+    let inv_det = 1.0 / det;
+    let d = inv_det * (b1 * (a22 * a33 - a23 * a32) - a12 * (b2 * a33 - a23 * b3) + a13 * (b2 * a32 - a22 * b3));
+    let e = inv_det * (a11 * (b2 * a33 - a23 * b3) - b1 * (a21 * a33 - a23 * a31) + a13 * (a21 * b3 - b2 * a31));
+    let f = inv_det * (a11 * (a22 * b3 - b2 * a32) - a12 * (a21 * b3 - b2 * a31) + b1 * (a21 * a32 - a22 * a31));
+
+    let r_sq = d * d / 4.0 + e * e / 4.0 - f;
+    if r_sq <= 0.0 {
+        return None;
+    }
+    Some(((mx - d / 2.0, my - e / 2.0), r_sq.sqrt()))
+}
+
+/// Third fitting method: multi-axis rescue for small torus patches.
+///
+/// Small patches (e.g. corner vertex blends spanning ~90° of a small major
+/// circle) defeat both the tube-center method (too few tube-direction normal
+/// pairs) and position-PCA axis estimation (a compact patch is a blob, not a
+/// ring, and its centroid is far off the axis). For each candidate axis
+/// direction: locate the axis position with a 2D circle fit of the vertices
+/// projected along the axis, fit the tube profile circle in (h, r)
+/// coordinates about that axis, and polish with LM. Returns the best result
+/// by max vertex distance.
+fn fit_torus_axes_rescue(
+    face_indices: &[usize],
+    vertex_set: &[usize],
+    faces: &[MeshFace],
+    vertices: &[MeshVertex],
+) -> Option<([f64; 3], [f64; 3], f64, f64)> {
+    if vertex_set.len() < 7 {
+        return None;
+    }
+
+    // Candidate axis directions: coordinate axes plus the normal-covariance
+    // and position-PCA smallest eigenvectors.
+    let mut candidates: Vec<[f64; 3]> =
+        vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    {
+        let mut ncov = [0.0_f64; 6];
+        for &fi in face_indices {
+            if let Some(n) = faces[fi].normal {
+                ncov[0] += n[0] * n[0];
+                ncov[1] += n[0] * n[1];
+                ncov[2] += n[0] * n[2];
+                ncov[3] += n[1] * n[1];
+                ncov[4] += n[1] * n[2];
+                ncov[5] += n[2] * n[2];
+            }
+        }
+        let mut a = smallest_eigenvector_3x3(&ncov);
+        if normalize3(&mut a) > 1e-12 {
+            candidates.push(a);
+        }
+    }
+    {
+        let n = vertex_set.len() as f64;
+        let mut c = [0.0_f64; 3];
+        for &vi in vertex_set {
+            c[0] += vertices[vi].x;
+            c[1] += vertices[vi].y;
+            c[2] += vertices[vi].z;
+        }
+        c[0] /= n; c[1] /= n; c[2] /= n;
+        let mut pcov = [0.0_f64; 6];
+        for &vi in vertex_set {
+            let dx = vertices[vi].x - c[0];
+            let dy = vertices[vi].y - c[1];
+            let dz = vertices[vi].z - c[2];
+            pcov[0] += dx * dx;
+            pcov[1] += dx * dy;
+            pcov[2] += dx * dz;
+            pcov[3] += dy * dy;
+            pcov[4] += dy * dz;
+            pcov[5] += dz * dz;
+        }
+        let mut a = smallest_eigenvector_3x3(&pcov);
+        if normalize3(&mut a) > 1e-12 {
+            candidates.push(a);
+        }
+    }
+
+    let points: Vec<[f64; 3]> = vertex_set
+        .iter()
+        .map(|&vi| [vertices[vi].x, vertices[vi].y, vertices[vi].z])
+        .collect();
+
+    let mut best: Option<(f64, TorusFitTuple)> = None;
+    for axis in candidates {
+        let (u, w) = perpendicular_basis(&axis);
+        // Axis position from a 2D circle fit of the projected vertices.
+        let coords: Vec<(f64, f64)> = points
+            .iter()
+            .map(|p| (dot3(p, &u), dot3(p, &w)))
+            .collect();
+        let Some(((a2, b2), _)) = fit_circle_2d(&coords) else { continue };
+        let origin = [
+            a2 * u[0] + b2 * w[0],
+            a2 * u[1] + b2 * w[1],
+            a2 * u[2] + b2 * w[2],
+        ];
+        // Tube profile circle in (h, r) coordinates about the axis.
+        let hr: Vec<(f64, f64)> = points
+            .iter()
+            .map(|p| {
+                let d = [p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]];
+                let h = dot3(&d, &axis);
+                let rx = d[0] - h * axis[0];
+                let ry = d[1] - h * axis[1];
+                let rz = d[2] - h * axis[2];
+                (h, (rx * rx + ry * ry + rz * rz).sqrt())
+            })
+            .collect();
+        let Some(((h0, major_r), minor_r)) = fit_circle_2d(&hr) else { continue };
+        if major_r <= 1e-6 || minor_r <= 1e-6 || minor_r >= major_r {
+            continue;
+        }
+        // Cheap gate before the LM: if the (h,r) profile points sit far off
+        // the fitted profile circle, this axis candidate is hopeless (mixed
+        // or non-toroidal seed) and LM will not save it. This keeps the
+        // rescue nearly free for the many junk seeds it is offered.
+        let profile_rms = {
+            let mut ss = 0.0_f64;
+            for &(h, r) in &hr {
+                let d = ((h - h0) * (h - h0) + (r - major_r) * (r - major_r)).sqrt() - minor_r;
+                ss += d * d;
+            }
+            (ss / hr.len() as f64).sqrt()
+        };
+        if profile_rms > minor_r * 0.2 {
+            continue;
+        }
+        let center = [
+            origin[0] + h0 * axis[0],
+            origin[1] + h0 * axis[1],
+            origin[2] + h0 * axis[2],
+        ];
+
+        // LM polish (tightly bounded patience: this runs for several
+        // candidates per seed and again per pruning round; the Kasa init is
+        // close for real tori, so converging fits converge quickly).
+        let problem = TorusLMProblem::new(points.clone(), axis, center, major_r, minor_r);
+        let (result, _report) = LevenbergMarquardt::new().with_patience(75).minimize(problem);
+        let refined_axis = result.axis_dir_from_params(&result.params);
+        let refined_center = [result.params[2], result.params[3], result.params[4]];
+        let refined_major = result.params[5];
+        let refined_minor = result.params[6];
+        let candidate = if refined_major > 0.0
+            && refined_minor > 0.0
+            && refined_minor < refined_major
+        {
+            (refined_center, refined_axis, refined_major, refined_minor)
+        } else {
+            (center, axis, major_r, minor_r)
+        };
+        let err = vertex_set
+            .iter()
+            .map(|&vi| {
+                vertex_to_torus_distance(
+                    &vertices[vi], &candidate.0, &candidate.1, candidate.2, candidate.3,
+                )
+                .abs()
+            })
+            .fold(0.0_f64, f64::max);
+        if best.as_ref().is_none_or(|(e, _)| err < *e) {
+            best = Some((err, candidate));
+        }
+        // First excellent candidate wins — no need to try the rest.
+        if err < 1e-5 {
+            break;
+        }
+    }
+    best.map(|(_, c)| c)
+}
+
 fn fit_torus(
     face_indices: &[usize],
     vertex_set: &[usize],
     faces: &[MeshFace],
     vertices: &[MeshVertex],
 ) -> Option<([f64; 3], [f64; 3], f64, f64)> {
-    // Try both methods and pick the one with lower max vertex error.
+    let max_err = |fit: &([f64; 3], [f64; 3], f64, f64)| -> f64 {
+        vertex_set.iter().map(|&vi| {
+            vertex_to_torus_distance(&vertices[vi], &fit.0, &fit.1, fit.2, fit.3).abs()
+        }).fold(0.0_f64, f64::max)
+    };
+    // Structural validity must be checked BEFORE picking the lowest-error
+    // candidate: on small corner patches the tube-center method can return
+    // a self-intersecting fit (minor > major) with a locally lower vertex
+    // error, which would shadow a valid rescue fit and then be rejected
+    // downstream.
+    let valid = |fit: &([f64; 3], [f64; 3], f64, f64)| -> bool {
+        fit.2 > 0.0 && fit.3 > 0.0 && fit.3 <= fit.2
+    };
+
+    // Try the tube-center and SOR methods and keep the better fit.
     let inner = fit_torus_inner(face_indices, vertex_set, faces, vertices);
     let sor = fit_torus_sor(face_indices, vertex_set, faces, vertices);
-
-    match (inner, sor) {
-        (Some(a), Some(b)) => {
-            let err_a = vertex_set.iter().map(|&vi| {
-                vertex_to_torus_distance(&vertices[vi], &a.0, &a.1, a.2, a.3).abs()
-            }).fold(0.0_f64, f64::max);
-            let err_b = vertex_set.iter().map(|&vi| {
-                vertex_to_torus_distance(&vertices[vi], &b.0, &b.1, b.2, b.3).abs()
-            }).fold(0.0_f64, f64::max);
-            if err_a <= err_b { Some(a) } else { Some(b) }
+    let mut best: Option<(f64, TorusFitTuple)> = None;
+    for cand in [inner, sor].into_iter().flatten() {
+        if !valid(&cand) {
+            continue;
         }
-        (Some(a), None) => Some(a),
-        (None, Some(b)) => Some(b),
-        (None, None) => None,
+        let err = max_err(&cand);
+        if best.as_ref().is_none_or(|(e, _)| err < *e) {
+            best = Some((err, cand));
+        }
     }
+
+    // Multi-axis rescue for small patches, only when the geometric methods
+    // fail to reach CAD-mesh precision (bounds the extra LM cost to the
+    // rare hard cases).
+    const RESCUE_ERR_THRESHOLD: f64 = 1e-4; // mm
+    if best.as_ref().is_none_or(|(e, _)| *e > RESCUE_ERR_THRESHOLD) {
+        if let Some(cand) = fit_torus_axes_rescue(face_indices, vertex_set, faces, vertices) {
+            if valid(&cand) {
+                let err = max_err(&cand);
+                if best.as_ref().is_none_or(|(e, _)| err < *e) {
+                    best = Some((err, cand));
+                }
+            }
+        }
+    }
+
+    best.map(|(_, c)| c)
 }
 
 fn fit_torus_inner(
@@ -556,7 +801,7 @@ fn fit_torus_inner(
 
     if points.len() >= 7 {
         let problem = TorusLMProblem::new(points, axis, center, major_r, minor_r);
-        let (result, _report) = LevenbergMarquardt::new().with_patience(500).minimize(problem);
+        let (result, _report) = LevenbergMarquardt::new().with_patience(150).minimize(problem);
         let refined_axis = result.axis_dir_from_params(&result.params);
         let refined_center = [result.params[2], result.params[3], result.params[4]];
         let refined_major_r = result.params[5];
@@ -746,7 +991,7 @@ fn fit_torus_sor(
 
     if points.len() >= 7 && major_r > 1e-10 {
         let problem = TorusLMProblem::new(points, axis, center, major_r, minor_r);
-        let (result, _report) = LevenbergMarquardt::new().with_patience(500).minimize(problem);
+        let (result, _report) = LevenbergMarquardt::new().with_patience(150).minimize(problem);
         let refined_axis = result.axis_dir_from_params(&result.params);
         let refined_center = [result.params[2], result.params[3], result.params[4]];
         let refined_major_r = result.params[5];
@@ -1038,7 +1283,7 @@ pub(super) struct ToroidalSurface;
 /// gathering its 3-ring edge neighborhood. Returns an empty vec unless the
 /// neighborhood spans ≥ 2 distinct conical hypotheses (evidence of major-arc
 /// curvature that a single cylinder cannot represent).
-fn strip_merge_seed(mesh: &ConnectedMesh, fi: usize) -> Vec<Seed> {
+fn strip_merge_seed(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig) -> Vec<Seed> {
     let mut ring: Vec<usize> = vec![fi];
     let mut seen = vec![false; mesh.faces.len()];
     seen[fi] = true;
@@ -1057,9 +1302,15 @@ fn strip_merge_seed(mesh: &ConnectedMesh, fi: usize) -> Vec<Seed> {
                 }
                 seen[ni] = true;
                 let face = &mesh.faces[ni];
+                let ni_large_sphere = if config.large_sphere.is_empty() {
+                    face.spherical_hypothesis >= 0
+                } else {
+                    config.large_sphere.get(ni).copied().unwrap_or(false)
+                };
                 if face.normal.is_some()
                     && face.toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS
-                    && face.spherical_hypothesis < 0
+                    && !ni_large_sphere
+                    && !config.multiface_planar.get(ni).copied().unwrap_or(false)
                 {
                     ring.push(ni);
                     next.push(ni);
@@ -1121,11 +1372,40 @@ impl SurfaceType for ToroidalSurface {
     /// like the conical stage does.
     fn angular_tol_multiplier() -> f64 { 2.0 }
 
-    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, _config: &BfsConfig) -> Vec<Seed> {
+    /// Corner vertex-blend patches (where two fillets meet) have low face
+    /// indices and seed before the adjacent larger fillet tori commit, so
+    /// their 1-ring seeds mix faces from both surfaces and fail. A second
+    /// pass retries them once everything else is committed and excluded.
+    fn seeding_passes() -> usize { 2 }
+
+    /// Torus vertex-neighborhood seeds legitimately mix faces from two
+    /// adjacent fillet patches; trimming relative outliers and refitting
+    /// isolates the majority patch.
+    fn seed_outlier_trimming() -> bool { true }
+
+    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig) -> Vec<Seed> {
         if mesh.faces[fi].normal.is_none() {
             return Vec::new();
         }
-        if mesh.faces[fi].spherical_hypothesis >= 0 {
+        // Exclude faces on LARGE spheres only: small spurious spheres (a
+        // corner vertex-blend patch locally fits a sphere of the tube
+        // radius) must not block torus seeding.
+        let on_large_sphere = |f: usize| -> bool {
+            if config.large_sphere.is_empty() {
+                mesh.faces[f].spherical_hypothesis >= 0
+            } else {
+                config.large_sphere.get(f).copied().unwrap_or(false)
+            }
+        };
+        if on_large_sphere(fi) {
+            return Vec::new();
+        }
+        // Flat facets poison small torus fits (e.g. top-face quads pulled
+        // into corner vertex-blend seeds), so multi-face planar faces are
+        // excluded both as start faces and from seed gathering below.
+        let on_plane =
+            |f: usize| -> bool { config.multiface_planar.get(f).copied().unwrap_or(false) };
+        if on_plane(fi) {
             return Vec::new();
         }
         // Faces committed to a cylinder may still lie on a torus: a coarsely
@@ -1137,7 +1417,7 @@ impl SurfaceType for ToroidalSurface {
         // hypotheses (a plain cylinder region is a single hypothesis and is
         // skipped cheaply).
         if mesh.faces[fi].conical_hypothesis >= 0 {
-            return strip_merge_seed(mesh, fi);
+            return strip_merge_seed(mesh, fi, config);
         }
 
         // 1-ring: collect all faces sharing any vertex with fi
@@ -1152,15 +1432,18 @@ impl SurfaceType for ToroidalSurface {
                     && face.normal.is_some()
                     && face.toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS
                     && face.conical_hypothesis < 0
-                    && face.spherical_hypothesis < 0
+                    && !on_large_sphere(fj)
+                    && !on_plane(fj)
                 {
                     seed_set.insert(fj);
                 }
             }
         }
 
-        // Need enough faces and vertices for 7-DOF fit
-        let faces: Vec<usize> = seed_set.into_iter().collect();
+        // Need enough faces and vertices for 7-DOF fit.
+        // Sorted for deterministic face iteration order in fitting.
+        let mut faces: Vec<usize> = seed_set.into_iter().collect();
+        faces.sort_unstable();
         let mut verts: HashSet<usize> = HashSet::new();
         for &sfi in &faces {
             let svc = mesh.faces[sfi].vertex_count as usize;
@@ -1179,14 +1462,20 @@ impl SurfaceType for ToroidalSurface {
         mesh: &ConnectedMesh,
         face_list: &[usize],
         vertex_list: &[usize],
-        _verbosity: u8,
+        verbosity: u8,
     ) -> Option<Self::Fit> {
         // Sorted, deduplicated for deterministic fitting sums.
         let mut vertex_set: Vec<usize> = vertex_list.to_vec();
         vertex_set.sort_unstable();
         vertex_set.dedup();
-        let (center, axis, major_r, minor_r) =
-            fit_torus(face_list, &vertex_set, &mesh.faces, &mesh.vertices)?;
+        let fit = fit_torus(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
+        if fit.is_none() && verbosity >= 5 {
+            for &vi in &vertex_set {
+                let v = &mesh.vertices[vi];
+                eprintln!("        torus fit input vtx {vi}: ({:.4}, {:.4}, {:.4})", v.x, v.y, v.z);
+            }
+        }
+        let (center, axis, major_r, minor_r) = fit?;
         if minor_r <= 0.0 || major_r <= 0.0 || minor_r > major_r {
             return None;
         }
@@ -1232,6 +1521,16 @@ impl SurfaceType for ToroidalSurface {
         _config: &BfsConfig,
     ) -> bool {
         if face_list.len() < MIN_TORUS_FACES {
+            return false;
+        }
+        // Reject degenerate giant-radius tori: a straight-edge fillet
+        // (cylinder) is the R→∞ limit of a torus, and a short segment of one
+        // can be fitted within tolerance by a torus with an absurdly distant
+        // axis (observed R ≈ 1500–3600 mm on ~100 mm models). A legitimate
+        // torus's major radius cannot exceed the mesh extent. Analogous to
+        // the cone apex-distance bound.
+        let bb_diag = super::bounding_box_diagonal(&mesh.vertices);
+        if fit.major_radius > bb_diag {
             return false;
         }
         // Major circle angular coverage (azimuthal)
@@ -1533,6 +1832,31 @@ mod tests {
         assert!((center[0] - 5.0).abs() < 0.1, "center.x should be 5, got {}", center[0]);
         assert!((center[1] - 10.0).abs() < 0.1, "center.y should be 10, got {}", center[1]);
         assert!((center[2] - (-3.0)).abs() < 0.1, "center.z should be -3, got {}", center[2]);
+    }
+
+    #[test]
+    fn torus_fit_corner_blend_patch() {
+        // Corner vertex-blend patch as found on stepped_block_toroidal_fillets:
+        // a small torus (R=2.5, r=0.5) patch spanning only 90° of the major
+        // circle and 90° of the tube. Both the tube-center method and
+        // position-PCA axis estimation fail on such compact doubly-curved
+        // patches; the multi-axis (h,r) rescue must recover it.
+        let (faces, vertices) = build_torus_mesh(
+            [-66.75, -64.5, -18.2], [0.0, 1.0, 0.0], 2.5, 0.5,
+            8, 5, 0.0, PI / 2.0, 0.0, PI / 2.0,
+        );
+        let face_indices: Vec<usize> = (0..faces.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
+
+        let result = fit_torus(&face_indices, &vertex_set, &faces, &vertices);
+        assert!(result.is_some(), "corner blend patch fit should succeed");
+        let (center, dir, major_r, minor_r) = result.unwrap();
+        assert!(dir[1].abs() > 0.999, "axis should be along Y, got {dir:?}");
+        assert!((major_r - 2.5).abs() < 0.02, "major_radius should be 2.5, got {major_r}");
+        assert!((minor_r - 0.5).abs() < 0.02, "minor_radius should be 0.5, got {minor_r}");
+        assert!((center[0] - (-66.75)).abs() < 0.05, "center.x, got {}", center[0]);
+        assert!((center[1] - (-64.5)).abs() < 0.05, "center.y, got {}", center[1]);
+        assert!((center[2] - (-18.2)).abs() < 0.05, "center.z, got {}", center[2]);
     }
 
     #[test]

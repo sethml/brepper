@@ -1426,14 +1426,52 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
     // Stage 2.1: Deduce planar hypotheses
     let t = Instant::now();
     let viz_21 = if config.viz_active(2, 1) { viz } else { None };
-    let bfs_config = BfsConfig {
+    let mut bfs_config = BfsConfig {
         vertex_tol: config.vertex_tolerance_mm,
         surface_tol: config.surface_tolerance_mm,
         angular_tol: config.angular_tolerance_rad,
         verbosity: config.verbosity,
         viz_level: config.viz_stages_level,
+        multiface_planar: Vec::new(),
+        large_sphere: Vec::new(),
     };
     let (mut planar_hypotheses, planar_quit) = bfs::generate_hypotheses::<PlanarSurface>(&mut mesh, &bfs_config, viz_21);
+
+    // Record which faces belong to blob-like planar regions so the
+    // curved-surface stages can exclude flat facets from seed gathering
+    // (a top-face quad pulled into a corner vertex-blend torus seed poisons
+    // the fit). Neither size nor multi-face-ness distinguishes a real plane
+    // from a flat strip lying on a curved surface: strips along straight
+    // small-radius fillets are long, exactly planar, and legitimately
+    // needed by torus seeds. The discriminator is SHAPE: a real plane
+    // region is a 2D blob with interior faces (>= 3 neighbors in the same
+    // hypothesis), while a strip is a 1-wide chain with none.
+    bfs_config.multiface_planar = {
+        let mut interior_counts = vec![0_usize; planar_hypotheses.len()];
+        for face in &mesh.faces {
+            let pi = face.planar_hypothesis;
+            if pi < 0 {
+                continue;
+            }
+            let vc = face.vertex_count as usize;
+            let same_neighbors = face.neighbors[..vc]
+                .iter()
+                .filter(|&&ni| ni >= 0 && mesh.faces[ni as usize].planar_hypothesis == pi)
+                .count();
+            if same_neighbors >= 3 {
+                interior_counts[pi as usize] += 1;
+            }
+        }
+        mesh.faces
+            .iter()
+            .map(|f| {
+                let pi = f.planar_hypothesis;
+                pi >= 0
+                    && planar_hypotheses[pi as usize].faces.len() >= 8
+                    && interior_counts[pi as usize] * 5 >= planar_hypotheses[pi as usize].faces.len()
+            })
+            .collect()
+    };
 
     // Synthesize single-face planar hypotheses for faces not covered by BFS.
     // BFS with acceptance >= 2 only produces multi-face hypotheses; every
@@ -1613,6 +1651,20 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             selected_surfaces: Vec::new(),
         });
     }
+
+    // Record which faces belong to large spherical hypotheses. Torus seed
+    // gathering excludes only these: small spurious spheres (a corner
+    // vertex-blend patch locally fits a sphere of the tube radius) must not
+    // block torus seeding — the real torus wins selection once found.
+    const LARGE_SPHERE_FACES: usize = 30;
+    bfs_config.large_sphere = mesh
+        .faces
+        .iter()
+        .map(|f| {
+            let si = f.spherical_hypothesis;
+            si >= 0 && spherical_hypotheses[si as usize].faces.len() >= LARGE_SPHERE_FACES
+        })
+        .collect();
 
     // Stage 2.2: Deduce conical/cylindrical hypotheses (unified)
     let t = Instant::now();
@@ -1890,6 +1942,8 @@ mod tests {
             angular_tol: 17.5_f64.to_radians(),
             verbosity: 0,
             viz_level: 1,
+            multiface_planar: Vec::new(),
+            large_sphere: Vec::new(),
         }
     }
 
@@ -1900,6 +1954,8 @@ mod tests {
             angular_tol: angular_tol_deg.to_radians(),
             verbosity: 0,
             viz_level: 1,
+            multiface_planar: Vec::new(),
+            large_sphere: Vec::new(),
         }
     }
 
