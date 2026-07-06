@@ -1128,6 +1128,16 @@ impl SurfaceType for ConicalSurface {
         if mesh.faces[fi].conical_hypothesis != UNDEDUCED_CONICAL_HYPOTHESIS {
             return Vec::new();
         }
+        // Skip faces already committed to a spherical hypothesis (stage 2.3
+        // runs before this stage). On a tessellated sphere, every band of
+        // quad rows lies exactly on some cone/cylinder, so without this check
+        // a fine sphere gets tiled with hundreds of bogus band hypotheses —
+        // enormously slow and all discarded by selection anyway. Faces near
+        // sphere junctions can still be *absorbed* during BFS expansion;
+        // only seeding is restricted.
+        if mesh.faces[fi].spherical_hypothesis >= 0 {
+            return Vec::new();
+        }
 
         let vc = mesh.faces[fi].vertex_count as usize;
         let angular_tol = config.angular_tol;

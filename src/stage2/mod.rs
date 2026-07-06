@@ -1244,91 +1244,19 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
         });
     }
 
-    // Stage 2.2: Deduce conical/cylindrical hypotheses (unified)
+    // Stage 2.3 (run before 2.2): Deduce spherical hypotheses.
+    //
+    // Spherical detection runs before conical/cylindrical detection because
+    // every band of quad rows on a tessellated sphere lies exactly on some
+    // cone or cylinder, so the conical BFS would otherwise tile fine spheres
+    // with hundreds of bogus band hypotheses (very slow, all discarded by
+    // stage 2.6). Sphere detection is cheap and robust — its solid-angle
+    // coverage acceptance test rejects band-like fits on cylinders, cones,
+    // and tori — so committing spheres first and skipping sphere-committed
+    // faces during conical *seeding* eliminates the pathology. The stage
+    // numbering (2.2 conical, 2.3 spherical) is retained for CLI/viz
+    // compatibility.
     let t = Instant::now();
-    let viz_22 = if config.viz_active(2, 2) { viz } else { None };
-    let (mut conical_hypotheses, conical_quit) = bfs::generate_hypotheses::<ConicalSurface>(&mut mesh, &bfs_config, viz_22);
-
-    if config.verbosity >= 1 {
-        let covered_faces: usize = conical_hypotheses.iter().map(|h| h.faces.len()).sum();
-        let cylinder_count = conical_hypotheses.iter().filter(|h| h.is_cylinder()).count();
-        let cone_count = conical_hypotheses.len() - cylinder_count;
-        let convex_count = conical_hypotheses.iter().filter(|h| h.convex).count();
-        let concave_count = conical_hypotheses.len() - convex_count;
-        eprintln!(
-            "Stage 2.2 ({:.3}s): Deduced {} conical/cylindrical hypotheses ({} cylinders, {} cones; {} convex, {} concave) covering {} faces",
-            t.elapsed().as_secs_f64(),
-            conical_hypotheses.len(),
-            cylinder_count,
-            cone_count,
-            convex_count,
-            concave_count,
-            covered_faces,
-        );
-        if config.verbosity >= 2 {
-            for (i, h) in conical_hypotheses.iter().enumerate() {
-                if h.is_cylinder() {
-                    eprintln!(
-                        "  Cylinder {}: {} faces, {} vertices, r={:.4}, {}, \
-apex=[{:.4}, {:.4}, {:.4}], axis_dir=[{:.4}, {:.4}, {:.4}], \
-vtx_err_max={:.2e}, cen_err_max={:.2e}",
-                        i, h.faces.len(), h.vertices.len(), h.radius_at_apex,
-                        if h.convex { "convex" } else { "concave" },
-                        h.apex[0], h.apex[1], h.apex[2],
-                        h.axis_direction[0], h.axis_direction[1], h.axis_direction[2],
-                        h.error_max, h.centroid_error_max,
-                    );
-                } else {
-                    eprintln!(
-                        "  Cone {}: {} faces, half_angle={:.4}\u{00b0}, apex=[{:.4},{:.4},{:.4}], {}, err_max={:.2e}",
-                        i,
-                        h.faces.len(),
-                        h.half_angle.to_degrees(),
-                        h.apex[0], h.apex[1], h.apex[2],
-                        if h.convex { "convex" } else { "concave" },
-                        h.error_max,
-                    );
-                }
-            }
-        }
-    }
-
-    // Compare against STEP file if --compare was specified
-    if config.compare_shape.is_some() {
-        compare_conical_hypotheses(&conical_hypotheses, &mesh, config)?;
-        if config.verbosity >= 1 {
-            eprintln!("  Compare: all conical/cylindrical hypothesis centroids within tolerance");
-        }
-    }
-
-    if conical_quit {
-        return Ok(Stage2Output {
-            mesh,
-            planar_hypotheses,
-            conical_hypotheses,
-            spherical_hypotheses: Vec::new(),
-            toroidal_hypotheses: Vec::new(),
-            selected_surfaces: Vec::new(),
-        });
-    }
-
-
-
-    if !config.stage.at_least(2, 3) {
-        return Ok(Stage2Output {
-            mesh,
-            planar_hypotheses,
-            conical_hypotheses,
-            spherical_hypotheses: Vec::new(),
-            toroidal_hypotheses: Vec::new(),
-            selected_surfaces: Vec::new(),
-        });
-    }
-
-    // Stage 2.3: Deduce spherical hypotheses
-    let t = Instant::now();
-    let _bb_diag = bounding_box_diagonal(&mesh.vertices);
-    let _max_sphere_radius = _bb_diag * MAX_SPHERE_RADIUS_FACTOR;
     let viz_23 = if config.viz_active(2, 3) { viz } else { None };
     let (mut spherical_hypotheses, spherical_quit) = bfs::generate_hypotheses::<SphericalSurface>(&mut mesh, &bfs_config, viz_23);
 
@@ -1399,6 +1327,74 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
         return Ok(Stage2Output {
             mesh,
             planar_hypotheses,
+            conical_hypotheses: Vec::new(),
+            spherical_hypotheses,
+            toroidal_hypotheses: Vec::new(),
+            selected_surfaces: Vec::new(),
+        });
+    }
+
+    // Stage 2.2: Deduce conical/cylindrical hypotheses (unified)
+    let t = Instant::now();
+    let viz_22 = if config.viz_active(2, 2) { viz } else { None };
+    let (mut conical_hypotheses, conical_quit) = bfs::generate_hypotheses::<ConicalSurface>(&mut mesh, &bfs_config, viz_22);
+
+    if config.verbosity >= 1 {
+        let covered_faces: usize = conical_hypotheses.iter().map(|h| h.faces.len()).sum();
+        let cylinder_count = conical_hypotheses.iter().filter(|h| h.is_cylinder()).count();
+        let cone_count = conical_hypotheses.len() - cylinder_count;
+        let convex_count = conical_hypotheses.iter().filter(|h| h.convex).count();
+        let concave_count = conical_hypotheses.len() - convex_count;
+        eprintln!(
+            "Stage 2.2 ({:.3}s): Deduced {} conical/cylindrical hypotheses ({} cylinders, {} cones; {} convex, {} concave) covering {} faces",
+            t.elapsed().as_secs_f64(),
+            conical_hypotheses.len(),
+            cylinder_count,
+            cone_count,
+            convex_count,
+            concave_count,
+            covered_faces,
+        );
+        if config.verbosity >= 2 {
+            for (i, h) in conical_hypotheses.iter().enumerate() {
+                if h.is_cylinder() {
+                    eprintln!(
+                        "  Cylinder {}: {} faces, {} vertices, r={:.4}, {}, \
+apex=[{:.4}, {:.4}, {:.4}], axis_dir=[{:.4}, {:.4}, {:.4}], \
+vtx_err_max={:.2e}, cen_err_max={:.2e}",
+                        i, h.faces.len(), h.vertices.len(), h.radius_at_apex,
+                        if h.convex { "convex" } else { "concave" },
+                        h.apex[0], h.apex[1], h.apex[2],
+                        h.axis_direction[0], h.axis_direction[1], h.axis_direction[2],
+                        h.error_max, h.centroid_error_max,
+                    );
+                } else {
+                    eprintln!(
+                        "  Cone {}: {} faces, half_angle={:.4}\u{00b0}, apex=[{:.4},{:.4},{:.4}], {}, err_max={:.2e}",
+                        i,
+                        h.faces.len(),
+                        h.half_angle.to_degrees(),
+                        h.apex[0], h.apex[1], h.apex[2],
+                        if h.convex { "convex" } else { "concave" },
+                        h.error_max,
+                    );
+                }
+            }
+        }
+    }
+
+    // Compare against STEP file if --compare was specified
+    if config.compare_shape.is_some() {
+        compare_conical_hypotheses(&conical_hypotheses, &mesh, config)?;
+        if config.verbosity >= 1 {
+            eprintln!("  Compare: all conical/cylindrical hypothesis centroids within tolerance");
+        }
+    }
+
+    if conical_quit {
+        return Ok(Stage2Output {
+            mesh,
+            planar_hypotheses,
             conical_hypotheses,
             spherical_hypotheses,
             toroidal_hypotheses: Vec::new(),
@@ -1406,8 +1402,8 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
         });
     }
 
-
-
+    // Note: stages 2.2 and 2.3 both run above (spherical before conical), so
+    // --stage=2.2 and --stage=2.3 stop at the same point.
     if !config.stage.at_least(2, 4) {
         return Ok(Stage2Output {
             mesh,
