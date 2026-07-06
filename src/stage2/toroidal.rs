@@ -1034,6 +1034,68 @@ pub(super) struct TorusFit {
 /// Marker struct for the toroidal surface type.
 pub(super) struct ToroidalSurface;
 
+/// Build a torus seed for a face committed to a cylindrical hypothesis by
+/// gathering its 3-ring edge neighborhood. Returns an empty vec unless the
+/// neighborhood spans ≥ 2 distinct conical hypotheses (evidence of major-arc
+/// curvature that a single cylinder cannot represent).
+fn strip_merge_seed(mesh: &ConnectedMesh, fi: usize) -> Vec<Seed> {
+    let mut ring: Vec<usize> = vec![fi];
+    let mut seen = vec![false; mesh.faces.len()];
+    seen[fi] = true;
+    let mut frontier = vec![fi];
+    for _hop in 0..3 {
+        let mut next = Vec::new();
+        for &f in &frontier {
+            let vc = mesh.faces[f].vertex_count as usize;
+            for &ni in &mesh.faces[f].neighbors[..vc] {
+                if ni < 0 {
+                    continue;
+                }
+                let ni = ni as usize;
+                if seen[ni] {
+                    continue;
+                }
+                seen[ni] = true;
+                let face = &mesh.faces[ni];
+                if face.normal.is_some()
+                    && face.toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS
+                    && face.spherical_hypothesis < 0
+                {
+                    ring.push(ni);
+                    next.push(ni);
+                }
+            }
+        }
+        frontier = next;
+    }
+
+    // Require faces from at least two distinct conical hypotheses.
+    let mut hyp_ids: Vec<i32> = ring
+        .iter()
+        .map(|&f| mesh.faces[f].conical_hypothesis)
+        .filter(|&h| h >= 0)
+        .collect();
+    hyp_ids.sort_unstable();
+    hyp_ids.dedup();
+    if hyp_ids.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut verts: Vec<usize> = Vec::new();
+    for &sfi in &ring {
+        let svc = mesh.faces[sfi].vertex_count as usize;
+        verts.extend_from_slice(&mesh.faces[sfi].vertex_indices[..svc]);
+    }
+    verts.sort_unstable();
+    verts.dedup();
+    if ring.len() < MIN_TORUS_FACES || verts.len() < 9 {
+        return Vec::new();
+    }
+
+    ring.sort_unstable();
+    vec![Seed { faces: ring }]
+}
+
 impl SurfaceType for ToroidalSurface {
     type Fit = TorusFit;
     type Hypothesis = ToroidalHypothesis;
@@ -1063,11 +1125,19 @@ impl SurfaceType for ToroidalSurface {
         if mesh.faces[fi].normal.is_none() {
             return Vec::new();
         }
-        // Skip faces already committed to cylindrical, spherical, or conical
-        if mesh.faces[fi].conical_hypothesis >= 0
-            || mesh.faces[fi].spherical_hypothesis >= 0
-        {
+        if mesh.faces[fi].spherical_hypothesis >= 0 {
             return Vec::new();
+        }
+        // Faces committed to a cylinder may still lie on a torus: a coarsely
+        // tessellated torus (e.g. a pipe elbow) is tiled by narrow cylinder
+        // strips in stage 2.2, each spanning too little of the major arc for
+        // a 1-ring torus fit. Seed from a 3-ring neighborhood instead, which
+        // spans several strips and provides major-arc curvature — but only
+        // when the neighborhood contains faces from ≥ 2 distinct conical
+        // hypotheses (a plain cylinder region is a single hypothesis and is
+        // skipped cheaply).
+        if mesh.faces[fi].conical_hypothesis >= 0 {
+            return strip_merge_seed(mesh, fi);
         }
 
         // 1-ring: collect all faces sharing any vertex with fi

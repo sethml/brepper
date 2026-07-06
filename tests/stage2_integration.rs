@@ -1738,13 +1738,31 @@ test_stl_step_stage26_compare!(
     "tests/onshape/dome_hemisphere_20_fine.stl",
     "tests/onshape/dome_hemisphere_20.step"
 );
-// Pipe elbow now passes compare at stage 2.6 (torus surface is segmented into
-// many small cylindrical patches, but centroids still match).
+// Pipe elbow: strip-merge torus seeding recovers the quarter torus from the
+// narrow cylinder strips of stage 2.2 (see stage2/toroidal.rs).
 test_stl_step_stage26_compare!(
     onshape_pipe_elbow_stage26_compare,
     "tests/onshape/pipe_elbow_10_fine.stl",
     "tests/onshape/pipe_elbow_10.step"
 );
+
+#[test]
+fn onshape_pipe_elbow_torus_params_match() {
+    // The elbow's quarter torus must be recovered from the cylinder strips
+    // with the exact STEP parameters (R=10, r=5).
+    let stl = format!("{}/tests/onshape/pipe_elbow_10_medium.stl", manifest_dir());
+    let config = config_for_stl_stage26(&stl);
+    let output = run_stage2(&config);
+
+    assert_eq!(
+        output.toroidal_hypotheses.len(),
+        1,
+        "pipe_elbow should select exactly 1 toroidal surface"
+    );
+    let t = &output.toroidal_hypotheses[0];
+    assert!((t.major_radius - 10.0).abs() < 0.01, "major radius should be ~10, got {}", t.major_radius);
+    assert!((t.minor_radius - 5.0).abs() < 0.01, "minor radius should be ~5, got {}", t.minor_radius);
+}
 test_stl_step_stage26_compare!(
     onshape_plate_with_hole_stage26_compare,
     "tests/onshape/plate_with_hole_100x50_coarse.stl",

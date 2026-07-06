@@ -342,6 +342,20 @@ fn onshape_nosecone_medium_stage41_compare() {
 }
 
 #[test]
+fn onshape_pipe_elbow_medium_stage41_compare() {
+    // The elbow torus is tessellated into narrow strips that stage 2.2 fits
+    // as ~83 cylinders; strip-merge torus seeding (stage 2.5) must recover
+    // the single quarter-torus for the full pipeline to pass.
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/onshape/pipe_elbow_10_medium.stl"),
+        &format!("{dir}/tmp/test_pipe_elbow_medium_cmp.step"),
+        &format!("{dir}/tests/onshape/pipe_elbow_10.step"),
+    );
+    run_stage4(&config);
+}
+
+#[test]
 fn onshape_cone_truncated_stage41_compare() {
     let dir = manifest_dir();
     let config = config_for_compare(

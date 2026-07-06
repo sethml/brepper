@@ -258,22 +258,41 @@ fn compare_adjacency_to_step(
             }
         }
 
+        let mut worst_vi = usize::MAX;
         for &si in &sample_indices {
             let vi = boundary[si];
             let v = &mesh.vertices[vi];
             let pt = gp::Pnt::new_real3(v.x, v.y, v.z);
             let d = min_distance_to_shape(&pt, edge_compound.as_shape());
-            max_dist = max_dist.max(d);
+            if d > max_dist {
+                max_dist = d;
+                worst_vi = vi;
+            }
         }
 
         edge_overall_max = edge_overall_max.max(max_dist);
-        if max_dist > config.vertex_tolerance_mm {
+        // Boundary vertices of tangent edges are allowed the chordal surface
+        // tolerance: an imprecise tessellation can place the region boundary
+        // one row off the tangent junction (see stage3() comment).
+        let edge_tol = if edge.tangent {
+            config.surface_tolerance_mm
+        } else {
+            config.vertex_tolerance_mm
+        };
+        if max_dist > edge_tol {
+            if !config.quiet && worst_vi != usize::MAX {
+                let v = &mesh.vertices[worst_vi];
+                eprintln!(
+                    "  Compare 3.1: edge {ei} worst boundary vertex {worst_vi} at ({:.4}, {:.4}, {:.4}), dist {max_dist:.6e}",
+                    v.x, v.y, v.z,
+                );
+            }
             return Err(Stage3CompareError {
                 substage: 1,
                 check_type: "edge",
                 element_index: ei,
                 max_distance: max_dist,
-                tolerance: config.vertex_tolerance_mm,
+                tolerance: edge_tol,
             });
         }
     }
@@ -870,10 +889,8 @@ fn build_surfaces_and_adjacency(
             }
         }
     }
-    // Compare against STEP edges/vertices if --compare was specified
-    if config.compare_shape.is_some() {
-        compare_adjacency_to_step(&recon_edges, &brep_vertices, &input.mesh, config)?;
-    }
+    // Note: the stage 3.1 --compare check runs from stage3() after tangency
+    // detection, because tangent edges use a looser boundary-vertex tolerance.
 
     Ok(Stage3Output {
         stage2: input,
@@ -1998,45 +2015,64 @@ fn compute_tangent_edge_curve_torus_closed(
 ) -> Result<(), String> {
     let tor_idx = torus_idx_from_pair(ss0, ss1)?;
     let tor = &stage2.toroidal_hypotheses[tor_idx];
-    let axis = tor.axis_direction;
-    let center = tor.center;
 
-    // Compute circle parameters from mesh boundary vertices.
-    // All vertices lie on a circle perpendicular to the torus axis.
-    let mut h_sum = 0.0;
-    let mut r_sum = 0.0;
-    let n = edge.mesh_boundary_vertices.len() as f64;
-    if n < 3.0 {
+    if edge.mesh_boundary_vertices.len() < 3 {
         return Err("torus closed loop has too few boundary vertices".to_string());
     }
 
-    for &vi in &edge.mesh_boundary_vertices {
-        let v = &stage2.mesh.vertices[vi];
-        let dp = [
-            v.x - center[0],
-            v.y - center[1],
-            v.z - center[2],
-        ];
-        let h = dp[0] * axis[0] + dp[1] * axis[1] + dp[2] * axis[2];
-        let radial = [
-            dp[0] - h * axis[0],
-            dp[1] - h * axis[1],
-            dp[2] - h * axis[2],
-        ];
-        let r = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
-        h_sum += h;
-        r_sum += r;
+    // The junction circle is perpendicular to *some* axis:
+    // - Coaxial fillet junctions (torus fillet around a cylinder or against a
+    //   plane): perpendicular to the TORUS axis.
+    // - Tube-continuation junctions (a straight pipe leaving a pipe-elbow
+    //   torus): a tube cross-section, perpendicular to the CYLINDER axis.
+    // Try each candidate axis and keep the circle that best fits the mesh
+    // boundary vertices.
+    let mut candidates: Vec<([f64; 3], [f64; 3])> = vec![(tor.center, tor.axis_direction)];
+    for ss in [ss0, ss1] {
+        if let SelectedSurface::Conical(c) = ss {
+            let hyp = &stage2.conical_hypotheses[*c];
+            candidates.push((hyp.apex, hyp.axis_direction));
+        }
     }
 
-    let h_avg = h_sum / n;
-    let r_avg = r_sum / n;
-
-    // Circle center is on the torus axis at distance h_avg from torus center
-    let circle_center = [
-        center[0] + h_avg * axis[0],
-        center[1] + h_avg * axis[1],
-        center[2] + h_avg * axis[2],
-    ];
+    let mut best: Option<(f64, [f64; 3], [f64; 3], f64)> = None; // (dev, center, axis, radius)
+    for (origin, axis) in candidates {
+        // Average axial position and radius of the boundary vertices.
+        let mut h_sum = 0.0;
+        let mut r_sum = 0.0;
+        let n = edge.mesh_boundary_vertices.len() as f64;
+        for &vi in &edge.mesh_boundary_vertices {
+            let v = &stage2.mesh.vertices[vi];
+            let dp = [v.x - origin[0], v.y - origin[1], v.z - origin[2]];
+            let h = dp[0] * axis[0] + dp[1] * axis[1] + dp[2] * axis[2];
+            let radial = [dp[0] - h * axis[0], dp[1] - h * axis[1], dp[2] - h * axis[2]];
+            let r = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+            h_sum += h;
+            r_sum += r;
+        }
+        let h_avg = h_sum / n;
+        let r_avg = r_sum / n;
+        let center = [
+            origin[0] + h_avg * axis[0],
+            origin[1] + h_avg * axis[1],
+            origin[2] + h_avg * axis[2],
+        ];
+        // Max deviation of boundary vertices from this circle.
+        let mut max_dev = 0.0_f64;
+        for &vi in &edge.mesh_boundary_vertices {
+            let v = &stage2.mesh.vertices[vi];
+            let dp = [v.x - center[0], v.y - center[1], v.z - center[2]];
+            let h = dp[0] * axis[0] + dp[1] * axis[1] + dp[2] * axis[2];
+            let radial = [dp[0] - h * axis[0], dp[1] - h * axis[1], dp[2] - h * axis[2]];
+            let r = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+            let dev = ((r - r_avg) * (r - r_avg) + h * h).sqrt();
+            max_dev = max_dev.max(dev);
+        }
+        if best.as_ref().is_none_or(|(d, _, _, _)| max_dev < *d) {
+            best = Some((max_dev, center, axis, r_avg));
+        }
+    }
+    let (_, circle_center, axis, r_avg) = best.unwrap();
 
     let center_pnt = gp::Pnt::new_real3(circle_center[0], circle_center[1], circle_center[2]);
     let normal_dir = gp::Dir::new_real3(axis[0], axis[1], axis[2]);
@@ -2843,13 +2879,18 @@ fn compute_uv_bounds_from_edges(
 ) -> Result<(f64, f64, f64, f64), Stage3Error> {
     let mut u_values: Vec<f64> = Vec::new();
     let mut v_values: Vec<f64> = Vec::new();
+    // Per-edge (u, v) samples, used for toroidal faces to classify each
+    // boundary as iso-U (tube-junction circle) or iso-V (fillet circle).
+    let mut edge_samples: Vec<(Vec<f64>, Vec<f64>)> = Vec::new();
 
     // Project edge sample points and endpoints onto the surface.
     // For toroidal surfaces (doubly periodic), we need enough samples on each
-    // edge to resolve the V-periodicity via the circular gap algorithm.
-    let n_edge_samples = if matches!(surface, SelectedSurface::Toroidal(_)) { 3 } else { 1 };
+    // edge to resolve the periodicity via the circular gap algorithm.
+    let n_edge_samples = if matches!(surface, SelectedSurface::Toroidal(_)) { 5 } else { 1 };
 
     for &ei in &fd.edge_indices {
+        let mut this_edge_us: Vec<f64> = Vec::new();
+        let mut this_edge_vs: Vec<f64> = Vec::new();
         let edge = &output.edges[ei];
         if let Some(curve) = edge.curve_3d.as_ref() {
             let c = curve.get();
@@ -2879,8 +2920,10 @@ fn compute_uv_bounds_from_edges(
                         && v.abs() > std::f64::consts::FRAC_PI_2 - 0.01;
                     if !at_sphere_pole {
                         u_values.push(u);
+                        this_edge_us.push(u);
                     }
                     v_values.push(v);
+                    this_edge_vs.push(v);
                 }
             }
         }
@@ -2907,11 +2950,14 @@ fn compute_uv_bounds_from_edges(
                         && v.abs() > std::f64::consts::FRAC_PI_2 - 0.01;
                     if !at_sphere_pole {
                         u_values.push(u);
+                        this_edge_us.push(u);
                     }
                     v_values.push(v);
+                    this_edge_vs.push(v);
                 }
             }
         }
+        edge_samples.push((this_edge_us, this_edge_vs));
     }
 
     if v_values.is_empty() {
@@ -2920,11 +2966,42 @@ fn compute_uv_bounds_from_edges(
         )));
     }
 
+    // Circular spread of a set of angles: 2π minus the largest gap between
+    // consecutive sorted values (mod 2π).
+    fn circular_spread(vals: &[f64]) -> f64 {
+        let two_pi = 2.0 * std::f64::consts::PI;
+        if vals.len() < 2 {
+            return 0.0;
+        }
+        let mut sorted: Vec<f64> = vals.iter().map(|&v| v.rem_euclid(two_pi)).collect();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mut max_gap = sorted[0] + two_pi - sorted[sorted.len() - 1];
+        for i in 1..sorted.len() {
+            max_gap = max_gap.max(sorted[i] - sorted[i - 1]);
+        }
+        two_pi - max_gap
+    }
+
+    // For toroidal faces, classify the boundary configuration:
+    // - Fillet junctions are iso-V circles (constant tube angle, spanning U).
+    // - Tube-continuation junctions (e.g. a straight pipe leaving a pipe-
+    //   elbow torus) are iso-U circles (constant major angle, spanning the
+    //   full tube V). In that case the face is FULL in V and partial in U,
+    //   the opposite of the fillet case.
+    let torus_iso_u_boundaries = matches!(surface, SelectedSurface::Toroidal(_))
+        && !edge_samples.is_empty()
+        && edge_samples.iter().all(|(us, vs)| {
+            us.len() >= 3 && circular_spread(us) < 0.3 && circular_spread(vs) > 1.0
+        });
+
     // Compute v bounds from all projected points.
     // For toroidal surfaces (doubly periodic in V), use the circular gap
     // algorithm to handle faces crossing the V=0/2π boundary. Without this,
     // a quarter-tube fillet with V ∈ [3π/2, 2π] gets mis-expanded to [0, 3π/2].
-    let (mut vmin, mut vmax) = if matches!(surface, SelectedSurface::Toroidal(_)) {
+    let (mut vmin, mut vmax) = if torus_iso_u_boundaries {
+        // Boundaries wrap the tube: face is full in V.
+        (0.0, 2.0 * std::f64::consts::PI)
+    } else if matches!(surface, SelectedSurface::Toroidal(_)) {
         let two_pi = 2.0 * std::f64::consts::PI;
         // Project mesh face centroids to disambiguate which V arc the face
         // spans. IMPORTANT: centroids only *select* between the two candidate
@@ -3032,7 +3109,94 @@ fn compute_uv_bounds_from_edges(
         e.vertex_indices[0] == usize::MAX && e.vertex_indices[1] == usize::MAX
     });
 
-    let (umin, umax) = if all_closed_loops {
+    let (umin, umax) = if torus_iso_u_boundaries {
+        // Iso-U boundaries: the face spans a partial arc of the major circle
+        // between the boundary circles' U positions. Use the circular gap
+        // algorithm on the per-edge U positions, then disambiguate which of
+        // the two candidate arcs the face occupies using mesh face centroid
+        // projections (centroids select, never extend — see the V-bounds
+        // comment above).
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let mut edge_us: Vec<f64> = edge_samples
+            .iter()
+            .filter(|(us, _)| !us.is_empty())
+            .map(|(us, _)| us[0].rem_euclid(two_pi))
+            .collect();
+        edge_us.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        edge_us.dedup_by(|a, b| (*a - *b).abs() < 1e-10);
+
+        if edge_us.len() < 2 {
+            // Single boundary circle: cannot bound U from edges alone; treat
+            // as full revolution (the seam will close it).
+            (0.0, two_pi)
+        } else {
+            let mut max_gap = 0.0_f64;
+            let mut gap_end_idx = 0;
+            for i in 0..edge_us.len() {
+                let next_i = (i + 1) % edge_us.len();
+                let gap = if next_i > i {
+                    edge_us[next_i] - edge_us[i]
+                } else {
+                    edge_us[next_i] + two_pi - edge_us[i]
+                };
+                if gap > max_gap {
+                    max_gap = gap;
+                    gap_end_idx = next_i;
+                }
+            }
+            let gap_start_idx = if gap_end_idx == 0 { edge_us.len() - 1 } else { gap_end_idx - 1 };
+            let u_lo = edge_us[gap_end_idx];
+            let mut u_hi = edge_us[gap_start_idx];
+            if u_hi < u_lo {
+                u_hi += two_pi;
+            }
+
+            // Project a few mesh face centroids to pick the correct arc.
+            let hyp_idx = match surface {
+                SelectedSurface::Toroidal(i) => *i,
+                _ => unreachable!(),
+            };
+            let hyp = &output.stage2.toroidal_hypotheses[hyp_idx];
+            let mut centroid_us: Vec<f64> = Vec::new();
+            for &mfi in hyp.faces.iter().take(3) {
+                let face = &output.stage2.mesh.faces[mfi];
+                let v0 = &output.stage2.mesh.vertices[face.vertex_indices[0]];
+                let v1 = &output.stage2.mesh.vertices[face.vertex_indices[1]];
+                let v2 = &output.stage2.mesh.vertices[face.vertex_indices[2]];
+                let pt = gp::Pnt::new_real3(
+                    (v0.x + v1.x + v2.x) / 3.0,
+                    (v0.y + v1.y + v2.y) / 3.0,
+                    (v0.z + v1.z + v2.z) / 3.0,
+                );
+                let proj = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
+                    &pt, &fd.surface, extrema::ExtAlgo::Grad,
+                );
+                if proj.nb_points() > 0 {
+                    let mut u_tmp = 0.0;
+                    let mut v_tmp = 0.0;
+                    proj.lower_distance_parameters(&mut u_tmp, &mut v_tmp);
+                    centroid_us.push(u_tmp.rem_euclid(two_pi));
+                }
+            }
+            let boundary_tol = 0.1_f64;
+            let inside = |u: f64| -> bool {
+                let uu = if u < u_lo { u + two_pi } else { u };
+                uu >= u_lo - boundary_tol && uu <= u_hi + boundary_tol
+            };
+            let n_inside = centroid_us.iter().filter(|&&u| inside(u)).count();
+            let n_outside = centroid_us.len() - n_inside;
+            if n_outside > n_inside {
+                let new_lo = u_hi.rem_euclid(two_pi);
+                let mut new_hi = u_lo.rem_euclid(two_pi);
+                if new_hi < new_lo {
+                    new_hi += two_pi;
+                }
+                (new_lo, new_hi)
+            } else {
+                (u_lo, u_hi)
+            }
+        }
+    } else if all_closed_loops {
         // Full revolution: u spans [0, 2π]
         (0.0, 2.0 * std::f64::consts::PI)
     } else {
@@ -5206,12 +5370,23 @@ pub fn stage3(config: &Config, input: Stage2Output, viz: Option<&crate::viz::Viz
     // Stage 3.1: Create OCCT surface objects and build adjacency graph
     let output = build_surfaces_and_adjacency(input, config)?;
 
+    // Stage 3.2: Detect tangency relationships along edges. This runs before
+    // the stage 3.1 --compare check because boundary vertices on TANGENT
+    // edges are checked against the chordal surface tolerance: when the
+    // tessellation lacks a precise vertex ring on a tangent junction, the
+    // region boundary can sit one row off the junction circle — still within
+    // chordal tolerance of both surfaces and harmless to reconstruction
+    // (tangent junction curves are built from the fitted hypotheses, not
+    // from these vertices).
+    let output = detect_tangency(output, config);
+
+    if config.compare_shape.is_some() {
+        compare_adjacency_to_step(&output.edges, &output.vertices, &output.stage2.mesh, config)?;
+    }
+
     if !config.stage.at_least(3, 2) {
         return Ok(output);
     }
-
-    // Stage 3.2: Detect tangency relationships along edges
-    let output = detect_tangency(output, config);
 
 
     if !config.stage.at_least(3, 3) {

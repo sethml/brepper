@@ -477,3 +477,12 @@ In `compute_uv_bounds_from_edges`, mesh face centroid projections must only *sel
 ### OCCT detailed BRepCheck diagnostics can throw
 
 `BRepCheck_Face`/`BRepCheck_Edge` diagnostics on invalid faces can throw `Standard_NullObject` (edges without geometry), which the bindings surface as a Rust panic. `validate_faces` wraps the detailed diagnostics in `catch_unwind` and treats a diagnostic failure as an ordinary invalid face rather than aborting the pipeline.
+
+### Pipe elbows: strip-merge torus seeding and iso-U boundaries
+
+- A coarsely tessellated torus (pipe elbow) is tiled by narrow cylinder strips in stage 2.2 — each strip's 1-ring neighborhood spans too little major-arc curvature for a torus fit. Strip-merge seeding: for conical-committed faces, seed from a 3-ring edge neighborhood when it spans ≥ 2 distinct conical hypotheses (a plain cylinder is 1 hypothesis → skipped cheaply). Three adjacent strips give a reliable 7-DOF torus fit; BFS then grows over the whole elbow and area-based selection discards the strips. pipe_elbow_10 medium/fine now pass the full pipeline; the deduced torus matches STEP exactly (R=10, r=5).
+- Elbow junction circles are iso-U on the torus (tube cross-sections, perpendicular to the CYLINDER axis), unlike fillet junctions which are iso-V (perpendicular to the TORUS axis). Both the tangent-circle construction (try both axes, keep the better vertex fit) and the UV-bounds computation (classify per-edge sample spreads; iso-U boundaries → face full in V, U from gap algorithm + centroid disambiguation) must handle both configurations.
+
+### Tangent-edge boundary vertices need chordal tolerance in stage 3.1 compare
+
+Onshape's fine tessellation does not always place a precise vertex ring on tangent junction circles (vertex positions can be ~1e-4 off the ideal surfaces near corners), so the mesh region boundary between two tangent surfaces can sit one row off the junction — one row of sagitta (row²/2R ≈ 7.6e-3 mm on rounded_cube fine) from the STEP edge. This is harmless: tangent junction curves are constructed from the fitted hypotheses, not from boundary vertices. The stage 3.1 compare therefore runs after tangency detection (3.2) and checks tangent-edge boundary vertices against --surface-tolerance while sharp edges keep --vertex-tolerance. Whether this fired at all used to depend on nondeterministic boundary composition and every-Nth sampling.

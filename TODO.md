@@ -2,10 +2,9 @@
 
 ## Remaining full-pipeline models
 These models still fail --compare through stage 4.1:
-- `pipe_elbow_10_medium` / `pipe_elbow_10_fine` (onshape): the elbow torus tessellates into narrow strips whose normals look locally cylindrical, so stage 2.5 torus fitting doesn't fire and the elbow is tiled with ~83 cylinder patches whose boundaries aren't STEP edges. Needs the unified SOR (h,r) profile framework (below) to distinguish torus from cylinder strips, or torus detection before conical with better seed fitting.
 - `cone_tangent_planes_medium` (onshape): STEP has 3 cones + 5 planes; only 1 cone is detected. The two side cone patches span a narrow azimuthal arc and fail angular coverage. Needs partial-cone acceptance (min-span variant) and plane-cone tangent line construction (stage 3.3 TODO).
 - `nosecone_truncated_medium` (onshape): angled truncation cuts both sphere and cone; bridging facets along the cut produce spurious planes and fake corners.
-- `stepped_block_toroidal_fillets_{medium,fine}` (onshape): toroidal fillets on a stepped block; stage 3.1 edge compare fails (~0.02-0.36 mm).
+- `stepped_block_toroidal_fillets_{medium,fine}` (onshape): toroidal fillets on a stepped block; stage 3.1 edge compare fails on a sharp edge (~0.36 mm). Selection is close (73 surfaces vs 72 in STEP: 21/17 planar, 36/37 cylindrical, 16/18 toroidal) but a few fillet junction regions mis-assign.
 
 # Unified Surface-of-Revolution Framework (refactor)
 

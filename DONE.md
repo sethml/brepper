@@ -244,3 +244,6 @@ Added `--viz-stages-level` flag (default 1) to control how often `--viz-stages` 
 - Sphere-cone tangent circles constructed from boundary-vertex averaging perpendicular to the cone axis; reoriented sphere faces compute V bounds from projected boundary circles instead of fixed hemispheres.
 - Deterministic fitting: all fit functions take sorted vertex slices instead of HashSets.
 - validate_faces wraps OCCT detailed diagnostics in catch_unwind (Standard_NullObject on invalid faces no longer aborts).
+
+## Unblock pipe_elbow (strip-merge torus seeding)
+pipe_elbow_10 medium and fine pass --compare through stage 4.1. Strip-merge torus seeds (3-ring neighborhoods spanning ≥2 cylinder hypotheses) recover the elbow torus from the cylinder strips of stage 2.2; cylinder-torus tangent circles try both candidate axes; toroidal UV-bounds classify iso-U vs iso-V boundaries. New tests: elbow torus params match STEP (R=10, r=5), stage-4.1 compare for pipe_elbow_10_medium.
