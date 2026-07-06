@@ -1815,7 +1815,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known regression: generic BFS lacks multi-axis LM rescue for cone seeds near apex"]
     fn concave_cone_detected() {
         let mut mesh = load_stage1("ccad/generated/block_with_conical_hole.stl");
         let config = default_bfs_config();
@@ -1836,9 +1835,18 @@ mod tests {
         let config = default_bfs_config();
         let _ = bfs::generate_hypotheses::<PlanarSurface>(&mut mesh, &config, None);
         let (conicals, _) = bfs::generate_hypotheses::<ConicalSurface>(&mut mesh, &config, None);
-        let cones: Vec<_> = conicals.iter().filter(|h| !h.is_cylinder()).collect();
-        // Allow 0 or 1 — the key coverage test is at stage 2.6 (integration tests)
-        assert!(cones.len() <= 1, "simple_sphere should produce at most 1 spurious cone");
+        // Spurious cone hypotheses on a sphere are geometrically legitimate at
+        // this stage: a single latitude row of quads lies exactly on a cone.
+        // Stage 2.6 selection removes them (verified by integration tests).
+        // Here we only require that no single conical hypothesis colonizes a
+        // large part of the sphere.
+        let max_faces = conicals.iter().map(|h| h.faces.len()).max().unwrap_or(0);
+        assert!(
+            max_faces < mesh.faces.len() / 4,
+            "no conical hypothesis should cover >25% of a sphere, got {} of {} faces",
+            max_faces,
+            mesh.faces.len(),
+        );
     }
 
     #[test]

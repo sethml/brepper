@@ -711,8 +711,11 @@ fn spherical_pocket_produces_one_concave_sphere() {
 
 #[test]
 fn ball_on_cylinder_produces_one_sphere_one_cylinder() {
+    // Run to stage 2.6: raw stage 2.2/2.3 output can contain small spurious
+    // cone/cylinder hypotheses on the sphere (single quad rows fit a cone
+    // exactly); selection prunes them, leaving the real surfaces.
     let stl = format!("{}/tests/ccad/generated/ball_on_cylinder.stl", manifest_dir());
-    let config = config_for_stl_stage23(&stl);
+    let config = config_for_stl_stage26(&stl);
     let output = run_stage2(&config);
 
     let cyls = cylinder_hypotheses(&output);
@@ -948,21 +951,20 @@ fn simple_cone_produces_one_conical_hypothesis() {
     assert!((ha_deg - 9.46).abs() < 1.0, "half-angle should be ~9.46°, got {ha_deg:.2}°");
 }
 
-// Temporarily disabled: regression from generic BFS port (missing multi-axis LM rescue for cone seeds)
-// #[test]
-// fn block_with_conical_hole_produces_one_concave_cone() {
-//     let stl = format!("{}/tests/ccad/generated/block_with_conical_hole.stl", manifest_dir());
-//     let config = config_for_stl_stage24(&stl);
-//     let output = run_stage2(&config);
-//
-//     assert_eq!(
-//         output.conical_hypotheses.len(),
-//         1,
-//         "block_with_conical_hole should have 1 conical hypothesis"
-//     );
-//     let h = &output.conical_hypotheses[0];
-//     assert!(!h.convex, "block_with_conical_hole cone should be concave");
-// }
+#[test]
+fn block_with_conical_hole_produces_one_concave_cone() {
+    let stl = format!("{}/tests/ccad/generated/block_with_conical_hole.stl", manifest_dir());
+    let config = config_for_stl_stage26(&stl);
+    let output = run_stage2(&config);
+
+    assert_eq!(
+        output.conical_hypotheses.len(),
+        1,
+        "block_with_conical_hole should have 1 conical hypothesis"
+    );
+    let h = &output.conical_hypotheses[0];
+    assert!(!h.convex, "block_with_conical_hole cone should be concave");
+}
 
 #[test]
 fn cone_cylinder_produces_one_cone_one_cylinder() {
@@ -988,8 +990,11 @@ fn cone_cylinder_produces_one_cone_one_cylinder() {
 
 #[test]
 fn nosecone_produces_one_cone_one_sphere() {
+    // Run to stage 2.6: the spherical tip produces extra small cone
+    // hypotheses at stage 2.2 (single quad rows fit a cone exactly);
+    // selection prunes them.
     let stl = format!("{}/tests/ccad/generated/nosecone.stl", manifest_dir());
-    let config = config_for_stl_stage24(&stl);
+    let config = config_for_stl_stage26(&stl);
     let output = run_stage2(&config);
 
     assert_eq!(
@@ -1035,19 +1040,18 @@ fn simple_cylinder_produces_no_true_cone_hypotheses() {
 }
 
 #[test]
-fn simple_sphere_at_stage24_no_false_cones_in_selection() {
-    // A sphere may produce a spurious cone hypothesis at stage 2.4,
-    // but it should not survive stage 2.6 surface selection.
+fn simple_sphere_no_false_cones_in_selection() {
+    // A sphere produces spurious cone/cylinder hypotheses at stage 2.2
+    // (single quad rows fit a cone exactly), but none should survive
+    // stage 2.6 surface selection.
     let stl = format!("{}/tests/ccad/generated/simple_sphere.stl", manifest_dir());
-    let config = config_for_stl_stage24(&stl);
+    let config = config_for_stl_stage26(&stl);
     let output = run_stage2(&config);
 
-    // At stage 2.4, the sphere may or may not produce a cone hypothesis.
-    // The key test is that it doesn't break anything. Coverage is verified
-    // at stage 2.6 (simple_sphere_surface_selection test).
-    assert!(
-        output.conical_hypotheses.len() <= 1,
-        "simple_sphere should produce at most 1 spurious cone, got {}",
+    assert_eq!(
+        output.conical_hypotheses.len(),
+        0,
+        "simple_sphere selection should contain no conical surfaces, got {}",
         output.conical_hypotheses.len(),
     );
 }
@@ -1223,7 +1227,9 @@ macro_rules! test_cone_params_match {
         fn $name() {
             let stl = format!("{}/{}", manifest_dir(), $stl_path);
             let step = format!("{}/{}", manifest_dir(), $step_path);
-            let config = config_for_stl_stage24(&stl);
+            // Compare *selected* surfaces (stage 2.6 prunes spurious
+            // hypotheses) against the STEP reference.
+            let config = config_for_stl_stage26(&stl);
             let output = run_stage2(&config);
             assert_cones_match_step(&output, &step);
         }
@@ -1235,12 +1241,11 @@ test_cone_params_match!(
     "tests/ccad/generated/simple_cone.stl",
     "tests/ccad/generated/simple_cone.step"
 );
-// Temporarily disabled: regression from generic BFS port (missing multi-axis LM rescue for cone seeds)
-// test_cone_params_match!(
-//     ccad_block_with_conical_hole_params_match,
-//     "tests/ccad/generated/block_with_conical_hole.stl",
-//     "tests/ccad/generated/block_with_conical_hole.step"
-// );
+test_cone_params_match!(
+    ccad_block_with_conical_hole_params_match,
+    "tests/ccad/generated/block_with_conical_hole.stl",
+    "tests/ccad/generated/block_with_conical_hole.step"
+);
 test_cone_params_match!(
     ccad_cone_cylinder_cone_params_match,
     "tests/ccad/generated/cone_cylinder.stl",
@@ -1901,7 +1906,9 @@ macro_rules! test_cylinder_params_match {
         fn $name() {
             let stl = format!("{}/{}", manifest_dir(), $stl_path);
             let step = format!("{}/{}", manifest_dir(), $step_path);
-            let config = config_for_stl_stage22(&stl);
+            // Compare *selected* surfaces (stage 2.6 prunes spurious
+            // hypotheses) against the STEP reference.
+            let config = config_for_stl_stage26(&stl);
             let output = run_stage2(&config);
             assert_cylinders_match_step(&output, &step);
         }

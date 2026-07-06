@@ -33,6 +33,11 @@ path = "src/bin/viewer.rs"
 [profile.dev]
 opt-level = 1
 
+# Fully optimize brepper itself so `cargo test` runs at near-release speed.
+# The BFS surface fitting and LM refinement in this crate dominate test time.
+[profile.dev.package.brepper]
+opt-level = 3
+
 [profile.dev.package.nalgebra]
 opt-level = 3
 

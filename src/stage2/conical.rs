@@ -1114,6 +1114,13 @@ impl SurfaceType for ConicalSurface {
     /// the seed vertex tolerance matches the base vertex tolerance.
     fn seed_vtol_multiplier() -> f64 { 1.0 }
 
+    /// Tessellated cones with N circumferential divisions have inter-strip
+    /// dihedral angles ≈ 360°/N, which can exceed the default angular
+    /// tolerance (e.g. 20° for N=18 vs the 17.5° default). Vertex-to-surface
+    /// distance is the primary discriminator for cones/cylinders, so the
+    /// angular check is relaxed 2×.
+    fn angular_tol_multiplier() -> f64 { 2.0 }
+
     fn generate_seeds(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig) -> Vec<Seed> {
         if mesh.faces[fi].normal.is_none() {
             return Vec::new();
@@ -1374,9 +1381,29 @@ impl SurfaceType for ConicalSurface {
         if fit.half_angle > 80.0_f64.to_radians() {
             return false;
         }
-        // Normal-axis consistency check removed: it's OK to detect cones on
-        // spheres — the surface selection phase (stage 2.5) will pick the sphere
-        // hypothesis over the conical hypotheses because spheres cover more area.
+        // Normal-axis consistency: on a cone, n·axis = sin(half_angle) is
+        // constant (0 for cylinders). Reject hypotheses where the normal dot
+        // products with the axis vary too much — the faces lie on a sphere or
+        // torus, not a cone/cylinder. Without this check, stage 2.2 tiles
+        // spheres and torus fillets with hundreds of small bogus conical
+        // hypotheses. Area-based selection (2.6) would discard them, but they
+        // starve torus seeding (which excludes conical-committed faces) and
+        // waste large amounts of BFS+LM time on fine meshes.
+        let dots: Vec<f64> = face_list.iter()
+            .filter_map(|&fi| mesh.faces[fi].normal.map(|n| {
+                n[0] * fit.axis_direction[0]
+                    + n[1] * fit.axis_direction[1]
+                    + n[2] * fit.axis_direction[2]
+            }))
+            .collect();
+        if dots.len() >= 3 {
+            let mean = dots.iter().sum::<f64>() / dots.len() as f64;
+            let var = dots.iter().map(|d| (d - mean).powi(2)).sum::<f64>()
+                / dots.len() as f64;
+            if var > 0.0005 {
+                return false;
+            }
+        }
         angular_coverage_valid(
             face_list, &fit.apex, &fit.axis_direction,
             &mesh.faces, &mesh.vertices,
