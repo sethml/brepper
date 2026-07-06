@@ -366,7 +366,7 @@ impl LeastSquaresProblem<f64, Dyn, Const<7>> for TorusLMProblem {
 /// Returns (center, axis_direction, major_radius, minor_radius) or None.
 fn fit_torus(
     face_indices: &[usize],
-    vertex_set: &HashSet<usize>,
+    vertex_set: &[usize],
     faces: &[MeshFace],
     vertices: &[MeshVertex],
 ) -> Option<([f64; 3], [f64; 3], f64, f64)> {
@@ -392,7 +392,7 @@ fn fit_torus(
 
 fn fit_torus_inner(
     face_indices: &[usize],
-    vertex_set: &HashSet<usize>,
+    vertex_set: &[usize],
     faces: &[MeshFace],
     vertices: &[MeshVertex],
 ) -> Option<([f64; 3], [f64; 3], f64, f64)> {
@@ -403,7 +403,7 @@ fn fit_torus_inner(
     // Sort vertices for deterministic iteration order (avoids floating-point
     // accumulation-order differences across runs due to HashSet randomization).
     let sorted_verts: Vec<usize> = {
-        let mut v: Vec<usize> = vertex_set.iter().copied().collect();
+        let mut v: Vec<usize> = vertex_set.to_vec();
         v.sort_unstable();
         v
     };
@@ -574,7 +574,7 @@ fn fit_torus_inner(
 /// This works when the normal-line intersection approach fails (e.g., too few face pairs).
 fn fit_torus_sor(
     face_indices: &[usize],
-    vertex_set: &HashSet<usize>,
+    vertex_set: &[usize],
     _faces: &[MeshFace],
     vertices: &[MeshVertex],
 ) -> Option<([f64; 3], [f64; 3], f64, f64)> {
@@ -584,7 +584,7 @@ fn fit_torus_sor(
 
     // Sort vertices for deterministic iteration order.
     let sorted_verts: Vec<usize> = {
-        let mut v: Vec<usize> = vertex_set.iter().copied().collect();
+        let mut v: Vec<usize> = vertex_set.to_vec();
         v.sort_unstable();
         v
     };
@@ -824,8 +824,20 @@ fn minor_circle_coverage_valid(
         return false;
     }
 
+    // Measure tube coverage from face *normals*, not centroid positions.
+    // On a torus, the surface normal at tube angle φ makes exactly that
+    // angle with the radial direction, regardless of tube radius. Flat
+    // annuli and cylinder bands lie exactly on degenerate tori (their
+    // centroids can span a nonzero positional arc on a large tube), but
+    // their normals are all parallel — tube-angle span ≈ 0 — so the
+    // normal-based span cleanly rejects them.
+    let _ = major_radius;
     let mut minor_angles: Vec<f64> = Vec::with_capacity(face_list.len());
     for &fi in face_list {
+        let n = match faces[fi].normal {
+            Some(n) => n,
+            None => continue,
+        };
         let c = face_centroid(&faces[fi], vertices);
         let d = [c[0] - center[0], c[1] - center[1], c[2] - center[2]];
         let axial = dot3(&d, axis_direction);
@@ -840,8 +852,12 @@ fn minor_circle_coverage_valid(
         if radial_dist < 1e-10 {
             continue;
         }
-        let dr = radial_dist - major_radius;
-        let phi = f64::atan2(axial, dr);
+        let radial_unit = [
+            radial_vec[0] / radial_dist,
+            radial_vec[1] / radial_dist,
+            radial_vec[2] / radial_dist,
+        ];
+        let phi = f64::atan2(dot3(&n, axis_direction), dot3(&n, &radial_unit));
         minor_angles.push(phi);
     }
 
@@ -862,8 +878,11 @@ fn minor_circle_coverage_valid(
     }
 
     let span = 2.0 * std::f64::consts::PI - largest_gap;
-    // Require meaningful angular coverage around the minor circle
-    span >= 0.1
+    // Require meaningful normal coverage around the tube. A real fillet
+    // patch spans a significant tube arc (typically 90°); flat annuli and
+    // cylinder bands span ~0° (plus tessellation noise). 0.3 rad (~17°)
+    // admits patches of 3+ tessellation rows while rejecting degenerates.
+    span >= 0.3
 }
 
 /// Validate angular coverage around the torus (same gap-based check as cylindrical).
@@ -1033,6 +1052,13 @@ impl SurfaceType for ToroidalSurface {
         face.toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS
     }
 
+    /// Torus quads twist (they are doubly curved), so stage 1.3 coplanar
+    /// fusion often fails on fillet patches, leaving raw triangles whose
+    /// normals differ by up to ~2× the tessellation angular step. Vertex
+    /// distance is the primary discriminator, so relax the dihedral check
+    /// like the conical stage does.
+    fn angular_tol_multiplier() -> f64 { 2.0 }
+
     fn generate_seeds(mesh: &ConnectedMesh, fi: usize, _config: &BfsConfig) -> Vec<Seed> {
         if mesh.faces[fi].normal.is_none() {
             return Vec::new();
@@ -1085,7 +1111,10 @@ impl SurfaceType for ToroidalSurface {
         vertex_list: &[usize],
         _verbosity: u8,
     ) -> Option<Self::Fit> {
-        let vertex_set: HashSet<usize> = vertex_list.iter().copied().collect();
+        // Sorted, deduplicated for deterministic fitting sums.
+        let mut vertex_set: Vec<usize> = vertex_list.to_vec();
+        vertex_set.sort_unstable();
+        vertex_set.dedup();
         let (center, axis, major_r, minor_r) =
             fit_torus(face_list, &vertex_set, &mesh.faces, &mesh.vertices)?;
         if minor_r <= 0.0 || major_r <= 0.0 || minor_r > major_r {
@@ -1399,7 +1428,7 @@ mod tests {
             24, 12, 0.0, 2.0 * PI, 0.0, 2.0 * PI,
         );
         let face_indices: Vec<usize> = (0..faces.len()).collect();
-        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
 
         let result = fit_torus(&face_indices, &vertex_set, &faces, &vertices);
         assert!(result.is_some(), "torus fit should succeed");
@@ -1421,7 +1450,7 @@ mod tests {
             24, 12, 0.0, 2.0 * PI, 0.0, 2.0 * PI,
         );
         let face_indices: Vec<usize> = (0..faces.len()).collect();
-        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
 
         let result = fit_torus(&face_indices, &vertex_set, &faces, &vertices);
         assert!(result.is_some(), "offset torus fit should succeed");
@@ -1443,7 +1472,7 @@ mod tests {
             24, 12, 0.0, 2.0 * PI, 0.0, 2.0 * PI,
         );
         let face_indices: Vec<usize> = (0..faces.len()).collect();
-        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
 
         let result = fit_torus(&face_indices, &vertex_set, &faces, &vertices);
         assert!(result.is_some(), "tilted torus fit should succeed");
@@ -1464,7 +1493,7 @@ mod tests {
             24, 8, 0.0, 2.0 * PI, 0.0, PI / 2.0,
         );
         let face_indices: Vec<usize> = (0..faces.len()).collect();
-        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
 
         let result = fit_torus(&face_indices, &vertex_set, &faces, &vertices);
         assert!(result.is_some(), "quarter-tube torus fit should succeed");
@@ -1484,7 +1513,7 @@ mod tests {
             12, 12, 0.0, PI, 0.0, 2.0 * PI,
         );
         let face_indices: Vec<usize> = (0..faces.len()).collect();
-        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
 
         let result = fit_torus(&face_indices, &vertex_set, &faces, &vertices);
         assert!(result.is_some(), "half-major torus fit should succeed");
@@ -1502,7 +1531,7 @@ mod tests {
             36, 12, 0.0, 2.0 * PI, 0.0, 2.0 * PI,
         );
         let face_indices: Vec<usize> = (0..faces.len()).collect();
-        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
 
         let result = fit_torus(&face_indices, &vertex_set, &faces, &vertices);
         assert!(result.is_some(), "thin fillet torus fit should succeed");
@@ -1532,7 +1561,7 @@ mod tests {
             MeshVertex::from_xyz(0.0, 1.0, 1.0),
             MeshVertex::from_xyz(1.0, 0.0, 1.0),
         ];
-        let vertex_set: HashSet<usize> = (0..6).collect();
+        let vertex_set: Vec<usize> = (0..6).collect();
         assert!(fit_torus(&[0], &vertex_set, &faces, &vertices).is_none(),
                 "torus fit should reject degenerate input");
     }

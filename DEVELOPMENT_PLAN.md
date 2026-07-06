@@ -247,6 +247,16 @@ Because the vertex tolerance is tight for CAD meshes, the angular tolerance chec
 
 **Acceptance tests**: `face_count >= 2`. Single-face planes are not kept as hypotheses. Faces that end up in a single-face group are left as `NO_HYPOTHESIS`; stage 2.6 synthesizes single-face planar hypotheses for any faces that received no hypothesis from stages 2.1–2.5.
 
+**Execution order note**: Stage 2.3 (spherical) executes *before* stage 2.2
+(conical/cylindrical), keeping the historical stage numbering for CLI/viz
+compatibility. On a tessellated sphere, every band of quad rows lies exactly
+on some cone or cylinder (two rings of vertices always fit both), so the
+conical BFS would otherwise tile fine spheres with hundreds of bogus band
+hypotheses. Sphere detection is cheap and robust (its solid-angle coverage
+acceptance rejects band-like fits), so spheres are committed first and
+conical seeding skips sphere-committed faces (conical BFS *expansion* may
+still absorb them, so tangent junctions work).
+
 #### 2.2 Deduce conical/cylindrical hypotheses
 
 Fit conical and cylindrical hypotheses to connected sets of faces that lie on a common cone or cylinder. Cylinders and cones are unified into a single `ConicalHypothesis` struct (matching the C++ implementation), with `half_angle == 0` for cylinders. A hypothesis consists of:
@@ -271,11 +281,15 @@ Runs the generic BFS hypothesis generation with the following parameterization:
 
 **Distance metric**: For cylinders (axis origin `o`, axis direction `a`, radius `r`): distance from point `p` is $| \|p - o - ((p-o)\cdot a)a\| - r |$. For cones (apex, axis, half_angle): distance is the point-to-cone-surface distance along the radial direction.
 
-**BFS-specific check — convexity**: Compute the vector from the axis to the face's centroid. Check that the face's normal agrees with the hypothesis convexity (dot product with radial vector has the expected sign). Reject if inconsistent — this prevents merging the inner and outer surfaces of a thin-walled cylinder.
+**BFS-specific checks**:
+- **Convexity**: Compute the vector from the axis to the face's centroid. Check that the face's normal agrees with the hypothesis convexity (dot product with radial vector has the expected sign). Reject if inconsistent — this prevents merging the inner and outer surfaces of a thin-walled cylinder.
+- **Normal-axis consistency (per face)**: on a cone, every facet normal satisfies |n·axis| = sin(half_angle) exactly (tessellation coarseness rotates facet normals *around* the axis, preserving the dot product). Candidate faces deviating more than 0.05 are rejected — faces on spheres and tori violate this as soon as BFS crosses tube rows, keeping doomed trials small.
 
-**Acceptance tests — angular coverage validation**: (1) For each face, compute centroid angular position θ around the axis. (2) Sort θ values. (3) Find the largest gap and compute span = 2π − largest_gap. (4) The second-largest gap must be ≤ span / 3. Ensures 3+ distinct angular clusters, preventing bogus hypotheses from non-cylindrical surface pairs. Also requires minimum face count. Note: no normal-axis consistency check is applied — it is acceptable for cones to be detected on spherical patches, since the surface selection phase (stage 2.6) resolves overlapping hypotheses by area.
+**Acceptance tests**:
+- **Angular coverage validation**: (1) For each face, compute centroid angular position θ around the axis. (2) Sort θ values. (3) Find the largest gap and compute span = 2π − largest_gap. (4) The second-largest gap must be ≤ span / 3. Ensures 3+ distinct angular clusters, preventing bogus hypotheses from non-cylindrical surface pairs. Also requires minimum face count.
+- **Normal-axis consistency (aggregate)**: reject if the variance of n·axis over member faces exceeds 0.0005 — the faces lie on a sphere or torus, not a cone/cylinder. Without this check, stage 2.2 tiles torus fillets with bogus conical hypotheses, which starves torus seeding (stage 2.4 seeds exclude conical-committed faces).
 
-`seed_vtol_multiplier` is 1.0 for cones/cylinders (vertices lie precisely on the surface, not approximated).
+`seed_vtol_multiplier` is 1.0 for cones/cylinders (vertices lie precisely on the surface, not approximated). `angular_tol_multiplier` is 2.0: tessellated cones with N circumferential divisions have inter-strip dihedral angles of 360°/N, which can exceed the default 17.5° tolerance (e.g. 20° for N=18); vertex-to-surface distance is the primary discriminator.
 
 #### 2.3 Deduce spherical hypotheses
 
@@ -321,7 +335,9 @@ Runs the generic BFS hypothesis generation with the following parameterization:
 
 **BFS-specific check — convexity**: Compute the vector from the nearest tube center point to the face centroid. The tube center is $c = C + R \cdot \hat{r}$ where $\hat{r}$ is the radial unit vector from the torus axis to the point. Check that the face normal's dot product with this vector has the expected sign.
 
-**Acceptance tests**: (1) Minimum `MIN_TORUS_FACES` (7) — torus has 7 DOF. (2) **Angular coverage around the major circle** (same azimuthal algorithm as cylindrical/conical). (3) **Minor circle coverage**: faces should span multiple angular positions around the tube cross-section (φ = atan2(axial, radial − R)).
+**Acceptance tests**: (1) Minimum `MIN_TORUS_FACES` (7) — torus has 7 DOF. (2) **Angular coverage around the major circle** (same azimuthal algorithm as cylindrical/conical). (3) **Minor circle coverage from face normals**: the tube angle of each face is measured from its *normal* (ψ = atan2(n·â, n·r̂)); the span (largest-gap algorithm) must be ≥ 0.3 rad. Normals — not centroid positions — are the decisive signal: a flat annulus or a cylinder band lies exactly on a one-parameter family of degenerate tori and can span a nonzero *positional* tube arc on a large-tube-radius member of that family, but its normals are all parallel (tube span ≈ 0).
+
+`angular_tol_multiplier` is 2.0: torus quads twist (doubly curved), so stage 1.3 coplanar fusion often fails on fillet patches, leaving raw triangles whose normals differ by up to ~2× the tessellation angular step.
 
 #### 2.5 Select surfaces to use for reconstruction
 Assign each mesh face to exactly one "selected surface" for reconstruction. Since stages 2.1–2.4 produce hypotheses that may overlap (a face can belong to one planar, one conical/cylindrical, one spherical, and one toroidal hypothesis simultaneously), surface selection must resolve these overlaps.
@@ -348,9 +364,13 @@ The algorithm selects hypotheses greedily by total mesh face area, largest first
    - `hypothesis_index: usize` — index into the appropriate hypothesis vector in Stage2Output.
    - `faces: Vec<usize>` — mesh face indices assigned to this surface.
    - `vertices: Vec<usize>` — mesh vertex indices on this surface (union of face vertices).
-6. **Prune unselected hypotheses**: remove any hypothesis that was not selected from the hypothesis vectors in `Stage2Output`. Remap `SelectedSurface` indices to match the compacted vectors. After this step, `Stage2Output.conical_hypotheses` (etc.) contain only selected hypotheses.
-7. Validate: every face is assigned to exactly one selected surface.
-8. Print a summary: count of selected surfaces by type, total faces covered.
+6. **Absorb redundant surfaces** (`absorb_redundant_surfaces`): merge a selected surface S into an adjacent, larger-area surface T when all of S's vertices lie within tolerance of T's fitted geometry AND all of S's face centroids lie within `--surface-tolerance` of T. Two situations require this:
+   - *Spurious sub-fits*: a narrow band of faces on a cone/sphere can fit an "exact" cylinder (e.g. 3 azimuthal strips of a shallow cone have nearly coplanar normals) and get committed before the real surface's BFS reaches those faces. Tolerance: 10× vertex tolerance (exact overlap).
+   - *Tangent-junction bridge facets*: a mesh facet spanning a tangent junction (e.g. cone–sphere on the nosecone) has vertices on both sides and can't be absorbed by either surface at vertex tolerance; it becomes an orphan single-face planar surface creating fake edges. Tolerance: `--surface-tolerance` (chordal sag), only for surfaces with ≤ 2 faces.
+   The centroid check prevents absorbing flat end caps triangulated as a fan from a boundary vertex (all cap *vertices* lie on the adjacent cone/cylinder's boundary circle, but face interiors do not).
+7. **Prune unselected hypotheses**: remove any hypothesis that was not selected from the hypothesis vectors in `Stage2Output`. Remap `SelectedSurface` indices to match the compacted vectors. After this step, `Stage2Output.conical_hypotheses` (etc.) contain only selected hypotheses.
+8. Validate: every face is assigned to exactly one selected surface.
+9. Print a summary: count of selected surfaces by type, total faces covered.
 
 **Why this works better than a fixed type-priority rule:** A fixed priority (e.g., spherical > cylindrical > multi-face planar) fails when a bogus hypothesis of a high-priority type (3-face r=139mm sphere) competes with a correct hypothesis of a lower-priority type (35-face r=2mm cylinder). Area-based greedy selection naturally picks the correct hypothesis because it covers vastly more area.
 
@@ -489,7 +509,8 @@ For each ReconEdge, compute the 3D intersection curve between the two adjacent s
 - For tangent edges: construct the curve analytically rather than using `GeomAPI_IntSS` (which fails or produces degenerate results for tangent/near-tangent surfaces). Dispatches by surface pair type:
   - **Plane-cylinder**: `Geom_Line` parallel to the cylinder axis at the tangent point, computed from the cylinder axis, radius, and the plane normal component perpendicular to the axis.
   - **Cylinder-cylinder**: `Geom_Line` along the first cylinder's axis direction.
-  - **Sphere-cylinder**: `Geom_Circle` (great circle arc on the sphere). Center and radius come from the sphere hypothesis. The circle plane normal is `normalize(cross(v0 - center, v1 - center))`. Arc selection samples mesh boundary vertices to determine forward vs. reverse arc on the periodic circle.
+  - **Sphere-cylinder**: `Geom_Circle` (great circle arc on the sphere). Center and radius come from the sphere hypothesis. The circle plane normal is `normalize(cross(v0 - center, v1 - center))`. Arc selection samples mesh boundary vertices to determine forward vs. reverse arc on the periodic circle. Open arcs use this path for slight cones too (the circle is built from sphere geometry + endpoint vertices, so it is valid for near-cylindrical cones such as fillets fitted with a small half-angle).
+  - **Sphere-cone (closed loop)**: the tangent circle is NOT a great circle (it sits at radius R·cos α, offset along the cone axis). Constructed as a `Geom_Circle` perpendicular to the cone axis, with axial position and radius averaged from the edge's mesh boundary vertices (`compute_tangent_edge_curve_axis_circle_closed`) — the same vertex-averaging approach as plane-torus.
   - **Plane-cone** (TODO): `Geom_Line` along the cone's generator at the tangent azimuth, from the tangent point toward (or away from) the apex.
   - **Cylinder-cone** (TODO): `Geom_Circle` at the axial position where the cone radius equals the cylinder radius (when coaxial), or `IntSS`-based (non-coaxial).
   - **Plane-torus**: `Geom_Circle` perpendicular to the torus axis. Circle center and radius computed from mesh boundary vertices projected onto the torus axis. Handles both closed loops and arcs.
@@ -545,11 +566,11 @@ For each ReconFace, construct a `TopoDS_Face` from the surface and bounding wire
 - **Cylindrical, spherical, conical, and toroidal faces** use three approaches:
 
   - **Full revolution** (all boundary edges are closed loops): UV-bounds construction via `MakeFace::new_handlegeomsurface_real5(surface, umin, umax, vmin, vmax, tol)`. UV bounds are computed from edge projections using a circular gap algorithm that handles periodicity. This automatically creates seam edges for proper B-Rep topology.
-  - **Spherical faces with closed-loop edges near poles** (e.g., pill/capsule hemispheres or dome hemispheres cut by a meridional plane): The boundary circles may pass through or near the sphere's UV singularities (poles at V=±π/2 where U is undefined). When any boundary circle passes within 45° of either pole (detected via `ProjectPointOnCurve` + chord-length formula), the sphere surface is recreated with its Z-axis aligned to a reorientation axis. The axis is determined from: (a) the adjacent cylinder's axis direction for tangent edges, or (b) the boundary circle's plane normal for non-tangent edges (computed from 3 sampled points on the curve). This is safe because for all-closed-loop boundaries, the reorientation axis is unique. The hemisphere is selected by projecting a mesh face centroid onto the oriented surface and checking the V-sign. UV-bounds [0,2π] × [0,π/2] or [0,2π] × [-π/2,0] then work correctly since the boundary circle becomes an iso-V curve.
+  - **Spherical faces with closed-loop edges near poles** (e.g., pill/capsule hemispheres or dome hemispheres cut by a meridional plane): The boundary circles may pass through or near the sphere's UV singularities (poles at V=±π/2 where U is undefined). When any boundary circle passes within 45° of either pole (detected via `ProjectPointOnCurve` + chord-length formula), the sphere surface is recreated with its Z-axis aligned to a reorientation axis. The axis is determined from: (a) the adjacent cylinder's axis direction for tangent edges, or (b) the boundary circle's plane normal for non-tangent edges (computed from 3 sampled points on the curve). This is safe because for all-closed-loop boundaries, the reorientation axis is unique. The face's V bounds are computed by projecting samples of each boundary circle onto the oriented surface: for sphere-cylinder tangencies the junction is a great circle (V=0), but for sphere-cone tangencies it sits at a nonzero latitude, so fixed hemisphere bounds would misplace the boundary. With a single boundary circle, the face spans from that circle's latitude to the pole on the side occupied by the mesh (determined by projecting a mesh face centroid and checking the V-sign); with two, it spans between them.
   - **Spherical faces with pole vertices** (e.g., rounded cube corners where cylinders meet at a sphere pole): When a spherical face's UV bounds include V=±π/2, vertex U values at the pole are undefined (singularity). The `compute_uv_bounds_from_edges` function excludes pole U values (within 0.01 radians of ±π/2) from the circular gap algorithm to avoid corrupted U spans. The face is then constructed via UV-bounds `MakeFace::new_handlegeomsurface_real5`, producing a triangular-topology face (3 edges, 2 meridians + 1 parallel; pole collapsed to a vertex). These faces have a harmless BRepCheck edge failure (tolerance ~0) on the first edge, resolved by sewing.
   - **Partial revolution** (open edges with vertices): Wire-based construction with pre-set pcurves. Before building the wire, `BRep_Builder::update_edge` sets `Geom2d_Line` pcurves on each IntSS edge for the periodic surface, mapping the edge's 3D parameter range to (u(t), v(t)) in surface UV space. This ensures MakeFace selects the correct arc and shares edges with adjacent planar faces for sewing.
   - **Conical faces**: Same approaches as cylinder: full revolution via UV-bounds (with circular gap for U and cone apex V-extension), partial via wire+pcurves. The cone apex vertex is handled as a UV singularity (V extended to 0 for non-truncated cones). All test models pass: simple_cone, cone_cylinder, nosecone, block_with_conical_hole.
-  - **Toroidal faces**: UV-bounds construction for complete torus patches. The torus UV space is doubly periodic: U ∈ [0,2π) around the major axis, V ∈ [0,2π) around the tube. For V-bounds, the circular gap algorithm handles periodicity (same approach as U-bounds for partial revolution). Multiple sample points per edge curve (3 instead of 1) and mesh face centroid projections provide robust V disambiguation. Fillet patches typically span a small V arc (e.g., π/2 for a 90° fillet).
+  - **Toroidal faces**: UV-bounds construction for complete torus patches. The torus UV space is doubly periodic: U ∈ [0,2π) around the major axis, V ∈ [0,2π) around the tube. For V-bounds, the circular gap algorithm handles periodicity (same approach as U-bounds for partial revolution). Multiple sample points per edge curve (3 instead of 1) define the V window; mesh face centroid projections only *disambiguate* which of the two candidate arcs the face spans — they never extend the bounds (a cap triangle whose three vertices all lie on the plane-torus junction circle is legitimately absorbed by the torus hypothesis, but its centroid projects slightly past the tangent circle and would otherwise shift the face boundary off the junction, breaking sewing). Fillet patches typically span a small V arc (e.g., π/2 for a 90° fillet).
 
   - Full spheres (no edges) use `MakeFace::new_handlegeomsurface_real(surface, tolerance)` with natural bounds.
 

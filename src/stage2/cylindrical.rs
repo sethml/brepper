@@ -1,7 +1,6 @@
 //! Stage 2 cylindrical fitting utilities.
 //! Core fitting functions used by ConicalSurface (in conical.rs) for cylinder fitting.
 
-use std::collections::HashSet;
 
 use levenberg_marquardt::{LeastSquaresProblem, LevenbergMarquardt};
 use nalgebra::{Const, Dyn, OMatrix, OVector, Owned};
@@ -43,11 +42,11 @@ pub(super) fn vertex_to_cylinder_distance(
 /// and fit a 2D circle. Returns (axis_origin_3d, radius) or None if degenerate.
 fn fit_circle_for_axis(
     axis_dir: &[f64; 3],
-    vertex_set: &HashSet<usize>,
+    vertex_set: &[usize],
     vertices: &[MeshVertex],
 ) -> Option<([f64; 3], f64)> {
     let (u, w) = perpendicular_basis(axis_dir);
-    let verts: Vec<usize> = vertex_set.iter().copied().collect();
+    let verts: Vec<usize> = vertex_set.to_vec();
     let n = verts.len();
     if n < 3 {
         return None;
@@ -243,7 +242,7 @@ impl LeastSquaresProblem<f64, Dyn, Const<6>> for CylinderLMProblem {
 /// Returns (axis_origin, axis_direction, radius).
 pub(super) fn fit_cylinder(
     face_indices: &[usize],
-    vertex_set: &HashSet<usize>,
+    vertex_set: &[usize],
     faces: &[MeshFace],
     vertices: &[MeshVertex],
 ) -> Option<([f64; 3], [f64; 3], f64)> {
@@ -447,7 +446,7 @@ mod tests {
             [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 10.0, 6, 16, 0.0, 30.0,
         );
         let face_indices: Vec<usize> = (0..faces.len()).collect();
-        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
 
         let result = fit_cylinder(&face_indices, &vertex_set, &faces, &vertices);
         assert!(result.is_some(), "cylinder fit should succeed");
@@ -466,7 +465,7 @@ mod tests {
             [5.0, 10.0, -3.0], [1.0, 0.0, 0.0], 7.0, 8, 20, -15.0, 15.0,
         );
         let face_indices: Vec<usize> = (0..faces.len()).collect();
-        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
 
         let result = fit_cylinder(&face_indices, &vertex_set, &faces, &vertices);
         assert!(result.is_some(), "offset cylinder fit should succeed");
@@ -485,7 +484,7 @@ mod tests {
             [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], 5.0, 10, 24, -20.0, 20.0,
         );
         let face_indices: Vec<usize> = (0..faces.len()).collect();
-        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
 
         let result = fit_cylinder(&face_indices, &vertex_set, &faces, &vertices);
         assert!(result.is_some(), "tilted cylinder fit should succeed");
@@ -514,7 +513,7 @@ mod tests {
             MeshVertex::from_xyz(1.0, 0.0, 0.0),
             MeshVertex::from_xyz(0.0, 1.0, 0.0),
         ];
-        let vertex_set: HashSet<usize> = (0..2).collect();
+        let vertex_set: Vec<usize> = (0..2).collect();
         assert!(fit_cylinder(&[0], &vertex_set, &faces, &vertices).is_none(),
                 "cylinder fit should reject 2 vertices");
     }

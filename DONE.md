@@ -222,3 +222,25 @@ Changed default `--vertex-tolerance` from 1e-5 to 5e-5 to better match typical O
 Overhauled BFS debug printing: removed all `[prefix]` tags (e.g. `[spherical-BFS]`), switched to consistent indentation levels (stage summary at 0 indent, per-hypothesis at 2, seed attempts at 4+, per-face BFS at 6+). Split verbosity into 5 levels: 1=stage summaries, 2=per-hypothesis details, 3=per-committed-hypothesis progress/stats, 4=per-seed-attempt details, 5=per-BFS-face exploration.
 
 Added `--viz-stages-level` flag (default 1) to control how often `--viz-stages` pauses: level 1 pauses at committed hypotheses and stage 2.6 selections, level 2 also pauses at accepted seeds, level 3 also pauses at each individual BFS face acceptance. The `viz_level` field is now propagated through `BfsConfig`.
+
+# Session: Test speedup + cone/torus completion (2026-07-06)
+
+## Test suite speedup (2:56 → ~1:15, all 438+ tests green)
+- `[profile.dev.package.brepper] opt-level = 3` so tests run optimized crate code.
+- Parallelized all --compare DistShapeShape loops across threads (stage 1.2 vertices/centroids, stage 2 hypothesis/selection compares).
+- Spherical detection (2.3) runs before conical (2.2); conical seeding skips sphere-committed faces. Kills the O(mesh) bogus cone/cylinder band tiling on fine spheres (pill_fine stage 2.2: 45 s → 0.002 s).
+- Cylinder-first fitting with cone-LM skip on exact cylinder fits; LM patience 500 → 150.
+
+## Fixed cone/torus regressions (17 failing tests at session start)
+- Restored normal-axis consistency acceptance check for conical hypotheses (plus a per-face variant during BFS expansion).
+- Restored angular_tol_multiplier 2.0 for cones (fixes block_with_conical_hole full pipeline); added it for tori (twisted torus quads don't fuse, leaving triangles with doubled normal steps).
+- Reworked brittle hypothesis-count tests to assert on stage 2.6 *selected* surfaces.
+
+## Full pipeline for fillet/cone models
+- filleted_cylinder, filleted_pipe, filleted_hole_block, block_with_conical_hole, nosecone (ccad + onshape medium), cone_truncated_medium, chamfered_cube ascii now pass --compare through stage 4.1 (new stage-4.1 tests added).
+- Torus minor-circle coverage measured from face normals (rejects flat annuli / cylinder bands lying on degenerate torus families).
+- Torus face V-bounds: centroids only disambiguate the window, never extend it.
+- Post-selection absorption pass merges spurious sub-fit surfaces and tangent-junction bridge facets into larger adjacent surfaces.
+- Sphere-cone tangent circles constructed from boundary-vertex averaging perpendicular to the cone axis; reoriented sphere faces compute V bounds from projected boundary circles instead of fixed hemispheres.
+- Deterministic fitting: all fit functions take sorted vertex slices instead of HashSets.
+- validate_faces wraps OCCT detailed diagnostics in catch_unwind (Standard_NullObject on invalid faces no longer aborts).

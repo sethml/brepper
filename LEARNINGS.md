@@ -351,7 +351,8 @@ In stage 3, conical faces are periodic (full-revolution) like cylindrical and sp
 Sphere and cylinder patches can be approximately fitted as cones because locally any smooth surface looks conical. Key discriminators:
 1. **Half-angle bounds**: ha < 2° → cylindrical, ha > 85° → planar. Reject both.
 2. **Apex distance**: If apex is > 10× mesh bounding-box diagonal from mesh center, the fit is degenerate (distant apex = near-cylindrical).
-3. ~~**Normal-axis consistency**~~ (REMOVED): Previously checked that face normals make a consistent angle with the cone axis. Removed because surface selection (stage 2.6) resolves overlapping hypotheses by area — it’s acceptable for cones to be detected on spherical patches since sphere hypotheses will win on area.
+3. **Normal-axis consistency** (restored after a brief removal): on a cone, |n·axis| = sin(half_angle) is constant for all facet normals — tessellation coarseness rotates facet normals *around* the axis, preserving the dot product exactly. Applied twice: per-face during BFS expansion (deviation > 0.05 rejects, keeping doomed trials small) and post-BFS as a variance check (> 0.0005 rejects). Removing it let stage 2.2 tile torus fillets with bogus conical hypotheses, which starved torus seeding (stage 2.5 seeds exclude conical-committed faces) and broke torus detection entirely.
+4. **What these checks cannot catch**: a *single row* of quads (two rings of vertices) lies EXACTLY on some cone; a *band of azimuthal strips* on a shallow cone lies almost exactly on a tilted cylinder (any 3 plane normals are coplanar-ish). Such spurious hypotheses are geometrically legitimate and unavoidable at the hypothesis level; they are removed by area-based selection plus the post-selection absorption pass (see below). Tests must therefore assert on *selected* surfaces (stage 2.6), never raw hypothesis counts.
 
 ### Pointed cone fitting: fixed-apex LM
 
@@ -371,13 +372,12 @@ After `select_surfaces` assigns faces to hypotheses, unselected hypotheses shoul
 
 Tessellated cones with N circumferential divisions have inter-strip dihedral angles ≈ 360°/N. For N=20 (typical), that's ~18°, which exceeds the default `angular_tol` of 17.5°. The cone BFS uses `angular_tol * 2.0` because vertex-to-surface distance is the primary discriminator for cones (not angular similarity). Without this relaxation, BFS captures only ~127/167 cone facets, and the remaining strips become spurious small planar hypotheses that corrupt surface selection.
 
-### Cone performance: filter cylindrical hypotheses, NOT spherical
+### Conical stage performance: spheres first, cylinder-first fitting, bounded LM patience
 
-On meshes with many curved surfaces (e.g., pipe_elbow_10_medium with 1162 faces), cone apex candidate detection can produce hundreds of false candidates (220 on pipe_elbow), each running expensive BFS+LM trials that grow to 400-500 faces. Three optimizations reduce Stage 2.4 from 17.4s to 0.000s:
-
-1. **Filter by cylindrical hypothesis**: Skip faces already committed to cylindrical hypotheses when building apex candidates, collecting seed faces, and during BFS expansion. On pipe_elbow, stage 2.2 commits 1039/1526 faces to cylindrical hypotheses, eliminating most false candidates.
-2. **Early half-angle rejection**: After initial cone fit but before seed tolerance check and BFS, reject cones with half-angle outside [2°, 85°]. Many false candidates produce degenerate near-cylindrical or near-planar cones.
-3. **Do NOT filter by spherical hypothesis**: Cone faces can have spurious spherical hypotheses from stage 2.3 (e.g., block_with_conical_hole: all 94 cone faces get spherical hypotheses). Filtering these kills real cone detection. Only cylindrical filtering is safe because cones and cylinders are geometrically distinct, while cones and spheres can overlap locally.
+- **Spherical detection (2.3) executes before conical (2.2)**: every band of quad rows on a tessellated sphere lies exactly on some cone/cylinder, so the conical BFS used to tile fine spheres with hundreds of band hypotheses (pill_fine: 456 bogus hypotheses, 45 s). Sphere detection is cheap and its solid-angle coverage acceptance rejects band fits on cylinders/cones/tori, so spheres are committed first and conical *seeding* skips sphere-committed faces (BFS expansion may still absorb them, so tangent junctions work). This dropped pill_fine stage 2.2 to 0.002 s. The old warning about spurious sphere hypotheses on cone faces (block_with_conical_hole) is obsolete — the solid-angle acceptance now rejects those, and block_with_conical_hole detects its cone with 0 sphere hypotheses.
+- **Cylinder-first fitting**: `fit_surface` runs the cheap 4-DOF cylinder fit first and skips the expensive cone LM when the cylinder fit is already exact (max vertex error ≤ 1e-6 mm) — a cone could at best tie, and ties select the cylinder.
+- **LM patience 150** (was 500): good fits converge and exit early regardless; the patience budget was only being burned by doomed fits on sphere/torus patches. Fillet models run ~3× faster in stage 2.2 with identical selected surfaces.
+- **Early half-angle rejection**: after the initial cone fit but before seed tolerance check and BFS, reject cones with half-angle outside [2°, 85°].
 
 ### Cone apex UV bounds extension
 
@@ -423,9 +423,9 @@ When convex and concave tori share edges (e.g., filleted_pipe: R=8.5 convex and 
 ### Pipe elbow torus tessellation
 
 The onshape pipe_elbow model's torus surface is tessellated into many narrow strips whose normals span < 180° locally. Stage 2.5 torus fitting doesn't fire because the normal distribution looks locally cylindrical (not toroidal). Stage 2.6 selects 290 cylindrical patches that individually pass `--compare`. This is expected behavior for coarsely tessellated, low-curvature tori where the mesh facets don't exhibit the characteristic toroidal normal pattern (band pattern in Gaussian map). Future improvement: unified SOR framework fitting could detect this by comparing cylinder vs torus profile fits in (h,r) space.
-### HashSet iteration order causes flaky tests
+### HashSet iteration order causes flaky results — fitting functions take sorted slices
 
-When fitting algorithms iterate over a `HashSet<usize>` of vertex indices, the iteration order varies between runs (Rust's default hasher uses per-process random keys). Since floating-point addition is non-associative, different iteration orders produce slightly different intermediate sums, which can change the final fitted parameters enough to make a marginal hypothesis pass or fail tolerance checks. Fix: collect HashSet into a Vec and sort before iterating in any computation that feeds into fitting (vertex positions, normals, tube centers). This is essential for reproducible test results.
+When fitting code iterates over a `HashSet<usize>` of vertex indices, the iteration order varies between runs (Rust's default hasher uses per-process random keys). Since floating-point addition is non-associative, different orders produce slightly different fitted parameters — enough to flip marginal hypotheses (simple_cone failed 1 run in 3). All `fit_*` functions now take `vertex_set: &[usize]` (sorted, deduplicated by the caller in `fit_surface`) instead of `&HashSet<usize>`; never reintroduce unordered iteration in anything that feeds a fit.
 
 ### Wide-angle cone: axis estimation uses both eigenvectors
 
@@ -449,3 +449,31 @@ Viz pause granularity in BFS is controlled by `BfsConfig.viz_level` (set from `C
 - Level 3: also pause after each individual BFS face acceptance
 
 Both `verbosity` and `viz_level` are fields in `BfsConfig` (defined in `src/stage2/bfs.rs`) and set in `stage2/mod.rs` when building `BfsConfig` from `Config`.
+
+### Post-selection absorption of redundant surfaces (stage 2.6)
+
+`absorb_redundant_surfaces` merges a selected surface S into an adjacent larger surface T when ALL of S's vertices lie within tolerance of T's geometry AND all of S's face centroids lie within surface tolerance of T. Two cases:
+- Spurious sub-fits (a cylinder band on a shallow cone): tolerance 10× vertex tolerance — the overlap is exact.
+- Tangent-junction bridge facets (≤ 2 faces): tolerance = surface tolerance. A facet spanning a tangent junction (e.g. cone-sphere on the nosecone) has vertices on both sides; its chordal deviation from either surface is ~d²/2R, far above vertex tolerance but below surface tolerance. Without absorption these become orphan single-face planar surfaces with fake edges that break stage 3.1 compare.
+
+**The centroid check is essential**: a flat end cap triangulated as a fan from a *boundary* vertex has ALL its vertices on the boundary circle — which lies exactly on the adjacent cone/cylinder — so a vertex-only test absorbs the entire cap into the cone (simple_cone collapsed to 1 surface). Cap face *centroids* are well off the cone, so the centroid test rejects the merge.
+
+**Limits**: absorbing bridge facets into a curved surface shifts the reconstructed mesh boundary between two tangent surfaces by one facet at those azimuths; on rounded_cube_10_r2_coarse at an out-of-spec angular tolerance (17.5° vs the required 20°) this produced invalid faces. Models must be run within their tessellation's angular tolerance (rounded_cube coarse tests pass --angular-tolerance=20 per tests/RESULTS.md).
+
+### Flat annuli and cylinder bands lie exactly on degenerate torus families
+
+Two coaxial circles at the same axial position (a flat annulus boundary) lie on a one-parameter FAMILY of tori (any tube offset works), so torus LM can fit an annulus exactly with an arbitrary tube radius, and its faces can span a nonzero *positional* tube arc on a large-tube member of the family. The minor-circle coverage acceptance therefore measures tube span from face NORMALS (ψ = atan2(n·â, n·r̂), span ≥ 0.3 rad): annuli and cylinder bands have all-parallel normals (span ≈ 0) and are rejected, while real fillets span their tube arc (90° typically). This fixed filleted_pipe, where bogus tori were stealing the annulus faces from the real planes.
+
+### Sphere-cone tangent junctions
+
+- The tangent circle between a sphere and a cone is NOT a great circle: it sits at radius R·cos α, offset along the cone axis. `compute_tangent_edge_curve_axis_circle_closed` builds it as a circle perpendicular to the cone axis with axial position and radius averaged from the edge's mesh boundary vertices.
+- Sphere faces reoriented for pole handling must compute V bounds by projecting boundary-circle samples onto the oriented surface: fixed hemisphere bounds [0, π/2] assume a great-circle junction and misplace the boundary for cones (nosecone free edges 3 mm apart at sewing).
+- Facets *bridging* the tangent junction (2 vertices on each side) cannot be absorbed by either surface at vertex tolerance (chordal deviation d²/2R ≈ 0.09 mm for d = 1.5 mm rows, R = 12.5 mm) — they are handled by the absorption pass above.
+
+### Torus face V-bounds: centroids disambiguate, never extend
+
+In `compute_uv_bounds_from_edges`, mesh face centroid projections must only *select* between the two candidate V windows delimited by the edge projections — never extend the window. A cap triangle whose three vertices all lie on the plane-torus junction circle is legitimately absorbed by the torus hypothesis, but its centroid projects ~2° past the tangent circle; including it in the window shifted the face boundary off the junction and produced sewing free edges (filleted_cylinder). This was also nondeterministic since only 3 arbitrary faces were sampled.
+
+### OCCT detailed BRepCheck diagnostics can throw
+
+`BRepCheck_Face`/`BRepCheck_Edge` diagnostics on invalid faces can throw `Standard_NullObject` (edges without geometry), which the bindings surface as a Rust panic. `validate_faces` wraps the detailed diagnostics in `catch_unwind` and treats a diagnostic failure as an ordinary invalid face rather than aborting the pipeline.

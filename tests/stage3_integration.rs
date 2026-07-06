@@ -1228,13 +1228,18 @@ fn check_solids_brep_valid(output: &stage3::Stage3Output) {
     }
 }
 
-/// Rounded cube (coarse) with default parameters must produce a BRepCheck-valid solid.
+/// Rounded cube (coarse) must produce a BRepCheck-valid solid.
 /// This catches sewing-induced wire corruption (e.g., sphere face wires getting
 /// cylinder edges inserted by BRepBuilderAPI_Sewing).
+/// Uses --angular-tolerance=20: the coarse tessellation has inter-facet
+/// dihedral angles that exceed the 17.5° default (see tests/RESULTS.md),
+/// which fragments the fillet fits.
 #[test]
 fn rounded_cube_coarse_brep_check() {
     let stl = format!("{}/tests/onshape/rounded_cube_10_r2_coarse.stl", manifest_dir());
-    let config = config_for_stl_36(&stl);
+    let config = config::parse_config_from(
+        ["brepper", &stl, "--stage=3.6", "--angular-tolerance=20", "-q"],
+    ).unwrap();
     let output = run_stage3_36(&config);
     check_solids_constructed(&output);
     check_solids_brep_valid(&output);

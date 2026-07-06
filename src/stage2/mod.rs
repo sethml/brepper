@@ -620,6 +620,7 @@ fn select_surfaces(
     spherical_hypotheses: &mut [SphericalHypothesis],
     toroidal_hypotheses: &mut [ToroidalHypothesis],
     viz: Option<&VizSender>,
+    verbosity: u8,
 ) -> Vec<SelectedSurface> {
     let num_faces = mesh.faces.len();
 
@@ -905,11 +906,296 @@ fn select_surfaces(
         if !assigned {
             let pi = mesh.faces[fi].planar_hypothesis;
             assert!(pi >= 0, "face {fi} has no hypothesis assigned");
+            if verbosity >= 2 {
+                let c = face_centroid(&mesh.faces[fi], &mesh.vertices);
+                let n = mesh.faces[fi].normal.unwrap_or([0.0; 3]);
+                eprintln!(
+                    "  Selection fallback: face {fi} → single-face planar {pi}, \
+centroid=[{:.4},{:.4},{:.4}] normal=[{:.3},{:.3},{:.3}]",
+                    c[0], c[1], c[2], n[0], n[1], n[2],
+                );
+            }
             selected.push(SelectedSurface::Planar(pi as usize));
         }
     }
 
     selected
+}
+
+/// Distance from a mesh vertex to a selected surface's fitted geometry.
+fn vertex_distance_to_selected(
+    v: &MeshVertex,
+    surface: &SelectedSurface,
+    planar_hypotheses: &[PlanarHypothesis],
+    conical_hypotheses: &[ConicalHypothesis],
+    spherical_hypotheses: &[SphericalHypothesis],
+    toroidal_hypotheses: &[ToroidalHypothesis],
+) -> f64 {
+    match surface {
+        SelectedSurface::Planar(i) => {
+            let h = &planar_hypotheses[*i];
+            (h.normal[0] * v.x + h.normal[1] * v.y + h.normal[2] * v.z - h.distance).abs()
+        }
+        SelectedSurface::Conical(i) => {
+            let h = &conical_hypotheses[*i];
+            if h.is_cylinder() {
+                cylindrical::vertex_to_cylinder_distance(
+                    v, &h.apex, &h.axis_direction, h.radius_at_apex,
+                ).abs()
+            } else {
+                conical::vertex_to_cone_distance(
+                    v, &h.apex, &h.axis_direction, h.half_angle,
+                ).abs()
+            }
+        }
+        SelectedSurface::Spherical(i) => {
+            let h = &spherical_hypotheses[*i];
+            spherical::vertex_to_sphere_distance(v, &h.center, h.radius).abs()
+        }
+        SelectedSurface::Toroidal(i) => {
+            let h = &toroidal_hypotheses[*i];
+            toroidal::vertex_to_torus_distance(
+                v, &h.center, &h.axis_direction, h.major_radius, h.minor_radius,
+            ).abs()
+        }
+    }
+}
+
+/// Merge redundant/orphan selected surfaces into larger adjacent ones.
+///
+/// Two situations produce selected surfaces that duplicate a neighbor's
+/// geometry rather than describing a real model feature:
+///
+/// 1. **Spurious sub-fits**: a narrow band of faces on a cone/sphere can fit
+///    an "exact" cylinder (e.g. 3 azimuthal strips of a shallow cone have
+///    nearly coplanar normals) and get committed before the real surface's
+///    BFS reaches those faces. All of the band's vertices lie exactly on the
+///    real surface.
+/// 2. **Tangent-junction bridge facets**: a mesh facet spanning a tangent
+///    junction (e.g. cone–sphere) has vertices on both sides and can't be
+///    absorbed by either surface at vertex tolerance; it becomes an orphan
+///    single-face planar surface. Its chordal deviation from either surface
+///    is bounded by the tessellation's surface tolerance.
+///
+/// Both create fake edges/vertices that break stage 3 reconstruction. This
+/// pass merges a surface S into an adjacent, larger-area surface T when all
+/// of S's vertices lie within tolerance of T's geometry: a tight tolerance
+/// (10× vertex tolerance) for multi-face S (case 1: exact overlap), and the
+/// looser surface tolerance for S with ≤ 2 faces (case 2: chordal sag).
+#[allow(clippy::too_many_arguments)]
+fn absorb_redundant_surfaces(
+    mesh: &ConnectedMesh,
+    selected_surfaces: &mut Vec<SelectedSurface>,
+    planar_hypotheses: &mut [PlanarHypothesis],
+    conical_hypotheses: &mut [ConicalHypothesis],
+    spherical_hypotheses: &mut [SphericalHypothesis],
+    toroidal_hypotheses: &mut [ToroidalHypothesis],
+    config: &Config,
+) {
+    let surface_faces = |s: &SelectedSurface,
+                         planar: &[PlanarHypothesis],
+                         conical: &[ConicalHypothesis],
+                         spherical: &[SphericalHypothesis],
+                         toroidal: &[ToroidalHypothesis]|
+     -> Vec<usize> {
+        match s {
+            SelectedSurface::Planar(i) => planar[*i].faces.clone(),
+            SelectedSurface::Conical(i) => conical[*i].faces.clone(),
+            SelectedSurface::Spherical(i) => spherical[*i].faces.clone(),
+            SelectedSurface::Toroidal(i) => toroidal[*i].faces.clone(),
+        }
+    };
+
+    for _iteration in 0..5 {
+        // Face → selected surface index map and per-surface areas.
+        let mut face_to_surface = vec![usize::MAX; mesh.faces.len()];
+        let mut areas = vec![0.0_f64; selected_surfaces.len()];
+        for (si, s) in selected_surfaces.iter().enumerate() {
+            for fi in surface_faces(
+                s, planar_hypotheses, conical_hypotheses,
+                spherical_hypotheses, toroidal_hypotheses,
+            ) {
+                face_to_surface[fi] = si;
+                areas[si] += face_area(&mesh.faces[fi], &mesh.vertices);
+            }
+        }
+
+        // Plan merges: source surface index → target surface index.
+        let mut merges: Vec<(usize, usize)> = Vec::new();
+        for (si, s) in selected_surfaces.iter().enumerate() {
+            let faces = surface_faces(
+                s, planar_hypotheses, conical_hypotheses,
+                spherical_hypotheses, toroidal_hypotheses,
+            );
+            if faces.is_empty() {
+                continue;
+            }
+            let tol = if faces.len() <= 2 {
+                config.surface_tolerance_mm
+            } else {
+                config.vertex_tolerance_mm * 10.0
+            };
+
+            // Collect adjacent surfaces with strictly larger area.
+            let mut adjacent: Vec<usize> = Vec::new();
+            for &fi in &faces {
+                let face = &mesh.faces[fi];
+                let vc = face.vertex_count as usize;
+                for &ni in &face.neighbors[..vc] {
+                    if ni < 0 {
+                        continue;
+                    }
+                    let ti = face_to_surface[ni as usize];
+                    if ti != usize::MAX && ti != si && areas[ti] > areas[si] {
+                        adjacent.push(ti);
+                    }
+                }
+            }
+            adjacent.sort_unstable();
+            adjacent.dedup();
+            // Try larger targets first.
+            adjacent.sort_by(|a, b| areas[*b].partial_cmp(&areas[*a]).unwrap());
+
+            // Collect all vertices of S once.
+            let mut verts: Vec<usize> = Vec::new();
+            for &fi in &faces {
+                let face = &mesh.faces[fi];
+                let vc = face.vertex_count as usize;
+                verts.extend_from_slice(&face.vertex_indices[..vc]);
+            }
+            verts.sort_unstable();
+            verts.dedup();
+
+            for ti in adjacent {
+                let target = &selected_surfaces[ti];
+                let max_vert_dist = verts
+                    .iter()
+                    .map(|&vi| {
+                        vertex_distance_to_selected(
+                            &mesh.vertices[vi], target,
+                            planar_hypotheses, conical_hypotheses,
+                            spherical_hypotheses, toroidal_hypotheses,
+                        )
+                    })
+                    .fold(0.0_f64, f64::max);
+                // Centroids must also lie on the target (within the chordal
+                // surface tolerance). Vertices alone are not sufficient: a
+                // flat end cap triangulated as a fan from a boundary vertex
+                // has ALL vertices on its boundary circle — which lies on the
+                // adjacent cone/cylinder — but its face interiors clearly do
+                // not follow that surface.
+                let max_centroid_dist = faces
+                    .iter()
+                    .map(|&fi| {
+                        let c = face_centroid(&mesh.faces[fi], &mesh.vertices);
+                        vertex_distance_to_selected(
+                            &MeshVertex::from_xyz(c[0], c[1], c[2]), target,
+                            planar_hypotheses, conical_hypotheses,
+                            spherical_hypotheses, toroidal_hypotheses,
+                        )
+                    })
+                    .fold(0.0_f64, f64::max);
+                if max_vert_dist <= tol && max_centroid_dist <= config.surface_tolerance_mm {
+                    if config.verbosity >= 2 {
+                        eprintln!(
+                            "  Absorb: surface {si} ({} faces, area {:.3}) -> surface {ti} \
+(vert_dist {:.2e}, centroid_dist {:.2e}, tol {:.2e})",
+                            faces.len(), areas[si], max_vert_dist, max_centroid_dist, tol,
+                        );
+                    }
+                    merges.push((si, ti));
+                    break;
+                }
+            }
+        }
+
+        if merges.is_empty() {
+            break;
+        }
+
+        // Apply merges. Skip chains where the target itself merges away this
+        // iteration (it will be handled on the next pass).
+        let merging: Vec<bool> = {
+            let mut m = vec![false; selected_surfaces.len()];
+            for &(si, _) in &merges {
+                m[si] = true;
+            }
+            m
+        };
+        let mut merged_any = false;
+        for &(si, ti) in &merges {
+            if merging[ti] {
+                continue;
+            }
+            let faces = surface_faces(
+                &selected_surfaces[si], planar_hypotheses, conical_hypotheses,
+                spherical_hypotheses, toroidal_hypotheses,
+            );
+            let mut verts: Vec<usize> = Vec::new();
+            for &fi in &faces {
+                let face = &mesh.faces[fi];
+                let vc = face.vertex_count as usize;
+                verts.extend_from_slice(&face.vertex_indices[..vc]);
+            }
+            // Move faces/vertices from S's hypothesis into T's.
+            let take = |s: &SelectedSurface,
+                        planar: &mut [PlanarHypothesis],
+                        conical: &mut [ConicalHypothesis],
+                        spherical: &mut [SphericalHypothesis],
+                        toroidal: &mut [ToroidalHypothesis]| {
+                match s {
+                    SelectedSurface::Planar(i) => planar[*i].faces.clear(),
+                    SelectedSurface::Conical(i) => conical[*i].faces.clear(),
+                    SelectedSurface::Spherical(i) => spherical[*i].faces.clear(),
+                    SelectedSurface::Toroidal(i) => toroidal[*i].faces.clear(),
+                }
+            };
+            take(
+                &selected_surfaces[si], planar_hypotheses, conical_hypotheses,
+                spherical_hypotheses, toroidal_hypotheses,
+            );
+            match &selected_surfaces[ti] {
+                SelectedSurface::Planar(i) => {
+                    planar_hypotheses[*i].faces.extend_from_slice(&faces);
+                    planar_hypotheses[*i].vertices.extend_from_slice(&verts);
+                    planar_hypotheses[*i].vertices.sort_unstable();
+                    planar_hypotheses[*i].vertices.dedup();
+                }
+                SelectedSurface::Conical(i) => {
+                    conical_hypotheses[*i].faces.extend_from_slice(&faces);
+                    conical_hypotheses[*i].vertices.extend_from_slice(&verts);
+                    conical_hypotheses[*i].vertices.sort_unstable();
+                    conical_hypotheses[*i].vertices.dedup();
+                }
+                SelectedSurface::Spherical(i) => {
+                    spherical_hypotheses[*i].faces.extend_from_slice(&faces);
+                    spherical_hypotheses[*i].vertices.extend_from_slice(&verts);
+                    spherical_hypotheses[*i].vertices.sort_unstable();
+                    spherical_hypotheses[*i].vertices.dedup();
+                }
+                SelectedSurface::Toroidal(i) => {
+                    toroidal_hypotheses[*i].faces.extend_from_slice(&faces);
+                    toroidal_hypotheses[*i].vertices.extend_from_slice(&verts);
+                    toroidal_hypotheses[*i].vertices.sort_unstable();
+                    toroidal_hypotheses[*i].vertices.dedup();
+                }
+            }
+            merged_any = true;
+        }
+
+        // Drop selected surfaces whose hypotheses are now empty.
+        selected_surfaces.retain(|s| {
+            !surface_faces(
+                s, planar_hypotheses, conical_hypotheses,
+                spherical_hypotheses, toroidal_hypotheses,
+            )
+            .is_empty()
+        });
+
+        if !merged_any {
+            break;
+        }
+    }
 }
 
 /// Remove unselected hypotheses from the hypothesis vectors and remap
@@ -1491,6 +1777,15 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
     let mut selected_surfaces = select_surfaces(
         &mesh, &mut planar_hypotheses, &mut conical_hypotheses,
         &mut spherical_hypotheses, &mut toroidal_hypotheses, viz_26,
+        config.verbosity,
+    );
+
+    // Merge spurious sub-fit surfaces and tangent-junction orphan facets
+    // into larger adjacent surfaces before reconstruction.
+    absorb_redundant_surfaces(
+        &mesh, &mut selected_surfaces, &mut planar_hypotheses,
+        &mut conical_hypotheses, &mut spherical_hypotheses,
+        &mut toroidal_hypotheses, config,
     );
 
     // Prune hypotheses that were not selected, keeping only the winning ones.

@@ -1708,11 +1708,32 @@ fn compute_tangent_edge_curve(
     let is_closed_loop = edge.vertex_indices[0] == usize::MAX || edge.vertex_indices[1] == usize::MAX;
 
     if has_sphere_cylinder {
+        // Sphere-cone tangencies are NOT great circles on the sphere (the
+        // tangent circle sits at radius R·cos α, offset along the cone axis),
+        // so handle them with the generic axis-perpendicular circle
+        // construction from mesh boundary vertices.
+        let cone_axis = match (ss0, ss1) {
+            (SelectedSurface::Conical(c), _) | (_, SelectedSurface::Conical(c))
+                if !stage2.conical_hypotheses[*c].is_cylinder() =>
+            {
+                let h = &stage2.conical_hypotheses[*c];
+                Some((h.apex, h.axis_direction))
+            }
+            _ => None,
+        };
         if is_closed_loop {
+            if let Some((axis_origin, axis_dir)) = cone_axis {
+                return compute_tangent_edge_curve_axis_circle_closed(
+                    edge, &axis_origin, &axis_dir, stage2, config,
+                );
+            }
             return compute_tangent_edge_curve_sphere_cylinder_closed(
                 edge, ss0, ss1, stage2, config,
             );
         }
+        // Open arcs: the circle is constructed from the sphere geometry and
+        // the two endpoint vertices, which works for both cylinders and
+        // near-cylindrical cones (e.g. fillets fitted as slight cones).
         let v0 = &vertices[edge.vertex_indices[0]];
         let v1 = &vertices[edge.vertex_indices[1]];
         return compute_tangent_edge_curve_sphere_cylinder(
@@ -1886,6 +1907,70 @@ fn compute_tangent_edge_curve_sphere_cylinder_closed(
     Ok(())
 }
 
+
+/// Construct a full-circle tangent edge curve perpendicular to a given axis.
+///
+/// The circle's axial position and radius are averaged from the edge's mesh
+/// boundary vertices, which lie exactly on the junction circle. Used for
+/// sphere-cone tangencies (and any coaxial tangency where the junction is a
+/// circle around a known axis).
+fn compute_tangent_edge_curve_axis_circle_closed(
+    edge: &mut ReconEdge,
+    axis_origin: &[f64; 3],
+    axis_dir: &[f64; 3],
+    stage2: &Stage2Output,
+    config: &Config,
+) -> Result<(), String> {
+    let n = edge.mesh_boundary_vertices.len() as f64;
+    if n < 3.0 {
+        return Err("closed tangent loop has too few boundary vertices".to_string());
+    }
+
+    let mut h_sum = 0.0;
+    let mut r_sum = 0.0;
+    for &vi in &edge.mesh_boundary_vertices {
+        let v = &stage2.mesh.vertices[vi];
+        let dp = [
+            v.x - axis_origin[0],
+            v.y - axis_origin[1],
+            v.z - axis_origin[2],
+        ];
+        let h = dp[0] * axis_dir[0] + dp[1] * axis_dir[1] + dp[2] * axis_dir[2];
+        let radial = [
+            dp[0] - h * axis_dir[0],
+            dp[1] - h * axis_dir[1],
+            dp[2] - h * axis_dir[2],
+        ];
+        let r = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+        h_sum += h;
+        r_sum += r;
+    }
+    let h_avg = h_sum / n;
+    let r_avg = r_sum / n;
+
+    let circle_center = [
+        axis_origin[0] + h_avg * axis_dir[0],
+        axis_origin[1] + h_avg * axis_dir[1],
+        axis_origin[2] + h_avg * axis_dir[2],
+    ];
+
+    let center_pnt = gp::Pnt::new_real3(circle_center[0], circle_center[1], circle_center[2]);
+    let normal_dir = gp::Dir::new_real3(axis_dir[0], axis_dir[1], axis_dir[2]);
+    let ax2 = gp::Ax2::new_pnt_dir(&center_pnt, &normal_dir);
+    let circle = geom::Circle::new_ax2_real(&ax2, r_avg);
+    let circle_handle = geom::Circle::to_handle(circle).to_handle_curve();
+
+    let curve = circle_handle.get();
+    let fp = curve.first_parameter();
+    let lp = curve.last_parameter();
+
+    let trimmed = geom::TrimmedCurve::new_handlegeomcurve_real2(&circle_handle, fp, lp);
+    let trimmed_handle = geom::TrimmedCurve::to_handle(trimmed).to_handle_curve();
+
+    validate_tangent_curve(edge, &trimmed_handle, stage2, config)?;
+    edge.curve_3d = Some(trimmed_handle);
+    Ok(())
+}
 
 /// Extract the torus hypothesis index from one of the two surfaces.
 fn torus_idx_from_pair(
@@ -2841,12 +2926,20 @@ fn compute_uv_bounds_from_edges(
     // a quarter-tube fillet with V ∈ [3π/2, 2π] gets mis-expanded to [0, 3π/2].
     let (mut vmin, mut vmax) = if matches!(surface, SelectedSurface::Toroidal(_)) {
         let two_pi = 2.0 * std::f64::consts::PI;
-        // Also project a mesh face centroid to help disambiguate V arc direction
+        // Project mesh face centroids to disambiguate which V arc the face
+        // spans. IMPORTANT: centroids only *select* between the two candidate
+        // windows delimited by the edge projections — they must never extend
+        // the bounds. A cap triangle whose three vertices all lie on the
+        // plane-torus junction circle is legitimately absorbed by the torus
+        // hypothesis, but its centroid projects ~2° past the tangent circle;
+        // including it in the window computation shifted the face boundary
+        // off the junction and broke sewing (free edges).
         let hyp_idx = match surface {
             SelectedSurface::Toroidal(i) => *i,
             _ => unreachable!(),
         };
         let hyp = &output.stage2.toroidal_hypotheses[hyp_idx];
+        let mut centroid_vs: Vec<f64> = Vec::new();
         for &mfi in hyp.faces.iter().take(3) {
             let face = &output.stage2.mesh.faces[mfi];
             let v0 = &output.stage2.mesh.vertices[face.vertex_indices[0]];
@@ -2863,7 +2956,10 @@ fn compute_uv_bounds_from_edges(
                 let mut u_tmp = 0.0;
                 let mut v_tmp = 0.0;
                 proj.lower_distance_parameters(&mut u_tmp, &mut v_tmp);
-                v_values.push(v_tmp);
+                if config.verbose {
+                    eprintln!("    torus centroid face {mfi} ({cx:.4},{cy:.4},{cz:.4}) -> v={v_tmp:.6}");
+                }
+                centroid_vs.push(v_tmp.rem_euclid(two_pi));
             }
         }
 
@@ -2874,6 +2970,8 @@ fn compute_uv_bounds_from_edges(
         if sorted_v.len() == 1 {
             (sorted_v[0], sorted_v[0])
         } else {
+            // Candidate window from edge projections only: the arc that
+            // excludes the largest gap between consecutive projected values.
             let mut max_gap = 0.0_f64;
             let mut gap_end_idx = 0;
             for i in 0..sorted_v.len() {
@@ -2894,7 +2992,29 @@ fn compute_uv_bounds_from_edges(
             if v_hi < v_lo {
                 v_hi += two_pi;
             }
-            (v_lo, v_hi)
+            // Disambiguate with centroids: if more centroids fall in the
+            // complementary arc than inside the window, the face spans the
+            // other side — swap. Points within a small tolerance of the
+            // window boundary count as inside (junction-ring face centroids
+            // project just outside the tangent circle).
+            let boundary_tol = 0.1_f64;
+            let inside = |v: f64| -> bool {
+                let vv = if v < v_lo { v + two_pi } else { v };
+                vv >= v_lo - boundary_tol && vv <= v_hi + boundary_tol
+            };
+            let n_inside = centroid_vs.iter().filter(|&&v| inside(v)).count();
+            let n_outside = centroid_vs.len() - n_inside;
+            if n_outside > n_inside {
+                // Complementary arc: from v_hi around to v_lo.
+                let new_lo = v_hi.rem_euclid(two_pi);
+                let mut new_hi = v_lo.rem_euclid(two_pi);
+                if new_hi < new_lo {
+                    new_hi += two_pi;
+                }
+                (new_lo, new_hi)
+            } else {
+                (v_lo, v_hi)
+            }
         }
     } else {
         let mut lo = v_values[0];
@@ -3674,10 +3794,55 @@ fn create_periodic_face(
 
             let half_pi = std::f64::consts::FRAC_PI_2;
             let two_pi = 2.0 * std::f64::consts::PI;
-            let (v_lo, v_hi) = if v_side > 0.0 {
-                (0.0, half_pi)
-            } else {
-                (-half_pi, 0.0)
+
+            // Compute the V latitude of each boundary circle on the oriented
+            // sphere. For sphere-cylinder tangencies the junction is a great
+            // circle (V = 0), but for sphere-cone tangencies it sits at a
+            // nonzero latitude, so fixed hemisphere bounds would misplace the
+            // face boundary and break sewing.
+            let mut boundary_vs: Vec<f64> = Vec::new();
+            for &ei in &fd.edge_indices {
+                let edge = &output.edges[ei];
+                let curve = match edge.curve_3d.as_ref() {
+                    Some(c) => c.get(),
+                    None => continue,
+                };
+                let fp = curve.first_parameter();
+                let lp = curve.last_parameter();
+                let mut v_sum = 0.0;
+                let mut v_count = 0;
+                for si in 0..3 {
+                    let t = fp + (si as f64 + 0.5) / 3.0 * (lp - fp);
+                    let pt = curve.value(t);
+                    let proj = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
+                        &pt, &oriented_surface, extrema::ExtAlgo::Grad,
+                    );
+                    if proj.nb_points() > 0 {
+                        let mut u_tmp = 0.0;
+                        let mut v_tmp = 0.0;
+                        proj.lower_distance_parameters(&mut u_tmp, &mut v_tmp);
+                        v_sum += v_tmp;
+                        v_count += 1;
+                    }
+                }
+                if v_count > 0 {
+                    boundary_vs.push(v_sum / v_count as f64);
+                }
+            }
+            boundary_vs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+            let (v_lo, v_hi) = match boundary_vs.len() {
+                0 => {
+                    // No projectable boundary: fall back to hemisphere bounds.
+                    if v_side > 0.0 { (0.0, half_pi) } else { (-half_pi, 0.0) }
+                }
+                1 => {
+                    // Single boundary circle: the face spans from that circle
+                    // to the pole on the side the mesh occupies.
+                    let vb = boundary_vs[0];
+                    if v_side > vb { (vb, half_pi) } else { (-half_pi, vb) }
+                }
+                _ => (boundary_vs[0], *boundary_vs.last().unwrap()),
             };
 
             // Use UV-bounds construction on the oriented surface
@@ -3807,6 +3972,66 @@ fn validate_faces(output: &Stage3Output, config: &Config) -> Result<(), Stage3Er
         let face = mf.face();
         let analyzer = b_rep_check::Analyzer::new_shape(face.as_shape());
         if !analyzer.is_valid() {
+            // The detailed diagnostics below call further OCCT checkers that
+            // can throw (e.g. Standard_NullObject on edges without geometry).
+            // A diagnostics failure must not abort the pipeline — treat it as
+            // an ordinary invalid face.
+            let diag_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                validate_face_detailed(fi, face, &analyzer, output, config)
+            }));
+            match diag_result {
+                Ok(counted) => {
+                    if counted {
+                        invalid_count += 1;
+                    }
+                }
+                Err(_) => {
+                    invalid_count += 1;
+                    if !config.quiet {
+                        eprintln!(
+                            "  Warning: face {fi} failed BRepCheck: detailed diagnostics threw an OCCT exception"
+                        );
+                    }
+                }
+            }
+        }
+        if config.verbose {
+            // Report face area and orientation for diagnostics
+            let mut gprops = g_prop::GProps::new();
+            b_rep_g_prop::surface_properties_shape_gprops_bool2(
+                face.as_shape(),
+                &mut gprops,
+                false, // UseTriangulation
+                false, // SkipShared
+            );
+            let area = gprops.mass();
+            let orient = face.as_shape().orientation();
+            eprintln!("  Face {fi}: area = {area:.4} mm², orientation = {orient:?}");
+        }
+    }
+
+    if !config.quiet && invalid_count > 0 {
+        eprintln!(
+            "  Warning: {invalid_count}/{} faces failed BRepCheck validation",
+            output.make_faces.len(),
+        );
+    }
+
+    Ok(())
+}
+
+/// Detailed BRepCheck_Face diagnostics for a face that failed the analyzer.
+/// Returns true if the face should count as invalid (false when the only
+/// failures are harmless near-zero-tolerance edges resolved by sewing).
+fn validate_face_detailed(
+    fi: usize,
+    face: &topo_ds::Face,
+    analyzer: &b_rep_check::Analyzer,
+    output: &Stage3Output,
+    config: &Config,
+) -> bool {
+    {
+        {
             // Run detailed BRepCheck_Face diagnostics
             let mut checker = b_rep_check::Face::new_face(face);
             checker.minimum();
@@ -3876,8 +4101,8 @@ fn validate_faces(output: &Stage3Output, config: &Config) -> Result<(), Stage3Er
             {
                 // Harmless: edge BRepCheck failure with ~zero tolerance on
                 // sphere pole face, resolved by sewing
+                false
             } else {
-                invalid_count += 1;
                 if !config.quiet {
                     let surface = &output.stage2.selected_surfaces
                         [output.face_descriptors[fi].selected_surface_idx];
@@ -3950,32 +4175,12 @@ fn validate_faces(output: &Stage3Output, config: &Config) -> Result<(), Stage3Er
                         issues.join("; ")
                     );
                 }
+                true
             }
         }
-        if config.verbose {
-            // Report face area and orientation for diagnostics
-            let mut gprops = g_prop::GProps::new();
-            b_rep_g_prop::surface_properties_shape_gprops_bool2(
-                face.as_shape(),
-                &mut gprops,
-                false, // UseTriangulation
-                false, // SkipShared
-            );
-            let area = gprops.mass();
-            let orient = face.as_shape().orientation();
-            eprintln!("  Face {fi}: area = {area:.4} mm², orientation = {orient:?}");
-        }
     }
-
-    if !config.quiet && invalid_count > 0 {
-        eprintln!(
-            "  Warning: {invalid_count}/{} faces failed BRepCheck validation",
-            output.make_faces.len(),
-        );
-    }
-
-    Ok(())
 }
+
 fn compare_faces_to_step(
     output: &Stage3Output,
     config: &Config,

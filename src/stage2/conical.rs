@@ -198,7 +198,7 @@ fn estimate_axis_from_normals(
 /// Strategy 3 (few faces, no shared vertex): cross product of normal diffs.
 fn compute_truncated_cone_axis(
     face_indices: &[usize],
-    vertex_set: &HashSet<usize>,
+    vertex_set: &[usize],
     faces: &[MeshFace],
     vertices: &[MeshVertex],
 ) -> Option<[f64; 3]> {
@@ -302,7 +302,7 @@ fn estimate_axis_from_normal_diffs(
 /// This works because all vertex directions cluster around the axis for narrow cones.
 fn estimate_axis_from_apex(
     apex: &[f64; 3],
-    vertex_set: &HashSet<usize>,
+    vertex_set: &[usize],
     vertices: &[MeshVertex],
 ) -> Option<[f64; 3]> {
     let mut cov = [0.0_f64; 6]; // upper triangle: [xx, xy, xz, yy, yz, zz]
@@ -352,7 +352,7 @@ fn estimate_axis_from_apex(
 /// Also orients the axis so that h increases away from the apex.
 fn estimate_apex_and_angle_from_profile(
     axis: &mut [f64; 3],
-    vertex_set: &HashSet<usize>,
+    vertex_set: &[usize],
     vertices: &[MeshVertex],
 ) -> Option<([f64; 3], f64)> {
     let n = vertex_set.len();
@@ -446,7 +446,7 @@ fn estimate_apex_and_angle_from_profile(
 fn estimate_half_angle(
     apex: &[f64; 3],
     axis: &mut [f64; 3],
-    vertex_set: &HashSet<usize>,
+    vertex_set: &[usize],
     vertices: &[MeshVertex],
 ) -> Option<f64> {
     // Orient axis so most points have positive h (away from apex)
@@ -735,7 +735,7 @@ impl LeastSquaresProblem<f64, Dyn, Const<6>> for ConeLMProblem {
 /// 4. Full LM refinement (6 params).
 fn fit_cone(
     face_indices: &[usize],
-    vertex_set: &HashSet<usize>,
+    vertex_set: &[usize],
     faces: &[MeshFace],
     vertices: &[MeshVertex],
 ) -> Option<([f64; 3], [f64; 3], f64)> {
@@ -1210,7 +1210,12 @@ impl SurfaceType for ConicalSurface {
         vertex_list: &[usize],
         verbosity: u8,
     ) -> Option<Self::Fit> {
-        let vertex_set: HashSet<usize> = vertex_list.iter().copied().collect();
+        // Sorted, deduplicated vertex list: fitting sums must iterate in a
+        // deterministic order (float addition is non-associative; HashSet
+        // order varies per process and produced run-to-run fit differences).
+        let mut vertex_set: Vec<usize> = vertex_list.to_vec();
+        vertex_set.sort_unstable();
+        vertex_set.dedup();
 
         // Try the cheap 4-DOF cylinder fit first. If it is essentially exact
         // (max vertex error at CAD-mesh precision), skip the much more
@@ -1670,7 +1675,7 @@ mod tests {
         let axis = [0.0, 0.0, -1.0];
         let (faces, vertices) = build_cone_mesh(apex, axis, ha, 8, 20, 30.0, 60.0);
         let face_indices: Vec<usize> = (0..faces.len()).collect();
-        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
 
         let result = fit_cone(&face_indices, &vertex_set, &faces, &vertices);
         assert!(result.is_some(), "cone fit should succeed");
@@ -1694,7 +1699,7 @@ mod tests {
         // h range: from apex distance 40 (z=20, r=4) to distance 60 (z=0, r=6)
         let (faces, vertices) = build_cone_mesh(apex, axis, ha, 6, 16, 40.0, 60.0);
         let face_indices: Vec<usize> = (0..faces.len()).collect();
-        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
 
         let result = fit_cone(&face_indices, &vertex_set, &faces, &vertices);
         assert!(result.is_some(), "conical hole fit should succeed");
@@ -1724,7 +1729,7 @@ mod tests {
             MeshVertex::from_xyz(1.0, 0.0, 0.0),
             MeshVertex::from_xyz(0.0, 1.0, 0.0),
         ];
-        let vertex_set: HashSet<usize> = (0..2).collect();
+        let vertex_set: Vec<usize> = (0..2).collect();
         assert!(fit_cone(&[0], &vertex_set, &faces, &vertices).is_none(),
                 "cone fit should reject degenerate input");
     }
@@ -1802,7 +1807,7 @@ mod tests {
 
         let (faces, vertices) = build_pointed_cone_mesh(n_slices, base_radius, height);
         let face_indices: Vec<usize> = (0..faces.len()).collect();
-        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
 
         let result = fit_cone(&face_indices, &vertex_set, &faces, &vertices);
         assert!(result.is_some(), "pointed cone fit should succeed");
@@ -1856,11 +1861,13 @@ mod tests {
 
         // Also test half-angle
         if let (Some(a), Some(mut ax)) = (apex, axis) {
-            let mut vset = HashSet::new();
+            let mut vset: Vec<usize> = Vec::new();
             for &f in &fi {
                 let vc = faces[f].vertex_count as usize;
-                for &vi in &faces[f].vertex_indices[..vc] { vset.insert(vi); }
+                vset.extend_from_slice(&faces[f].vertex_indices[..vc]);
             }
+            vset.sort_unstable();
+            vset.dedup();
             let ha = estimate_half_angle(&a, &mut ax, &vset, &vertices);
             eprintln!("half_angle (0,1,2): {:?} (expected {:.4})", ha, (base_radius/height).atan());
             eprintln!("axis after orient: ({:.4}, {:.4}, {:.4})", ax[0], ax[1], ax[2]);
@@ -1883,13 +1890,13 @@ mod tests {
                 let face_indices: Vec<usize> = (0..window_size)
                     .map(|i| (start + i) % n_slices)
                     .collect();
-                let mut vertex_set = HashSet::new();
+                let mut vertex_set: Vec<usize> = Vec::new();
                 for &fi in &face_indices {
                     let vc = faces[fi].vertex_count as usize;
-                    for &vi in &faces[fi].vertex_indices[..vc] {
-                        vertex_set.insert(vi);
-                    }
+                    vertex_set.extend_from_slice(&faces[fi].vertex_indices[..vc]);
                 }
+                vertex_set.sort_unstable();
+                vertex_set.dedup();
 
                 let result = fit_cone(&face_indices, &vertex_set, &faces, &vertices);
                 assert!(

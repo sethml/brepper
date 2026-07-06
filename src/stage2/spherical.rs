@@ -56,7 +56,7 @@ pub(super) fn vertex_to_sphere_distance(
 /// Returns (center, radius) or None if degenerate.
 #[allow(clippy::needless_range_loop)]
 fn fit_sphere(
-    vertex_set: &HashSet<usize>,
+    vertex_set: &[usize],
     vertices: &[MeshVertex],
 ) -> Option<([f64; 3], f64)> {
     let n = vertex_set.len();
@@ -143,7 +143,7 @@ fn fit_sphere(
     // Jacobian: ∂f/∂c = -(p_i - c) / ||p_i - c||, ∂f/∂r = -1
     // Solves J^T J delta = -J^T f via normal equations at each iteration.
     if n >= 6 {
-        let verts: Vec<usize> = vertex_set.iter().copied().collect();
+        let verts: Vec<usize> = vertex_set.to_vec();
         for _iter in 0..20 {
             // Build normal equations: (J^T J) delta = -(J^T f)
             let mut jtj = [[0.0_f64; 4]; 4];
@@ -428,7 +428,10 @@ impl SurfaceType for SphericalSurface {
         vertex_list: &[usize],
         _verbosity: u8,
     ) -> Option<Self::Fit> {
-        let vertex_set: HashSet<usize> = vertex_list.iter().copied().collect();
+        // Sorted, deduplicated for deterministic fitting sums.
+        let mut vertex_set: Vec<usize> = vertex_list.to_vec();
+        vertex_set.sort_unstable();
+        vertex_set.dedup();
         let (center, radius) = fit_sphere(&vertex_set, &mesh.vertices)?;
         // Reject obviously wrong radii
         let bb_diag = bounding_box_diagonal(&mesh.vertices);
@@ -612,7 +615,7 @@ mod tests {
     #[test]
     fn sphere_fit_origin() {
         let vertices = sphere_points([0.0, 0.0, 0.0], 12.5, 8, 16, -PI / 2.0 + 0.1, PI / 2.0 - 0.1);
-        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
 
         let result = fit_sphere(&vertex_set, &vertices);
         assert!(result.is_some(), "sphere fit should succeed");
@@ -627,7 +630,7 @@ mod tests {
     #[test]
     fn sphere_fit_offset() {
         let vertices = sphere_points([5.0, -3.0, 7.0], 10.0, 10, 20, -PI / 2.0 + 0.1, PI / 2.0 - 0.1);
-        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
 
         let result = fit_sphere(&vertex_set, &vertices);
         assert!(result.is_some(), "offset sphere fit should succeed");
@@ -642,7 +645,7 @@ mod tests {
     #[test]
     fn sphere_fit_hemisphere() {
         let vertices = sphere_points([0.0, 0.0, 0.0], 10.0, 6, 16, 0.05, PI / 2.0 - 0.05);
-        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
 
         let result = fit_sphere(&vertex_set, &vertices);
         assert!(result.is_some(), "hemisphere fit should succeed");
@@ -658,7 +661,7 @@ mod tests {
     fn sphere_fit_small_cap() {
         // Only a small cap near the north pole: elevation from 60° to 90°.
         let vertices = sphere_points([0.0, 0.0, 0.0], 25.0, 5, 12, PI / 3.0, PI / 2.0 - 0.05);
-        let vertex_set: HashSet<usize> = (0..vertices.len()).collect();
+        let vertex_set: Vec<usize> = (0..vertices.len()).collect();
 
         let result = fit_sphere(&vertex_set, &vertices);
         assert!(result.is_some(), "small cap fit should succeed");
@@ -677,7 +680,7 @@ mod tests {
             MeshVertex::from_xyz(0.0, 1.0, 0.0),
             MeshVertex::from_xyz(0.0, 0.0, 1.0),
         ];
-        let vertex_set: HashSet<usize> = (0..3).collect();
+        let vertex_set: Vec<usize> = (0..3).collect();
         assert!(fit_sphere(&vertex_set, &vertices).is_none(),
                 "sphere fit should reject 3 vertices");
     }
@@ -692,7 +695,7 @@ mod tests {
             MeshVertex::from_xyz(-s, s, -s),
             MeshVertex::from_xyz(-s, -s, s),
         ];
-        let vertex_set: HashSet<usize> = (0..4).collect();
+        let vertex_set: Vec<usize> = (0..4).collect();
 
         let result = fit_sphere(&vertex_set, &vertices);
         assert!(result.is_some(), "4-point sphere fit should succeed");

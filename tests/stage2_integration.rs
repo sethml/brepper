@@ -936,8 +936,11 @@ macro_rules! test_stl_step_stage24_compare {
 
 #[test]
 fn simple_cone_produces_one_conical_hypothesis() {
+    // Run to stage 2.6: at stage 2.2 a narrow band of the cone can also fit
+    // an exact spurious cylinder; selection + absorption merges it into the
+    // cone, leaving exactly one selected conical surface.
     let stl = format!("{}/tests/ccad/generated/simple_cone.stl", manifest_dir());
-    let config = config_for_stl_stage24(&stl);
+    let config = config_for_stl_stage26(&stl);
     let output = run_stage2(&config);
 
     assert_eq!(

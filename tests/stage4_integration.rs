@@ -57,10 +57,14 @@ fn simple_sphere_step_output() {
 }
 #[test]
 fn rounded_cube_step_output() {
+    // --angular-tolerance=20: the coarse tessellation exceeds the 17.5°
+    // default dihedral limit (see tests/RESULTS.md special flags).
     let dir = manifest_dir();
     let stl = format!("{dir}/tests/onshape/rounded_cube_10_r2_coarse.stl");
     let out = format!("{dir}/tmp/test_rounded_cube_output.step");
-    let config = config_for_output(&stl, &out);
+    let config = config::parse_config_from(
+        ["brepper", &stl, "-o", &out, "--angular-tolerance=20", "-q"],
+    ).unwrap();
     run_stage4(&config);
     assert!(std::path::Path::new(&out).exists());
 }
@@ -285,6 +289,65 @@ fn ccad_block_with_conical_hole_stage41_compare() {
         &format!("{dir}/tests/ccad/generated/block_with_conical_hole.stl"),
         &format!("{dir}/tmp/test_block_with_conical_hole_cmp.step"),
         &format!("{dir}/tests/ccad/generated/block_with_conical_hole.step"),
+    );
+    run_stage4(&config);
+}
+
+// --- Torus fillet models: full pipeline with compare ---
+
+#[test]
+fn ccad_filleted_cylinder_stage41_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/ccad/generated/filleted_cylinder.stl"),
+        &format!("{dir}/tmp/test_filleted_cylinder_cmp.step"),
+        &format!("{dir}/tests/ccad/generated/filleted_cylinder.step"),
+    );
+    run_stage4(&config);
+}
+
+#[test]
+fn ccad_filleted_pipe_stage41_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/ccad/generated/filleted_pipe.stl"),
+        &format!("{dir}/tmp/test_filleted_pipe_cmp.step"),
+        &format!("{dir}/tests/ccad/generated/filleted_pipe.step"),
+    );
+    run_stage4(&config);
+}
+
+#[test]
+fn ccad_filleted_hole_block_stage41_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/ccad/generated/filleted_hole_block.stl"),
+        &format!("{dir}/tmp/test_filleted_hole_block_cmp.step"),
+        &format!("{dir}/tests/ccad/generated/filleted_hole_block.step"),
+    );
+    run_stage4(&config);
+}
+
+// --- Onshape cone models: full pipeline with compare ---
+
+#[test]
+fn onshape_nosecone_medium_stage41_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/onshape/nosecone_medium.stl"),
+        &format!("{dir}/tmp/test_nosecone_medium_cmp.step"),
+        &format!("{dir}/tests/onshape/nosecone.step"),
+    );
+    run_stage4(&config);
+}
+
+#[test]
+fn onshape_cone_truncated_stage41_compare() {
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/onshape/cone_truncated_medium.stl"),
+        &format!("{dir}/tmp/test_cone_truncated_cmp.step"),
+        &format!("{dir}/tests/onshape/cone_truncated.step"),
     );
     run_stage4(&config);
 }
