@@ -27,6 +27,10 @@ path = "src/bin/step_measure_tolerance.rs"
 name = "viewer"
 path = "src/bin/viewer.rs"
 
+[[bin]]
+name = "gen-test-models"
+path = "src/bin/gen_test_models.rs"
+
 # Optimize numerics-heavy dependencies even in dev builds.
 # Without this, nalgebra/levenberg-marquardt are ~35x slower in debug mode
 # due to bounds checking, shape queries, and deep un-inlined call chains.

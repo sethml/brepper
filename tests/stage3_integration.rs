@@ -1228,6 +1228,36 @@ fn check_solids_brep_valid(output: &stage3::Stage3Output) {
     }
 }
 
+/// Hollow cube: a 20 mm cube with an enclosed 10 mm cubic void. Stage 3.6
+/// must produce ONE solid whose volume excludes the cavity (7000 mm^3), by
+/// merging the void shell into the outer solid — not two nested solids.
+#[test]
+fn hollow_cube_void_solid() {
+    let stl = format!("{}/tests/occt/hollow_cube.stl", manifest_dir());
+    let config = config_for_stl_36(&stl);
+    let output = run_stage3_36(&config);
+    assert_eq!(output.solids.len(), 1, "hollow cube should produce exactly 1 solid");
+
+    let mut gprops = opencascade_sys::g_prop::GProps::new();
+    opencascade_sys::b_rep_g_prop::volume_properties_shape_gprops_bool3(
+        output.solids[0].as_shape(), &mut gprops, true, false, false,
+    );
+    let volume = gprops.mass();
+    assert!(
+        (volume - 7000.0).abs() < 1.0,
+        "hollow cube volume should be ~7000 mm^3 (8000 outer - 1000 void), got {volume}"
+    );
+}
+
+#[test]
+fn hollow_cube_stage36_compare() {
+    let stl = format!("{}/tests/occt/hollow_cube.stl", manifest_dir());
+    let step = format!("{}/tests/occt/hollow_cube.step", manifest_dir());
+    let config = config_for_compare_36(&stl, &step);
+    let output = run_stage3_36(&config);
+    assert_eq!(output.solids.len(), 1);
+}
+
 /// Rounded cube (coarse) must produce a BRepCheck-valid solid.
 /// This catches sewing-induced wire corruption (e.g., sphere face wires getting
 /// cylinder edges inserted by BRepBuilderAPI_Sewing).

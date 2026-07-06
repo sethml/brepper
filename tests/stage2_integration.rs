@@ -1262,6 +1262,38 @@ test_cone_params_match!(
 // Note: cone_15x20.step is a triangulated export (PLANEs only, no CONICAL_SURFACE),
 // so we use a direct parameter check instead of test_cone_params_match.
 #[test]
+fn occt_full_torus_selection() {
+    // A complete donut must select exactly 1 toroidal surface with the
+    // generator parameters (R=10, r=3).
+    let stl = format!("{}/tests/occt/full_torus.stl", manifest_dir());
+    let config = config_for_stl_stage26(&stl);
+    let output = run_stage2(&config);
+    assert_eq!(output.selected_surfaces.len(), 1, "full torus should select 1 surface");
+    assert_eq!(output.toroidal_hypotheses.len(), 1, "full torus should select 1 torus");
+    let t = &output.toroidal_hypotheses[0];
+    assert!((t.major_radius - 10.0).abs() < 0.01, "R should be 10, got {}", t.major_radius);
+    assert!((t.minor_radius - 3.0).abs() < 0.01, "r should be 3, got {}", t.minor_radius);
+}
+
+#[test]
+fn onshape_cone_tangent_planes_three_cones() {
+    // Transition piece: STEP has 3 cones (7.67°, 73.04°, 84.25°) + 5 planes.
+    // The side cone patches span narrow azimuthal arcs (normal-line axis
+    // rescue) and the third cone's half-angle is close to the 85° limit.
+    let stl = format!("{}/tests/onshape/cone_tangent_planes_medium.stl", manifest_dir());
+    let config = config_for_stl_stage26(&stl);
+    let output = run_stage2(&config);
+
+    let cones: Vec<_> = output.conical_hypotheses.iter().filter(|h| !h.is_cylinder()).collect();
+    assert_eq!(cones.len(), 3, "cone_tangent_planes should select 3 cones");
+    let mut has: Vec<f64> = cones.iter().map(|c| c.half_angle.to_degrees()).collect();
+    has.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert!((has[0] - 7.67).abs() < 0.5, "smallest half-angle ~7.67°, got {:.2}", has[0]);
+    assert!((has[1] - 73.04).abs() < 0.5, "middle half-angle ~73.04°, got {:.2}", has[1]);
+    assert!((has[2] - 84.25).abs() < 0.5, "largest half-angle ~84.25°, got {:.2}", has[2]);
+}
+
+#[test]
 fn onshape_cone_15x20_params_match() {
     let stl = format!("{}/tests/onshape/cone_15x20_medium.stl", manifest_dir());
     let config = config_for_stl_stage24(&stl);

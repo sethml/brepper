@@ -278,6 +278,25 @@ test_stl_step_compare!(
     "tests/onshape/stepped_block.step"
 );
 
+// --- tests/occt/ ---
+test_stl_step_compare!(
+    occt_hollow_cube_compare,
+    "tests/occt/hollow_cube.stl",
+    "tests/occt/hollow_cube.step"
+);
+
+#[test]
+fn occt_hollow_cube_void_stats() {
+    // The hollow cube has 2 closed shells; the inner one (negative signed
+    // volume, contained in the outer shell's bounding box) is a legitimate
+    // internal void, not an inverted-winding error.
+    let stl = format!("{}/tests/occt/hollow_cube.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let mesh = stage1::stage1(&config).expect("hollow cube should validate");
+    assert_eq!(mesh.stats.connected_shells, 2, "should have 2 shells");
+    assert_eq!(mesh.stats.voids_within_solids, 1, "should have 1 void");
+}
+
 // --- tests/fusion/ ---
 test_stl_step_compare!(
     fusion_plate_high_compare,

@@ -247,3 +247,12 @@ Added `--viz-stages-level` flag (default 1) to control how often `--viz-stages` 
 
 ## Unblock pipe_elbow (strip-merge torus seeding)
 pipe_elbow_10 medium and fine pass --compare through stage 4.1. Strip-merge torus seeds (3-ring neighborhoods spanning ≥2 cylinder hypotheses) recover the elbow torus from the cylinder strips of stage 2.2; cylinder-torus tangent circles try both candidate axes; toroidal UV-bounds classify iso-U vs iso-V boundaries. New tests: elbow torus params match STEP (R=10, r=5), stage-4.1 compare for pipe_elbow_10_medium.
+
+## Multi-shell solids (internal voids)
+Stage 1.2 accepts contained negative-volume shells as voids (voids_within_solids stat); stage 3.6 merge_void_solids merges void shells into their container solid with orientation verified by volume. hollow_cube (tests/occt/, generated via OCCT since ccad segfaults) passes stage 4.1 with one 7000 mm³ solid.
+
+## Partial cones + plane-cone tangent generators
+cone_tangent_planes: 3 of 3 cones detected (normal-line axis rescue with profile-linearity gate; half-angle cap 80°→85°); plane-cone tangent edges are generator lines through the endpoint vertices; 11/11 edge curves. Stage 3.4 partial-cone face construction issue remains (documented in TODO.md).
+
+## Full-torus seam coverage
+full_torus test model (complete donut R=10, r=3) passes the full pipeline: complete tori use natural-bounds face construction (both seams created by OCCT automatically).

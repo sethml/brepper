@@ -742,6 +742,255 @@ fn fit_cone(
     if vertex_set.len() < 4 {
         return None;
     }
+    let max_err = |fit: &([f64; 3], [f64; 3], f64)| -> f64 {
+        vertex_set
+            .iter()
+            .map(|&vi| vertex_to_cone_distance(&vertices[vi], &fit.0, &fit.1, fit.2).abs())
+            .fold(0.0_f64, f64::max)
+    };
+
+    let primary = fit_cone_primary(face_indices, vertex_set, faces, vertices);
+    let mut best: Option<(f64, ([f64; 3], [f64; 3], f64))> = None;
+    if let Some(fit) = primary {
+        best = Some((max_err(&fit), fit));
+    }
+
+    // Normal-line axis rescue for narrow azimuthal arcs: the primary axis
+    // estimates (normal covariance, normal differences) degenerate when the
+    // seed's normals are nearly parallel (e.g. side cone patches of a
+    // transition piece spanning only a few tessellation columns). Cone
+    // surface normals all pass through the axis, so closest-approach
+    // midpoints of normal-line pairs trace the axis directly.
+    const RESCUE_ERR_THRESHOLD: f64 = 1e-4; // mm
+    if best.as_ref().is_none_or(|(e, _)| *e > RESCUE_ERR_THRESHOLD) {
+        if let Some(fit) = fit_cone_normal_line_rescue(face_indices, vertex_set, faces, vertices) {
+            let err = max_err(&fit);
+            if best.as_ref().is_none_or(|(e, _)| err < *e) {
+                best = Some((err, fit));
+            }
+        }
+    }
+
+    best.map(|(_, f)| f)
+}
+
+/// Closest-approach midpoint between two 3D lines (p1 + t·d1, p2 + s·d2).
+/// Returns None for near-parallel lines or when the gap between the closest
+/// points is large relative to their distance from the line origins.
+fn line_closest_midpoint(
+    p1: &[f64; 3],
+    d1: &[f64; 3],
+    p2: &[f64; 3],
+    d2: &[f64; 3],
+) -> Option<[f64; 3]> {
+    let r = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
+    let a = dot3(d1, d1);
+    let b = dot3(d1, d2);
+    let c = dot3(d2, d2);
+    let d = dot3(d1, &r);
+    let e = dot3(d2, &r);
+    let denom = a * c - b * b;
+    if denom.abs() < 1e-6 {
+        return None; // near-parallel
+    }
+    let t = (d * c - e * b) / denom;
+    let sv = (d * b - e * a) / denom;
+    let q1 = [p1[0] + t * d1[0], p1[1] + t * d1[1], p1[2] + t * d1[2]];
+    let q2 = [p2[0] + sv * d2[0], p2[1] + sv * d2[1], p2[2] + sv * d2[2]];
+    let gap = ((q1[0] - q2[0]).powi(2) + (q1[1] - q2[1]).powi(2) + (q1[2] - q2[2]).powi(2)).sqrt();
+    let scale = t.abs().max(sv.abs()).max(1e-9);
+    if gap > scale * 0.5 {
+        return None; // lines don't come close: not a surface of revolution
+    }
+    Some([
+        (q1[0] + q2[0]) / 2.0,
+        (q1[1] + q2[1]) / 2.0,
+        (q1[2] + q2[2]) / 2.0,
+    ])
+}
+
+/// Fit a cone by estimating the axis from normal-line closest-approach
+/// midpoints, then the profile line in (h, r) coordinates, then LM.
+fn fit_cone_normal_line_rescue(
+    face_indices: &[usize],
+    vertex_set: &[usize],
+    faces: &[MeshFace],
+    vertices: &[MeshVertex],
+) -> Option<([f64; 3], [f64; 3], f64)> {
+    // Axis points from normal-line pairs.
+    let mut axis_pts: Vec<[f64; 3]> = Vec::new();
+    let n_faces = face_indices.len();
+    for i in 0..n_faces {
+        let fi = face_indices[i];
+        let Some(n1) = faces[fi].normal else { continue };
+        let c1 = face_centroid(&faces[fi], vertices);
+        for &fj in face_indices.iter().skip(i + 1) {
+            let Some(n2) = faces[fj].normal else { continue };
+            let cr = cross3(&n1, &n2);
+            let cr_len = (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
+            if cr_len < 0.01 {
+                continue; // near-parallel normals give no axis information
+            }
+            let c2 = face_centroid(&faces[fj], vertices);
+            if let Some(m) = line_closest_midpoint(&c1, &n1, &c2, &n2) {
+                axis_pts.push(m);
+            }
+            if axis_pts.len() >= 64 {
+                break;
+            }
+        }
+        if axis_pts.len() >= 64 {
+            break;
+        }
+    }
+    if axis_pts.len() < 2 {
+        return None;
+    }
+
+    // 3D line through the axis points: centroid + dominant scatter direction.
+    let n = axis_pts.len() as f64;
+    let mut origin = [0.0_f64; 3];
+    for p in &axis_pts {
+        origin[0] += p[0];
+        origin[1] += p[1];
+        origin[2] += p[2];
+    }
+    origin[0] /= n;
+    origin[1] /= n;
+    origin[2] /= n;
+    let mut cov = [0.0_f64; 6];
+    for p in &axis_pts {
+        let dx = p[0] - origin[0];
+        let dy = p[1] - origin[1];
+        let dz = p[2] - origin[2];
+        cov[0] += dx * dx;
+        cov[1] += dx * dy;
+        cov[2] += dx * dz;
+        cov[3] += dy * dy;
+        cov[4] += dy * dz;
+        cov[5] += dz * dz;
+    }
+    let mut axis = largest_eigenvector_3x3(&cov);
+    if normalize3(&mut axis) < 1e-12 {
+        return None;
+    }
+
+    // Profile line in (h, r): r = slope·h + b  →  half_angle = atan(|slope|).
+    let mut sum_h = 0.0_f64;
+    let mut sum_r = 0.0_f64;
+    let mut sum_hh = 0.0_f64;
+    let mut sum_hr = 0.0_f64;
+    let np = vertex_set.len() as f64;
+    let mut hr_pts: Vec<(f64, f64)> = Vec::with_capacity(vertex_set.len());
+    for &vi in vertex_set {
+        let v = &vertices[vi];
+        let d = [v.x - origin[0], v.y - origin[1], v.z - origin[2]];
+        let h = dot3(&d, &axis);
+        let radial = [d[0] - h * axis[0], d[1] - h * axis[1], d[2] - h * axis[2]];
+        let r = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+        sum_h += h;
+        sum_r += r;
+        sum_hh += h * h;
+        sum_hr += h * r;
+        hr_pts.push((h, r));
+    }
+    let denom = np * sum_hh - sum_h * sum_h;
+    if denom.abs() < 1e-12 {
+        return None;
+    }
+    let mut slope = (np * sum_hr - sum_h * sum_r) / denom;
+    if slope.abs() < 1e-6 {
+        return None; // cylinder, not a cone
+    }
+    // Validity condition of this rescue: the (h, r) profile must actually be
+    // LINEAR. Doubly-curved patches (torus corner blends) have an arc-shaped
+    // profile that a line fits poorly; without this gate the LM polish can
+    // still land within tolerance for tiny 2-ring subsets and commit spurious
+    // cones that block torus seeding.
+    {
+        let b0 = (sum_r - slope * sum_h) / np;
+        let mut ss = 0.0_f64;
+        for &(h, r) in &hr_pts {
+            let d = r - (slope * h + b0);
+            ss += d * d;
+        }
+        let rms = (ss / np).sqrt();
+        let r_mean = (sum_r / np).abs().max(1e-9);
+        if rms > r_mean * 0.02 {
+            return None;
+        }
+    }
+    // Orient the axis so h increases from apex toward the base (r grows):
+    // under h' = -h the slope negates and the h sums flip sign.
+    let mut h_mean = sum_h / np;
+    if slope < 0.0 {
+        axis = [-axis[0], -axis[1], -axis[2]];
+        slope = -slope;
+        h_mean = -h_mean;
+    }
+    let r_mean = sum_r / np;
+    let intercept = r_mean - slope * h_mean;
+
+    let half_angle = slope.atan();
+    if !(2.0_f64.to_radians()..=85.0_f64.to_radians()).contains(&half_angle) {
+        return None;
+    }
+    let apex_h = -intercept / slope;
+    let apex = [
+        origin[0] + apex_h * axis[0],
+        origin[1] + apex_h * axis[1],
+        origin[2] + apex_h * axis[2],
+    ];
+
+    // LM polish with recentered coordinates.
+    let n_pts = vertex_set.len() as f64;
+    let mut centroid = [0.0_f64; 3];
+    for &vi in vertex_set {
+        centroid[0] += vertices[vi].x;
+        centroid[1] += vertices[vi].y;
+        centroid[2] += vertices[vi].z;
+    }
+    centroid[0] /= n_pts;
+    centroid[1] /= n_pts;
+    centroid[2] /= n_pts;
+    let centered_points: Vec<[f64; 3]> = vertex_set
+        .iter()
+        .map(|&vi| [
+            vertices[vi].x - centroid[0],
+            vertices[vi].y - centroid[1],
+            vertices[vi].z - centroid[2],
+        ])
+        .collect();
+    let centered_apex = [
+        apex[0] - centroid[0],
+        apex[1] - centroid[1],
+        apex[2] - centroid[2],
+    ];
+    let problem = ConeLMProblem::new(centered_points, axis, centered_apex, half_angle);
+    let (result, _report) = LevenbergMarquardt::new().with_patience(150).minimize(problem);
+    let refined_dir = result.axis_dir_from_params(&result.params);
+    let refined_apex = [
+        result.params[2] + centroid[0],
+        result.params[3] + centroid[1],
+        result.params[4] + centroid[2],
+    ];
+    let refined_ha = result.params[5];
+    if refined_ha > 0.01 && refined_ha < 85.0_f64.to_radians() {
+        Some((refined_apex, refined_dir, refined_ha))
+    } else {
+        Some((apex, axis, half_angle))
+    }
+}
+
+fn fit_cone_primary(
+    face_indices: &[usize],
+    vertex_set: &[usize],
+    faces: &[MeshFace],
+    vertices: &[MeshVertex],
+) -> Option<([f64; 3], [f64; 3], f64)> {
+    if vertex_set.len() < 4 {
+        return None;
+    }
 
     // Check for pointed cone: a vertex present in ALL seed faces.
     let shared_apex = find_shared_apex_vertex(face_indices, faces, vertices);
@@ -1419,10 +1668,12 @@ impl SurfaceType for ConicalSurface {
         if face_list.len() < min_faces {
             return false;
         }
-        // Reject cones with very large half-angle (nearly a plane).
-        // On a sphere, a near-tangent cone patch has half_angle ≈ 85° and
-        // passes the normal consistency check because all normals are similar.
-        if fit.half_angle > 80.0_f64.to_radians() {
+        // Reject cones with very large half-angle (nearly a plane). Real CAD
+        // cones up to 85° exist (cone_tangent_planes has an 84.25° cone), and
+        // the historical worry — near-tangent bogus cones on sphere polar
+        // caps — is now prevented upstream: spherical detection runs before
+        // conical and sphere-committed faces don't seed cones.
+        if fit.half_angle > 85.0_f64.to_radians() {
             return false;
         }
         // Normal-axis consistency: on a cone, n·axis = sin(half_angle) is

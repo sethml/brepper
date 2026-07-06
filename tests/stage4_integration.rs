@@ -328,6 +328,31 @@ fn ccad_filleted_hole_block_stage41_compare() {
     run_stage4(&config);
 }
 
+#[test]
+fn occt_full_torus_stage41_compare() {
+    // Complete donut: exercises both U and V seams on the doubly-periodic
+    // torus face (natural-bounds construction, no boundary edges).
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/occt/full_torus.stl"),
+        &format!("{dir}/tmp/test_full_torus_cmp.step"),
+        &format!("{dir}/tests/occt/full_torus.step"),
+    );
+    run_stage4(&config);
+}
+
+#[test]
+fn occt_hollow_cube_stage41_compare() {
+    // Multi-shell solid: one solid with an internal void (volume 7000 mm^3).
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/occt/hollow_cube.stl"),
+        &format!("{dir}/tmp/test_hollow_cube_cmp.step"),
+        &format!("{dir}/tests/occt/hollow_cube.step"),
+    );
+    run_stage4(&config);
+}
+
 // --- Onshape cone models: full pipeline with compare ---
 
 #[test]

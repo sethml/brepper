@@ -12,8 +12,9 @@ use crate::stage1::{ConnectedMesh, MeshVertex};
 use crate::stage2::{SelectedSurface, Stage2Output};
 use crate::stage1;
 use opencascade_sys::{
-    b_rep, b_rep_adaptor, b_rep_builder_api, b_rep_check, b_rep_extrema, b_rep_g_prop, b_rep_lib,
-    b_rep_tools, extrema,
+    b_rep, b_rep_adaptor, b_rep_bnd_lib, b_rep_builder_api, b_rep_check, b_rep_extrema,
+    b_rep_g_prop, b_rep_lib,
+    b_rep_tools, bnd, extrema,
     geom, geom2d, geom2d_api, geom_api, g_prop, gp, message, shape_analysis,
     shape_fix,
     t_col_std, t_colgp, top_abs, top_exp, top_loc, topo_ds, OwnedPtr,
@@ -1796,19 +1797,30 @@ fn compute_tangent_edge_curve_line(
     stage2: &Stage2Output,
     config: &Config,
 ) -> Result<(), String> {
-    // Get the line direction from the cylinder axis (if one of the surfaces is cylindrical)
+    // Get the line direction. For plane-CYLINDER (and cylinder-cylinder)
+    // tangencies the line is parallel to the cylinder axis. For plane-CONE
+    // tangencies the line is a cone GENERATOR — tilted from the axis by the
+    // half-angle — and the two endpoint vertices lie exactly on it, so the
+    // vertex-to-vertex direction is used (radius_at_apex is 0 for cones, so
+    // the analytic cylinder construction would collapse onto the axis).
+    let conical_is_cylinder = |idx: &usize| stage2.conical_hypotheses[*idx].is_cylinder();
     let line_dir = match (ss0, ss1) {
         (SelectedSurface::Conical(idx), SelectedSurface::Planar(_))
-        | (SelectedSurface::Planar(_), SelectedSurface::Conical(idx)) => {
+        | (SelectedSurface::Planar(_), SelectedSurface::Conical(idx))
+            if conical_is_cylinder(idx) =>
+        {
             let hyp = &stage2.conical_hypotheses[*idx];
             hyp.axis_direction
         }
-        (SelectedSurface::Conical(idx), SelectedSurface::Conical(_)) => {
+        (SelectedSurface::Conical(idx), SelectedSurface::Conical(_))
+            if conical_is_cylinder(idx) =>
+        {
             let hyp = &stage2.conical_hypotheses[*idx];
             hyp.axis_direction
         }
         _ => {
-            // Fallback: use direction from vertex to vertex
+            // Cone generators and general fallback: direction between the
+            // vertex endpoints.
             let dx = v1.point[0] - v0.point[0];
             let dy = v1.point[1] - v0.point[1];
             let dz = v1.point[2] - v0.point[2];
@@ -1823,7 +1835,9 @@ fn compute_tangent_edge_curve_line(
     // Compute the tangent point analytically for plane-cylinder pairs.
     let tangent_point = match (ss0, ss1) {
         (SelectedSurface::Conical(cyl_idx), SelectedSurface::Planar(plane_idx))
-        | (SelectedSurface::Planar(plane_idx), SelectedSurface::Conical(cyl_idx)) => {
+        | (SelectedSurface::Planar(plane_idx), SelectedSurface::Conical(cyl_idx))
+            if conical_is_cylinder(cyl_idx) =>
+        {
             let cyl = &stage2.conical_hypotheses[*cyl_idx];
             let plane = &stage2.planar_hypotheses[*plane_idx];
             let a = cyl.axis_direction;
@@ -3768,19 +3782,29 @@ fn create_periodic_face(
     let fd = &output.face_descriptors[fi];
     let surface = &output.stage2.selected_surfaces[fd.selected_surface_idx];
 
-    // Full sphere with no edges — use natural bounds
-    if matches!(surface, SelectedSurface::Spherical(_)) && fd.edge_indices.is_empty() {
+    // Complete closed surface with no edges — use natural bounds. Full
+    // spheres get their seam meridian automatically; complete tori (full
+    // donuts) get both the U seam (around the major circle) and the V seam
+    // (around the tube) from OCCT's natural [0,2π]×[0,2π] bounds.
+    if fd.edge_indices.is_empty()
+        && matches!(
+            surface,
+            SelectedSurface::Spherical(_) | SelectedSurface::Toroidal(_)
+        )
+    {
         let make_face = b_rep_builder_api::MakeFace::new_handlegeomsurface_real(
             &fd.surface,
             config.vertex_tolerance_mm,
         );
         if !make_face.is_done() {
             return Err(Stage3Error::AdjacencyError(format!(
-                "MakeFace failed for full sphere face {fi}: {:?}",
+                "MakeFace failed for complete closed face {fi}: {:?}",
                 make_face.error(),
             )));
         }
-        return Ok((make_face, false)); // Full spheres are always convex
+        let concave = matches!(surface, SelectedSurface::Toroidal(idx)
+            if !output.stage2.toroidal_hypotheses[*idx].convex);
+        return Ok((make_face, concave));
     }
 
     // Compute UV bounds for all periodic faces
@@ -5218,6 +5242,15 @@ fn construct_solids(
         solids.push(solid);
     }
 
+    // Merge internal-void solids into their containers. A shell whose faces
+    // enclose a cavity gets turned into an ordinary solid by SolidFromShell
+    // above; if its bounding box is contained in a larger solid's box it is
+    // actually a void of that solid, and the STEP output must be ONE solid
+    // whose volume excludes the cavity - not two nested solids.
+    if solids.len() > 1 {
+        solids = merge_void_solids(solids, config);
+    }
+
     if let Some(viz_sender) = viz {
         for (si, solid) in solids.iter().enumerate() {
             let mut overlay = crate::viz::VizOverlay::new();
@@ -5249,6 +5282,126 @@ fn construct_solids(
 
     output.solids = solids;
     Ok(output)
+}
+
+/// Volume of a solid via BRepGProp.
+fn solid_volume(solid: &topo_ds::Solid) -> f64 {
+    let mut gprops = g_prop::GProps::new();
+    b_rep_g_prop::volume_properties_shape_gprops_bool3(
+        solid.as_shape(), &mut gprops, true, false, false,
+    );
+    gprops.mass()
+}
+
+/// Merge void solids (bounding box contained in a larger solid) into their
+/// containers by adding their shells to the container solid. Shell
+/// orientation is verified by the resulting volume: container minus voids.
+fn merge_void_solids(
+    solids: Vec<OwnedPtr<topo_ds::Solid>>,
+    config: &Config,
+) -> Vec<OwnedPtr<topo_ds::Solid>> {
+    let n = solids.len();
+    let mut volumes = Vec::with_capacity(n);
+    let mut boxes: Vec<([f64; 3], [f64; 3])> = Vec::with_capacity(n);
+    for solid in &solids {
+        volumes.push(solid_volume(solid));
+        let mut bb = bnd::Box::new();
+        b_rep_bnd_lib::add_shape_box_bool(solid.as_shape(), &mut bb, false);
+        let cmin = bb.corner_min();
+        let cmax = bb.corner_max();
+        boxes.push((
+            [cmin.x(), cmin.y(), cmin.z()],
+            [cmax.x(), cmax.y(), cmax.z()],
+        ));
+    }
+
+    // For each solid, find the smallest strictly-larger solid whose bounding
+    // box contains it: that is its container.
+    let mut container: Vec<Option<usize>> = vec![None; n];
+    for i in 0..n {
+        let mut best: Option<usize> = None;
+        for j in 0..n {
+            if i == j || volumes[j] <= volumes[i] {
+                continue;
+            }
+            let contains = (0..3).all(|k| {
+                boxes[j].0[k] <= boxes[i].0[k] && boxes[i].1[k] <= boxes[j].1[k]
+            });
+            if contains && best.is_none_or(|b| volumes[j] < volumes[b]) {
+                best = Some(j);
+            }
+        }
+        container[i] = best;
+    }
+
+    if container.iter().all(|c| c.is_none()) {
+        return solids;
+    }
+
+    let mut result: Vec<OwnedPtr<topo_ds::Solid>> = Vec::new();
+    for j in 0..n {
+        if container[j].is_some() {
+            continue; // voids are merged into their containers
+        }
+        let void_indices: Vec<usize> = (0..n).filter(|&i| container[i] == Some(j)).collect();
+        if void_indices.is_empty() {
+            result.push(solids[j].to_owned());
+            continue;
+        }
+
+        let expected: f64 = volumes[j] - void_indices.iter().map(|&i| volumes[i]).sum::<f64>();
+        let builder = topo_ds::Builder::new();
+
+        // Try both orientations for the void shells; keep the one whose
+        // volume matches container minus voids.
+        let mut merged: Option<OwnedPtr<topo_ds::Solid>> = None;
+        for reverse in [true, false] {
+            let mut candidate = solids[j].to_owned();
+            for &i in &void_indices {
+                let mut shell_exp = top_exp::Explorer::new_shape_shapeenum2(
+                    solids[i].as_shape(), top_abs::ShapeEnum::Shell, top_abs::ShapeEnum::Shape,
+                );
+                while shell_exp.more() {
+                    let shell_shape = shell_exp.value();
+                    if reverse {
+                        builder.add(candidate.as_shape_mut(), &shell_shape.reversed());
+                    } else {
+                        builder.add(candidate.as_shape_mut(), shell_shape);
+                    }
+                    shell_exp.next();
+                }
+            }
+            let vol = solid_volume(&candidate);
+            if (vol - expected).abs() <= expected.abs() * 1e-6 + 1e-9 {
+                merged = Some(candidate);
+                break;
+            }
+        }
+
+        match merged {
+            Some(m) => {
+                if !config.quiet {
+                    eprintln!(
+                        "  Solid {j}: merged {} internal void shell(s), volume {:.6} mm3",
+                        void_indices.len(),
+                        solid_volume(&m),
+                    );
+                }
+                result.push(m);
+            }
+            None => {
+                eprintln!(
+                    "  Warning: could not merge void shell(s) into solid {j} \
+(volume mismatch); keeping solids separate"
+                );
+                result.push(solids[j].to_owned());
+                for &i in &void_indices {
+                    result.push(solids[i].to_owned());
+                }
+            }
+        }
+    }
+    result
 }
 
 /// Compare stage 3.6 solids against reference STEP shape.

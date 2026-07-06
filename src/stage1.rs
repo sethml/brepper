@@ -471,44 +471,73 @@ impl ConnectedMesh {
         // richer geometric predicates and can avoid expensive O(N^2) triangle checks here.
 
         // Check face orientation via signed volume for each closed shell.
-        // A positive signed volume means face normals point outward (correct).
-        // A negative signed volume means face normals point inward (inverted).
+        // A positive signed volume means face normals point outward (correct
+        // for an outer shell). A negative signed volume is correct for an
+        // internal void shell (normals point out of the material, i.e. INTO
+        // the cavity) — such shells are legitimate when contained in a
+        // positive shell's bounding box; otherwise it indicates inverted
+        // winding.
+        let mut shell_volumes = vec![0.0_f64; component_count];
+        let mut shell_bb_min = vec![[f64::INFINITY; 3]; component_count];
+        let mut shell_bb_max = vec![[f64::NEG_INFINITY; 3]; component_count];
+        for (fi, &comp_id) in face_component.iter().enumerate() {
+            let face = &self.faces[fi];
+            let vc = face.vertex_count as usize;
+            for &vi in &face.vertex_indices[..vc] {
+                let v = &self.vertices[vi];
+                let p = [v.x, v.y, v.z];
+                for k in 0..3 {
+                    shell_bb_min[comp_id][k] = shell_bb_min[comp_id][k].min(p[k]);
+                    shell_bb_max[comp_id][k] = shell_bb_max[comp_id][k].max(p[k]);
+                }
+            }
+            // Signed volume contribution: sum of signed tetrahedra with origin.
+            // For triangles: V += (v0 · (v1 × v2)) / 6
+            // For quads: split into two triangles (v0,v1,v2) and (v0,v2,v3)
+            let v0 = &self.vertices[face.vertex_indices[0]];
+            let v1 = &self.vertices[face.vertex_indices[1]];
+            let v2 = &self.vertices[face.vertex_indices[2]];
+            // v1 × v2
+            let cross_x = v1.y * v2.z - v1.z * v2.y;
+            let cross_y = v1.z * v2.x - v1.x * v2.z;
+            let cross_z = v1.x * v2.y - v1.y * v2.x;
+            shell_volumes[comp_id] += v0.x * cross_x + v0.y * cross_y + v0.z * cross_z;
+            if vc == 4 {
+                let v3 = &self.vertices[face.vertex_indices[3]];
+                let cross_x = v2.y * v3.z - v2.z * v3.y;
+                let cross_y = v2.z * v3.x - v2.x * v3.z;
+                let cross_z = v2.x * v3.y - v2.y * v3.x;
+                shell_volumes[comp_id] += v0.x * cross_x + v0.y * cross_y + v0.z * cross_z;
+            }
+        }
+        for v in &mut shell_volumes {
+            *v /= 6.0;
+        }
         for (comp, is_closed) in component_closed.iter().enumerate() {
             if !is_closed {
                 continue; // Only check closed shells
             }
-            let mut signed_volume = 0.0_f64;
-            for (fi, &comp_id) in face_component.iter().enumerate() {
-                if comp_id != comp {
-                    continue;
-                }
-                let face = &self.faces[fi];
-                let vc = face.vertex_count as usize;
-                // Signed volume contribution: sum of signed tetrahedra with origin.
-                // For triangles: V += (v0 · (v1 × v2)) / 6
-                // For quads: split into two triangles (v0,v1,v2) and (v0,v2,v3)
-                let v0 = &self.vertices[face.vertex_indices[0]];
-                let v1 = &self.vertices[face.vertex_indices[1]];
-                let v2 = &self.vertices[face.vertex_indices[2]];
-                // v1 × v2
-                let cross_x = v1.y * v2.z - v1.z * v2.y;
-                let cross_y = v1.z * v2.x - v1.x * v2.z;
-                let cross_z = v1.x * v2.y - v1.y * v2.x;
-                signed_volume += v0.x * cross_x + v0.y * cross_y + v0.z * cross_z;
-                if vc == 4 {
-                    let v3 = &self.vertices[face.vertex_indices[3]];
-                    let cross_x = v2.y * v3.z - v2.z * v3.y;
-                    let cross_y = v2.z * v3.x - v2.x * v3.z;
-                    let cross_z = v2.x * v3.y - v2.y * v3.x;
-                    signed_volume += v0.x * cross_x + v0.y * cross_y + v0.z * cross_z;
-                }
-            }
-            signed_volume /= 6.0;
+            let signed_volume = shell_volumes[comp];
             if signed_volume < 0.0 {
-                return Err(MeshValidationError::InvertedNormals {
-                    shell_index: comp,
-                    signed_volume,
+                // A void shell: contained (by bounding box) in some closed
+                // positive shell that could hold it.
+                let contained_in_positive = (0..component_count).any(|other| {
+                    other != comp
+                        && component_closed[other]
+                        && shell_volumes[other] > 0.0
+                        && (0..3).all(|k| {
+                            shell_bb_min[other][k] <= shell_bb_min[comp][k]
+                                && shell_bb_max[comp][k] <= shell_bb_max[other][k]
+                        })
                 });
+                if contained_in_positive {
+                    self.stats.voids_within_solids += 1;
+                } else {
+                    return Err(MeshValidationError::InvertedNormals {
+                        shell_index: comp,
+                        signed_volume,
+                    });
+                }
             }
         }
 

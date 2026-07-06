@@ -76,6 +76,13 @@ Fusion 360 calls this "Normal Deviation", and the preset values are:
 - High: 10.0
 In theory "Normal Deviation" should be the maximum angular error of the face relative to the surface normal, but in practice it seems to result in the given maximum angular deviation.
 
+### OCCT-Generated Test Models
+
+Models in `tests/occt/` are generated directly via OCCT by the `gen-test-models`
+binary (`./scripts/generate_occt_models.sh`) — used for models that ccad cannot
+express, e.g. `hollow_cube` (a solid with a fully enclosed internal void, for
+multi-shell solid support). The generated STL/STEP pairs are committed.
+
 ### Generating Test Models
 
 Some tests use models generated via [CodeCAD](https://codecad.xyz/). The generated STL/STEP files are committed to the repo, so CodeCAD is not required to run tests.
