@@ -810,44 +810,99 @@ pub fn min_distance_to_shape(
     }
 }
 
+/// Compute the minimum distance from each point to the bounded compare shape,
+/// in parallel across threads. Returns one distance per input point.
+///
+/// Safety: `BRepExtrema_DistShapeShape`, `BRepBuilderAPI_MakeVertex`, and the
+/// `gp` value types have no global mutable state and do not mutate the target
+/// shape (verified in the OCCT C++ source — see LEARNINGS.md "OCCT Thread
+/// Safety"), so sharing a read-only `&Shape` across threads is sound.
+pub fn distances_to_shape(
+    points: &[[f64; 3]],
+    shape: &opencascade_sys::topo_ds::Shape,
+) -> Vec<f64> {
+    let n = points.len();
+    let threads = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(1)
+        .min(8)
+        .min(n.div_ceil(16).max(1));
+    if threads <= 1 {
+        return points
+            .iter()
+            .map(|p| {
+                let pt = gp::Pnt::new_real3(p[0], p[1], p[2]);
+                min_distance_to_shape(&pt, shape)
+            })
+            .collect();
+    }
+
+    struct SharedShape(*const opencascade_sys::topo_ds::Shape);
+    unsafe impl Send for SharedShape {}
+    unsafe impl Sync for SharedShape {}
+    let shared = SharedShape(shape as *const _);
+
+    let chunk = n.div_ceil(threads);
+    let mut out = vec![0.0_f64; n];
+    std::thread::scope(|s| {
+        for (pts_chunk, out_chunk) in points.chunks(chunk).zip(out.chunks_mut(chunk)) {
+            let shared = &shared;
+            s.spawn(move || {
+                let shape = unsafe { &*shared.0 };
+                for (p, o) in pts_chunk.iter().zip(out_chunk.iter_mut()) {
+                    let pt = gp::Pnt::new_real3(p[0], p[1], p[2]);
+                    *o = min_distance_to_shape(&pt, shape);
+                }
+            });
+        }
+    });
+    out
+}
+
+/// Find the maximum of `distances_to_shape` over the points.
+/// Returns (max_distance, index_of_max); (0.0, 0) for empty input.
+pub fn max_distance_to_shape(
+    points: &[[f64; 3]],
+    shape: &opencascade_sys::topo_ds::Shape,
+) -> (f64, usize) {
+    let dists = distances_to_shape(points, shape);
+    let mut max_d = 0.0_f64;
+    let mut max_i = 0_usize;
+    for (i, &d) in dists.iter().enumerate() {
+        if d > max_d {
+            max_d = d;
+            max_i = i;
+        }
+    }
+    (max_d, max_i)
+}
+
 /// Check mesh vertices and face centroids against comparison STEP shape.
 fn compare_mesh_to_step(mesh: &ConnectedMesh, config: &Config) -> Result<(), CompareError> {
     let compare_shape = config.compare_shape.as_ref().unwrap();
 
     // Check all vertices
-    let mut vtx_max_dist = 0.0_f64;
-    let mut vtx_max_idx = 0_usize;
-    for (i, v) in mesh.vertices.iter().enumerate() {
-        let pt = gp::Pnt::new_real3(v.x, v.y, v.z);
-        let d = min_distance_to_shape(&pt, compare_shape);
-        if d > vtx_max_dist {
-            vtx_max_dist = d;
-            vtx_max_idx = i;
-        }
-    }
+    let vertex_points: Vec<[f64; 3]> = mesh.vertices.iter().map(|v| [v.x, v.y, v.z]).collect();
+    let (vtx_max_dist, vtx_max_idx) = max_distance_to_shape(&vertex_points, compare_shape);
 
     // Check all face centroids
-    let mut ctr_max_dist = 0.0_f64;
-    let mut ctr_max_face = 0_usize;
-    for (fi, face) in mesh.faces.iter().enumerate() {
-        let n = face.vertex_count as usize;
-        let mut cx = 0.0_f64;
-        let mut cy = 0.0_f64;
-        let mut cz = 0.0_f64;
-        for vi in 0..n {
-            let v = &mesh.vertices[face.vertex_indices[vi]];
-            cx += v.x;
-            cy += v.y;
-            cz += v.z;
-        }
-        let inv_n = 1.0 / n as f64;
-        let pt = gp::Pnt::new_real3(cx * inv_n, cy * inv_n, cz * inv_n);
-        let d = min_distance_to_shape(&pt, compare_shape);
-        if d > ctr_max_dist {
-            ctr_max_dist = d;
-            ctr_max_face = fi;
-        }
-    }
+    let centroid_points: Vec<[f64; 3]> = mesh
+        .faces
+        .iter()
+        .map(|face| {
+            let n = face.vertex_count as usize;
+            let mut c = [0.0_f64; 3];
+            for vi in 0..n {
+                let v = &mesh.vertices[face.vertex_indices[vi]];
+                c[0] += v.x;
+                c[1] += v.y;
+                c[2] += v.z;
+            }
+            let inv_n = 1.0 / n as f64;
+            [c[0] * inv_n, c[1] * inv_n, c[2] * inv_n]
+        })
+        .collect();
+    let (ctr_max_dist, ctr_max_face) = max_distance_to_shape(&centroid_points, compare_shape);
 
     if !config.quiet {
         eprintln!(

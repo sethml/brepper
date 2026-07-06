@@ -2,7 +2,6 @@
 
 use std::collections::HashSet;
 
-use opencascade_sys::gp;
 
 use crate::config::Config;
 use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_PLANAR_HYPOTHESIS};
@@ -67,9 +66,7 @@ pub(super) fn compare_planar_hypotheses(
     let compare_shape = config.compare_shape.as_ref().unwrap();
 
     for (hi, hyp) in hypotheses.iter().enumerate() {
-        let mut max_dist = 0.0_f64;
-
-        for &fi in &hyp.faces {
+        let projected_points: Vec<[f64; 3]> = hyp.faces.iter().map(|&fi| {
             let face = &mesh.faces[fi];
             let n = face.vertex_count as usize;
             let mut cx = 0.0_f64;
@@ -89,14 +86,14 @@ pub(super) fn compare_planar_hypotheses(
             // Project centroid onto the fitted plane
             let dist_to_plane = hyp.normal[0] * cx + hyp.normal[1] * cy + hyp.normal[2] * cz
                 - hyp.distance;
-            let px = cx - dist_to_plane * hyp.normal[0];
-            let py = cy - dist_to_plane * hyp.normal[1];
-            let pz = cz - dist_to_plane * hyp.normal[2];
+            [
+                cx - dist_to_plane * hyp.normal[0],
+                cy - dist_to_plane * hyp.normal[1],
+                cz - dist_to_plane * hyp.normal[2],
+            ]
+        }).collect();
 
-            let pt = gp::Pnt::new_real3(px, py, pz);
-            let d = stage1::min_distance_to_shape(&pt, compare_shape);
-            max_dist = max_dist.max(d);
-        }
+        let (max_dist, _) = stage1::max_distance_to_shape(&projected_points, compare_shape);
 
         if max_dist > config.surface_tolerance_mm {
             return Err(Stage2CompareError {

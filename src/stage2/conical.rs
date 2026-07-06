@@ -4,7 +4,6 @@ use std::collections::HashSet;
 
 use levenberg_marquardt::{LeastSquaresProblem, LevenbergMarquardt};
 use nalgebra::{Const, Dyn, OMatrix, OVector, Owned};
-use opencascade_sys::gp;
 
 use crate::config::Config;
 use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_CONICAL_HYPOTHESIS};
@@ -780,7 +779,7 @@ fn fit_cone(
         let half_angle = estimate_half_angle(&apex, &mut axis, vertex_set, vertices)?;
 
         let problem = ConeFixedApexLMProblem::new(centered_points, centered_apex, axis, half_angle);
-        let (result, _report) = LevenbergMarquardt::new().with_patience(500).minimize(problem);
+        let (result, _report) = LevenbergMarquardt::new().with_patience(150).minimize(problem);
         let refined_dir = result.axis_dir_from_params(&result.params);
         let refined_ha = result.params[2];
         if refined_ha > 0.01 && refined_ha < 85.0_f64.to_radians() {
@@ -805,7 +804,7 @@ fn fit_cone(
             apex[2] - centroid[2],
         ];
         let problem = ConeLMProblem::new(centered_points, axis, centered_apex, half_angle);
-        let (result, _report) = LevenbergMarquardt::new().with_patience(500).minimize(problem);
+        let (result, _report) = LevenbergMarquardt::new().with_patience(150).minimize(problem);
         let refined_dir = result.axis_dir_from_params(&result.params);
         let refined_apex = [
             result.params[2] + centroid[0],
@@ -984,9 +983,7 @@ pub(super) fn compare_conical_hypotheses(
     let compare_shape = config.compare_shape.as_ref().unwrap();
 
     for (hi, hyp) in hypotheses.iter().enumerate() {
-        let mut max_dist = 0.0_f64;
-
-        for &fi in &hyp.faces {
+        let projected_points: Vec<[f64; 3]> = hyp.faces.iter().map(|&fi| {
             let centroid = face_centroid(&mesh.faces[fi], &mesh.vertices);
 
             // Project centroid onto cone surface
@@ -1004,7 +1001,7 @@ pub(super) fn compare_conical_hypotheses(
             let radial_dist = (radial[0] * radial[0] + radial[1] * radial[1]
                 + radial[2] * radial[2]).sqrt();
 
-            let projected = if hyp.is_cylinder() {
+            if hyp.is_cylinder() {
                 // For cylinders: project onto cylinder surface at radius_at_apex
                 if radial_dist > 1e-15 {
                     let scale = hyp.radius_at_apex / radial_dist;
@@ -1027,13 +1024,10 @@ pub(super) fn compare_conical_hypotheses(
                 ]
             } else {
                 centroid
-            };
+            }
+        }).collect();
 
-            let pt = gp::Pnt::new_real3(projected[0], projected[1], projected[2]);
-            let dist = stage1::min_distance_to_shape(&pt, compare_shape);
-            max_dist = max_dist.max(dist);
-        }
-
+        let (max_dist, _) = stage1::max_distance_to_shape(&projected_points, compare_shape);
         let tolerance = config.surface_tolerance_mm;
 
         if max_dist > tolerance {
@@ -1218,6 +1212,46 @@ impl SurfaceType for ConicalSurface {
     ) -> Option<Self::Fit> {
         let vertex_set: HashSet<usize> = vertex_list.iter().copied().collect();
 
+        // Try the cheap 4-DOF cylinder fit first. If it is essentially exact
+        // (max vertex error at CAD-mesh precision), skip the much more
+        // expensive cone LM entirely: a cone could at best tie, and ties
+        // select the cylinder anyway. This roughly halves fit cost on
+        // cylinder-dominated meshes.
+        let cyl_result = fit_cylinder(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
+        let cyl_fit = cyl_result.map(|(origin, dir, radius)| {
+            ConeFit { apex: origin, axis_direction: dir, half_angle: 0.0, radius, convex: None }
+        });
+
+        // Compute max vertex error and max surface (centroid) error for cylinder fit
+        let (cyl_vtx_max, cyl_sfc_max) = if let Some(ref fit) = cyl_fit {
+            let vtx = vertex_list.iter().map(|&vi| {
+                let v = &mesh.vertices[vi];
+                vertex_to_cylinder_distance(v, &fit.apex, &fit.axis_direction, fit.radius).abs()
+            }).fold(0.0_f64, f64::max);
+            let sfc = face_list.iter().map(|&fi| {
+                let c = super::face_centroid(&mesh.faces[fi], &mesh.vertices);
+                let v = MeshVertex::from_xyz(c[0], c[1], c[2]);
+                vertex_to_cylinder_distance(&v, &fit.apex, &fit.axis_direction, fit.radius).abs()
+            }).fold(0.0_f64, f64::max);
+            (Some(vtx), Some(sfc))
+        } else {
+            (None, None)
+        };
+        let _ = cyl_sfc_max; // used only for logging below
+
+        const EXACT_CYLINDER_VTX_ERR: f64 = 1e-6; // mm; CAD-mesh vertex precision
+        if let (Some(ref fit), Some(vtx)) = (&cyl_fit, cyl_vtx_max) {
+            if vtx <= EXACT_CYLINDER_VTX_ERR {
+                if verbosity >= 4 {
+                    eprintln!(
+                        "      cylinder fit exact (radius={:.6e}, max_vtx_err={:.6e}); skipping cone fit",
+                        fit.radius, vtx
+                    );
+                }
+                return cyl_fit;
+            }
+        }
+
         // Try cone fit
         let cone_result = fit_cone(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
         let cone_fit = cone_result.and_then(|(apex, dir, ha)| {
@@ -1284,39 +1318,18 @@ impl SurfaceType for ConicalSurface {
             (None, None)
         };
 
-        // Try cylinder fit (always, or only if cone failed — per user request,
-        // log cylinder only when cone fails, but still try both for best selection)
-        let cyl_result = fit_cylinder(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
-        let cyl_fit = cyl_result.map(|(origin, dir, radius)| {
-            ConeFit { apex: origin, axis_direction: dir, half_angle: 0.0, radius, convex: None }
-        });
-
         if cyl_result.is_none() && verbosity >= 4 && cone_fit.is_none() {
             eprintln!("      cylinder fit failed: fit_cylinder returned None");
         }
-
-        // Compute max vertex error and max surface (centroid) error for cylinder fit
-        let (cyl_vtx_max, cyl_sfc_max) = if let Some(ref fit) = cyl_fit {
-            let vtx = vertex_list.iter().map(|&vi| {
-                let v = &mesh.vertices[vi];
-                vertex_to_cylinder_distance(v, &fit.apex, &fit.axis_direction, fit.radius).abs()
-            }).fold(0.0_f64, f64::max);
-            let sfc = face_list.iter().map(|&fi| {
-                let c = super::face_centroid(&mesh.faces[fi], &mesh.vertices);
-                let v = MeshVertex::from_xyz(c[0], c[1], c[2]);
-                vertex_to_cylinder_distance(&v, &fit.apex, &fit.axis_direction, fit.radius).abs()
-            }).fold(0.0_f64, f64::max);
-            if verbosity >= 4 && cone_fit.is_none() {
+        if verbosity >= 4 && cone_fit.is_none() {
+            if let (Some(ref fit), Some(vtx), Some(sfc)) = (&cyl_fit, cyl_vtx_max, cyl_sfc_max) {
                 eprintln!(
                     "      cylinder fit: radius={:.6e}, max_vtx_err={:.6e}, max_sfc_err={:.6e}",
                     fit.radius, vtx, sfc
                 );
             }
-            (Some(vtx), Some(sfc))
-        } else {
-            (None, None)
-        };
-        let _ = (cone_sfc_max, cyl_sfc_max); // used only for logging above
+        }
+        let _ = cone_sfc_max; // used only for logging above
 
         // Pick the better fit by max vertex error
         match (cyl_fit, cone_fit) {
@@ -1357,6 +1370,22 @@ impl SurfaceType for ConicalSurface {
     }
 
     fn convexity_check(fit: &Self::Fit, mesh: &ConnectedMesh, fi: usize) -> bool {
+        // Normal-axis consistency: on a cone, every facet normal satisfies
+        // n·axis = sin(half_angle) exactly — tessellation coarseness rotates
+        // facet normals *around* the axis, preserving the dot product. Faces
+        // on spheres and tori violate this as soon as BFS crosses tube rows,
+        // so checking here keeps doomed trials small instead of letting them
+        // grow across a whole fillet and only failing the post-BFS variance
+        // test (which made stage 2.2 quadratic in fillet size).
+        if let Some(n) = mesh.faces[fi].normal {
+            let n_dot_axis = n[0] * fit.axis_direction[0]
+                + n[1] * fit.axis_direction[1]
+                + n[2] * fit.axis_direction[2];
+            let expected = fit.half_angle.sin();
+            if (n_dot_axis.abs() - expected.abs()).abs() > 0.05 {
+                return false;
+            }
+        }
         if let Some(convex) = fit.convex {
             let fi_convex = determine_convexity(
                 &mesh.faces[fi], &mesh.vertices, &fit.apex, &fit.axis_direction,

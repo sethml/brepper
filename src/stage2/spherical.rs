@@ -2,7 +2,6 @@
 
 use std::collections::HashSet;
 
-use opencascade_sys::gp;
 
 use crate::config::Config;
 use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_SPHERICAL_HYPOTHESIS};
@@ -320,9 +319,7 @@ pub(super) fn compare_spherical_hypotheses(
     let compare_shape = config.compare_shape.as_ref().unwrap();
 
     for (hi, hyp) in hypotheses.iter().enumerate() {
-        let mut max_dist = 0.0_f64;
-
-        for &fi in &hyp.faces {
+        let projected_points: Vec<[f64; 3]> = hyp.faces.iter().map(|&fi| {
             let centroid = face_centroid(&mesh.faces[fi], &mesh.vertices);
 
             // Project centroid onto sphere surface (nearest point)
@@ -333,7 +330,7 @@ pub(super) fn compare_spherical_hypotheses(
             ];
             let dist_to_center = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
 
-            let projected = if dist_to_center > 1e-15 {
+            if dist_to_center > 1e-15 {
                 let scale = hyp.radius / dist_to_center;
                 [
                     hyp.center[0] + d[0] * scale,
@@ -343,12 +340,10 @@ pub(super) fn compare_spherical_hypotheses(
             } else {
                 // Centroid is at the center — unlikely but handle gracefully
                 centroid
-            };
+            }
+        }).collect();
 
-            let pt = gp::Pnt::new_real3(projected[0], projected[1], projected[2]);
-            let dist = stage1::min_distance_to_shape(&pt, compare_shape);
-            max_dist = max_dist.max(dist);
-        }
+        let (max_dist, _) = stage1::max_distance_to_shape(&projected_points, compare_shape);
 
         if max_dist > config.surface_tolerance_mm {
             return Err(Stage2CompareError {

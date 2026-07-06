@@ -16,7 +16,6 @@ mod toroidal;
 use crate::config::Config;
 use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex};
 use crate::viz::{self, VizAction, VizSender};
-use opencascade_sys::gp;
 use std::collections::HashSet;
 use std::time::Instant;
 use std::error::Error;
@@ -985,8 +984,6 @@ fn compare_selected_surfaces(
     let compare_shape = config.compare_shape.as_ref().unwrap();
 
     for (si, surface) in selected_surfaces.iter().enumerate() {
-        let mut max_dist = 0.0_f64;
-
         let (hyp_type, face_indices) = match surface {
             SelectedSurface::Planar(i) => ("planar", &planar_hypotheses[*i].faces),
             SelectedSurface::Conical(i) => {
@@ -997,10 +994,10 @@ fn compare_selected_surfaces(
             SelectedSurface::Toroidal(i) => ("toroidal", &toroidal_hypotheses[*i].faces),
         };
 
-        for &fi in face_indices {
+        let projected_points: Vec<[f64; 3]> = face_indices.iter().map(|&fi| {
             let centroid = face_centroid(&mesh.faces[fi], &mesh.vertices);
 
-            let projected = match surface {
+            match surface {
                 SelectedSurface::Planar(i) => {
                     let hyp = &planar_hypotheses[*i];
                     let dist_to_plane = hyp.normal[0] * centroid[0]
@@ -1115,13 +1112,10 @@ fn compare_selected_surfaces(
                         centroid
                     }
                 }
-            };
+            }
+        }).collect();
 
-            let pt = gp::Pnt::new_real3(projected[0], projected[1], projected[2]);
-            let dist = stage1::min_distance_to_shape(&pt, compare_shape);
-            max_dist = max_dist.max(dist);
-        }
-
+        let (max_dist, _) = stage1::max_distance_to_shape(&projected_points, compare_shape);
         let tolerance = config.surface_tolerance_mm;
 
         if max_dist > tolerance {

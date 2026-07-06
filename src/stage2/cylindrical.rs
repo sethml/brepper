@@ -289,7 +289,7 @@ pub(super) fn fit_cylinder(
 
     // Refine with Levenberg-Marquardt optimization on radial residuals.
     let problem = CylinderLMProblem::new(points, axis_dir, centered_origin, radius);
-    let (result, _report) = LevenbergMarquardt::new().with_patience(500).minimize(problem);
+    let (result, _report) = LevenbergMarquardt::new().with_patience(150).minimize(problem);
     let refined_dir = result.axis_dir_from_params(&result.params);
     let refined_origin = [
         result.params[2] + centroid[0],

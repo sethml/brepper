@@ -12,7 +12,6 @@ use std::collections::HashSet;
 
 use levenberg_marquardt::{LeastSquaresProblem, LevenbergMarquardt};
 use nalgebra::{Const, Dyn, OMatrix, OVector, Owned};
-use opencascade_sys::gp;
 
 use crate::config::Config;
 use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_TOROIDAL_HYPOTHESIS};
@@ -935,9 +934,7 @@ pub(super) fn compare_toroidal_hypotheses(
     let compare_shape = config.compare_shape.as_ref().unwrap();
 
     for (hi, hyp) in hypotheses.iter().enumerate() {
-        let mut max_dist = 0.0_f64;
-
-        for &fi in &hyp.faces {
+        let projected_points: Vec<[f64; 3]> = hyp.faces.iter().map(|&fi| {
             let centroid = face_centroid(&mesh.faces[fi], &mesh.vertices);
 
             // Project centroid onto torus surface
@@ -955,7 +952,7 @@ pub(super) fn compare_toroidal_hypotheses(
             let radial_dist = (radial[0] * radial[0] + radial[1] * radial[1]
                 + radial[2] * radial[2]).sqrt();
 
-            let projected = if radial_dist > 1e-15 {
+            if radial_dist > 1e-15 {
                 let tube_center = [
                     hyp.center[0] + hyp.major_radius * radial[0] / radial_dist,
                     hyp.center[1] + hyp.major_radius * radial[1] / radial_dist,
@@ -980,13 +977,10 @@ pub(super) fn compare_toroidal_hypotheses(
                 }
             } else {
                 centroid
-            };
+            }
+        }).collect();
 
-            let pt = gp::Pnt::new_real3(projected[0], projected[1], projected[2]);
-            let dist = stage1::min_distance_to_shape(&pt, compare_shape);
-            max_dist = max_dist.max(dist);
-        }
-
+        let (max_dist, _) = stage1::max_distance_to_shape(&projected_points, compare_shape);
         let tolerance = config.surface_tolerance_mm;
 
         if max_dist > tolerance {
