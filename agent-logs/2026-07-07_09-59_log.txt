@@ -1,0 +1,2389 @@
+
+This is a good architectural question and I shouldn't answer it from my current partial understanding. Let me ground it in how stage 3 actually assembles topology — specifically whether edges are already shared across faces, and what sewing is really doing.
+
+
+Ran 2 commands, read a file
+Mapped face assembly, edge sharing, and sewing
+grep -n "fn create_occt_faces_all\|fn.*sew\|Sewing\|fn build_shells\|fn.*stage3\b\|MakeEdge::new\|topo_edges\[" src/stage3.rs | head -40
+3042:        let first_edge = topo_edges[group[0]].edge();
+3045:            make_wire.add_edge(topo_edges[ei].edge());
+3725:                topo_edges[ei].edge(),
+3739:            topo_edges[ei].edge(),
+3762:        let first_edge = topo_edges[group[0]].edge();
+3765:            make_wire.add_edge(topo_edges[ei].edge());
+4877:fn create_occt_faces_all(
+4912:                    let make_edge = b_rep_builder_api::MakeEdge::new_vertex2(
+4922:                        let make_edge = b_rep_builder_api::MakeEdge::new_vertex2(
+4992:            b_rep_builder_api::MakeEdge::new_handlegeomcurve_vertex2_real2(
+5001:            b_rep_builder_api::MakeEdge::new_handlegeomcurve(curve)
+5117:/// Stitch OCCT faces into shells using BRepBuilderAPI_Sewing.
+5119:/// Takes all faces created in stage 3.4 and passes them to BRepBuilderAPI_Sewing,
+5134:    let mut sewing = b_rep_builder_api::Sewing::new_real(sewing_tol);
+5149:        eprintln!("  Sewing result shape type: {:?}", sewn_type);
+5153:        eprintln!("  Sewing stats: {n_free} free edges, {n_multi} multiple edges, {n_contig} contiguous edges");
+5189:            // Sewing produced a solid directly — extract shells from it
+5753:pub fn stage3(config: &Config, input: Stage2Output, viz: Option<&crate::viz::VizSender>) -> Result<Stage3Output, Stage3Error> {
+Read
+stage3.rs
+(4877–4996, 5117–5206)
+/Users/sethml/src/brepper/src/stage3.rs
+fn create_occt_faces_all(
+    mut output: Stage3Output,
+    config: &Config,
+    viz: Option<&crate::viz::VizSender>,
+) -> Result<Stage3Output, Stage3Error> {
+    let t = Instant::now();
+    let num_faces = output.face_descriptors.len();
+    // 1. Create shared TopoDS_Vertex for each BRepVertex.
+    // Set tolerance to vertex_tolerance_mm so that mesh vertex positions
+    // (which may deviate slightly from fitted analytical surfaces) are accepted
+    // by MakeEdge when projecting vertices onto edge curves.
+    let builder = b_rep::Builder::new();
+    let topo_vertices: Vec<OwnedPtr<topo_ds::Vertex>> = output
+        .vertices
+        .iter()
+        .map(|v| {
+            let pt = gp::Pnt::new_real3(v.point[0], v.point[1], v.point[2]);
+            let mut mv = b_rep_builder_api::MakeVertex::new_pnt(&pt);
+            let vtx = mv.vertex().to_owned();
+            builder.update_vertex_vertex_real(&vtx, config.vertex_tolerance_mm);
+            vtx
+        })
+        .collect();
+    // 2. Create TopoDS_Edge for each ReconEdge, using shared vertices when available
+    let mut topo_edges: Vec<OwnedPtr<b_rep_builder_api::MakeEdge>> = Vec::with_capacity(output.edges.len());
+    for (ei, edge) in output.edges.iter().enumerate() {
+        let curve = match edge.curve_3d.as_ref() {
+            Some(c) => c,
+            None => {
+                // No intersection curve — create a straight-line edge between endpoints
+                if edge.vertex_indices[0] != usize::MAX
+                    && edge.vertex_indices[1] != usize::MAX
+                {
+                    let make_edge = b_rep_builder_api::MakeEdge::new_vertex2(
+                        &topo_vertices[edge.vertex_indices[0]],
+                        &topo_vertices[edge.vertex_indices[1]],
+                    );
+                    if !make_edge.is_done() {
+                        if !config.quiet {
+                            eprintln!("  Edge {ei}: straight-line fallback FAILED ({:?}), faces [{}, {}]",
+                                make_edge.error(), edge.face_indices[0], edge.face_indices[1]);
+                        }
+                        // Create a degenerate edge as placeholder
+                        let make_edge = b_rep_builder_api::MakeEdge::new_vertex2(
+                            &topo_vertices[edge.vertex_indices[0]],
+                            &topo_vertices[edge.vertex_indices[0]],
+                        );
+                        topo_edges.push(make_edge);
+                    } else {
+                        if !config.quiet {
+                            eprintln!("  Edge {ei}: using straight-line fallback (no intersection curve)");
+                        }
+                        topo_edges.push(make_edge);
+                    }
+                } else {
+                    return Err(Stage3Error::AdjacencyError(format!(
+                        "Edge {ei}: no curve and no vertex endpoints"
+                    )));
+                }
+                continue;
+            }
+        };
+        let make_edge = if edge.vertex_indices[0] != usize::MAX
+            && edge.vertex_indices[1] != usize::MAX
+        {
+            // Both endpoints have shared vertices — create edge with explicit vertex topology.
+            // For periodic curves (circles), MakeEdge strips the TrimmedCurve and uses
+            // AdjustPeriodic which forces p1 < p2, always taking the forward arc from V1
+            // to V2. We must ensure V1 corresponds to the curve's first_parameter and V2
+            // to last_parameter, otherwise MakeEdge will select the complementary arc.
+            let c = curve.get();
+            let p_start = c.value(c.first_parameter());
+            let v0_pt = &output.vertices[edge.vertex_indices[0]].point;
+            let v1_pt = &output.vertices[edge.vertex_indices[1]].point;
+            let d0_start = (v0_pt[0] - p_start.x()).powi(2)
+                + (v0_pt[1] - p_start.y()).powi(2)
+                + (v0_pt[2] - p_start.z()).powi(2);
+            let d1_start = (v1_pt[0] - p_start.x()).powi(2)
+                + (v1_pt[1] - p_start.y()).powi(2)
+                + (v1_pt[2] - p_start.z()).powi(2);
+            let (vi0, vi1) = if d0_start <= d1_start {
+                (edge.vertex_indices[0], edge.vertex_indices[1])
+            } else {
+                (edge.vertex_indices[1], edge.vertex_indices[0])
+            };
+            // Use explicit parameter values to avoid OCCT's vertex-to-curve projection,
+            // which can fail when vertex tolerance exceeds default precision.
+            // vi0 is always the vertex closest to the curve start, vi1 closest to end,
+            // so parameters are always (first_parameter, last_parameter).
+            let fp = c.first_parameter();
+            let lp = c.last_parameter();
+            // Update vertex tolerances to accommodate curve-vertex distance.
+            // Imprecisely-fitted surfaces produce intersection curves that may not
+            // pass exactly through mesh vertex positions.
+            let p_fp = c.value(fp);
+            let p_lp = c.value(lp);
+            let v0_pt = &output.vertices[vi0].point;
+            let v1_pt = &output.vertices[vi1].point;
+            let d0 = ((v0_pt[0] - p_fp.x()).powi(2)
+                + (v0_pt[1] - p_fp.y()).powi(2)
+                + (v0_pt[2] - p_fp.z()).powi(2))
+            .sqrt();
+            let d1 = ((v1_pt[0] - p_lp.x()).powi(2)
+                + (v1_pt[1] - p_lp.y()).powi(2)
+                + (v1_pt[2] - p_lp.z()).powi(2))
+            .sqrt();
+            let min_tol = config.vertex_tolerance_mm;
+            let tol0 = d0.max(min_tol) * 1.01; // 1% margin
+            let tol1 = d1.max(min_tol) * 1.01;
+            builder.update_vertex_vertex_real(&topo_vertices[vi0], tol0);
+            builder.update_vertex_vertex_real(&topo_vertices[vi1], tol1);
+            b_rep_builder_api::MakeEdge::new_handlegeomcurve_vertex2_real2(
+                curve,
+                &topo_vertices[vi0],
+                &topo_vertices[vi1],
+                fp,
+/Users/sethml/src/brepper/src/stage3.rs
+/// Stitch OCCT faces into shells using BRepBuilderAPI_Sewing.
+///
+/// Takes all faces created in stage 3.4 and passes them to BRepBuilderAPI_Sewing,
+/// which merges shared edges and produces one or more TopoDS_Shell objects.
+fn construct_shells(
+    mut output: Stage3Output,
+    config: &Config,
+    viz: Option<&crate::viz::VizSender>,
+) -> Result<Stage3Output, Stage3Error> {
+    let t = Instant::now();
+    let num_faces = output.make_faces.len();
+    if num_faces == 0 {
+        return Err(Stage3Error::AdjacencyError("no faces to sew into shells".into()));
+    }
+    // Create sewing operator
+    let sewing_tol = config.vertex_tolerance_mm;
+    let mut sewing = b_rep_builder_api::Sewing::new_real(sewing_tol);
+    // Add all faces to the sewing operator.
+    for mf in output.make_faces.iter() {
+        sewing.add(mf.face().as_shape());
+    }
+    // Perform sewing
+    let progress = message::ProgressRange::new();
+    sewing.perform(&progress);
+    let sewn = sewing.sewed_shape();
+    let sewn_type = sewn.shape_type();
+    if config.verbose {
+        eprintln!("  Sewing result shape type: {:?}", sewn_type);
+        let n_free = sewing.nb_free_edges();
+        let n_multi = sewing.nb_multiple_edges();
+        let n_contig = sewing.nb_contigous_edges();
+        eprintln!("  Sewing stats: {n_free} free edges, {n_multi} multiple edges, {n_contig} contiguous edges");
+        for i in 1..=n_free {
+            let free_edge = sewing.free_edge(i);
+            let mut edge_explorer = top_exp::Explorer::new_shape_shapeenum2(
+                free_edge.as_shape(), top_abs::ShapeEnum::Vertex, top_abs::ShapeEnum::Shape,
+            );
+            let mut pts: Vec<String> = Vec::new();
+            while edge_explorer.more() {
+                let vtx = topo_ds::vertex(edge_explorer.value());
+                let pt = b_rep::Tool::pnt(vtx);
+                pts.push(format!("({:.4},{:.4},{:.4})", pt.x(), pt.y(), pt.z()));
+                edge_explorer.next();
+            }
+            eprintln!("    Free edge {i}: vertices {}", pts.join(" -> "));
+        }
+    }
+    // Extract shells from the sewing result.
+    // The result can be a Shell (single), a Solid, or a Compound containing shells.
+    let mut shells: Vec<OwnedPtr<topo_ds::Shell>> = Vec::new();
+    match sewn_type {
+        top_abs::ShapeEnum::Shell => {
+            // Single shell result — copy it
+            let shell = topo_ds::shell_shape(sewn);
+            shells.push(shell.to_owned());
+        }
+        top_abs::ShapeEnum::Face => {
+            // Single face — wrap it in a shell (e.g., a full sphere with no edges)
+            let mut shell = topo_ds::Shell::new();
+            let builder = topo_ds::Builder::new();
+            builder.make_shell(&mut shell);
+            builder.add(shell.as_shape_mut(), sewn);
+            shells.push(shell);
+        }
+        top_abs::ShapeEnum::Solid => {
+            // Sewing produced a solid directly — extract shells from it
+            let mut shell_explorer = top_exp::Explorer::new_shape_shapeenum2(
+                sewn,
+                top_abs::ShapeEnum::Shell,
+                top_abs::ShapeEnum::Shape,
+            );
+            while shell_explorer.more() {
+                let shell = topo_ds::shell_shape(shell_explorer.value());
+                shells.push(shell.to_owned());
+                shell_explorer.next();
+            }
+        }
+        top_abs::ShapeEnum::Compound | top_abs::ShapeEnum::Compsolid => {
+            // Multiple shells — iterate to find them; also check for loose faces
+            let mut shell_explorer = top_exp::Explorer::new_shape_shapeenum2(
+                sewn,
+                top_abs::ShapeEnum::Shell,
+                top_abs::ShapeEnum::Shape,
+Gauged the size of the face-construction + sewing machinery
+echo "=== stage3.rs total ==="; wc -l src/stage3.rs; echo "=== span of stage 3.4 face construction (create_planar_face .. construct_shells) ==="; awk '/^fn create_planar_face/{s=NR} /^fn construct_shells/{print "face-construction block: lines "s"-"NR" = "NR-s" lines"} ' src/stage3.rs; echo "=== how many surface-type-specific / pole / seam / sewing special-cases ==="; grep -cE "is_sphere|near_pole|pole|seam|apex|ShapeFix|Sewing|reorient|degenerate" src/stage3.rs
+=== stage3.rs total ===
+    5817 src/stage3.rs
+=== span of stage 3.4 face construction (create_planar_face .. construct_shells) ===
+face-construction block: lines 3022-5121 = 2099 lines
+=== how many surface-type-specific / pole / seam / sewing special-cases ===
+152
+I dug into the actual assembly to ground this rather than reason from the smell. Here's what I found and what I'd do.
+
+What the architecture actually is
+Stage 3 already builds edges once as shared TopoDS_Edge objects (indexed by edge id, reused across both adjacent faces' wires). So it's not naïvely rebuilding edges per face. But the final assembly is BRepBuilderAPI_Sewing — a geometric stitch that re-merges edges by proximity/tolerance — not a topological assembly that trusts the shared edges. Sewing is load-bearing because:
+
+MakeFace/MakeWire/ShapeFix copy edges, so "shared" edges stop being identical objects after face construction.
+The UV-bounds faces (spheres, tori, full-revolution cones — and my attempted cap) generate their own natural-bounds boundary edges that are genuinely not shared with neighbors. Sewing is the reconciliation layer that papers over the two construction paths.
+The face-construction + sewing block is ~2100 lines with 152 pole/seam/apex/ShapeFix/reorient/degenerate/sewing special-cases. That is the real signal: this is where complexity accumulates, and it's the common root of the cone-apex bug and the tangent-edge tolerance relaxations ("ambiguous junction rows" are geometric-matching slop).
+
+Is the narrow patch the right fix? No — and it probably can't fully work alone.
+My cap attempt half-worked precisely because the problem spans layers: segmentation → edge topology (are edges 0/4 the same arc or complementary?) → face trimming (pie-slice-with-apex) → sewing. Patching only the face-construction layer left the boundary not matching neighbors. A wire-based cap with a degenerate apex edge might close it, but it'd be one more bespoke case bolted onto the 152 that already exist.
+
+Is a rework the right answer? Yes — but not now, and not for this model.
+The principled design is a shared-edge topological assembler: build each edge once, attach a pcurve on both adjacent faces, insert degenerate/seam edges uniformly for every periodic surface, then assemble the shell directly with BRep_Builder — no geometric sewing. That dissolves the whole class: cone apex, sphere pole, torus seam, and the tangent-edge tolerance relaxations all become "attach the correct pcurve to the shared edge."
+
+But three things say not yet:
+
+Reward/risk is upside-down today. 52/57 pass. The only beneficiary right now is one unusual model that already emits valid-ish output with a volume warning. A 2000-line rewrite risks the 52 for that.
+The payoff is unlocked by NURBS, the deferred project-defining feature. Freeform surfaces have arbitrary trimmed boundaries and will hammer exactly this machinery; building NURBS on top of projection+sewing is building on sand. The rework is the right foundation to lay when NURBS starts — and that's also when there'll finally be test coverage to validate a more-general assembler (today I'd be generalizing a machine tested only on analytic surfaces it already handles).
+No forcing function yet. Every current model is either passing or a documented low-value warning. Nothing is blocked by the sewing fragility.
+Recommendation
+Do neither now. Leave cone_tangent_planes as a known warning (its TODO already has the sharp diagnosis). Record an explicit architectural decision: the edge-generation + sewing rework is bound to the NURBS effort — it's the foundation for it, pays for itself there, and gets test coverage there. The trigger to pull it forward earlier is if a model becomes unfixable without tighter topology (i.e., the tangent-edge relaxations start failing real models rather than just loosening tolerances).
+
+Want me to write that up as a short design note (e.g. DESIGN_NOTES.md or a section in DEVELOPMENT_PLAN) and cross-link it from the NURBS TODO, so the decision and its trigger are captured where the next person will look?
+
+Write it as a section in DEVELOPMENT_PLAN. Then decide whether tackling that work would be better done with your current context, or with a new AI agent with empty context.
+
+
+Ran a command, read a file
+Outlined the DEVELOPMENT_PLAN headings
+grep -nE "^#{1,3} " DEVELOPMENT_PLAN.md | head -60
+1:# STL to STEP Conversion Utility - Development Plan
+3:## Project Overview
+7:## Assumptions
+16:## Dependencies
+24:### Required OCCT Functionality
+95:## Open Questions
+102:## Architecture
+104:### Stage 1: Mesh Input & Preprocessing
+173:### Stage 2: Surface Fitting
+432:### Algorithm Reference
+438:### Stage 3: Surface Reconstruction
+636:### Stage 4: Output
+653:## Visualization (`--viz-stages`)
+657:### Architecture
+664:### Communication pipeline
+683:### Key types (in `src/viz.rs`)
+690:### Interactive features
+699:### Integration with generic BFS
+719:## Source Code Organization
+739:## Testing Strategy
+748:### Test Cases
+757:## Performance Targets
+767:## Future Enhancements
+Read
+DEVELOPMENT_PLAN.md
+(636–690, 438–467, 614–637)
+/Users/sethml/src/brepper/DEVELOPMENT_PLAN.md
+### Stage 4: Output
+#### 4.1 Output objects
+Write constructed solid(s) to a STEP file.
+**Algorithm (implemented):**
+- Build a `topo_ds::Compound` containing all solids from stage 3.6.
+- Set STEP metadata: AP214 schema, product name "brepper" via `Interface_Static::set_c_val`.
+- Create a `STEPControl_Writer`, transfer the compound with `StepModelType::Asis` mode to preserve exact geometry.
+- Write the output file. Report error if transfer or write returns non-Done status.
+- With the `--compare` flag:
+    - Re-read the written STEP file via `STEPControl_Reader` to validate the round-trip.
+    - Compare volumes of the output shape vs reference shape using `BRepGProp::VolumeProperties`. Warn on >1% relative difference.
+    - Compute maximum distance between output and reference using `BRepExtrema_DistShapeShape`. Hard error if exceeds `--surface-tolerance`.
+---
+## Visualization (`--viz-stages`)
+The `--viz-stages` flag enables interactive 3D visualization for debugging each pipeline stage. The user specifies a stage pattern (e.g. `2.2` for conical BFS, or `2.*` for all stage 2 sub-stages). The companion `--viz-stages-level` flag (default 1) controls how often the visualization pauses: level 1 pauses at committed hypotheses and stage 2.6 selections, level 2 also pauses at each accepted seed, and level 3 also pauses at each individual BFS face acceptance.
+### Architecture
+The visualization uses a two-thread architecture with synchronous channel communication:
+1. **Main thread**: Owns the window, drives the three-d render loop, and displays overlays.
+2. **Pipeline thread**: Runs the brepper pipeline (stages 1–4) in the background.
+### Communication pipeline
+```
+Pipeline thread                          Main/render thread
+     │                                         │
+     │  VizOverlay (via SyncSender)             │
+     ├────────────────────────────────────────►  │
+     │                                         │ display overlay, wait for keypress
+     │  VizAction (via SyncSender)              │
+     │  ◄────────────────────────────────────────┤
+     │                                         │
+     ▼                                         ▼
+```
+- `VizSender::show_and_wait(overlay)` sends a `VizOverlay` to the render thread and blocks.
+- The render thread displays face highlights, translucent geometry overlays (cylinders, cones, spheres, tori), status text, and optionally moves the camera.
+- The user presses **Space** (NextStep), **Shift+Space** (NextSeed/skip to next seed), or **Q** (Quit).
+- The render thread sends back a `VizAction` and the pipeline thread resumes.
+### Key types (in `src/viz.rs`)
+- `VizSender` / `VizReceiver`: Channel endpoints. Created by `viz_channel()`.
+- `VizOverlay`: A display frame containing face highlights, cylinder/cone/sphere/torus overlays, line overlays, shape meshes, status text, and optional camera focus.
+- `VizAction`: The user's response — `NextStep`, `NextSeed`, `SkipToSeed(face_index)`, or `Quit`.
+- `FaceHighlight`, `CylinderOverlay`, `ConeOverlay`, `SphereOverlay`, `TorusOverlay`, `LineOverlay`, `ShapeMeshOverlay`: Overlay primitives.
+### Interactive features
+/Users/sethml/src/brepper/DEVELOPMENT_PLAN.md
+### Stage 3: Surface Reconstruction
+Build OCCT B-Rep topology (faces, edges, vertices) from the selected surfaces. This is the most complex stage — surface intersections in 3D are numerically delicate, and small perturbations can cause large changes in intersection curves or cause them to disappear.
+**Core data structures:**
+A vector of `FaceDescriptor` structs, one per selected surface:
+- `selected_surface_idx: usize` — Index into the selected surfaces from stage 2.6.
+- `surface: OwnedPtr<HandleGeomSurface>` — Infinite OCCT surface, type-erased (created in 3.1).
+- `adjacent_faces: Vec<usize>` — Indices of adjacent FaceDescriptors, ordered topologically around this face's boundary. A face may appear multiple times if it shares multiple edges with this face (e.g., a cylindrical face adjacent to itself via a seam edge).
+- `edge_indices: Vec<usize>` — ReconEdge indices. `edge_indices[i]` is the edge between this face and `adjacent_faces[i]`.
+- `vertex_indices: Vec<usize>` — BRepVertex indices at corners. `vertex_indices[i]` is the vertex between `edge_indices[i]` and `edge_indices[(i+1) % N]`.
+- (TODO) `occt_face: Option<TopoDS_Face>` — Populated in 3.4.
+A vector of `ReconEdge` structs:
+- `face_indices: [usize; 2]` — Indices of the two adjacent FaceDescriptors.
+- `vertex_indices: [usize; 2]` — Indices of the two BRepVertices at each end. For closed-loop edges (no vertices), both are `usize::MAX`.
+- `curve_3d: Option<OwnedPtr<HandleGeomCurve>>` — 3D intersection curve, trimmed to vertex endpoints (populated in 3.3).
+- (TODO) `pcurves: [Handle<Geom2d_Curve>; 2]` — 2D parametric curve on each adjacent face's surface.
+- `tangent: bool` — Whether the adjacent surfaces are tangent along this edge (detected in 3.2).
+- `mesh_boundary_vertices: Vec<usize>` — Mesh vertex indices along this boundary, ordered along the boundary.
+A vector of `BRepVertex` structs:
+- `point: [f64; 3]` — 3D position: the mesh vertex position, refined for sharp corners by cyclic projection onto the adjacent fitted surfaces (see stage 2.6 refitting notes).
+- `adjacent_faces: Vec<usize>` — Indices of FaceDescriptors meeting at this vertex, in topological order.
+- `adjacent_edges: Vec<usize>` — Indices of ReconEdges meeting at this vertex, in topological order.
+- (TODO) `uv_coords: Vec<(f64, f64)>` — UV coordinates of this vertex on each adjacent face's surface.
+- (TODO) `tolerance: f64` — Maximum deviation from any adjacent surface.
+#### 3.1 Create OCCT surface objects and build adjacency graph
+/Users/sethml/src/brepper/DEVELOPMENT_PLAN.md
+    - Report an error if the sewing produced free edges (edges not shared by any pair of faces), as this indicates incomplete stitching.
+    - Report shell count comparison and orientation check results.
+#### 3.6 Construct solids
+Convert closed shells into `TopoDS_Solid` objects.
+**Algorithm:**
+- For each shell, use `ShapeFix_Solid::SolidFromShell` which handles orientation automatically.
+- Apply `ShapeFix_Shape::Perform()` for comprehensive face/wire/edge/shell/solid fixes.
+- Call `BRepLib::SameParameter` with `forced=false` and tight tolerance (`vertex_tolerance_mm`) to ensure pcurve/3D curve agreement without corrupting already-correct pcurves. Using `forced=true` or a large tolerance (e.g. 1.0mm) recomputes all pcurves and can corrupt faces with closely-spaced tangent edges (e.g. sphere faces at sphere-cylinder junctions), causing BRepCheck self-intersection failures.
+- Call `BRepLib::UpdateTolerances` and `BRepLib::OrientClosedSolid`.
+- Validate with `BRepCheck_Analyzer`. Log warning if validation fails (may indicate upstream face issues from stage 3.4).
+- Compute and report volume using `BRepGProp::VolumeProperties`.
+- **Multi-shell solids (internal voids)**: after per-shell solids are built, `merge_void_solids` finds solids whose bounding box is contained in a strictly larger solid's box; each such void's shells are added to the container solid (`BRep_Builder::Add`), trying both shell orientations and keeping the one whose resulting volume equals container − Σ voids. The hollow_cube test model (tests/occt/, generated by `gen-test-models` since ccad cannot express enclosed voids) validates one solid of 7000 mm³ instead of two nested solids.
+- With the `--compare` flag:
+    - Count solids in the reference STEP file.
+    - Compute volumes of both constructed and reference solids. Match by sorted volume. Report warning if relative volume difference exceeds 1%. All current test models achieve volume agreement within ~1e-7 relative difference.
+    - Compute `BRepExtrema_DistShapeShape` between each constructed solid and the reference STEP shape. Report error if distance exceeds `--surface-tolerance`. This is the tightest geometric accuracy check.
+---
+### Stage 4: Output
+I'll place the architectural section at the end of Stage 3, right before Stage 4. Note the data-structure TODOs at lines 456/464 (pcurves on both sides, uv_coords) confirm the original design intended shared-edge topology — worth citing.
+
+Edited
+DEVELOPMENT_PLAN.md
++23
+-0
+/Users/sethml/src/brepper/DEVELOPMENT_PLAN.md
+    - Compute volumes of both constructed and reference solids. Match by sorted volume. Report warning if relative volume difference exceeds 1%. All current test models achieve volume agreement within ~1e-7 relative difference.
+    - Compute `BRepExtrema_DistShapeShape` between each constructed solid and the reference STEP shape. Report error if distance exceeds `--surface-tolerance`. This is the tightest geometric accuracy check.
+
+#### 3.x (proposed) Rework: shared-edge topological assembly instead of geometric sewing
+
+**Status: not started. Deliberately deferred and bound to the NURBS effort (see Future Enhancements). This section records the decision and its trigger so it is not rediscovered from scratch.**
+
+**The current design.** Stage 3.4 builds each face independently and stage 3.5 reconciles them with `BRepBuilderAPI_Sewing`, a *geometric* stitch that merges edges by proximity within a tolerance. Edges *are* created once as shared `TopoDS_Edge` objects (§3.1), but two things defeat that sharing by assembly time:
+- `MakeFace`/`MakeWire`/`ShapeFix` copy edges, so the "shared" edge in face A is no longer the identical object in face B.
+- The UV-bounds construction paths (full spheres, complete tori, full-revolution and — as of the cone-cap investigation — apex-cap cones) synthesize their *own* natural-bounds boundary edges that were never shared with a neighbour at all.
+
+So sewing is load-bearing, and the `ReconEdge.pcurves: [_; 2]` and `BRepVertex.uv_coords` fields (§3.0) that the original design earmarked for a both-sides-shared representation were never populated — the geometric sewing pass stands in for them. The face-construction + sewing block is ~2100 lines carrying ~150 pole/seam/apex/reorient/ShapeFix/degenerate special-cases.
+
+**Why this is the root of a whole class of fragility.** Every hard case in stage 3 — sphere pole caps, torus seams, cone apex caps, and the tangent-edge/corner-vertex *tolerance relaxations* (the "genuinely ambiguous junction rows") — is ultimately a symptom of trimming faces independently and matching them by geometric tolerance. `cone_tangent_planes` is the sharpest example: its two apex-cap cone faces are pie-slices-with-apex whose two boundary curves lie on the same iso-V line; the wire builder collapses them, and a pure UV-bounds cap gets the *area* right but only matches its neighbours along part of the boundary, so sewing leaves free edges → open shell. The problem spans segmentation → edge topology → trimming → sewing, which is exactly why patching any single layer only half-works.
+
+**The proposed design.** Build the B-rep topologically instead of geometrically:
+1. Build each edge once (shared `TopoDS_Edge` + shared vertices, with its 3D curve) — as today.
+2. For **both** adjacent faces of every edge, compute and attach the pcurve of that edge on that face's surface (populate `ReconEdge.pcurves`). Poles/seams are handled *only* here, in pcurve computation, uniformly for every periodic surface.
+3. Insert degenerate edges at UV poles (cone apex, sphere pole) and seam edges at periodic wraps, shared correctly, as first-class topology rather than per-surface fix-ups.
+4. Assemble each face and the shell directly with `BRep_Builder` from the shared edges — the shell is closed *by construction*. Drop `BRepBuilderAPI_Sewing`; it becomes at most a validation check.
+5. This makes construction lower-level and more controlled (avoid `ShapeFix`/`MakeFace` edge-copying that breaks sharing). The cone apex cap, sphere pole cap, and torus seam then all reduce to "attach the correct pcurve to the shared edge, plus a degenerate/seam edge" — one uniform mechanism instead of ~150 special-cases.
+
+**Why defer it.** 52/57 models pass; nothing is *blocked*. The only current beneficiary is one unusual model (`cone_tangent_planes`) that already writes valid-ish output with a volume warning. The full payoff arrives with **NURBS**: freeform patches have arbitrary trimmed boundaries and will stress this machinery hard, building NURBS on top of projection+sewing is building on sand, and NURBS is also what finally brings test coverage to validate a more general assembler (today it would be a more-general machine exercised only on the analytic surfaces the current code already handles). So the rework is the *foundation to lay when NURBS begins*, not a standalone task.
+
+**Trigger to pull it forward earlier.** If a model becomes *unfixable* without tighter topology — i.e. the tangent-edge/corner tolerance relaxations stop merely loosening tolerances and start letting a real model fail — do the rework then rather than adding relaxation #N.
+
+---
+
+### Stage 4: Output
+Now let me cross-link it from the NURBS entry so the trigger is discoverable there too:
+
+
+Read a file, ran 2 commands, edited a file
+Read
+DEVELOPMENT_PLAN.md
+file_path: /Users/sethml/src/brepper/DEVELOPMENT_PLAN.md
+offset: 808
+limit: 30
+Found Future Enhancements / NURBS references
+grep -n "Future Enhancements\|NURBS\|freeform\|B-spline\|B-Spline\|bspline" DEVELOPMENT_PLAN.md
+5:**brepper** (B-Rep from Mesh) - A utility to convert triangulated STL meshes from CAD exports into parametric STEP files with fitted analytic and freeform surfaces.
+44:- `Geom_BSplineSurface` — NURBS/B-spline surfaces
+50:- `GeomAPI_PointsToBSplineSurface` — Fit B-spline surface to points
+376:4. Assign any remaining unassigned faces to their single-face planar hypothesis (fallback for faces on surfaces not yet fitted: ruled, freeform). Stage 2.7 may replace some of these with NURBS surfaces.
+415:#### 2.7 NURBS fallback
+417:For groups of adjacent faces that remain as single-face planar hypotheses after stages 2.1–2.5 (i.e., they don't fit any analytic surface), try to fit a NURBS or B-spline surface.
+423:   b. Use OCCT's `GeomAPI_PointsToBSplineSurface` to fit a B-spline through the parameterized points.
+425:   d. If valid, create a NURBS hypothesis; if not, leave as single-face planar.
+426:3. Add valid NURBS hypotheses to the surface selection.
+428:*Comment: NURBS fitting is complex: parameterization quality strongly affects fit quality, degree/knot selection matters, and thin features may need special handling. Start with OCCT’s built-in B-spline fitter which handles degree selection and parameterization internally. For “freeform” regions that are nearly planar, a plane with small tolerance is preferable to a NURBS that overfits noise.*
+636:**Status: not started. Deliberately deferred and bound to the NURBS effort (see Future Enhancements). This section records the decision and its trigger so it is not rediscovered from scratch.**
+653:**Why defer it.** 52/57 models pass; nothing is *blocked*. The only current beneficiary is one unusual model (`cone_tangent_planes`) that already writes valid-ish output with a volume warning. The full payoff arrives with **NURBS**: freeform patches have arbitrary trimmed boundaries and will stress this machinery hard, building NURBS on top of projection+sewing is building on sand, and NURBS is also what finally brings test coverage to validate a more general assembler (today it would be a more-general machine exercised only on the analytic surfaces the current code already handles). So the rework is the *foundation to lay when NURBS begins*, not a standalone task.
+790:## Future Enhancements
+Read
+DEVELOPMENT_PLAN.md
+/Users/sethml/src/brepper/DEVELOPMENT_PLAN.md
+#### 2.7 NURBS fallback
+For groups of adjacent faces that remain as single-face planar hypotheses after stages 2.1–2.5 (i.e., they don't fit any analytic surface), try to fit a NURBS or B-spline surface.
+**Algorithm:**
+1. Identify connected components of single-face planar hypothesis faces that are adjacent to each other in the mesh.
+2. For each component with ≥ 4 faces:
+   a. Compute UV parameterization of the face vertices (using discrete harmonic mapping or Floater's mean value coordinates).
+   b. Use OCCT's `GeomAPI_PointsToBSplineSurface` to fit a B-spline through the parameterized points.
+   c. Validate: max vertex-to-surface distance < `--surface-tolerance`.
+   d. If valid, create a NURBS hypothesis; if not, leave as single-face planar.
+3. Add valid NURBS hypotheses to the surface selection.
+*Comment: NURBS fitting is complex: parameterization quality strongly affects fit quality, degree/knot selection matters, and thin features may need special handling. Start with OCCT’s built-in B-spline fitter which handles degree selection and parameterization internally. For “freeform” regions that are nearly planar, a plane with small tolerance is preferable to a NURBS that overfits noise.*
+Edited
+DEVELOPMENT_PLAN.md
++2
+-0
+/Users/sethml/src/brepper/DEVELOPMENT_PLAN.md
+*Comment: NURBS fitting is complex: parameterization quality strongly affects fit quality, degree/knot selection matters, and thin features may need special handling. Start with OCCT’s built-in B-spline fitter which handles degree selection and parameterization internally. For “freeform” regions that are nearly planar, a plane with small tolerance is preferable to a NURBS that overfits noise.*
+*Reconstruction note: when this stage is implemented, do the stage-3 reconstruction rework described in §3.x (proposed) first, as its foundation. NURBS patches have arbitrary trimmed boundaries that would stress the current projection-plus-geometric-sewing assembly exactly where it is most fragile (see the §3.x analysis and the `cone_tangent_planes` case), and the NURBS test models are also what finally give the more-general shared-edge assembler real coverage.*
+---
+### Algorithm Reference
+Committed
+7ece433
+git diff --stat && cat > tmp/COMMITMSG <<'EOF'
+docs: record the stage-3 shared-edge assembly rework as a deferred decision
+Adds DEVELOPMENT_PLAN §3.x (proposed): the architectural decision that
+stage 3's face-construction-plus-geometric-sewing design (~2100 lines,
+~150 pole/seam/apex/reorient/ShapeFix special-cases) is the root of a
+whole class of fragility — sphere pole caps, torus seams, cone apex caps,
+and the tangent-edge tolerance relaxations. Describes the principled
+alternative (build shared edges once, attach pcurves on both faces,
+insert degenerate/seam edges uniformly, assemble the shell directly with
+BRep_Builder, drop BRepBuilderAPI_Sewing) and records why it is
+deliberately deferred and bound to the NURBS effort, plus the concrete
+trigger to pull it forward (a model that becomes unfixable without
+tighter topology rather than one more tolerance relaxation).
+Cross-links it from the §2.7 NURBS fallback note so the dependency is
+discoverable from both ends. No code change.
+---
+Generated with assistance from Claude Opus 4.8 (Anthropic, 2026)
+User prompt(s):
+- "Think hard about whether that's the right fix, or if it's worth taking
+  a step back and reworking edge generation and sewing in a different way."
+- "Write it as a section in DEVELOPMENT_PLAN. Then decide whether tackling
+  that work would be better done with your current context, or with a new
+  AI agent with empty context."
+EOF
+git add -A && git commit -F tmp/COMMITMSG 2>&1 | tail -3
+ DEVELOPMENT_PLAN.md | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+[experiment-fable 7ece433] docs: record the stage-3 shared-edge assembly rework as a deferred decision
+ 1 file changed, 25 insertions(+)
+The section is written and committed. Now the second question: current context vs. fresh agent for actually doing the rework.
+
+Decision: a fresh agent, with a scoped handoff brief — not this context.
+This is a case where my accumulated context is worth less than it feels, and in a couple of ways is actively working against a clean job.
+
+Why fresh wins here:
+
+The rework is a rewrite, not an extension. My context is saturated with the current design — the sewing tolerances, the 150 special-cases, why each relaxation exists. That's exactly the mental model you want to replace, not carry. An agent steeped in "how the sewing path is coaxed into working" will keep reaching for those tools and reproduce the architecture it's supposed to retire. A cold start reads the code as it is and builds the shared-edge assembler on its merits.
+The trigger is NURBS, which is a different session anyway. The decision I just wrote binds this work to the NURBS effort. By the time it's picked up, the code will have moved and this conversation's specifics will be stale. There's no continuity to preserve — the durable state is now in DEVELOPMENT_PLAN §3.x, TODO, and LEARNINGS, which is where a fresh agent should get its context. If the handoff needs anything that isn't in those files, that's a signal to write it down, not to keep a warm session alive.
+My high-value context is already externalized. The sharp diagnosis (pie-slice-with-apex, iso-V collapse, the two dead-ended approaches, the mesh-U-span pole trap) is in the TODO and the plan. That's the part worth keeping, and it survives without me.
+Cost/benefit of a long warm context. Continuing here means paying to drag a large, increasingly medium-resolution-fillet-flavored history through a 2000-line rewrite. A fresh agent on the rework runs cheaper and cleaner and re-derives only what it needs from the (now good) docs.
+The one caveat — where my context is uniquely valuable: the empirical facts that took real digging and are easy to get wrong from a cold read — ShapeFix segfaults on cones, the exact iso-V/U-pole failure mode, that BRepExtrema is thread-safe, the tangent-edge relaxations being compensations rather than requirements. Those are captured in LEARNINGS and the TODO, but I'd verify that capture is complete before I'd be comfortable handing off. If you want, I can do a short pass to make sure the handoff brief in DEVELOPMENT_PLAN §3.x is self-sufficient — i.e., a fresh agent could start the rework from the docs alone with no reference to this conversation.
+
+Net: do the rework in a fresh agent when NURBS starts; my job now is to make sure everything a cold start needs is on disk. Want me to do that self-sufficiency pass on the handoff brief?
+
+yes, do the self-sufficiency pass
+
+Let me audit what's actually on disk versus what only lives in this conversation. I'll check the three handoff surfaces and the key empirical facts a fresh agent would need.
+
+Checked which empirical facts and code anchors are on disk
+Bash
+echo "=== LEARNINGS: ShapeFix/cone segfault, BRepExtrema thread-safety, sewing ==="; grep -niE "segfault|shapefix|brepextrema|thread.?safe|sewing" LEARNINGS.md | head -20; echo; echo "=== code anchors present in DEVELOPMENT_PLAN 3.x? ==="; grep -niE "stage3.rs|create_periodic_face|create_wire_based|construct_shells|create_occt_faces_all|src/" DEVELOPMENT_PLAN.md | head; echo; echo "=== cone code comment about ShapeFix segfault ==="; grep -n "segfault" src/stage3.rs
+=== LEARNINGS: ShapeFix/cone segfault, BRepExtrema thread-safety, sewing ===
+52:### OCCT Thread Safety
+53:OCCT has process-global mutable state that is **not thread-safe**. Only STEP Reader/Writer operations are affected:
+58:The following APIs are **thread-safe** (verified in OCCT C++ source — no global mutable state):
+61:- `BRepExtrema_DistShapeShape` (no globals)
+63:- All `BRepBuilderAPI` (MakeEdge, MakeFace, MakeVertex, Sewing) — only static helper functions
+64:- `ShapeFix_Shell`, `ShapeFix_Face`, `ShapeFix_Solid` (no globals)
+86:// Thread-safe wrapper (serializes via StepReader's built-in mutex):
+119:### Bounded vs unbounded distance: BRepExtrema vs GeomAPI_ProjectPointOnSurf
+120:`GeomAPI_ProjectPointOnSurf` projects onto the *infinite* underlying `Geom_Surface`, not the bounded face. Use `BRepExtrema_DistShapeShape` (via `b_rep_extrema::DistShapeShape`) instead to compute distance to bounded `TopoDS_Face` shapes. Create a `BRepBuilderAPI_MakeVertex` from the point, then compute `DistShapeShape` between the vertex shape and the target shape. This correctly reports nonzero distance for points that lie on an infinite surface extension but outside the bounded face.
+203:- Stage 3.1 --compare check: validates that (a) ReconEdge boundary mesh vertices lie within vertex_tolerance of STEP edges, and (b) BRepVertex positions lie within vertex_tolerance of STEP vertices. Uses `topo_ds::Compound` to build compounds of all STEP edges and vertices separately, then `BRepExtrema_DistShapeShape` against those compounds.
+228:  - **Partial revolution** (open edges with vertices): Use wire-based construction WITH pre-set pcurves via `BRep_Builder::update_edge` before calling `MakeFace`. The pcurves (Geom2d_Line) map the edge's 3D parameter range to the surface's UV space. This ensures correct arc selection on the periodic surface and shares edges with adjacent planar faces for proper sewing.
+250:- `BRepBuilderAPI_Sewing`: Create with `Sewing::new_real(tolerance)` where tolerance = `vertex_tolerance_mm`. Add all faces via `.add(face.as_shape())`, then `.perform(&ProgressRange::new())`.
+254:- `ShapeFix_Shell::new_shell(shell)`, then `.fix_face_orientation(shell, false, false)`, `.perform(&ProgressRange::new())`, `.shell()` returns the fixed shell.
+257:- Sewing statistics: `.nb_free_edges()`, `.nb_multiple_edges()`, `.nb_contigous_edges()` — note the OCCT typo "contigous" (not "contiguous").
+264:- Face orientation is handled correctly by the combination of `ShapeFix_Shell::Perform()` (edge consistency + pcurve repair) and `ShapeFix_Solid::SolidFromShell()` (global orientation via `BRepClass3d_SolidClassifier::PerformInfinitePoint`). Do NOT post-process individual face orientations — flipping individual faces breaks edge consistency, which causes both `BRepGProp::VolumeProperties` and `SolidFromShell` to give wrong results. This was extensively tested: 6/8 models produce perfect volume without any post-processing, vs. various failures when individual faces were flipped.
+278:- **Reorientation for all-closed-loop spheres (tangent and non-tangent)**: When a sphere face has all-closed-loop boundary edges and any boundary circle passes within 45° of a UV pole, the sphere surface is reoriented so the boundary circles become iso-V curves. The reorientation axis is determined from: (a) the adjacent cylinder's axis direction for tangent edges, or (b) the boundary circle's plane normal for non-tangent edges (e.g., dome hemispheres cut by a meridional plane). This generalizes the original tangent-only reorientation and fixes sewing failures for hemispheres where the flat face plane contains the sphere axis.
+280:- **Sphere pole vertex faces** (open edges with vertices at poles, e.g., rounded cube corners where each octant has one vertex at a pole): When a spherical face has open edges with vertices, and the UV bounds include V=±π/2, the U value at the pole is undefined (singularity). This corrupts the circular gap algorithm for U bounds (producing ~205° span instead of ~90°), pcurves (diagonal instead of meridional), and face areas (negative). Fix: in `compute_uv_bounds_from_edges`, exclude U values from vertices/midpoints within 0.01 radians of a pole (V ≈ ±π/2). The face is constructed via UV-bounds `MakeFace::new_handlegeomsurface_real5`. OCCT creates a 3-edge face (2 meridians + 1 parallel at the non-pole boundary; the pole collapses to a vertex with no degenerate edge). BRepCheck reports a harmless edge failure on edge 0 with ~zero tolerance; this is suppressed in `validate_faces` since it's resolved by sewing.
+282:- **BRepCheck_Analyzer::new_shape_bool(shape, false)**: `GeomControls=false` checks only topological info. However, UV-bounds sphere pole faces fail BOTH geometric and topological checks on edge 0 (~zero tolerance). The root cause is unclear but harmless — the final solid after sewing passes BRepCheck.
+343:In stage 3, conical faces are periodic (full-revolution) like cylindrical and spherical faces. The `is_periodic` check must include `SelectedSurface::Conical(_)` or conical faces will go through `create_planar_face` instead of `create_periodic_face`, causing segfaults when a full-circle edge is encountered.
+384:Full (non-truncated) cones with a single boundary edge at the base produce zero V-range from `compute_uv_bounds_from_edges` (both V values project to the same edge height). This creates a degenerate face → BRepCheck failure → sewing failure. Fix: for conical surfaces with a single boundary edge, extend V to 0 (the apex) by sampling mesh face centroids to determine which side of the edge the face extends, then setting `vmin = 0.0`. This is analogous to sphere pole V-extension for hemispheres.
+
+=== code anchors present in DEVELOPMENT_PLAN 3.x? ===
+22:Use the opencascade binding in ../opencascade-rs/crates/opencascade-sys, including porting instructions in PORTING.md and details on the FFI mapping in ../opencascade-rs/crates/opencascade-binding-generator/README.md. It's a reasonably complete binding of the C++ API of the opencascade library which resides in ../opencascade-rs/crates/occt-sys/OCCT, with source code in src/ and documentation in dox/.
+708:### Key types (in `src/viz.rs`)
+730:The generic `generate_hypotheses()` function in `src/stage2/bfs.rs` sends viz overlays controlled by `--viz-stages-level`:
+
+=== cone code comment about ShapeFix segfault ===
+3803:            // ShapeFix can segfault on cones due to pcurve/edge curve interactions.
+5024:        // TEMP: debug segfault
+Good audit. Key gaps for a cold start: (1) §3.x names no code entry points, (2) the ShapeFix-segfaults-on-cones constraint lives only in a code comment (stage3.rs:3803) that the rewrite would likely delete, and (3) there's no reproduce/validate recipe. Let me read the current §3.x to edit precisely, and check that stray "TEMP: debug segfault".
+
+
+Read 2 files
+Read
+DEVELOPMENT_PLAN.md
+/Users/sethml/src/brepper/DEVELOPMENT_PLAN.md
+    - Compute `BRepExtrema_DistShapeShape` between each constructed solid and the reference STEP shape. Report error if distance exceeds `--surface-tolerance`. This is the tightest geometric accuracy check.
+#### 3.x (proposed) Rework: shared-edge topological assembly instead of geometric sewing
+**Status: not started. Deliberately deferred and bound to the NURBS effort (see Future Enhancements). This section records the decision and its trigger so it is not rediscovered from scratch.**
+**The current design.** Stage 3.4 builds each face independently and stage 3.5 reconciles them with `BRepBuilderAPI_Sewing`, a *geometric* stitch that merges edges by proximity within a tolerance. Edges *are* created once as shared `TopoDS_Edge` objects (§3.1), but two things defeat that sharing by assembly time:
+- `MakeFace`/`MakeWire`/`ShapeFix` copy edges, so the "shared" edge in face A is no longer the identical object in face B.
+- The UV-bounds construction paths (full spheres, complete tori, full-revolution and — as of the cone-cap investigation — apex-cap cones) synthesize their *own* natural-bounds boundary edges that were never shared with a neighbour at all.
+So sewing is load-bearing, and the `ReconEdge.pcurves: [_; 2]` and `BRepVertex.uv_coords` fields (§3.0) that the original design earmarked for a both-sides-shared representation were never populated — the geometric sewing pass stands in for them. The face-construction + sewing block is ~2100 lines carrying ~150 pole/seam/apex/reorient/ShapeFix/degenerate special-cases.
+**Why this is the root of a whole class of fragility.** Every hard case in stage 3 — sphere pole caps, torus seams, cone apex caps, and the tangent-edge/corner-vertex *tolerance relaxations* (the "genuinely ambiguous junction rows") — is ultimately a symptom of trimming faces independently and matching them by geometric tolerance. `cone_tangent_planes` is the sharpest example: its two apex-cap cone faces are pie-slices-with-apex whose two boundary curves lie on the same iso-V line; the wire builder collapses them, and a pure UV-bounds cap gets the *area* right but only matches its neighbours along part of the boundary, so sewing leaves free edges → open shell. The problem spans segmentation → edge topology → trimming → sewing, which is exactly why patching any single layer only half-works.
+**The proposed design.** Build the B-rep topologically instead of geometrically:
+1. Build each edge once (shared `TopoDS_Edge` + shared vertices, with its 3D curve) — as today.
+2. For **both** adjacent faces of every edge, compute and attach the pcurve of that edge on that face's surface (populate `ReconEdge.pcurves`). Poles/seams are handled *only* here, in pcurve computation, uniformly for every periodic surface.
+3. Insert degenerate edges at UV poles (cone apex, sphere pole) and seam edges at periodic wraps, shared correctly, as first-class topology rather than per-surface fix-ups.
+4. Assemble each face and the shell directly with `BRep_Builder` from the shared edges — the shell is closed *by construction*. Drop `BRepBuilderAPI_Sewing`; it becomes at most a validation check.
+5. This makes construction lower-level and more controlled (avoid `ShapeFix`/`MakeFace` edge-copying that breaks sharing). The cone apex cap, sphere pole cap, and torus seam then all reduce to "attach the correct pcurve to the shared edge, plus a degenerate/seam edge" — one uniform mechanism instead of ~150 special-cases.
+**Why defer it.** 52/57 models pass; nothing is *blocked*. The only current beneficiary is one unusual model (`cone_tangent_planes`) that already writes valid-ish output with a volume warning. The full payoff arrives with **NURBS**: freeform patches have arbitrary trimmed boundaries and will stress this machinery hard, building NURBS on top of projection+sewing is building on sand, and NURBS is also what finally brings test coverage to validate a more general assembler (today it would be a more-general machine exercised only on the analytic surfaces the current code already handles). So the rework is the *foundation to lay when NURBS begins*, not a standalone task.
+**Trigger to pull it forward earlier.** If a model becomes *unfixable* without tighter topology — i.e. the tangent-edge/corner tolerance relaxations stop merely loosening tolerances and start letting a real model fail — do the rework then rather than adding relaxation #N.
+Read
+stage3.rs
+(5016–5035, 5033–5062)
+/Users/sethml/src/brepper/src/stage3.rs
+    for (fi, concave_flag) in concave_faces.iter_mut().enumerate() {
+        let surface_type = &output.stage2.selected_surfaces[output.face_descriptors[fi].selected_surface_idx];
+        let is_periodic = matches!(
+            surface_type,
+            SelectedSurface::Conical(_) | SelectedSurface::Spherical(_)
+            | SelectedSurface::Toroidal(_)
+        );
+        // TEMP: debug segfault
+        let stype = match surface_type {
+            SelectedSurface::Planar(_) => "planar",
+            SelectedSurface::Conical(i) => {
+                if output.stage2.conical_hypotheses[*i].is_cylinder() { "cylindrical" } else { "conical" }
+            }
+            SelectedSurface::Spherical(_) => "spherical",
+            SelectedSurface::Toroidal(_) => "toroidal",
+        };
+        let (mut make_face, is_concave) = if is_periodic {
+            create_periodic_face(fi, &output, &mut topo_edges, config)?
+        } else {
+/Users/sethml/src/brepper/src/stage3.rs
+        let (mut make_face, is_concave) = if is_periodic {
+            create_periodic_face(fi, &output, &mut topo_edges, config)?
+        } else {
+            (create_planar_face(fi, &output, &mut topo_edges, config)?, false)
+        };
+        *concave_flag = is_concave;
+        if config.verbose {
+            eprintln!(
+                "  Face {fi}: {stype} — created successfully ({} edges)",
+                output.face_descriptors[fi].edge_indices.len(),
+            );
+        }
+        if let Some(viz_sender) = viz {
+            let mut overlay = crate::viz::VizOverlay::new();
+            // Tessellate the OCCT face and show it translucent
+            let face_shape = make_face.shape();
+            overlay.shape_meshes.push(crate::viz::tessellate_shape(
+                face_shape, [0.3, 0.8, 0.3, 0.4], [0.0, 1.0, 0.0, 1.0], 0.1, 0.5,
+            ));
+            // Show edge curves in bright green
+            for &edge_idx in &output.face_descriptors[fi].edge_indices {
+                if let Some(curve) = output.edges[edge_idx].curve_3d.as_ref() {
+                    overlay.lines.push(crate::viz::LineOverlay {
+                        positions: crate::viz::sample_curve_for_viz(curve, 64),
+                        color: [0.0, 1.0, 0.0, 1.0],
+                        no_depth_test: true,
+                    });
+                }
+stype at 5042 is actually used (verbose print) — the "TEMP: debug segfault" comment is stale and would mislead the rework agent reading that exact function. I'll fix that one-line comment and add the missing anchors/recipe/constraints to §3.x.
+
+
+Edited 2 files
+Edited
+stage3.rs
++1
+-1
+/Users/sethml/src/brepper/src/stage3.rs
+            | SelectedSurface::Toroidal(_)
+        );
+        // TEMP: debug segfault
+        // Human-readable surface type for the per-face verbose log below.
+        let stype = match surface_type {
+            SelectedSurface::Planar(_) => "planar",
+            SelectedSurface::Conical(i) => {
+Edited
+DEVELOPMENT_PLAN.md
++14
+-0
+/Users/sethml/src/brepper/DEVELOPMENT_PLAN.md
+**Trigger to pull it forward earlier.** If a model becomes *unfixable* without tighter topology — i.e. the tangent-edge/corner tolerance relaxations stop merely loosening tolerances and start letting a real model fail — do the rework then rather than adding relaxation #N.
+**Where the code lives (cold-start entry points).** All of stage 3 is in `src/stage3.rs` (~5800 lines); entry `stage3()`. The assembler is `create_occt_faces_all`: it builds one shared `TopoDS_Vertex` per `BRepVertex`, one shared `TopoDS_Edge` per `ReconEdge` (from `ReconEdge.curve_3d`, held in the `topo_edges` vec indexed by edge id — this is the sharing that later gets defeated), then dispatches each face to `create_planar_face` or `create_periodic_face`. `create_periodic_face` (cones/spheres/tori) chooses among: natural-bounds (`MakeFace::new_handlegeomsurface_real`, complete closed surfaces with no edges); UV-bounds (`MakeFace::new_handlegeomsurface_real5`, full-revolution / all-closed-loop / reoriented-sphere); and wire-based `create_wire_based_periodic_face` (partial revolution — projects each edge's 3D curve to pcurve points, sets the pcurve on the shared edge via `BRep_Builder::update_edge_edge_...`, builds a `MakeWire`, then `MakeFace`). Sewing is `construct_shells` (`BRepBuilderAPI_Sewing`); solids and void-merging are §3.6. The both-sides representation to populate is already declared but unused: `ReconEdge.pcurves: [_; 2]` and `BRepVertex.uv_coords` (§3.0 data structures).
+**Hard OCCT constraints (established empirically — do not relearn by crashing).**
+- `ShapeFix_*` can **segfault on cone faces** (pcurve/edge-curve interaction); the wire path already skips ShapeFix for non-spheres for this reason. A shared-edge assembler that attaches pcurves directly and avoids `ShapeFix`/`MakeFace` edge-copying sidesteps this — but do not reintroduce ShapeFix on cone faces to "clean up" a wire.
+- `is_periodic` in `create_occt_faces_all` **must include `Conical(_)`** or cone faces route to `create_planar_face` and segfault on a full-circle edge (LEARNINGS: "Conical faces are periodic").
+- `MakeEdge` on a periodic (circle) curve forces p1 < p2 and takes the forward arc V1→V2, so **vertex order selects which arc** — see the explicit first/last-parameter handling in `create_occt_faces_all` (the `d0_start`/`d1_start` block). This is the same complementary-arc trap that collapses the `cone_tangent_planes` apex caps.
+- Thread-safety of the OCCT calls used here: LEARNINGS "OCCT Thread Safety" (BRepExtrema, MakeEdge/Face/Vertex/Sewing, ShapeFix_* are all safe; only STEP Reader/Writer need serializing).
+**Reproduce & validate the motivating case.**
+- Repro: `./target/release/brepper tests/onshape/cone_tangent_planes_medium.stl --compare tests/onshape/cone_tangent_planes.step -o tmp/x.step` → completes (exit 0) but prints a stage-3.6 volume **WARNING** (6617 vs 14676 mm³) and three BRepCheck "face shape invalid" warnings.
+- Inspect: `--stage=3.4 -v` prints each face's `area=…` (the two bad caps come out 0.0001 and a wrong 130 mm²) and which faces fail BRepCheck; `--stage=3.1 -v` lists each face's surface type + fitted parameters and every edge as `faces [a,b] vertices [v0,v1]`.
+- Done = full suite green (`cargo test --release`, ~3 min) **and** `cone_tangent_planes` volume within 1% with no warning; regenerate `tests/RESULTS.md` via `./scripts/run_test_table.sh`.
+- Directly relevant LEARNINGS entries to read first: the "Partial revolution … wire-based … pcurves" note, the two sphere-pole-vertex entries, the cone "extend V to the apex" entry, and "Conical faces are periodic".
+---
+### Stage 4: Output
+Let me verify the LEARNINGS pointers resolve and add the ShapeFix-cone-segfault gotcha to LEARNINGS itself (its canonical home), since it currently lives only in code comments:
+
+
+Read a file, edited a file
+Read
+LEARNINGS.md
+/Users/sethml/src/brepper/LEARNINGS.md
+### Conical faces need `is_periodic` treatment
+In stage 3, conical faces are periodic (full-revolution) like cylindrical and spherical faces. The `is_periodic` check must include `SelectedSurface::Conical(_)` or conical faces will go through `create_planar_face` instead of `create_periodic_face`, causing segfaults when a full-circle edge is encountered.
+### OCCT cone convention: origin at apex, zero ref_radius
+Edited
+LEARNINGS.md
++4
+-0
+/Users/sethml/src/brepper/LEARNINGS.md
+In stage 3, conical faces are periodic (full-revolution) like cylindrical and spherical faces. The `is_periodic` check must include `SelectedSurface::Conical(_)` or conical faces will go through `create_planar_face` instead of `create_periodic_face`, causing segfaults when a full-circle edge is encountered.
+### `ShapeFix_*` can segfault on cone faces
+`create_wire_based_periodic_face` deliberately skips `ShapeFix_Wire`/`ShapeFix_Face` for non-sphere periodic faces: on cones, ShapeFix crashes (not just errors) due to pcurve/edge-curve interactions. Spheres tolerate it. So cone face repair must be done without ShapeFix. This constrains the proposed stage-3 shared-edge rework (DEVELOPMENT_PLAN §3.x): attach pcurves to shared edges directly with `BRep_Builder` rather than routing cone faces through ShapeFix to "fix up" a wire.
+### OCCT cone convention: origin at apex, zero ref_radius
+`geom::ConicalSurface::new_ax3_real2(&ax3, half_angle, ref_radius)` — for brepper's cones, set origin at the apex and ref_radius=0. The Ax3 origin is the apex point, Z-direction points from apex toward the base.
+Now let me verify the doc cross-references actually resolve (§3.0, §3.x, the cited LEARNINGS keywords) and that the build still compiles with the comment change:
+
+Verified cross-references resolve and build is clean
+Bash
+cd /Users/sethml/src/brepper
+echo "=== §3.0 data-structure fields referenced by §3.x exist? ==="; grep -nE "pcurves: \[|uv_coords" DEVELOPMENT_PLAN.md
+echo; echo "=== LEARNINGS keywords the plan tells the agent to search resolve? ==="
+for kw in "Partial revolution" "Sphere pole vertex faces" "extend V to" "Conical faces are periodic" "segfault on cone"; do printf '%-32s' "$kw:"; grep -c "$kw" LEARNINGS.md; done
+echo "=== build still clean after comment edit ==="; cargo build --release 2>&1 | grep -E "^(error|warning: unused)" | head
+=== §3.0 data-structure fields referenced by §3.x exist? ===
+458:- (TODO) `pcurves: [Handle<Geom2d_Curve>; 2]` — 2D parametric curve on each adjacent face's surface.
+466:- (TODO) `uv_coords: Vec<(f64, f64)>` — UV coordinates of this vertex on each adjacent face's surface.
+644:So sewing is load-bearing, and the `ReconEdge.pcurves: [_; 2]` and `BRepVertex.uv_coords` fields (§3.0) that the original design earmarked for a both-sides-shared representation were never populated — the geometric sewing pass stands in for them. The face-construction + sewing block is ~2100 lines carrying ~150 pole/seam/apex/reorient/ShapeFix/degenerate special-cases.
+659:**Where the code lives (cold-start entry points).** All of stage 3 is in `src/stage3.rs` (~5800 lines); entry `stage3()`. The assembler is `create_occt_faces_all`: it builds one shared `TopoDS_Vertex` per `BRepVertex`, one shared `TopoDS_Edge` per `ReconEdge` (from `ReconEdge.curve_3d`, held in the `topo_edges` vec indexed by edge id — this is the sharing that later gets defeated), then dispatches each face to `create_planar_face` or `create_periodic_face`. `create_periodic_face` (cones/spheres/tori) chooses among: natural-bounds (`MakeFace::new_handlegeomsurface_real`, complete closed surfaces with no edges); UV-bounds (`MakeFace::new_handlegeomsurface_real5`, full-revolution / all-closed-loop / reoriented-sphere); and wire-based `create_wire_based_periodic_face` (partial revolution — projects each edge's 3D curve to pcurve points, sets the pcurve on the shared edge via `BRep_Builder::update_edge_edge_...`, builds a `MakeWire`, then `MakeFace`). Sewing is `construct_shells` (`BRepBuilderAPI_Sewing`); solids and void-merging are §3.6. The both-sides representation to populate is already declared but unused: `ReconEdge.pcurves: [_; 2]` and `BRepVertex.uv_coords` (§3.0 data structures).
+
+=== LEARNINGS keywords the plan tells the agent to search resolve? ===
+Partial revolution:             1
+Sphere pole vertex faces:       1
+extend V to:                    1
+Conical faces are periodic:     0
+segfault on cone:               1
+=== build still clean after comment edit ===
+One pointer doesn't resolve — I cited "Conical faces are periodic" but the actual LEARNINGS heading is "Conical faces need is_periodic treatment". Let me align the two references:
+
+
+Ran 3 commands
+Aligned the LEARNINGS cross-reference and verified
+perl -pi -e 's/\QConical faces are periodic\E/Conical faces need is_periodic treatment/g' DEVELOPMENT_PLAN.md && echo "=== now resolves? ===" && grep -c "Conical faces need is_periodic treatment" DEVELOPMENT_PLAN.md LEARNINGS.md
+=== now resolves? ===
+DEVELOPMENT_PLAN.md:2
+LEARNINGS.md:0
+Failed to confirm all plan pointers resolve in LEARNINGS
+echo "=== backtick-agnostic discoverability check ==="; grep -c "Conical faces need" DEVELOPMENT_PLAN.md LEARNINGS.md; echo "=== full final §3.x cross-refs all resolve (agnostic) ==="; for kw in "Partial revolution" "Sphere pole vertex faces" "extend V to the apex" "Conical faces need" "ShapeFix_\* can segfault\|segfault on cone"; do printf '%-30s LEARNINGS:' "$kw"; grep -cE "$kw" LEARNINGS.md; done
+Exit code 1
+=== backtick-agnostic discoverability check ===
+LEARNINGS.md:1
+DEVELOPMENT_PLAN.md:2
+=== full final §3.x cross-refs all resolve (agnostic) ===
+Partial revolution             LEARNINGS:1
+Sphere pole vertex faces       LEARNINGS:1
+extend V to the apex           LEARNINGS:0
+Conical faces need             LEARNINGS:1
+ShapeFix_\* can segfault\|segfault on cone LEARNINGS:0
+Finaled discoverability check with realistic search terms
+echo "=== simple substrings an agent would grep ==="
+for kw in "extend V" "ShapeFix" "segfault" "wire-based construction WITH pre-set pcurves" "Sphere pole vertex"; do printf '%-45s LEARNINGS: ' "$kw"; grep -c "$kw" LEARNINGS.md; done
+echo "=== the new ShapeFix-cone heading exists ==="; grep -n "segfault on cone faces" LEARNINGS.md
+=== simple substrings an agent would grep ===
+extend V                                      LEARNINGS: 1
+ShapeFix                                      LEARNINGS: 5
+segfault                                      LEARNINGS: 3
+wire-based construction WITH pre-set pcurves  LEARNINGS: 1
+Sphere pole vertex                            LEARNINGS: 1
+=== the new ShapeFix-cone heading exists ===
+345:### `ShapeFix_*` can segfault on cone faces
+All pointers resolve via realistic search terms. Let me review the full diff and commit:
+
+
+Ran 2 commands
+Reviewed changed files
+git diff --stat
+ DEVELOPMENT_PLAN.md | 14 ++++++++++++++
+ LEARNINGS.md        |  4 ++++
+ src/stage3.rs       |  2 +-
+ 3 files changed, 19 insertions(+), 1 deletion(-)
+Committed
+d766310
+cat > tmp/COMMITMSG <<'EOF'
+docs: make the stage-3 rework handoff self-sufficient for a cold start
+Follow-up to the §3.x rework decision: ensure a fresh agent (or the
+NURBS effort it's bound to) can start from the docs alone, without this
+conversation. Audited what was captured vs. what only lived in-session
+and closed the gaps.
+DEVELOPMENT_PLAN §3.x, three additions:
+- "Where the code lives": names the concrete entry points in
+  src/stage3.rs (create_occt_faces_all, create_periodic_face,
+  create_wire_based_periodic_face, construct_shells) and the pcurve /
+  UV-bounds / natural-bounds dispatch, plus the already-declared-but-
+  unused ReconEdge.pcurves / BRepVertex.uv_coords fields to populate.
+- "Hard OCCT constraints": ShapeFix-segfaults-on-cones, is_periodic must
+  include Conical, MakeEdge periodic-arc/vertex-order trap, thread-safety
+  pointer — the facts that are painful to relearn by crashing.
+- "Reproduce & validate": the exact cone_tangent_planes command, the
+  verbose flags that dump per-face areas / BRepCheck failures, the
+  definition of done, and which LEARNINGS entries to read first.
+LEARNINGS: promoted "ShapeFix_* can segfault on cone faces" from a bare
+code comment to a durable entry (the rewrite would likely delete the
+comment). Aligned the §3.x cross-references so every LEARNINGS pointer
+resolves by search.
+src/stage3.rs: replaced a stale "TEMP: debug segfault" comment (the
+variable it guarded is now a live verbose-log value) with an accurate
+one, since the rework agent will be reading that exact function.
+---
+Generated with assistance from Claude Opus 4.8 (Anthropic, 2026)
+User prompt(s):
+- "yes, do the self-sufficiency pass"
+EOF
+git add -A && git commit -F tmp/COMMITMSG 2>&1 | tail -3
+[experiment-fable d766310] docs: make the stage-3 rework handoff self-sufficient for a cold start
+ 3 files changed, 19 insertions(+), 1 deletion(-)
+Done. The self-sufficiency pass is committed (d766310).
+
+What I audited and closed
+I checked each fact a cold-start agent would need against what was actually on disk, and found three gaps:
+
+No code anchors — §3.x described the design but never named where it lives. Added a "Where the code lives" paragraph pointing at the real entry points (create_occt_faces_all → create_periodic_face → create_wire_based_periodic_face / construct_shells), the natural-bounds/UV-bounds/wire dispatch, and the declared-but-unused ReconEdge.pcurves / BRepVertex.uv_coords fields to populate.
+The ShapeFix-segfaults-on-cones constraint lived only in a code comment — exactly the kind of comment a rewrite deletes. Promoted it to a durable LEARNINGS entry and restated it in §3.x, alongside the other crash-to-relearn constraints (is_periodic must include Conical, the MakeEdge periodic-arc/vertex-order trap, thread-safety pointer).
+No reproduce/validate recipe — added the exact cone_tangent_planes command, the verbose flags that dump per-face areas and BRepCheck failures, the definition of done (suite green + volume within 1%), and which LEARNINGS entries to read first.
+I also verified every LEARNINGS pointer resolves by realistic search term, and fixed a stale // TEMP: debug segfault comment in the exact function the rework touches (the variable it guarded is now a live verbose-log value).
+
+Net state of the handoff
+A fresh agent starting the rework now has, from disk alone: the decision and its trigger (§3.x), the proposed design, the concrete code map, the OCCT landmines, a runnable repro, and a done-condition — cross-linked from the NURBS TODO so it's discoverable from the effort it's bound to. The one thing docs can't convey — the feel for why the current sewing path resists tightening — is exactly the context you want a cold start to shed, per the earlier decision.
+
+Three commits this turn: the §3.x section (7ece433), and this self-sufficiency pass (d766310); the tree is otherwise unchanged and still green.
+
+The session log is in /Users/sethml/Downloads/session-export-1783443006379.zip. Put the transcript into agent-logs/ consistent with the existing files and commit.
+
+
+Ran 27 commands
+Listed existing agent-logs directory contents
+ls -la agent-logs/ 2>&1 | head -30
+total 42856
+drwxr-xr-x@ 80 sethml  staff     2560 Jul  6 00:44 ./
+drwxr-xr-x@ 25 sethml  staff      800 Jul  7 09:47 ../
+-rw-r--r--@  1 sethml  staff     6151 Mar 17 11:28 2026-01-07 99-99 claude opus 4.5.md
+-rw-r--r--@  1 sethml  staff   147845 Mar 17 11:28 2026-01-07_21-10_log.md
+-rw-r--r--@  1 sethml  staff     8044 Mar 17 11:28 2026-01-29_19-15_log.md
+-rw-r--r--@  1 sethml  staff   285175 Mar 17 11:28 2026-02-24_20-40_log.md
+-rw-r--r--@  1 sethml  staff     9968 Mar 17 11:28 2026-02-28_02-11_log.md
+-rw-r--r--@  1 sethml  staff   150545 Mar 17 11:28 2026-03-01_18-25_log.md
+-rw-r--r--@  1 sethml  staff   197868 Mar 17 11:28 2026-03-01_20-40_log.md
+-rw-r--r--@  1 sethml  staff   268972 Mar 17 11:28 2026-03-01_21-15_log.md
+-rw-r--r--@  1 sethml  staff   110639 Mar 17 11:28 2026-03-01_23-50_log.md
+-rw-r--r--@  1 sethml  staff   137974 Mar 17 11:28 2026-03-02_00-10_log.md
+-rw-r--r--@  1 sethml  staff   391580 Mar 17 11:28 2026-03-02_00-26_log.md
+-rw-r--r--@  1 sethml  staff    32885 Mar 17 11:28 2026-03-02_01-14_log.md
+-rw-r--r--@  1 sethml  staff   210157 Mar 17 11:28 2026-03-02_01-40_log.md
+-rw-r--r--@  1 sethml  staff   615602 Mar 17 11:28 2026-03-02_02-07_log.md
+-rw-r--r--@  1 sethml  staff   668090 Mar 17 11:28 2026-03-02_06-56_log.md
+-rw-r--r--@  1 sethml  staff   126169 Mar 17 11:28 2026-03-02_08-42_log.md
+-rw-r--r--@  1 sethml  staff   272886 Mar 17 11:28 2026-03-02_10-41_log.md
+-rw-r--r--@  1 sethml  staff   131481 Mar 17 11:28 2026-03-02_15-44_log.md
+-rw-r--r--@  1 sethml  staff  1018983 Mar 17 11:28 2026-03-02_16-02_log.md
+-rw-r--r--@  1 sethml  staff    11201 Mar 17 11:28 2026-03-06_17-18_log.md
+-rw-r--r--@  1 sethml  staff   150486 Mar 17 11:28 2026-03-06_17-50_log.md
+-rw-r--r--@  1 sethml  staff   224524 Mar 17 11:28 2026-03-06_21-50_log.md
+-rw-r--r--@  1 sethml  staff   190422 Mar 17 11:28 2026-03-06_22-30_log.md
+-rw-r--r--@  1 sethml  staff   160769 Mar 17 11:28 2026-03-07_10-11_log.md
+-rw-r--r--@  1 sethml  staff   219573 Mar 17 11:28 2026-03-07_10-25_log.md
+-rw-r--r--@  1 sethml  staff   313448 Mar 17 11:28 2026-03-07_12-01_log.md
+-rw-r--r--@  1 sethml  staff  2170759 Mar 17 11:28 2026-03-07_12-49_log.md
+Listed tail of agent-logs directory
+ls -la agent-logs/ | tail -30
+-rw-r--r--@  1 sethml  staff  1699086 Mar 17 11:28 2026-03-10_09-42_log.md
+-rw-r--r--@  1 sethml  staff   171627 Mar 17 11:28 2026-03-11_09-29_log.md
+-rw-r--r--@  1 sethml  staff    73965 Mar 17 11:28 2026-03-11_10-09_log.md
+-rw-r--r--@  1 sethml  staff   173739 Mar 17 11:28 2026-03-11_10-35_log.md
+-rw-r--r--@  1 sethml  staff    42693 Mar 17 11:28 2026-03-11_15-02_log.md
+-rw-r--r--@  1 sethml  staff   165405 Mar 17 11:28 2026-03-11_15-41_log.md
+-rw-r--r--@  1 sethml  staff    53741 Mar 17 11:28 2026-03-11_19-55_log.md
+-rw-r--r--@  1 sethml  staff   155856 Mar 17 11:28 2026-03-11_20-04_log.md
+-rw-r--r--@  1 sethml  staff   500613 Mar 17 11:28 2026-03-11_21-38_log.md
+-rw-r--r--@  1 sethml  staff    97188 Mar 17 11:28 2026-03-12_06-53_log.md
+-rw-r--r--@  1 sethml  staff   229840 Mar 17 11:28 2026-03-12_08-30_log.md
+-rw-r--r--@  1 sethml  staff   442051 Mar 17 11:28 2026-03-12_09-02_log.md
+-rw-r--r--@  1 sethml  staff    48595 Mar 17 11:28 2026-03-12_19-56_log.md
+-rw-r--r--@  1 sethml  staff   481089 Mar 17 11:28 2026-03-12_20-39_log.md
+-rw-r--r--@  1 sethml  staff    52883 Mar 19 08:37 2026-03-19_07-53_log.md
+-rw-r--r--@  1 sethml  staff   293280 Mar 19 13:24 2026-03-19_08-41_log.md
+-rw-r--r--@  1 sethml  staff    55954 Mar 19 14:26 2026-03-19_14-04_log.md
+-rw-r--r--@  1 sethml  staff    12203 Mar 19 15:11 2026-03-19_15-02_log.md
+-rw-r--r--@  1 sethml  staff    17045 Mar 19 16:23 2026-03-19_15-29_log.md
+-rw-r--r--@  1 sethml  staff    81533 Mar 19 17:09 2026-03-19_16-37_log.md
+-rw-r--r--@  1 sethml  staff    54310 Mar 19 19:42 2026-03-19_18-54_log.md
+-rw-r--r--@  1 sethml  staff    23880 Mar 20 08:12 2026-03-20_08-01_log.md
+-rw-r--r--@  1 sethml  staff    14847 Mar 20 08:33 2026-03-20_08-26_log.md
+-rw-r--r--@  1 sethml  staff   308229 Mar 20 11:44 2026-03-20_08-35_log.md
+-rw-r--r--@  1 sethml  staff    80244 Mar 20 12:06 2026-03-20_11-47_log.md
+-rw-r--r--@  1 sethml  staff   602943 Mar 20 17:03 2026-03-20_12-09_log.md
+-rw-r--r--@  1 sethml  staff    28569 Mar 20 17:19 2026-03-20_17-04_log.md
+-rw-r--r--@  1 sethml  staff    71576 Mar 20 17:45 2026-03-20_17-22_log.md
+-rw-r--r--@  1 sethml  staff   226503 Mar 20 21:09 2026-03-20_20-31_log.md
+-rw-r--r--@  1 sethml  staff   310198 Mar 20 22:33 2026-03-20_21-33_log.md
+Inspected format of a sample existing log file
+head -60 "agent-logs/2026-03-20_21-33_log.md"
+# Debugging and Visualization Enhancements for Iteration Process
+
+- **Date:** 2026-03-20 21:33 – 22:32
+- **Session ID:** 032a8abe-dfdf-4669-a4e1-cbfc5c20603f
+- **Models:** Claude Opus 4.6, Claude Sonnet 4.6
+- **Turns:** 2
+- **Tool calls:** 256
+- **Thinking blocks:** 60
+- **Input words:** 19,405
+- **Output words:** 12,653
+- **Prompt tokens (last round):** 188,550
+- **API rounds:** 219
+- **Total elapsed:** 28m28s
+
+## Table of Contents
+
+1. [/iterate](#user-1) (Claude Opus 4.6)
+2. [Read AGENTS.md and finish the iteration steps you skipped.](#user-2) (Claude Sonnet 4.6)
+
+---
+
+<a id="user-1"></a>
+
+## User (1)
+
+> /iterate
+> Change default --vertex-tolerance to 5e-5.
+> When visualizing cones in viz mode, make sure they&#x27;re at least 2x the maximum dimension of the model in length.
+> Make stage 2 debugging printing more consistent:
+> - With verbose=1: just summaries such as &quot;Stage 2.1 (0.001s): Deduced 60 planar hypotheses (24 multi-face, 36 single-face) covering 156 of 156 mesh faces&quot;
+> - verbose=2: include hypothesis such as &quot;  Plane 10: 2 faces, 4 vertices, normal=[0.8804, -0.0577, 0.4708], d=194.8917, err_max=4.66e-6, err_min=-4.66e-6&quot;
+> - verbose=3: for each successful hypothesis, print seed faces and final number of faces and details of acceptance/rejection.
+> - verbose=4: for each seed attempted, print seed faces and why the seed is rejected or BFS searched. For accepted seeds, print the fit and error.
+> - verbose=5: for each seed BFS searched, for each face explored, print the face&#x27;s error, if there&#x27;s a refit say so and print the refit results/error, and whether the face is accepted or rejected.
+> Make sure the debug messages have all useful state - for example for hypotheses, all geometric fields, and for fit, max vertex and surface error and whatever else woudl be helpful for understanding why the algorithm is doing what it&#x27;s doing.
+> Get rid of prefixes like [spherical-BFS]. Use indentation (two spaces at a time) to show verbose level - verbose=1 stuff at top level indent, verbose=2 at two spaces indent, etc.
+> When clicking on a face in viz-stages mode, force BFS to seed that face next. Add a --viz-stages-level flag which determines how often viz stops in stages which are selected by --viz-stages:
+> --viz-stages-level=1: Stop at the end of each accepted hypothesis.
+> --viz-stages-level=2: Also stop at the beginning of each accepted seed.
+> --viz-stages-level=3: Also stop at each explored BFS face that isn&#x27;t skipped.
+> --viz-stages-level=4: Also stop at the beginning of every seed candidate (accepted or not) and at each explored BFS face, even if it&#x27;s skipped.
+
+*2026-03-20 21:57*
+
+### Assistant — Claude Opus 4.6
+
+> 💭 Let me start by reading the key files mentioned in the AGENTS.md instructions for the `/iterate` command.
+
+**Todo list:**
+- 🔄 Read LEARNINGS.md, README.md, DEVELOPMENT_PLAN.md
+- ⬜ Read TODO.md and DONE.md
+- ⬜ Change default --vertex-tolerance to 5e-5
+- ⬜ Extend cone visualization length
+- ⬜ Refactor stage 2 debug printing
+- ⬜ Add --viz-stages-level flag
+- ⬜ Add click-to-seed in viz-stages mode
+- ⬜ Update docs and move TODO item
+- ⬜ Export chat log and review diff
+- ⬜ Update LEARNINGS.md if needed
+- ⬜ Commit changes
+Listed contents of the session export zip
+unzip -l /Users/sethml/Downloads/session-export-1783443006379.zip
+Archive:  /Users/sethml/Downloads/session-export-1783443006379.zip
+  Length      Date    Time    Name
+---------  ---------- -----   ----
+  8667469  07-07-2026 09:50   abd6df15-9563-4a4d-a937-76e85e98ace0.jsonl
+    57164  07-07-2026 09:50   abd6df15-9563-4a4d-a937-76e85e98ace0/tool-results/b8sdod531.txt
+  3211688  07-07-2026 09:50   abd6df15-9563-4a4d-a937-76e85e98ace0/tool-results/bna629mvn.txt
+      710  07-07-2026 09:50   metadata.json
+      293  07-07-2026 09:50   local-session-state.json
+    51755  07-07-2026 09:50   logs/claude.ai-web.log
+     1257  07-07-2026 09:50   logs/cowork_vm_node.log
+   597195  07-07-2026 09:50   logs/main.log
+     8465  07-07-2026 09:50   logs/ssh.log
+     1533  07-07-2026 09:50   logs/swift.log
+     1548  07-07-2026 09:50   logs/unknown-window.log
+---------                     -------
+ 12599077                     11 files
+Found references to agent-logs conventions in repo
+grep -rl "agent-logs" --include="*.md" --include="*.sh" --include="*.py" --include="*.js" . 2>/dev/null | grep -v "agent-logs/" | head -20
+AGENTS.md
+Read AGENTS.md instructions about agent-logs
+grep -n -B5 -A40 "agent-logs" AGENTS.md
+17-1. Read LEARNINGS.md, README.md, and DEVELOPMENT_PLAN.md.
+18-2. If given instructions on work to do, add them as an item to the top of TODO.me then follow them. Otherwise find the first item in TODO.md and implement it.
+19-3. Don't worry about running tests for now. We're making changes such that a bunch of tests are broken.
+20-4. Update README.md (if user-facing behavior changed) and DEVELOPMENT_PLAN.md to reflect your changes. When updating DEVELOPMENT_PLAN.md, ensure the algorithm descriptions in the Architecture section accurately describe the code as implemented — if the implementation differs from the original plan, update the plan to match reality.
+21-5. When complete, move the item from TODO.md to the end of DONE.md.
+22:6. Do an initial chat log export by running `../vscode-export-chat-log/export-chat-log.py`. Then read the **full output** of `git diff agent-logs/` (not piped through head or tail) to understand all of the work completed in this session, not just what's in your current context window.
+23-7. Think about whether items in LEARNINGS.md are obsolete - if so, delete or rewrite them. If you modified surface fitting code, update SURFACE_FITTING.md.
+24-8. Think about whether you've learned things that may be useful to a future AI agent editing the code - if so, add them to LEARNINGS.md.
+25-9. Commit your changes (see Commit Messages and Commit Checklist below), including any pre-existing staged files.
+26-10. Think about whether you encountered code that would be clearer or more correct if refactored or improved. If so, make the improvements, test, and commit.
+27:11. Do a final chat log export by running `( ../vscode-export-chat-log/export-chat-log.py --wait && git add agent-logs/ && git commit --amend --no-edit ) &`.
+28-12. Tell the user a limerick inspired by your work this session.
+29-13. Stop. Do not continue to the next iteration unless the user says to.
+30-
+31-### Commit Checklist (MANDATORY — verify before every commit)
+32-
+33-- `cargo clippy` emits no warnings.
+34-- Build passes with no errors or warnings.
+35-- Commit message uses a temporary file with model name and user prompts (see Commit Messages)
+36-- Chat log exported after commit (see Chat Log Export)
+37-
+38-## Project Layout
+39-
+40-This is a Rust project. Key locations:
+41-
+42-- `README.md` - Program usage. Read it.
+43-- `DEVELOPMENT_PLAN.md` - Development plan. Read it.
+44-- `Cargo.toml` — Rust project manifest
+45-- `src/` — Rust source files
+46-  - `bin/brepper.rs` — the main program
+47-  - `bin/step_measure_tolerance.rs` — utility to measure distances from STL to correpsonding STEP
+48-  - `bin/viewer.rs` — GUI to visualize STL or STEP files
+49-- `scripts/` — shell scripts for batch operations over test data
+50-  - `step_distance_table.sh` - runs `step_measure_tolerance` over all STL/STEP pairs and summarizes statistics
+51-- `tests/` — STL and STEP test file pairs
+52-  - `manual/` — handcrafted simple models
+53-  - `onshape/` — models exported from Onshape
+54-  - `ccad/generated/` — models generated via CodeCAD
+55-
+56-### OCCT / opencascade-rs
+57-
+58-The project uses the `opencascade-sys` crate (auto-generated Rust FFI bindings to OpenCASCADE Technology) via a path dependency. MANDATORY: All useful C++ OCCT APIs should be available in the binding - if you want to use one that doesn't seem to be bound, complain loudly about it AND STOP.
+59-
+60-```
+61-../opencascade-rs/crates/opencascade-sys   ← Rust FFI bindings (8700+ types)
+62-../opencascade-rs/crates/opencascade-sys/PORTING.md  ← Naming conventions & usage patterns
+63-../opencascade-rs/crates/opencascade-sys/generated/  ← All generated .rs modules
+64-../opencascade-rs/crates/occt-sys/OCCT/src/  ← OCCT C++ source (for reading docs/headers)
+65-../opencascade-rs/crates/occt-sys/OCCT/dox/  ← OCCT C++ documentation
+66-```
+67-
+Checked the export-chat-log tool directory
+ls -la ../vscode-export-chat-log/ 2>&1 | head -20
+total 200
+drwxr-xr-x@  3 sethml  staff     96 Mar  1 22:54 __pycache__/
+drwxr-xr-x@ 11 sethml  staff    352 Mar 29 18:51 ./
+drwxr-xr-x  61 sethml  staff   1952 Jul  5 22:04 ../
+-rw-r--r--@  1 sethml  staff   6148 Apr  1 14:00 .DS_Store
+drwxr-xr-x@ 14 sethml  staff    448 Mar 31 13:48 .git/
+-rw-r--r--@  1 sethml  staff     45 Feb 27 20:24 .gitignore
+drwxr-xr-x@ 19 sethml  staff    608 Mar 31 13:48 agent-logs/
+-rw-r--r--@  1 sethml  staff   2552 Mar  1 23:43 AGENTS.md
+-rwxr-xr-x@  1 sethml  staff  78847 Mar 31 13:47 export-chat-log.py*
+-rw-r--r--@  1 sethml  staff   2483 Mar 17 12:34 README.md
+drwxr-xr-x@ 78 sethml  staff   2496 Mar 31 13:47 tmp/
+Checked export-chat-log.py usage/help
+python3 ../vscode-export-chat-log/export-chat-log.py --help 2>&1 | head -80
+usage: export-chat-log.py [-h] [--session-id SESSION_ID] [--output OUTPUT]
+                          [--workspace WORKSPACE]
+                          [--project-root PROJECT_ROOT] [--list] [--wait]
+                          [--insiders] [--no-insiders]
+
+Export VS Code chat session to markdown
+
+options:
+  -h, --help            show this help message and exit
+  --session-id SESSION_ID
+                        Specific session UUID to export
+  --output, -o OUTPUT   Output file path (use '-' for stdout)
+  --workspace, -w WORKSPACE
+                        Workspace root directory
+  --project-root PROJECT_ROOT
+                        Path from output dir to project root, prepended to
+                        relative links (default: '..')
+  --list, -l            List available sessions
+  --wait                Wait for JSONL flush before exporting (default: on if
+                        stdin is not a TTY)
+  --insiders            Force using VS Code Insiders data directory
+  --no-insiders         Do not use VS Code Insiders data directory (overrides
+                        TERM_PROGRAM_VERSION detection)
+Read the top of export-chat-log.py to understand session discovery
+sed -n '1,120p' ../vscode-export-chat-log/export-chat-log.py
+#!/usr/bin/env python3
+"""
+Extract a VS Code Copilot chat session from JSONL format into
+a clean, readable markdown file.
+
+Usage:
+    python3 scripts/export_chat_log.py [--session-id UUID] [--output PATH]
+
+If no session-id is given, uses the most recently active session for this workspace.
+If no output is given, writes to agent-logs/ with the standard naming convention.
+Use --output - to write markdown to stdout.
+"""
+
+from __future__ import annotations
+import glob
+
+
+import hashlib
+import html
+import json
+import os
+import re
+import sqlite3
+import sys
+import time
+from datetime import datetime
+from urllib.parse import unquote
+from typing import Any, cast
+
+# Prepended to workspace-relative links; set via --project-root (default "..")
+_project_root = ".."
+_workspace_path = ""
+_force_insiders = False
+
+
+# ---------------------------------------------------------------------------
+# Workspace / session discovery
+# ---------------------------------------------------------------------------
+
+def _vscode_data_dirs() -> list[str]:
+    """Return candidate VS Code user-data directories, ordered by preference.
+
+    Checks TERM_PROGRAM_VERSION to prefer Insiders when running inside it.
+    Supports macOS, Linux, and Windows.
+    """
+    variants = ["Code - Insiders", "Code"] if _force_insiders else ["Code", "Code - Insiders"]
+
+    platform = sys.platform
+    dirs: list[str] = []
+    for variant in variants:
+        if platform == "darwin":
+            base = os.path.expanduser(f"~/Library/Application Support/{variant}")
+        elif platform == "win32":
+            appdata = os.environ.get("APPDATA", "")
+            base = os.path.join(appdata, variant) if appdata else ""
+        else:  # linux / other unix
+            config = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+            base = os.path.join(config, variant)
+        if base:
+            dirs.append(base)
+    return dirs
+
+
+def find_workspace_storage(workspace_path: str) -> list[str]:
+    """Find VS Code workspace storage dirs for the given workspace.
+
+    Returns all matching storage directories.  A directory can match via the
+    ``folder`` key (regular folder workspace) or via the ``workspace`` key
+    (multi-root ``.code-workspace`` file located inside *workspace_path*).
+    """
+    abs_path: str = os.path.abspath(workspace_path)
+    folder_uri: str = "file://" + abs_path
+
+    # Collect .code-workspace URIs for files in the directory
+    workspace_file_uris: set[str] = set()
+    for name in glob.glob(os.path.join(abs_path, "*.code-workspace")):
+        workspace_file_uris.add("file://" + name)
+
+    results: list[str] = []
+    for data_dir in _vscode_data_dirs():
+        ws_storage = os.path.join(data_dir, "User", "workspaceStorage")
+        if not os.path.isdir(ws_storage):
+            continue
+        for entry in os.listdir(ws_storage):
+            ws_json = os.path.join(ws_storage, entry, "workspace.json")
+            if os.path.isfile(ws_json):
+                try:
+                    with open(ws_json) as f:
+                        data = json.load(f)
+                    stored_folder: str = unquote(data.get("folder", "")).rstrip("/")
+                    stored_workspace: str = unquote(data.get("workspace", "")).rstrip("/")
+                    if stored_folder and stored_folder == folder_uri.rstrip("/"):
+                        results.append(os.path.join(ws_storage, entry))
+                    elif stored_workspace and stored_workspace in workspace_file_uris:
+                        results.append(os.path.join(ws_storage, entry))
+                except (json.JSONDecodeError, IOError):
+                    continue
+    return results
+
+
+def get_session_index(storage_path: str) -> dict[str, Any] | None:
+    """Read the chat session index from the SQLite state DB."""
+    db_path = os.path.join(storage_path, "state.vscdb")
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        cursor = conn.execute(
+            "SELECT value FROM ItemTable WHERE key = 'chat.ChatSessionStore.index'"
+        )
+        row = cursor.fetchone()
+        return json.loads(row[0]) if row else None
+    finally:
+        conn.close()
+
+
+def find_parent_session_id(storage_path: str, parent_title: str) -> str | None:
+    """Find the session ID of the parent of a forked session by matching title."""
+    index = get_session_index(storage_path)
+    if not isinstance(index, dict):
+        return None
+    entries: Any = index.get("entries", {})
+Found session/jsonl handling and main entry logic
+grep -n "jsonl\|session_id\|def main\|def find_session\|def export\|argparse\|add_argument" ../vscode-export-chat-log/export-chat-log.py | head -80
+115:def find_parent_session_id(storage_path: str, parent_title: str) -> str | None:
+130:def find_rolled_back_request_ids(storage_path: str, session_id: str, all_request_ids: set[str] | None = None) -> set[str]:
+148:        storage_path, "chatEditingSessions", session_id, "state.json"
+190:def find_active_session(storage_path: str, session_id: str | None = None,
+201:    if session_id:
+202:        path = os.path.join(sessions_dir, f"{session_id}.jsonl")
+205:        raise FileNotFoundError(f"Session {session_id} not found")
+219:            path = os.path.join(sessions_dir, f"{sid}.jsonl")
+245:    jsonl_files = sorted(
+249:            if f.endswith(".jsonl")
+254:    if jsonl_files:
+255:        return jsonl_files[0][0]
+337:def replay_jsonl(filepath: str) -> dict[str, Any]:
+1304:def session_to_markdown(session: dict[str, Any], rolled_back_ids: set[str] | None = None, source_mtime: float | None = None, parent_session_id: str | None = None) -> str:
+1457:                if parent_session_id:
+1458:                    fork_marker += f" (from `{parent_session_id}`)"
+1684:            if parent_session_id:
+1685:                fork_marker += f" (from `{parent_session_id}`)"
+1732:def main() -> None:
+1733:    import argparse
+1735:    parser = argparse.ArgumentParser(description="Export VS Code chat session to markdown")
+1736:    parser.add_argument("--session-id", help="Specific session UUID to export")
+1737:    parser.add_argument("--output", "-o", help="Output file path (use '-' for stdout)")
+1738:    parser.add_argument("--workspace", "-w", default=".", help="Workspace root directory")
+1739:    parser.add_argument("--project-root", default="..", help="Path from output dir to project root, prepended to relative links (default: '..')")
+1740:    parser.add_argument("--list", "-l", action="store_true", help="List available sessions")
+1741:    parser.add_argument("--wait", action="store_true", default=None, help="Wait for JSONL flush before exporting (default: on if stdin is not a TTY)")
+1742:    parser.add_argument("--insiders", action="store_true", help="Force using VS Code Insiders data directory")
+1743:    parser.add_argument("--no-insiders", action="store_true", help="Do not use VS Code Insiders data directory (overrides TERM_PROGRAM_VERSION detection)")
+1785:    if args.session_id:
+1788:                session_path = find_active_session(sp, args.session_id)
+1794:            raise FileNotFoundError(f"Session {args.session_id} not found")
+1837:    session = replay_jsonl(session_path)
+1840:    session_id = session.get("sessionId", os.path.splitext(os.path.basename(session_path))[0])
+1842:    rolled_back_ids = find_rolled_back_request_ids(storage_path, session_id, all_request_ids)
+1861:    parent_session_id: str | None = None
+1866:            parent_session_id = find_parent_session_id(sp, parent_title)
+1867:            if parent_session_id:
+1872:                                   parent_session_id=parent_session_id)
+Extracted zip to a temp dir and inspected structure
+mkdir -p /tmp/sess_export && cd /tmp/sess_export && unzip -o -q /Users/sethml/Downloads/session-export-1783443006379.zip && ls -la && echo "---" && ls -la abd6df15-9563-4a4d-a937-76e85e98ace0/tool-results/ 2>/dev/null && echo "---metadata---" && cat metadata.json && echo "---local-session-state---" && cat local-session-state.json
+total 16952
+drwxr-xr-x@  7 sethml  wheel      224 Jul  7 09:52 ./
+drwxrwxrwt  24 root    wheel      768 Jul  7 09:52 ../
+drwxr-xr-x@  3 sethml  wheel       96 Jul  7 09:52 abd6df15-9563-4a4d-a937-76e85e98ace0/
+-rw-r--r--@  1 sethml  wheel  8667469 Jul  7 09:50 abd6df15-9563-4a4d-a937-76e85e98ace0.jsonl
+-rw-r--r--@  1 sethml  wheel      293 Jul  7 09:50 local-session-state.json
+drwxr-xr-x@  8 sethml  wheel      256 Jul  7 09:52 logs/
+-rw-r--r--@  1 sethml  wheel      710 Jul  7 09:50 metadata.json
+---
+total 6392
+drwxr-xr-x@ 4 sethml  wheel      128 Jul  7 09:52 ./
+drwxr-xr-x@ 3 sethml  wheel       96 Jul  7 09:52 ../
+-rw-r--r--@ 1 sethml  wheel    57164 Jul  7 09:50 b8sdod531.txt
+-rw-r--r--@ 1 sethml  wheel  3211688 Jul  7 09:50 bna629mvn.txt
+---metadata---
+{"sessionId":"local_d12fc560-fb06-4dfd-9034-4c0d356a9d71","cliSessionId":"abd6df15-9563-4a4d-a937-76e85e98ace0","cwd":"/Users/sethml/src/brepper","originCwd":"/Users/sethml/src/brepper","lastFocusedAt":1783438616747,"createdAt":1783324005074,"lastActivityAt":1783442688374,"model":"claude-opus-4-8","effort":"xhigh","sessionSettings":{"ultracode":true},"isArchived":false,"title":"Complete stalled AI project","titleSource":"auto","permissionMode":"bypassPermissions","remoteMcpServersConfig":[],"writtenBranches":["experiment-fable"],"chromePermissionMode":"skip_all_permission_checks","completedTurns":12,"alwaysAllowedReasons":[],"sessionPermissionUpdates":[],"classifierSummaryEnabled":true,"spawnSeed":{}}---local-session-state---
+{"capturedAt":"2026-07-07T16:50:06.129Z","sessionId":"<blob>","cliSessionId":"abd6df15-9563-4a4d-a937-76e85e98ace0","isRunning":false,"pendingEchoUuids":null,"inputStreamHasPending":false,"nextCycleUuid":null,"hasPendingCycle":false,"pendingCycleUserMessageUuid":null,"deferredSendUuids":null}
+Shell cwd was reset to /Users/sethml/src/brepper
+Peeked at the jsonl format
+head -c 3000 /tmp/sess_export/abd6df15-9563-4a4d-a937-76e85e98ace0.jsonl; echo; echo "---linecount---"; wc -l /tmp/sess_export/abd6df15-9563-4a4d-a937-76e85e98ace0.jsonl
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-07-06T07:46:45.403Z","sessionId":"abd6df15-9563-4a4d-a937-76e85e98ace0","content":"This is a project that I got about half done via AI and then stalled out on. You are a much more capable model than I was using. Look at *.md to understand the project, and attempt to complete it. Do not be afraid to change the approach from that which is documented if a different approach will work better. Add unit tests and test models as prudent to improve coverage, particularly of new features or edge cases. Don't take the existing unit tests or code as gospel - when helpful, change them to make progress toward the goal.  Keep tests running efficiently - if possible the test suite should take less than 5 minutes. Making sure tests run optimized code might help. Feel free to simplify tests or make them more efficient. As you improve coverage, do a git commit at points where the code builds and runs and performs better than the previous commit. Start by timing the tests and reducing their runtime dramatically. Decreasing the resolution of some test models might help - some have very many triangles."}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-07-06T07:46:45.421Z","sessionId":"abd6df15-9563-4a4d-a937-76e85e98ace0"}
+{"parentUuid":null,"isSidechain":false,"promptId":"7945a103-ef1b-47c8-b334-f833e0db71d0","type":"user","message":{"role":"user","content":"This is a project that I got about half done via AI and then stalled out on. You are a much more capable model than I was using. Look at *.md to understand the project, and attempt to complete it. Do not be afraid to change the approach from that which is documented if a different approach will work better. Add unit tests and test models as prudent to improve coverage, particularly of new features or edge cases. Don't take the existing unit tests or code as gospel - when helpful, change them to make progress toward the goal.  Keep tests running efficiently - if possible the test suite should take less than 5 minutes. Making sure tests run optimized code might help. Feel free to simplify tests or make them more efficient. As you improve coverage, do a git commit at points where the code builds and runs and performs better than the previous commit. Start by timing the tests and reducing their runtime dramatically. Decreasing the resolution of some test models might help - some have very many triangles."},"uuid":"8347cae1-dea8-48de-bf3b-2efa26c68ad5","timestamp":"2026-07-06T07:46:45.438Z","permissionMode":"bypassPermissions","origin":{"kind":"human"},"promptSource":"sdk","userType":"external","entrypoint":"claude-desktop","cwd":"/Users/sethml/src/brepper","sessionId":"abd6df15-9563-4a4d-a937-76e85e98ace0","version":"2.1.197","gitBranch":"experiment-fable"}
+{"parentUuid":"8347cae1-dea8-48de-bf3b-2efa26c68ad5","isSidechain":false,"attachment":{"type":"deferred_tools_delta","addedNames":["CronCreate","CronDelete","CronList","DesignSync
+---linecount---
+    3749 /tmp/sess_export/abd6df15-9563-4a4d-a937-76e85e98ace0.jsonl
+Read replay_jsonl implementation
+sed -n '337,420p' ../vscode-export-chat-log/export-chat-log.py
+def replay_jsonl(filepath: str) -> dict[str, Any]:
+    """Replay the JSONL to reconstruct the full session state."""
+    session_state: dict[str, Any] = {}
+    requests_by_id: dict[str, dict[str, Any]] = {}
+    request_order: list[str] = []
+    response_windows: dict[str, list[tuple[int, list[dict[str, Any]]]]] = {}   # rid -> list of (seq, window) pairs
+    # Track sequence numbers for interjection detection
+    seq = 0
+    request_submit_seq: dict[str, int] = {}   # rid -> seq when request was submitted
+    # Track which request IDs came from the initial kind:0 snapshot
+    # (used to detect forked sessions — forks embed parent requests in the snapshot)
+    initial_snapshot_rids: set[str] = set()
+    # Track result/modelState/followups writes with their seq and origin index
+    result_writes: list[tuple[int, int, dict[str, Any]]] = []        # list of (seq, idx, value)
+    model_state_writes: list[tuple[int, int, Any]] = []   # list of (seq, idx, value)
+    followups_writes: list[tuple[int, int, Any]] = []     # list of (seq, idx, value)
+
+    with open(filepath) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            data: dict[str, Any] = json.loads(line)
+            kind: Any = data.get("kind")
+            keys: list[Any] = data.get("k", [])
+            v: Any = data.get("v")
+            seq += 1
+
+            if kind == 0:
+                if isinstance(v, dict):
+                    session_state = cast(dict[str, Any], v)
+                else:
+                    session_state = {}
+                # Capture original title before any kind:1 edits can change it
+                session_state["_initial_title"] = session_state.get("customTitle", "")
+                for req in session_state.get("requests", []):
+                    rid: str = req.get("requestId", "")
+                    if rid and rid not in requests_by_id:
+                        requests_by_id[rid] = req
+                        request_order.append(rid)
+                        request_submit_seq[rid] = seq
+                        initial_snapshot_rids.add(rid)
+                        resp_val: Any = req.get("response", [])
+                        if resp_val:
+                            response_windows.setdefault(rid, []).append((seq, resp_val))
+
+            elif kind == 2 and keys == ["requests"]:
+                if isinstance(v, list):
+                    for req_item in cast(list[Any], v):
+                        if not isinstance(req_item, dict):
+                            continue
+                        req: dict[str, Any] = cast(dict[str, Any], req_item)
+                        rid = str(req.get("requestId", ""))
+                        if not rid:
+                            continue
+                        if rid not in requests_by_id:
+                            request_order.append(rid)
+                            request_submit_seq[rid] = seq
+                        requests_by_id[rid] = req
+                        resp: list[dict[str, Any]] = list(cast(list[Any], req.get("response", [])))
+                        if resp:
+                            response_windows.setdefault(rid, []).append((seq, resp))
+
+            elif kind in (1, 2):
+                if not keys:
+                    continue
+                if (
+                    keys[0] == "requests"
+                    and len(keys) >= 2
+                    and isinstance(keys[1], int)
+                ):
+                    idx: int = keys[1]
+                    if idx < len(request_order):
+                        rid = request_order[idx]
+                        target: dict[str, Any] = requests_by_id[rid]
+                        sub_keys: list[Any] = keys[2:]
+
+                        if sub_keys == ["response"] and isinstance(v, list):
+                            window: list[dict[str, Any]] = cast(list[dict[str, Any]], v)
+                            response_windows.setdefault(rid, []).append((seq, window))
+                            target["response"] = window
+                            continue
+
+                        # Track result/modelState/followups writes
+Checked whether export-chat-log.py has any Claude Code CLI format support
+grep -n "parentUuid\|cliSessionId\|claude-code\|toolUseResult\|\"type\":\"user\"\|\"type\": \"user\"\|content.*text\|thinking" ../vscode-export-chat-log/export-chat-log.py | head -40
+281:    if kind == "thinking":
+286:        # versions of the same thinking block are treated as the same part.
+289:        return ("thinking", think_id, prefix)
+319:            elif fp[0] == "thinking":
+1196:def format_thinking_block(part: dict[str, Any]) -> list[str]:
+1197:    """Format a thinking block as an indented blockquote."""
+1337:    total_thinking = 0
+1366:                if part_d.get("kind") == "thinking":
+1367:                    total_thinking += 1
+1401:    out.append(f"- **Thinking blocks:** {total_thinking}")
+1525:        # Accumulate text runs (text + inline refs) and flush on tool calls / thinking
+1564:            if part_kind == "thinking":
+1566:                think_lines: list[str] = format_thinking_block(part_d2)
+1626:            # Text content — add to text run
+Read session_to_markdown header/stats section
+sed -n '1304,1460p' ../vscode-export-chat-log/export-chat-log.py
+def session_to_markdown(session: dict[str, Any], rolled_back_ids: set[str] | None = None, source_mtime: float | None = None, parent_session_id: str | None = None) -> str:
+    """Convert a replayed session state to a rich markdown document.
+
+    source_mtime: mtime of the JSONL file (epoch seconds), used to estimate
+                  duration for in-progress requests.
+    """
+    out: list[str] = []
+    if rolled_back_ids is None:
+        rolled_back_ids = set()
+
+    title = session.get("customTitle", "Untitled Session")
+    # Detect forked sessions: initial snapshot contains requests that were rolled back
+    initial_snapshot_rids: set[str] = session.get("_initial_snapshot_rids", set())
+    forked_rids: set[str] = initial_snapshot_rids & rolled_back_ids
+    dt = get_session_creation_time(session)
+    session_model_id = (
+        session.get("inputState", {})
+        .get("selectedModel", {})
+        .get("metadata", {})
+        .get("id", "unknown")
+    )
+
+    requests = session.get("requests", [])
+    classified = classify_requests(requests)
+    active = [c for c in classified if not c["is_retried"]]
+
+    # Mark rolled-back entries
+    for c in active:
+        c["is_rolled_back"] = c["req"].get("requestId") in rolled_back_ids
+    visible = [c for c in active if not c["is_rolled_back"]]
+
+    # Compute stats (only for visible requests)
+    total_tool_calls = 0
+    total_thinking = 0
+    total_prompt_tokens = 0
+    total_rounds = 0
+    total_input_words = 0
+    total_output_words = 0
+    total_elapsed_ms = 0
+    models_used: set[str] = set()
+    for c in visible:
+        req = c["req"]
+        model_name = get_request_model(req)
+        if model_name:
+            models_used.add(model_name)
+        meta_raw: Any = req.get("result", {})
+        meta: Any = cast(dict[str, Any], meta_raw).get("metadata", {}) if isinstance(meta_raw, dict) else {}
+        if isinstance(meta, dict):
+            meta_d2: dict[str, Any] = cast(dict[str, Any], meta)
+            if meta_d2.get("promptTokens"):
+                total_prompt_tokens += int(meta_d2["promptTokens"])
+            rounds: Any = meta_d2.get("toolCallRounds", [])
+            total_rounds += max(len(cast(list[Any], rounds)), 1) if rounds or meta_d2.get("promptTokens") else 0
+        timings_raw: Any = req.get("result", {})
+        timings: Any = cast(dict[str, Any], timings_raw).get("timings", {}) if isinstance(timings_raw, dict) else {}
+        if isinstance(timings, dict) and cast(dict[str, Any], timings).get("totalElapsed"):
+            total_elapsed_ms += int(cast(dict[str, Any], timings)["totalElapsed"])
+        for part in cast(list[Any], req.get("response", [])):
+            if isinstance(part, dict):
+                part_d: dict[str, Any] = cast(dict[str, Any], part)
+                if part_d.get("kind") == "toolInvocationSerialized":
+                    total_tool_calls += 1
+                if part_d.get("kind") == "thinking":
+                    total_thinking += 1
+
+    model_label = "Models" if len(models_used) > 1 else "Model"
+    models_str = ', '.join(sorted(models_used)) or humanize_model_id(session_model_id)
+
+    # Compute session time range
+    end_dt = dt
+    for c in visible:
+        req = c["req"]
+        req_ts = req.get("timestamp", 0)
+        req_elapsed = 0
+        timings_raw2: Any = req.get("result", {})
+        timings2: Any = cast(dict[str, Any], timings_raw2).get("timings", {}) if isinstance(timings_raw2, dict) else {}
+        if isinstance(timings2, dict) and cast(dict[str, Any], timings2).get("totalElapsed"):
+            req_elapsed = cast(dict[str, Any], timings2)["totalElapsed"]
+        elif c["status"] == "incomplete" and req_ts and source_mtime:
+            req_elapsed = source_mtime * 1000 - req_ts
+        if req_ts:
+            candidate = datetime.fromtimestamp((req_ts + req_elapsed) / 1000)
+            if candidate > end_dt:
+                end_dt = candidate
+
+    if end_dt.date() == dt.date():
+        date_range = f"{dt.strftime('%Y-%m-%d %H:%M')} – {end_dt.strftime('%H:%M')}"
+    else:
+        date_range = f"{dt.strftime('%Y-%m-%d %H:%M')} – {end_dt.strftime('%Y-%m-%d %H:%M')}"
+
+    out.append(f"# {escape_html(title)}")
+    out.append("")
+    out.append(f"- **Date:** {date_range}")
+    out.append(f"- **Session ID:** {escape_html(str(session.get('sessionId', 'unknown')))}")
+    out.append(f"- **{model_label}:** {models_str}")
+    out.append(f"- **Turns:** {len(visible)}")
+    out.append(f"- **Tool calls:** {total_tool_calls}")
+    out.append(f"- **Thinking blocks:** {total_thinking}")
+    INPUT_WORDS_IDX = len(out)
+    out.append("")  # placeholder for input words
+    OUTPUT_WORDS_IDX = len(out)
+    out.append("")  # placeholder for output words
+    if total_prompt_tokens:
+        out.append(f"- **Prompt tokens (last round):** {total_prompt_tokens:,}")
+    if total_rounds:
+        out.append(f"- **API rounds:** {total_rounds:,}")
+    if total_elapsed_ms:
+        out.append(f"- **Total elapsed:** {format_elapsed(total_elapsed_ms)}")
+    out.append("")
+
+    # --- Table of Contents ---
+    out.append("## Table of Contents")
+    out.append("")
+    for c in visible:
+        req = c["req"]
+        turn_idx = c["turn_num"]
+        user_text = _get_prompt_text(req)
+
+        # Create a short preview of the prompt
+        preview = user_text.split("\n")[0] if user_text else "(empty)"
+        if len(preview) > 100:
+            preview = preview[:97] + "..."
+
+        status_marker = ""
+        if c["status"] == "canceled":
+            status_marker = " ⚠️ canceled"
+        elif c["status"] == "incomplete":
+            status_marker = " ⚠️ incomplete"
+        elif c["status"] == "failed":
+            status_marker = " ⚠️ failed"
+
+        model_name = get_request_model(req)
+        model_suffix = f" ({model_name})" if model_name else ""
+
+        anchor = make_gfm_anchor(f"User ({turn_idx})")
+        out.append(f"{turn_idx}. [{escape_link_text(preview)}](#{anchor}){model_suffix}{status_marker}")
+    out.append("")
+    out.append("---")
+    out.append("")
+
+    # --- Turns ---
+    rollback_count = 0
+    rollback_rids: list[str] = []
+    for c in active:
+        if c["is_rolled_back"]:
+            rollback_count += 1
+            rollback_rids.append(c["req"].get("requestId", ""))
+            continue
+        # Emit rollback/fork marker if we just passed a sequence of rolled-back turns
+        if rollback_count > 0:
+            # All rolled-back requests came from initial snapshot = forked conversation
+            if rollback_rids and all(rid in forked_rids for rid in rollback_rids if rid):
+                fork_marker = "**Forked conversation**"
+                if parent_session_id:
+                    fork_marker += f" (from `{parent_session_id}`)"
+                out.append(fork_marker)
+            else:
+Read the turn-body rendering logic
+sed -n '1460,1700p' ../vscode-export-chat-log/export-chat-log.py
+            else:
+                s = "s" if rollback_count > 1 else ""
+                out.append(f"**{rollback_count} user prompt{s} rolled back**")
+            out.append("")
+            out.append("---")
+            out.append("")
+            rollback_count = 0
+            rollback_rids = []
+
+        req = c["req"]
+        turn_idx = c["turn_num"]
+        user_text = _get_prompt_text(req)
+        turn_input_words = len(user_text.split()) if user_text else 0
+        turn_output_words = 0
+
+        req_ts = req.get("timestamp", 0)
+        req_dt = datetime.fromtimestamp(req_ts / 1000) if req_ts else None
+        req_timings_raw: Any = req.get("result", {})
+        req_timings: Any = cast(dict[str, Any], req_timings_raw).get("timings", {}) if isinstance(req_timings_raw, dict) else {}
+        req_elapsed_ms: Any = cast(dict[str, Any], req_timings).get("totalElapsed") if isinstance(req_timings, dict) else None
+        # For incomplete requests, estimate elapsed from file mtime
+        if req_elapsed_ms is None and c["status"] == "incomplete" and req_ts and source_mtime:
+            req_elapsed_ms = source_mtime * 1000 - req_ts
+        req_meta_raw: Any = req.get("result", {})
+        req_meta: Any = cast(dict[str, Any], req_meta_raw).get("metadata", {}) if isinstance(req_meta_raw, dict) else {}
+        req_pt: Any = cast(dict[str, Any], req_meta).get("promptTokens") if isinstance(req_meta, dict) else None
+        req_rounds: int = len(cast(list[Any], cast(dict[str, Any], req_meta).get("toolCallRounds", []))) if isinstance(req_meta, dict) else 0
+
+        anchor = make_gfm_anchor(f"User ({turn_idx})")
+        out.append(f'<a id="{anchor}"></a>')
+        out.append("")
+        out.append(f"## User ({turn_idx})")
+        out.append("")
+        if user_text:
+            quoted_user = "> " + escape_html(user_text.strip()).replace("\n", "\n> ")
+            out.append(quoted_user)
+        else:
+            out.append("> *(empty message)*")
+        out.append("")
+
+        # Status note for problematic requests
+        if c["status"] == "canceled":
+            out.append("> **⚠️ This request was canceled.**")
+            out.append("")
+        elif c["status"] == "incomplete":
+            out.append("> **⚠️ This response did not complete.**")
+            out.append("")
+        elif c["status"] == "failed":
+            out.append("> **⚠️ This request failed.**")
+            out.append("")
+
+        # User prompt timestamp
+        if req_dt:
+            out.append(f"*{req_dt.strftime('%Y-%m-%d %H:%M')}*")
+            out.append("")
+
+        response = req.get("response", [])
+        if not isinstance(response, list) or not response:
+            continue
+
+        model_name = get_request_model(req)
+        model_suffix = f" — {model_name}" if model_name else ""
+
+        out.append(f"### Assistant{model_suffix}")
+        out.append("")
+        # Accumulate text runs (text + inline refs) and flush on tool calls / thinking
+        text_run: list[str] = []
+
+        def flush_text_run() -> None:
+            if text_run:
+                merged = "".join(text_run).strip()
+                if merged:
+                    out.append(merged)
+                    out.append("")
+                text_run.clear()
+
+        # Pre-scan: build tool-call map from toolCallRounds for content.txt resolution
+        tcr_map: dict[str, dict[str, str]] = _build_tool_call_map(req_meta)
+
+        # Pre-scan: collect tool calls that belong to a subagent
+        subagent_children: dict[str, list[dict[str, Any]]] = {}  # parent tcid -> child parts
+        subagent_child_ids: set[str] = set()  # toolCallIds that are children
+        for _part in cast(list[Any], response):
+            if not isinstance(_part, dict):
+                continue
+            _part_d: dict[str, Any] = cast(dict[str, Any], _part)
+            parent_id: str = str(_part_d.get("subAgentInvocationId", "") or "")
+            if parent_id:
+                subagent_children.setdefault(parent_id, []).append(_part_d)
+                child_tcid: str = str(_part_d.get("toolCallId", "") or "")
+                if child_tcid:
+                    subagent_child_ids.add(child_tcid)
+
+        for part in cast(list[Any], response):
+            if not isinstance(part, dict):
+                continue
+
+            part_d2: dict[str, Any] = cast(dict[str, Any], part)
+            part_kind = part_d2.get("kind", "")
+
+            if part_kind in ("mcpServersStarting", "textEditGroup"):
+                continue
+
+            # Thinking blocks — render as collapsed sections
+            if part_kind == "thinking":
+                flush_text_run()
+                think_lines: list[str] = format_thinking_block(part_d2)
+                if think_lines:
+                    for line in think_lines:
+                        out.append(line)
+                    out.append("")
+                think_text: str = str(part_d2.get("value", ""))
+                turn_output_words += len(think_text.split()) if think_text else 0
+                continue
+
+            # Inline reference — merge into text run
+            if part_kind == "inlineReference":
+                ref_text: str = format_inline_ref(part_d2)
+                if ref_text:
+                    text_run.append(ref_text)
+                continue
+
+            # Tool call — flush text, then render tool
+            tool_id: str = str(part_d2.get("toolId", ""))
+            if part_kind == "toolInvocationSerialized" or (tool_id and part_kind != ""):
+                # Skip tool calls that belong to a subagent (rendered with parent)
+                part_tcid: str = str(part_d2.get("toolCallId", "") or "")
+                if part_tcid in subagent_child_ids:
+                    continue
+                flush_text_run()
+
+                # Handle copilot_readFile for content.txt (large tool result continuation)
+                if tool_id == "copilot_readFile":
+                    ct_info: tuple[str, int | None, int | None] | None = _extract_content_txt_info(part_d2)
+                    if ct_info is not None:
+                        ct_fpath, ct_start, ct_end = ct_info
+                        ct_lines: list[str] | None = format_content_txt_read(ct_fpath, tcr_map, ct_start, ct_end)
+                        if ct_lines:
+                            for line in ct_lines:
+                                out.append(line)
+                            out.append("")
+                        continue
+
+                # For subagent invocations, pass their child tool calls
+                children: list[dict[str, Any]] | None = subagent_children.get(part_tcid)
+                tool_lines: list[str] = format_tool_call(part_d2, children)
+                if tool_lines:
+                    for line in tool_lines:
+                        out.append(line)
+                    out.append("")
+                # Tool output = input words (counted from response parts)
+                rd: Any = part_d2.get("resultDetails", {})
+                if isinstance(rd, dict):
+                    rd_d: dict[str, Any] = cast(dict[str, Any], rd)
+                    for out_item in cast(list[Any], rd_d.get("output", [])):
+                        if isinstance(out_item, dict):
+                            val_s: str = str(cast(dict[str, Any], out_item).get("value", ""))
+                            turn_input_words += len(val_s.split()) if val_s else 0
+                elif isinstance(rd, list):
+                    for item in cast(list[Any], rd):
+                        if isinstance(item, dict):
+                            item_d: dict[str, Any] = cast(dict[str, Any], item)
+                            val_s2: str = str(item_d.get("value", "") or item_d.get("path", ""))
+                            turn_input_words += len(val_s2.split()) if val_s2 else 0
+                continue
+
+            # Text content — add to text run
+            val2: Any = part_d2.get("value", "")
+            text: str = extract_text(val2)
+            if text and text.strip():
+                text_run.append(text)
+                turn_output_words += len(text.split())
+
+        flush_text_run()
+        # Count tool call arguments from toolCallRounds (output words)
+        if isinstance(req_meta, dict):
+            req_meta_d2: dict[str, Any] = cast(dict[str, Any], req_meta)
+            for rnd in cast(list[Any], req_meta_d2.get("toolCallRounds", [])):
+                if not isinstance(rnd, dict):
+                    continue
+                rnd_d: dict[str, Any] = cast(dict[str, Any], rnd)
+                for tc in cast(list[Any], rnd_d.get("toolCalls", [])):
+                    if isinstance(tc, dict):
+                        args: str = str(cast(dict[str, Any], tc).get("arguments", ""))
+                        turn_output_words += len(args.split()) if args else 0
+        total_input_words += turn_input_words
+        total_output_words += turn_output_words
+
+        # Response end metadata
+        resp_meta_parts: list[str] = []
+        if req_elapsed_ms is not None and req_ts:
+            end_dt = datetime.fromtimestamp((req_ts + req_elapsed_ms) / 1000)
+            resp_meta_parts.append(end_dt.strftime('%Y-%m-%d %H:%M'))
+        elif req_dt:
+            resp_meta_parts.append(req_dt.strftime('%Y-%m-%d %H:%M'))
+        if req_elapsed_ms is not None:
+            resp_meta_parts.append(f"{req_elapsed_ms / 1000:.0f}s")
+        if c["status"] == "incomplete":
+            resp_meta_parts.append("in progress")
+        resp_word_parts: list[str] = []
+        if turn_input_words:
+            resp_word_parts.append(f"{turn_input_words:,} in")
+        if turn_output_words:
+            resp_word_parts.append(f"{turn_output_words:,} out")
+        if resp_word_parts:
+            resp_meta_parts.append("Words: " + " \u00b7 ".join(resp_word_parts))
+        resp_token_parts: list[str] = []
+        if req_pt:
+            resp_token_parts.append(f"{req_pt:,} ctx")
+        if req_rounds > 1:
+            resp_token_parts.append(f"{req_rounds} rounds")
+        if resp_token_parts:
+            resp_meta_parts.append(" · ".join(resp_token_parts))
+        if resp_meta_parts:
+            sep = " \u00b7 "
+            out.append("*" + sep.join(resp_meta_parts) + "*")
+            out.append("")
+
+        out.append("---")
+        out.append("")
+    # Trailing rollback marker if session ends with rolled-back turns
+    if rollback_count > 0:
+        if rollback_rids and all(rid in forked_rids for rid in rollback_rids if rid):
+            fork_marker = "**Forked conversation**"
+            if parent_session_id:
+                fork_marker += f" (from `{parent_session_id}`)"
+            out.append(fork_marker)
+        else:
+            s = "s" if rollback_count > 1 else ""
+            out.append(f"**{rollback_count} user prompt{s} rolled back**")
+        out.append("")
+        out.append("---")
+        out.append("")
+
+    # Fill in word count placeholders now that we've counted everything
+    out[INPUT_WORDS_IDX] = f"- **Input words:** {total_input_words:,}"
+    out[OUTPUT_WORDS_IDX] = f"- **Output words:** {total_output_words:,}"
+
+    return "\n".join(out)
+Saw more of the sample log to find tool-call formatting
+sed -n '60,200p' "agent-logs/2026-03-20_21-33_log.md"
+- ⬜ Commit changes
+- ⬜ Consider refactoring opportunities
+- ⬜ Final chat log export and limerick
+
+Read [LEARNINGS.md](../LEARNINGS.md#1-1), lines 1 to 100
+
+Read [README.md](../README.md#1-1), lines 1 to 150
+
+Read [DEVELOPMENT_PLAN.md](../DEVELOPMENT_PLAN.md#1-1), lines 1 to 200
+
+Read [DEVELOPMENT_PLAN.md](../DEVELOPMENT_PLAN.md#200-200), lines 200 to 734
+
+Read [LEARNINGS.md](../LEARNINGS.md#100-100), lines 100 to 435
+
+Read [TODO.md](../TODO.md#1-1), lines 1 to 50
+
+**Todo list:**
+- ✅ Read LEARNINGS.md, README.md, DEVELOPMENT_PLAN.md
+- ✅ Read TODO.md and DONE.md
+- 🔄 Change default --vertex-tolerance to 5e-5
+- ⬜ Extend cone visualization length
+- ⬜ Refactor stage 2 debug printing
+- ⬜ Add --viz-stages-level flag
+- ⬜ Add click-to-seed in viz-stages mode
+- ⬜ Update docs and move TODO item
+- ⬜ Export chat log and review diff
+- ⬜ Update LEARNINGS.md if needed
+- ⬜ Commit changes
+- ⬜ Consider refactoring opportunities
+- ⬜ Final chat log export and limerick
+
+Now let me explore the project structure to understand the current state of the code:
+
+Read [config.rs](../src/config.rs#1-1), lines 1 to 150
+
+Read [src](../src)
+
+Read [config.rs](../src/config.rs#150-150), lines 150 to 400
+
+Read [stage2](../src/stage2)
+
+Good. Now let me understand the current BFS code and viz code to plan the changes accurately. Let me explore the key files:
+
+<details>
+<summary>Explore stage2 BFS and viz code (Claude Opus 4.6)</summary>
+
+**Prompt:**
+> I need to understand the current state of the stage2 BFS code and visualization code in the brepper project. Please read and report back on the following:
+> 
+> 1. Read /Users/sethml/src/brepper/src/stage2/bfs.rs - report the FULL contents. This is critical.
+> 2. Read /Users/sethml/src/brepper/src/stage2/mod.rs - report the FULL contents (especially any verbose/debug printing and the stage summary logic).
+> 3. Read /Users/sethml/src/brepper/src/viz.rs - focus on:
+>    - The VizAction enum 
+>    - The VizOverlay struct
+>    - How viz_active is checked and how the viz_stages work
+>    - The ConeOverlay struct and how cones are visualized
+>    - The click-to-skip logic (SkipToSeed)
+>    - How the render loop processes events
+> 4. Read /Users/sethml/src/brepper/src/stage2/planar.rs - report the verbose/debug printing parts and how they use verbosity levels
+> 5. Read /Users/sethml/src/brepper/src/stage2/cylindrical.rs - report the verbose/debug printing parts
+> 6. Read /Users/sethml/src/brepper/src/stage2/conical.rs - report the verbose/debug printing parts and how the ConeOverlay is generated
+> 7. Read /Users/sethml/src/brepper/src/stage2/spherical.rs - report the verbose/debug printing parts
+> 8. Read /Users/sethml/src/brepper/src/stage2/toroidal.rs - report the verbose/debug printing parts
+> 
+> For each file, report:
+> - Total line count
+> - The full contents of functions related to verbose/debug printing
+> - The exact verbose level checks used (e.g., `if config.verbosity >= 2`)
+> - Any `eprintln!` or `println!` calls along with their exact format strings
+> - For viz.rs: the exact ConeOverlay struct definition and usage
+> 
+> This is a research task, not a code-writing task.
+
+Searched for regex `.` (`**/src/stage2/bfs.rs`), 200 results
+- [bfs.rs:1](../src/stage2/bfs.rs#L1)
+- [bfs.rs:2](../src/stage2/bfs.rs#L2)
+- [bfs.rs:3](../src/stage2/bfs.rs#L3)
+- [bfs.rs:4](../src/stage2/bfs.rs#L4)
+
+**Terminal:**
+```sh
+wc -l src/stage2/bfs.rs src/stage2/mod.rs src/viz.rs src/stage2/planar.rs src/stage2/cylindrical.rs src/stage2/conical.rs src/stage2/spherical.rs src/stage2/toroidal.rs
+```
+<details>
+<summary>Output (9 lines)</summary>
+
+```
+     711 src/stage2/bfs.rs
+    1847 src/stage2/mod.rs
+    2581 src/viz.rs
+     206 src/stage2/planar.rs
+     522 src/stage2/cylindrical.rs
+    1859 src/stage2/conical.rs
+     712 src/stage2/spherical.rs
+    1546 src/stage2/toroidal.rs
+    9984 total
+```
+</details>
+
+Read [bfs.rs](../src/stage2/bfs.rs#1-1), lines 1 to 711
+
+Read [planar.rs](../src/stage2/planar.rs#1-1), lines 1 to 206
+
+Read [mod.rs](../src/stage2/mod.rs#1-1), lines 1 to 500
+
+Read [cylindrical.rs](../src/stage2/cylindrical.rs#1-1), lines 1 to 522
+
+Read [mod.rs](../src/stage2/mod.rs#500-500), lines 500 to 1000
+
+Read [conical.rs](../src/stage2/conical.rs#1-1), lines 1 to 700
+
+Read [spherical.rs](../src/stage2/spherical.rs#1-1), lines 1 to 712
+
+Read [toroidal.rs](../src/stage2/toroidal.rs#1-1), lines 1 to 700
+
+Read [mod.rs](../src/stage2/mod.rs#1000-1000), lines 1000 to 1848
+
+Read [conical.rs](../src/stage2/conical.rs#700-700), lines 700 to 1860
+
+Read [toroidal.rs](../src/stage2/toroidal.rs#700-700), lines 700 to 1547
+
+Read [viz.rs](../src/viz.rs#1-1), lines 1 to 700
+
+Read [viz.rs](../src/viz.rs#700-700), lines 700 to 1400
+
+Read [viz.rs](../src/viz.rs#1400-1400), lines 1400 to 2100
+
+Read [viz.rs](../src/viz.rs#2100-2100), lines 2100 to 2582
+
+Read [bfs.rs](../src/stage2/bfs.rs#1-1), lines 1 to 711
+
+Read [mod.rs](../src/stage2/mod.rs#1-1), lines 1 to 999
+
+Now I have all the data. Here is the comprehensive report:
+
+---
+
+## File Line Counts
+
+| File | Lines |
+|------|-------|
+Surveyed top-level entry types and content block types in the JSONL
+cd /tmp/sess_export && python3 - <<'EOF'
+import json
+from collections import Counter
+types = Counter()
+subtypes = Counter()
+roles = Counter()
+content_block_types = Counter()
+with open("abd6df15-9563-4a4d-a937-76e85e98ace0.jsonl") as f:
+    for i, line in enumerate(f):
+        line = line.strip()
+        if not line: continue
+        d = json.loads(line)
+        t = d.get("type")
+        types[t] += 1
+        if t in ("user","assistant"):
+            msg = d.get("message", {})
+            roles[msg.get("role")] += 1
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        content_block_types[block.get("type")] += 1
+            elif isinstance(content, str):
+                content_block_types["<string>"] += 1
+print("TYPES:", types)
+print("ROLES:", roles)
+print("CONTENT BLOCK TYPES:", content_block_types)
+EOF
+TYPES: Counter({'assistant': 1734, 'user': 980, 'ai-title': 216, 'custom-title': 216, 'last-prompt': 216, 'attachment': 182, 'queue-operation': 142, 'mode': 40, 'system': 23})
+ROLES: Counter({'assistant': 1734, 'user': 980})
+CONTENT BLOCK TYPES: Counter({'tool_use': 957, 'tool_result': 957, 'thinking': 572, 'text': 207, '<string>': 22})
+Shell cwd was reset to /Users/sethml/src/brepper
+Inspected system/title/mode entries
+cd /tmp/sess_export && python3 - <<'EOF'
+import json
+with open("abd6df15-9563-4a4d-a937-76e85e98ace0.jsonl") as f:
+    lines = [json.loads(l) for l in f if l.strip()]
+# system entries
+sys_entries = [d for d in lines if d.get("type")=="system"]
+print("=== system entries (first 3) ===")
+for d in sys_entries[:3]:
+    print(json.dumps(d, indent=2)[:1500])
+    print("---")
+print("\n=== ai-title / custom-title samples ===")
+for d in lines:
+    if d.get("type") in ("ai-title","custom-title","last-prompt"):
+        print(d.get("type"), "->", str(d)[:300])
+        break
+print("\n=== mode samples ===")
+for d in lines:
+    if d.get("type")=="mode":
+        print(str(d)[:300]); break
+EOF
+=== system entries (first 3) ===
+{
+  "parentUuid": "06817bee-5d93-43c1-8e05-b913fcc6ee4f",
+  "isSidechain": false,
+  "type": "system",
+  "subtype": "api_error",
+  "level": "error",
+  "error": {
+    "message": "529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"},\"request_id\":\"req_011CckW38SXpsmRUMU144yV2\"}",
+    "status": 529,
+    "requestId": "req_011CckW38SXpsmRUMU144yV2",
+    "formatted": "529 Overloaded",
+    "connection": null,
+    "isNetworkDown": false,
+    "rateLimits": null
+  },
+  "retryInMs": 568.221546096473,
+  "retryAttempt": 1,
+  "maxRetries": 10,
+  "timestamp": "2026-07-06T08:38:25.249Z",
+  "uuid": "0b785ecc-0d32-4829-aa1a-f866570a1418",
+  "userType": "external",
+  "entrypoint": "claude-desktop",
+  "cwd": "/Users/sethml/src/brepper",
+  "sessionId": "abd6df15-9563-4a4d-a937-76e85e98ace0",
+  "version": "2.1.197",
+  "gitBranch": "experiment-fable"
+}
+---
+{
+  "parentUuid": "0b785ecc-0d32-4829-aa1a-f866570a1418",
+  "isSidechain": false,
+  "type": "system",
+  "subtype": "api_error",
+  "level": "error",
+  "error": {
+    "message": "529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"},\"request_id\":\"req_011CckW3RedYxvUiTdPAdRCJ\"}",
+    "status": 529,
+    "requestId": "req_011CckW3RedYxvUiTdPAdRCJ",
+    "formatted": "529 Overloaded",
+    "connection": null,
+    "isNetworkDown": false,
+    "rateLimits": null
+  },
+  "retryInMs": 1157.3651663999499,
+  "retryAttempt": 2,
+  "maxRetries": 10,
+  "timestamp": "2026-07-06T08:38:30.903Z",
+  "uuid": "2a4b06f8-447f-4965-8732-2f1360eb2419",
+  "userType": "external",
+  "entrypoint": "claude-desktop",
+  "cwd": "/Users/sethml/src/brepper",
+  "sessionId": "abd6df15-9563-4a4d-a937-76e85e98ace0",
+  "version": "2.1.197",
+  "gitBranch": "experiment-fable"
+}
+---
+{
+  "parentUuid": "2a4b06f8-447f-4965-8732-2f1360eb2419",
+  "isSidechain": false,
+  "type": "system",
+  "subtype": "api_error",
+  "level": "error",
+  "error": {
+    "message": "529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"},\"request_id\":\"req_011CckW3tKVmB4GDo6SKqLKj\"}",
+    "status": 529,
+    "requestId": "req_011CckW3tKVmB4GDo6SKqLKj",
+    "formatted": "529 Overloaded",
+    "connection": null,
+    "isNetworkDown": false,
+    "rateLimits": null
+  },
+  "retryInMs": 2001.0253913242254,
+  "retryAttempt": 3,
+  "maxRetries": 10,
+  "timestamp": "2026-07-06T08:38:38.083Z",
+  "uuid": "ab97bb42-46ce-44e0-b0b8-744c1046ad6e",
+  "userType": "external",
+  "entrypoint": "claude-desktop",
+  "cwd": "/Users/sethml/src/brepper",
+  "sessionId": "abd6df15-9563-4a4d-a937-76e85e98ace0",
+  "version": "2.1.197",
+  "gitBranch": "experiment-fable"
+}
+---
+
+=== ai-title / custom-title samples ===
+ai-title -> {'type': 'ai-title', 'aiTitle': 'Complete and optimize AI project with test improvements', 'sessionId': 'abd6df15-9563-4a4d-a937-76e85e98ace0'}
+
+=== mode samples ===
+{'type': 'mode', 'mode': 'normal', 'sessionId': 'abd6df15-9563-4a4d-a937-76e85e98ace0'}
+Shell cwd was reset to /Users/sethml/src/brepper
+Inspected assistant message schema, model/usage fields, tool_use block shape
+cd /tmp/sess_export && python3 - <<'EOF'
+import json
+with open("abd6df15-9563-4a4d-a937-76e85e98ace0.jsonl") as f:
+    lines = [json.loads(l) for l in f if l.strip()]
+# All ai-title values (dedup, preserve order)
+seen=[]
+for d in lines:
+    if d.get("type")=="ai-title":
+        t=d.get("aiTitle")
+        if t not in seen: seen.append(t)
+print("ai-title values seen:", seen)
+# find first assistant entry with tool_use and thinking and text and usage
+for d in lines:
+    if d.get("type")=="assistant":
+        msg=d["message"]
+        print("KEYS:", list(msg.keys()))
+        print("model:", msg.get("model"))
+        print("usage:", msg.get("usage"))
+        break
+# print a tool_use block example
+for d in lines:
+    if d.get("type")=="assistant":
+        for b in d["message"].get("content",[]):
+            if isinstance(b,dict) and b.get("type")=="tool_use":
+                print("TOOL_USE EXAMPLE:", json.dumps(b, indent=2)[:800])
+                raise SystemExit
+EOF
+ai-title values seen: ['Complete and optimize AI project with test improvements']
+KEYS: ['model', 'id', 'type', 'role', 'content', 'stop_reason', 'stop_sequence', 'stop_details', 'usage', 'diagnostics']
+model: claude-fable-5
+usage: {'input_tokens': 4936, 'cache_creation_input_tokens': 4301, 'cache_read_input_tokens': 15148, 'output_tokens': 142, 'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0}, 'service_tier': 'standard', 'cache_creation': {'ephemeral_1h_input_tokens': 4301, 'ephemeral_5m_input_tokens': 0}, 'inference_geo': 'not_available', 'iterations': [{'input_tokens': 4936, 'output_tokens': 142, 'cache_read_input_tokens': 15148, 'cache_creation_input_tokens': 4301, 'cache_creation': {'ephemeral_5m_input_tokens': 0, 'ephemeral_1h_input_tokens': 4301}, 'type': 'message'}], 'speed': 'standard'}
+TOOL_USE EXAMPLE: {
+  "type": "tool_use",
+  "id": "toolu_014e1KqVdYtPwe9ak7x8fiHK",
+  "name": "Bash",
+  "input": {
+    "command": "ls /Users/sethml/src/brepper/*.md && ls /Users/sethml/src/brepper",
+    "description": "List markdown files and project contents"
+  },
+  "caller": {
+    "type": "direct"
+  }
+}
+Shell cwd was reset to /Users/sethml/src/brepper
+Inspected model distribution, thinking block, and tool_result shapes
+cd /tmp/sess_export && python3 - <<'EOF'
+import json
+from collections import Counter
+with open("abd6df15-9563-4a4d-a937-76e85e98ace0.jsonl") as f:
+    lines = [json.loads(l) for l in f if l.strip()]
+models = Counter()
+for d in lines:
+    if d.get("type")=="assistant":
+        models[d["message"].get("model")] += 1
+print("MODEL COUNTS (by message count):", models)
+# thinking block example
+for d in lines:
+    if d.get("type")=="assistant":
+        for b in d["message"].get("content",[]):
+            if isinstance(b,dict) and b.get("type")=="thinking":
+                print("THINKING KEYS:", list(b.keys()))
+                print("THINKING SAMPLE:", b.get("thinking","")[:300])
+                break
+        else:
+            continue
+        break
+# tool_result example (user entry)
+for d in lines:
+    if d.get("type")=="user":
+        content = d["message"].get("content")
+        if isinstance(content, list):
+            for b in content:
+                if isinstance(b,dict) and b.get("type")=="tool_result":
+                    print("\nTOOL_RESULT TOP KEYS (entry):", list(d.keys()))
+                    print("TOOL_RESULT BLOCK KEYS:", list(b.keys()))
+                    print("TOOL_RESULT content type:", type(b.get("content")))
+                    c = b.get("content")
+                    if isinstance(c, list):
+                        print("inner block types:", [x.get("type") if isinstance(x,dict) else type(x) for x in c])
+                        print("sample inner:", str(c)[:400])
+                    else:
+                        print("content sample:", str(c)[:400])
+                    print("is_error:", b.get("is_error"))
+                    raise SystemExit
+EOF
+MODEL COUNTS (by message count): Counter({'claude-fable-5': 1416, 'claude-opus-4-8': 308, '<synthetic>': 10})
+THINKING KEYS: ['type', 'thinking', 'signature']
+THINKING SAMPLE: 
+
+TOOL_RESULT TOP KEYS (entry): ['parentUuid', 'isSidechain', 'promptId', 'type', 'message', 'uuid', 'timestamp', 'toolUseResult', 'sourceToolAssistantUUID', 'userType', 'entrypoint', 'cwd', 'sessionId', 'version', 'gitBranch']
+TOOL_RESULT BLOCK KEYS: ['tool_use_id', 'type', 'content', 'is_error']
+TOOL_RESULT content type: <class 'str'>
+content sample: /Users/sethml/src/brepper/AGENTS.md
+/Users/sethml/src/brepper/DEVELOPMENT_PLAN.md
+/Users/sethml/src/brepper/DONE.md
+/Users/sethml/src/brepper/LEARNINGS.md
+/Users/sethml/src/brepper/README.md
+/Users/sethml/src/brepper/SURFACE_FITTING.md
+/Users/sethml/src/brepper/TODO.md
+agent-logs/
+AGENTS.md
+brepper.code-workspace
+brepper.log
+Cargo.lock
+Cargo.toml
+DEVELOPMENT_PLAN.md
+DONE.md
+LEARNINGS.md
+out.step
+p
+is_error: False
+Shell cwd was reset to /Users/sethml/src/brepper
+Listed all top-level human turns with timestamps
+cd /tmp/sess_export && python3 - <<'EOF'
+import json
+with open("abd6df15-9563-4a4d-a937-76e85e98ace0.jsonl") as f:
+    lines = [json.loads(l) for l in f if l.strip()]
+human_turns = []
+for d in lines:
+    if d.get("type")=="user":
+        msg = d.get("message",{})
+        content = msg.get("content")
+        if isinstance(content, str):
+            human_turns.append((d.get("timestamp"), content))
+print(f"Total human turns (string content): {len(human_turns)}\n")
+for i,(ts,txt) in enumerate(human_turns):
+    preview = txt.replace("\n"," ")[:100]
+    print(f"{i+1}. [{ts}] {preview}")
+EOF
+Total human turns (string content): 22
+
+1. [2026-07-06T07:46:45.438Z] This is a project that I got about half done via AI and then stalled out on. You are a much more cap
+2. [2026-07-06T11:04:34.675Z] This is a project that I got about half done via AI and then stalled out on. You are a much more cap
+3. [2026-07-06T15:28:01.759Z] This is a project that I got about half done via AI and then stalled out on. You are a much more cap
+4. [2026-07-06T16:02:28.413Z] continue
+5. [2026-07-06T19:12:38.449Z] Think about how to complete the project, and whether the remaining work is really the right next ste
+6. [2026-07-06T19:17:32.731Z] Continue to defer NURBS fallback, but rewrite the TODO with the rest of your recommendations, and th
+7. [2026-07-06T21:10:25.193Z] continue
+8. [2026-07-06T22:00:32.622Z] I'm thinking that face seeding might be more efficient and effective if we picked seed faces better 
+9. [2026-07-06T22:04:59.963Z] Great, document what you just proposed, and then implement stage 1, commit, and decide whether to im
+10. [2026-07-06T22:10:40.252Z] <task-notification> <task-id>bpw9dpqq0</task-id> <tool-use-id>toolu_01NRXyWbdv3Hpg99vDUyGV1Y</tool-u
+11. [2026-07-07T02:44:10.935Z] continue
+12. [2026-07-07T03:16:45.884Z] For the sharp corner vertex and other situations where surface fits overlap: I think there's an idea
+13. [2026-07-07T03:19:02.861Z] yes.
+14. [2026-07-07T03:47:37.835Z] How should we fix the undetected low-res corner torus? Do we need to relax the tolerances? Look at t
+15. [2026-07-07T03:53:36.782Z] This session is being continued from a previous conversation that ran out of context. The summary be
+16. [2026-07-07T15:03:27.908Z] continue
+17. [2026-07-07T15:29:17.928Z] continue
+18. [2026-07-07T16:15:28.091Z] Explain the TODO.
+19. [2026-07-07T16:17:31.082Z] Both.
+20. [2026-07-07T16:33:53.720Z] Think hard about whether that's the right fix, or if it's worth taking a step back and reworking edg
+21. [2026-07-07T16:42:33.190Z] Write it as a section in DEVELOPMENT_PLAN. Then decide whether tackling that work would be better do
+22. [2026-07-07T16:44:45.739Z] yes, do the self-sufficiency pass
+Shell cwd was reset to /Users/sethml/src/brepper
+Inspected sidechain (sub-agent) entry structure and linkage
+cd /tmp/sess_export && python3 - <<'EOF'
+import json
+from collections import Counter
+with open("abd6df15-9563-4a4d-a937-76e85e98ace0.jsonl") as f:
+    lines = [json.loads(l) for l in f if l.strip()]
+sc = Counter()
+for d in lines:
+    sc[d.get("isSidechain")] += 1
+print("isSidechain counts:", sc)
+# find first sidechain entry, print full keys
+for d in lines:
+    if d.get("isSidechain") is True:
+        print(json.dumps({k:v for k,v in d.items() if k!="message"}, indent=2, default=str)[:1500])
+        print("message keys:", list(d.get("message",{}).keys()))
+        break
+# how many distinct sidechain "roots" (parentUuid null within sidechain)
+sidechain_roots = [d for d in lines if d.get("isSidechain") is True and d.get("parentUuid") is None]
+print("\nsidechain roots (parentUuid null):", len(sidechain_roots))
+for d in sidechain_roots[:5]:
+    print(" -", d.get("uuid"), d.get("timestamp"), d.get("type"))
+EOF
+isSidechain counts: Counter({False: 2919, None: 830})
+
+sidechain roots (parentUuid null): 0
+Shell cwd was reset to /Users/sethml/src/brepper
+Got tool name distribution across the session
+cd /tmp/sess_export && python3 - <<'EOF'
+import json
+from collections import Counter
+with open("abd6df15-9563-4a4d-a937-76e85e98ace0.jsonl") as f:
+    lines = [json.loads(l) for l in f if l.strip()]
+tool_names = Counter()
+for d in lines:
+    if d.get("type")=="assistant":
+        for b in d["message"].get("content",[]):
+            if isinstance(b,dict) and b.get("type")=="tool_use":
+                tool_names[b.get("name")] += 1
+for name,count in tool_names.most_common():
+    print(f"{count:5d}  {name}")
+print("\ntotal tool_use blocks:", sum(tool_names.values()))
+# text block count, and count text-only assistant messages
+text_count=0
+for d in lines:
+    if d.get("type")=="assistant":
+        for b in d["message"].get("content",[]):
+            if isinstance(b,dict) and b.get("type")=="text":
+                text_count+=1
+print("text blocks:", text_count)
+EOF
+  663  Bash
+  111  Read
+  109  Edit
+   24  TaskUpdate
+   19  Write
+   12  TaskCreate
+   10  Monitor
+    7  mcp__ccd_session__mark_chapter
+    2  ToolSearch
+
+total tool_use blocks: 957
+text blocks: 206
+Shell cwd was reset to /Users/sethml/src/brepper
+Located reusable utility functions
+grep -n "^def format_elapsed\|^def escape_html\|^def humanize_model_id\|^def make_gfm_anchor\|^def escape_link_text\|^def extract_text" ../vscode-export-chat-log/export-chat-log.py
+573:def extract_text(val: Any) -> str:
+662:def humanize_model_id(model_id: str) -> str:
+706:def escape_html(text: str) -> str:
+714:def format_elapsed(ms: int) -> str:
+727:def escape_link_text(text: str) -> str:
+1224:def make_gfm_anchor(text: str) -> str:
+Read humanize_model_id, escape_html, format_elapsed, escape_link_text, make_gfm_anchor
+sed -n '662,735p' ../vscode-export-chat-log/export-chat-log.py; echo "---anchor---"; sed -n '1224,1260p' ../vscode-export-chat-log/export-chat-log.py
+def humanize_model_id(model_id: str) -> str:
+    """Convert a model ID like 'copilot/claude-opus-4.6' to 'Claude Opus 4.6'."""
+    if not model_id:
+        return ""
+    # Strip provider prefix
+    name = model_id.split("/")[-1] if "/" in model_id else model_id
+    if name == "auto":
+        return "Auto"
+    # Capitalize each part: claude-opus-4.6 -> Claude Opus 4.6
+    parts = name.split("-")
+    result: list[str] = []
+    for part in parts:
+        # Keep version numbers as-is
+        if re.match(r'^\d', part):
+            result.append(part)
+        else:
+            result.append(part.capitalize())
+    return " ".join(result)
+
+
+def sanitize_for_markdown(text: str) -> str:
+    """Ensure code fences in text are balanced so they don't break the document."""
+    lines = text.rstrip().split("\n")
+    fence_count = 0
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r'^`{3,}', stripped):
+            fence_count += 1
+    if fence_count % 2 != 0:
+        # Remove the trailing unmatched fence
+        for i in range(len(lines) - 1, -1, -1):
+            if re.match(r'^`{3,}', lines[i].strip()):
+                lines.pop(i)
+                break
+    return "\n".join(lines)
+
+
+def fence_for(content: str) -> str:
+    """Return a backtick fence string long enough that content can't close it."""
+    max_run = 0
+    for m in re.finditer(r'`+', content):
+        max_run = max(max_run, len(m.group()))
+    return '`' * max(3, max_run + 1)
+
+def escape_html(text: str) -> str:
+    """Escape HTML special characters in text embedded in markdown headings or blockquotes.
+
+    Uses quote=False to preserve apostrophes and double quotes, which are safe in markdown.
+    """
+    return html.escape(text, quote=False)
+
+
+def format_elapsed(ms: int) -> str:
+    """Format elapsed milliseconds as 3h12m34s, 5m22s, or 23s."""
+    total_s = round(ms / 1000)
+    hours = total_s // 3600
+    minutes = (total_s % 3600) // 60
+    seconds = total_s % 60
+    if hours:
+        return f"{hours}h{minutes:02d}m{seconds:02d}s"
+    elif minutes:
+        return f"{minutes}m{seconds:02d}s"
+    else:
+        return f"{seconds}s"
+
+def escape_link_text(text: str) -> str:
+    """Escape text for use inside a markdown link display: escape HTML and bracket chars."""
+    s = html.escape(text, quote=False)
+    return s.replace("[", "&#91;").replace("]", "&#93;")
+
+
+def md_to_summary_html(text: str) -> str:
+    """Convert markdown-formatted text to HTML safe for use inside <summary> tags."""
+    result: list[str] = []
+---anchor---
+def make_gfm_anchor(text: str) -> str:
+    """Generate a GFM-compatible heading anchor from heading text."""
+    text = text.lower()
+    text = re.sub(r'[^\w\s-]', '', text)
+    text = re.sub(r'\s+', '-', text.strip())
+    text = re.sub(r'-+', '-', text)
+    return text
+
+
+def get_request_model(req: dict[str, Any]) -> str:
+    """Get the human-readable model name for a request."""
+    model_id = req.get("modelId", "")
+    return humanize_model_id(model_id)
+
+
+def classify_requests(requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Classify requests and assign display turn numbers.
+
+    Returns a list of dicts with keys:
+      - req: the original request dict
+      - status: 'ok' | 'failed' | 'canceled' | 'incomplete'
+      - is_retried: True if a failed request is followed by a retry with same prompt
+      - turn_num: display turn number (sequential, skipping retried failures)
+    """
+    classified: list[dict[str, Any]] = []
+    for i, req in enumerate(requests):
+        result: Any = req.get("result", {})
+        if not isinstance(result, dict):
+            result = {}
+        result_d: dict[str, Any] = cast(dict[str, Any], result) if isinstance(result, dict) else {}
+        error: Any = result_d.get("errorDetails", {})
+        if not isinstance(error, dict):
+            error = {}
+        error_code: str = str(cast(dict[str, Any], error).get("code", "") if isinstance(error, dict) else "")
+
+        if error_code == "failed":
+            status = "failed"
+Checked for a main guard at the end of the script
+tail -20 ../vscode-export-chat-log/export-chat-log.py
+        print("  Written to: stdout", file=sys.stderr)
+        print(f"  Size: {len(markdown)} chars, {markdown.count(chr(10))} lines", file=sys.stderr)
+        return
+
+    if args.output:
+        output_path = args.output
+    else:
+        output_dir = os.path.join(workspace, "agent-logs")
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = generate_output_path(session, output_dir)
+
+    with open(output_path, "w") as f:
+        f.write(markdown)
+
+    print(f"  Written to: {output_path}", file=sys.stderr)
+    print(f"  Size: {len(markdown)} chars, {markdown.count(chr(10))} lines", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
+
+Server was temporarily limiting requests
+
+/export
+ chat-log.txt
+
+/export isn't available in this environment.
+
+/export isn't a recognized command here. Some commands only work in the Claude Code terminal.
+
+
