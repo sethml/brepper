@@ -1422,6 +1422,110 @@ fn compare_selected_surfaces(
 // ---------------------------------------------------------------------------
 
 /// Run stage 2: fit surface hypotheses to mesh faces and select surfaces.
+/// Compute the per-face curvature-difference seed score used to order BFS
+/// start faces (ascending: interior faces of uniform surfaces first).
+///
+/// 1. Per-face curvature summary: max over edges of the discrete normal
+///    curvature κ ≈ dihedral angle / centroid distance.
+/// 2. Raw score: max |summary difference| against edge neighbors. Interior
+///    faces of any uniform surface score ≈ 0; faces at surface transitions
+///    score high — including TANGENT junctions (fillet↔plane), which are
+///    invisible to dihedral checks (G1) but jump in curvature (G2).
+/// 3. Three Jacobi diffusion passes spread the junction signal a few hops so
+///    seed neighborhoods (radius 1-2) of early faces cannot touch a junction.
+///
+/// Returns (diffused_scores, junction_mask). The mask flags faces whose RAW
+/// (pre-diffusion) score exceeds 30% of the mesh maximum — the immediate
+/// transition rows — for exclusion from pass-1 seed gathering.
+fn compute_seed_scores(mesh: &ConnectedMesh) -> (Vec<f64>, Vec<bool>) {
+    let n = mesh.faces.len();
+    let centroids: Vec<[f64; 3]> = mesh
+        .faces
+        .iter()
+        .map(|f| face_centroid(f, &mesh.vertices))
+        .collect();
+
+    // Step 1: per-face curvature summary.
+    let mut summary = vec![0.0_f64; n];
+    for fi in 0..n {
+        let Some(n1) = mesh.faces[fi].normal else { continue };
+        let vc = mesh.faces[fi].vertex_count as usize;
+        for &ni in &mesh.faces[fi].neighbors[..vc] {
+            if ni < 0 {
+                continue;
+            }
+            let ni = ni as usize;
+            let Some(n2) = mesh.faces[ni].normal else { continue };
+            let d = dot3(&n1, &n2).clamp(-1.0, 1.0);
+            let theta = d.acos();
+            let dx = centroids[ni][0] - centroids[fi][0];
+            let dy = centroids[ni][1] - centroids[fi][1];
+            let dz = centroids[ni][2] - centroids[fi][2];
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+            if dist > 1e-12 {
+                summary[fi] = summary[fi].max(theta / dist);
+            }
+        }
+    }
+
+    // Step 2: raw score = max |summary difference| vs neighbors.
+    let mut score = vec![0.0_f64; n];
+    for fi in 0..n {
+        let vc = mesh.faces[fi].vertex_count as usize;
+        for &ni in &mesh.faces[fi].neighbors[..vc] {
+            if ni >= 0 {
+                score[fi] = score[fi].max((summary[fi] - summary[ni as usize]).abs());
+            }
+        }
+    }
+
+    // Junction mask from the RAW score, before diffusion smears it. The
+    // criterion is LOCAL relative change: flag a face when its curvature
+    // changes by a large fraction of the local curvature magnitude. A
+    // mesh-global threshold fails here — sharp creases (κ jumps of several
+    // 1/mm) dominate the maximum and tangent fillet junctions (jumps of
+    // 1/r_fillet) fall under any fraction of it, yet tangent junctions are
+    // the primary target. Locally, a plane→fillet transition changes
+    // curvature by ~100% of the fillet curvature; interior faces of any
+    // uniform surface change by only tessellation noise.
+    let junction: Vec<bool> = (0..n)
+        .map(|fi| {
+            let vc = mesh.faces[fi].vertex_count as usize;
+            let mut local_scale = summary[fi];
+            for &ni in &mesh.faces[fi].neighbors[..vc] {
+                if ni >= 0 {
+                    local_scale = local_scale.max(summary[ni as usize]);
+                }
+            }
+            local_scale > 1e-12 && score[fi] > 0.5 * local_scale
+        })
+        .collect();
+
+    // Step 3: diffusion (Jacobi — deterministic).
+    for _pass in 0..3 {
+        let mut next = vec![0.0_f64; n];
+        for fi in 0..n {
+            let vc = mesh.faces[fi].vertex_count as usize;
+            let mut sum = 0.0_f64;
+            let mut count = 0_usize;
+            for &ni in &mesh.faces[fi].neighbors[..vc] {
+                if ni >= 0 {
+                    sum += score[ni as usize];
+                    count += 1;
+                }
+            }
+            next[fi] = if count > 0 {
+                0.5 * score[fi] + 0.5 * (sum / count as f64)
+            } else {
+                score[fi]
+            };
+        }
+        score = next;
+    }
+
+    (score, junction)
+}
+
 pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz::VizSender>) -> Result<Stage2Output, Stage2Error> {
     // Stage 2.1: Deduce planar hypotheses
     let t = Instant::now();
@@ -1434,7 +1538,20 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
         viz_level: config.viz_stages_level,
         multiface_planar: Vec::new(),
         large_sphere: Vec::new(),
+        seed_scores: Vec::new(),
+        junction_faces: Vec::new(),
     };
+    let (seed_scores, junction_faces) = compute_seed_scores(&mesh);
+    if config.verbosity >= 2 {
+        let n_junction = junction_faces.iter().filter(|&&j| j).count();
+        eprintln!(
+            "  Seed field: {} of {} faces flagged as junction faces",
+            n_junction,
+            mesh.faces.len(),
+        );
+    }
+    bfs_config.seed_scores = seed_scores;
+    bfs_config.junction_faces = junction_faces;
     let (mut planar_hypotheses, planar_quit) = bfs::generate_hypotheses::<PlanarSurface>(&mut mesh, &bfs_config, viz_21);
 
     // Record which faces belong to blob-like planar regions so the
@@ -1532,9 +1649,21 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
 
     // Compare against STEP file if --compare was specified
     if config.compare_shape.is_some() {
-        compare_planar_hypotheses(&planar_hypotheses, &mesh, config)?;
-        if config.verbosity >= 1 {
-            eprintln!("  Compare: all planar hypothesis centroids within tolerance");
+        // Raw-hypothesis compare failures are warnings only: stages 2.1-2.5
+        // legitimately produce spurious hypotheses (exact sub-fits, junction
+        // artifacts) that surface selection discards. The hard gate is the
+        // post-selection compare at stage 2.6.
+        match compare_planar_hypotheses(&planar_hypotheses, &mesh, config) {
+            Ok(()) => {
+                if config.verbosity >= 1 {
+                    eprintln!("  Compare: all planar hypothesis centroids within tolerance");
+                }
+            }
+            Err(e) => {
+                if !config.quiet {
+                    eprintln!("  Compare WARNING (raw hypothesis, pre-selection): {e}");
+                }
+            }
         }
     }
 
@@ -1635,9 +1764,17 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
 
     // Compare against STEP file if --compare was specified
     if config.compare_shape.is_some() {
-        compare_spherical_hypotheses(&spherical_hypotheses, &mesh, config)?;
-        if config.verbosity >= 1 {
-            eprintln!("  Compare: all spherical hypothesis centroids within tolerance");
+        match compare_spherical_hypotheses(&spherical_hypotheses, &mesh, config) {
+            Ok(()) => {
+                if config.verbosity >= 1 {
+                    eprintln!("  Compare: all spherical hypothesis centroids within tolerance");
+                }
+            }
+            Err(e) => {
+                if !config.quiet {
+                    eprintln!("  Compare WARNING (raw hypothesis, pre-selection): {e}");
+                }
+            }
         }
     }
 
@@ -1665,6 +1802,78 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             si >= 0 && spherical_hypotheses[si as usize].faces.len() >= LARGE_SPHERE_FACES
         })
         .collect();
+
+    // Stage 2.5 (run before 2.2): Deduce toroidal hypotheses.
+    //
+    // Toroidal detection runs before conical/cylindrical detection for the
+    // same reason spherical does: any pair of adjacent quad rows on a torus
+    // tube lies exactly on some cone, so the conical BFS would tile fillets
+    // with 2-ring cone bands before the torus stage ever ran, and the bands
+    // then blocked torus seeding. Cylinders resist bogus torus fits cheaply
+    // (tube centers collapse onto the axis and the (h,r) profile is a
+    // constant-r line, so all three fitting methods reject), so the reverse
+    // ordering is safe. Conical seeding skips torus-committed faces; BFS
+    // expansion may still absorb them at junctions. Stage numbering is
+    // retained for CLI/viz compatibility.
+    let t = Instant::now();
+    let viz_25 = if config.viz_active(2, 5) { viz } else { None };
+    let (mut toroidal_hypotheses, toroidal_quit) = bfs::generate_hypotheses::<ToroidalSurface>(&mut mesh, &bfs_config, viz_25);
+
+    if config.verbosity >= 1 {
+        let covered_faces: usize = toroidal_hypotheses.iter().map(|h| h.faces.len()).sum();
+        let convex_count = toroidal_hypotheses.iter().filter(|h| h.convex).count();
+        let concave_count = toroidal_hypotheses.len() - convex_count;
+        eprintln!(
+            "Stage 2.5 ({:.3}s): Deduced {} toroidal hypotheses ({} convex, {} concave) covering {} faces",
+            t.elapsed().as_secs_f64(),
+            toroidal_hypotheses.len(),
+            convex_count,
+            concave_count,
+            covered_faces,
+        );
+        if config.verbosity >= 2 {
+            for (i, h) in toroidal_hypotheses.iter().enumerate() {
+                eprintln!(
+                    "  Torus {}: {} faces, {} vertices, R={:.4}, r={:.4}, {}, \
+center=[{:.4}, {:.4}, {:.4}], axis=[{:.4}, {:.4}, {:.4}], \
+vtx_err_max={:.2e}, cen_err_max={:.2e}",
+                    i, h.faces.len(), h.vertices.len(),
+                    h.major_radius, h.minor_radius,
+                    if h.convex { "convex" } else { "concave" },
+                    h.center[0], h.center[1], h.center[2],
+                    h.axis_direction[0], h.axis_direction[1], h.axis_direction[2],
+                    h.error_max, h.centroid_error_max,
+                );
+            }
+        }
+    }
+
+    if config.compare_shape.is_some() {
+        match compare_toroidal_hypotheses(&toroidal_hypotheses, &mesh, config) {
+            Ok(()) => {
+                if config.verbosity >= 1 {
+                    eprintln!("  Compare: all toroidal hypothesis centroids within tolerance");
+                }
+            }
+            Err(e) => {
+                if !config.quiet {
+                    eprintln!("  Compare WARNING (raw hypothesis, pre-selection): {e}");
+                }
+            }
+        }
+    }
+
+    if toroidal_quit {
+        return Ok(Stage2Output {
+            mesh,
+            planar_hypotheses,
+            conical_hypotheses: Vec::new(),
+            spherical_hypotheses,
+            toroidal_hypotheses,
+            selected_surfaces: Vec::new(),
+        });
+    }
+
 
     // Stage 2.2: Deduce conical/cylindrical hypotheses (unified)
     let t = Instant::now();
@@ -1717,9 +1926,17 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
 
     // Compare against STEP file if --compare was specified
     if config.compare_shape.is_some() {
-        compare_conical_hypotheses(&conical_hypotheses, &mesh, config)?;
-        if config.verbosity >= 1 {
-            eprintln!("  Compare: all conical/cylindrical hypothesis centroids within tolerance");
+        match compare_conical_hypotheses(&conical_hypotheses, &mesh, config) {
+            Ok(()) => {
+                if config.verbosity >= 1 {
+                    eprintln!("  Compare: all conical/cylindrical hypothesis centroids within tolerance");
+                }
+            }
+            Err(e) => {
+                if !config.quiet {
+                    eprintln!("  Compare WARNING (raw hypothesis, pre-selection): {e}");
+                }
+            }
         }
     }
 
@@ -1729,79 +1946,15 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
             planar_hypotheses,
             conical_hypotheses,
             spherical_hypotheses,
-            toroidal_hypotheses: Vec::new(),
+            toroidal_hypotheses,
             selected_surfaces: Vec::new(),
         });
     }
 
-    // Note: stages 2.2 and 2.3 both run above (spherical before conical), so
-    // --stage=2.2 and --stage=2.3 stop at the same point.
+    // Note: stages 2.2, 2.3, and 2.5 all run above (spherical and toroidal
+    // before conical), so --stage=2.2 through --stage=2.5 stop at the same
+    // point.
     if !config.stage.at_least(2, 4) {
-        return Ok(Stage2Output {
-            mesh,
-            planar_hypotheses,
-            conical_hypotheses,
-            spherical_hypotheses,
-            toroidal_hypotheses: Vec::new(),
-            selected_surfaces: Vec::new(),
-        });
-    }
-
-    // Stage 2.4: (conical hypotheses now unified with cylinders in stage 2.2)
-
-    if !config.stage.at_least(2, 5) {
-        return Ok(Stage2Output {
-            mesh,
-            planar_hypotheses,
-            conical_hypotheses,
-            spherical_hypotheses,
-            toroidal_hypotheses: Vec::new(),
-            selected_surfaces: Vec::new(),
-        });
-    }
-
-    // Stage 2.5: Deduce toroidal hypotheses
-    let t = Instant::now();
-    let viz_25 = if config.viz_active(2, 5) { viz } else { None };
-    let (mut toroidal_hypotheses, toroidal_quit) = bfs::generate_hypotheses::<ToroidalSurface>(&mut mesh, &bfs_config, viz_25);
-
-    if config.verbosity >= 1 {
-        let covered_faces: usize = toroidal_hypotheses.iter().map(|h| h.faces.len()).sum();
-        let convex_count = toroidal_hypotheses.iter().filter(|h| h.convex).count();
-        let concave_count = toroidal_hypotheses.len() - convex_count;
-        eprintln!(
-            "Stage 2.5 ({:.3}s): Deduced {} toroidal hypotheses ({} convex, {} concave) covering {} faces",
-            t.elapsed().as_secs_f64(),
-            toroidal_hypotheses.len(),
-            convex_count,
-            concave_count,
-            covered_faces,
-        );
-        if config.verbosity >= 2 {
-            for (i, h) in toroidal_hypotheses.iter().enumerate() {
-                eprintln!(
-                    "  Torus {}: {} faces, {} vertices, R={:.4}, r={:.4}, {}, \
-center=[{:.4}, {:.4}, {:.4}], axis=[{:.4}, {:.4}, {:.4}], \
-vtx_err_max={:.2e}, cen_err_max={:.2e}",
-                    i, h.faces.len(), h.vertices.len(),
-                    h.major_radius, h.minor_radius,
-                    if h.convex { "convex" } else { "concave" },
-                    h.center[0], h.center[1], h.center[2],
-                    h.axis_direction[0], h.axis_direction[1], h.axis_direction[2],
-                    h.error_max, h.centroid_error_max,
-                );
-            }
-        }
-    }
-
-    if config.compare_shape.is_some() {
-        compare_toroidal_hypotheses(&toroidal_hypotheses, &mesh, config)?;
-        if config.verbosity >= 1 {
-            eprintln!("  Compare: all toroidal hypothesis centroids within tolerance");
-        }
-    }
-
-    if toroidal_quit {
         return Ok(Stage2Output {
             mesh,
             planar_hypotheses,
@@ -1944,6 +2097,8 @@ mod tests {
             viz_level: 1,
             multiface_planar: Vec::new(),
             large_sphere: Vec::new(),
+            seed_scores: Vec::new(),
+            junction_faces: Vec::new(),
         }
     }
 
@@ -1956,7 +2111,53 @@ mod tests {
             viz_level: 1,
             multiface_planar: Vec::new(),
             large_sphere: Vec::new(),
+            seed_scores: Vec::new(),
+            junction_faces: Vec::new(),
         }
+    }
+
+    #[test]
+    fn seed_scores_highlight_creases() {
+        // Two coplanar quads followed by a 90° crease into two more quads:
+        // faces adjacent to the crease must score higher than interior
+        // faces, and interior faces of both planes must score ~equally low.
+        //
+        //  z
+        //  |  f3 f2   (vertical plane, x=2)
+        //  +--f0 f1-- x  (horizontal plane, z=0)
+        let verts = vec![
+            MeshVertex::from_xyz(0.0, 0.0, 0.0),
+            MeshVertex::from_xyz(1.0, 0.0, 0.0),
+            MeshVertex::from_xyz(2.0, 0.0, 0.0),
+            MeshVertex::from_xyz(0.0, 1.0, 0.0),
+            MeshVertex::from_xyz(1.0, 1.0, 0.0),
+            MeshVertex::from_xyz(2.0, 1.0, 0.0),
+            MeshVertex::from_xyz(2.0, 0.0, 1.0),
+            MeshVertex::from_xyz(2.0, 1.0, 1.0),
+            MeshVertex::from_xyz(2.0, 0.0, 2.0),
+            MeshVertex::from_xyz(2.0, 1.0, 2.0),
+        ];
+        // Triangles: horizontal plane f0..f3, vertical plane f4..f7.
+        let tris = vec![
+            [0, 1, 4], [0, 4, 3], // interior horizontal
+            [1, 2, 5], [1, 5, 4], // crease-adjacent horizontal
+            [2, 6, 7], [2, 7, 5], // crease-adjacent vertical
+            [6, 8, 9], [6, 9, 7], // interior vertical
+        ];
+        let mesh = build_mesh(verts, tris);
+        let (scores, junction) = compute_seed_scores(&mesh);
+
+        let interior_max = scores[0].max(scores[1]).max(scores[6]).max(scores[7]);
+        let crease_min = scores[2].min(scores[3]).min(scores[4]).min(scores[5]);
+        assert!(
+            crease_min > interior_max,
+            "crease faces must outscore interior faces: crease_min={crease_min}, interior_max={interior_max}, scores={scores:?}"
+        );
+        // The four crease-adjacent faces are junctions; interiors are not.
+        assert!(junction[2] && junction[3] && junction[4] && junction[5],
+                "crease faces should be flagged as junctions: {junction:?}");
+        assert!(!junction[0] && !junction[1] && !junction[6] && !junction[7],
+                "interior faces should not be junctions: {junction:?}");
     }
 
     #[test]

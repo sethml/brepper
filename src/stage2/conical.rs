@@ -1364,7 +1364,12 @@ impl SurfaceType for ConicalSurface {
     /// angular check is relaxed 2×.
     fn angular_tol_multiplier() -> f64 { 2.0 }
 
-    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig) -> Vec<Seed> {
+    /// Two passes: pass 1 excludes junction faces from fan seeds; pass 2
+    /// retries remaining undeduced faces without the filter (narrow cone
+    /// patches between tangent junctions can be all-transition faces).
+    fn seeding_passes() -> usize { 2 }
+
+    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig, relaxed: bool) -> Vec<Seed> {
         if mesh.faces[fi].normal.is_none() {
             return Vec::new();
         }
@@ -1381,6 +1386,20 @@ impl SurfaceType for ConicalSurface {
         if mesh.faces[fi].spherical_hypothesis >= 0 {
             return Vec::new();
         }
+        // Likewise skip faces committed to a toroidal hypothesis (stage 2.5
+        // also runs before this stage): any adjacent pair of quad rows on a
+        // torus tube lies exactly on some cone, so fillets would otherwise
+        // be tiled with 2-ring cone bands. BFS expansion may still absorb
+        // torus-committed faces at junctions.
+        if mesh.faces[fi].toroidal_hypothesis >= 0 {
+            return Vec::new();
+        }
+        // Junction faces (curvature transitions) produce contaminated fans;
+        // pass 1 skips them as anchors and fan members. Pass 2 (relaxed)
+        // lifts the filter for surfaces made entirely of transition faces.
+        if config.is_junction(fi, relaxed) {
+            return Vec::new();
+        }
 
         let vc = mesh.faces[fi].vertex_count as usize;
         let angular_tol = config.angular_tol;
@@ -1390,6 +1409,7 @@ impl SurfaceType for ConicalSurface {
             .iter()
             .filter(|&&n| n >= 0)
             .map(|&n| n as usize)
+            .filter(|&ni| !config.is_junction(ni, relaxed))
             .filter(|&ni| conical_pairwise_qualified(mesh, fi, ni, angular_tol))
             .collect();
 

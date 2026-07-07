@@ -1,16 +1,22 @@
 # Prioritized by value toward the project goal (README: "analytic and freeform surfaces")
 
 ## 1. Fix stepped_block_toroidal_fillets (medium + fine)
-The most representative remaining model: a block with a network of interacting toroidal
-fillets. PROGRESS: 17 of its 18 tori are now detected (was 16; two-pass toroidal
-seeding, seed outlier trimming, corner-blend multi-axis rescue, final-refit
-validation), and the fine variant's stage 1-2 runtime dropped ~119 s → ~43 s.
-REMAINING: one corner vertex-blend torus (R=2.5, r=0.5 @ (−66.75,−64.5,−18.2)) still
-fails — its seeds are contaminated by leftover faces of ~4 undetected corner WALL
-CYLINDERS (narrow 90° arcs at the step corners; same partial-arc fitting problem as
-the cone_tangent_planes side patches — the normal-line axis rescue now exists for
-cones and could be extended to cylinders). Fixing the wall cylinders should
-de-contaminate the torus seeds.
+The most representative remaining model: a block with a network of interacting
+toroidal fillets. PROGRESS (curvature-guided seeding + toroidal-before-conical):
+the FINE variant now selects all 18 tori and all 37 cylinders, stage 2 runs in ~22 s
+(was ~119 s), and the full pipeline completes within the table timeout. REMAINING:
+- fine: fails stage 3.1 on ONE corner vertex 0.07 mm from the STEP vertex — a sharp
+  triple corner where a fillet terminates against two planes; the mesh corner vertex
+  lands a fraction of a facet off the CAD corner because one region boundary absorbs
+  a row differently near the corner. Needs either corner-vertex refinement (project
+  onto the three adjacent fitted surfaces and intersect) or a principled tolerance
+  for corners adjacent to tangent-terminating fillets.
+- medium: one corner vertex-blend torus (R=2.5, r=0.5 @ (−66.75,−64.5,−18.2)) still
+  undetected — at this resolution the blend patch is ~30 faces and has almost no
+  interior left after junction masking, so pass-1 seeds don't form and pass-2
+  (relaxed) seeds are contaminated. The fine variant finds it. A dedicated
+  small-patch path (seed from the patch's connected component of leftover faces
+  with outlier trimming) may close it.
 
 ## 2. cone_tangent_planes: stage 3.4 partial-cone face construction
 DONE at stage 2: all 3 cones are now detected (normal-line axis rescue for narrow
@@ -26,6 +32,13 @@ one 7000 mm³ solid; full-torus seam coverage — full_torus (tests/occt/, R=10 
 passes stage 4.1 via natural-bounds face construction; partial-cone detection and
 plane-cone tangent generators — all 3 cone_tangent_planes cones detected, 11/11 edge
 curves, stage 3.4 face construction issue remains, see item 2.)
+
+(completed and removed: curvature-guided seeding stages 1+2 — per-face field with
+ascending seed ordering AND pass-1 junction exclusion from gathering, plus the
+toroidal-before-conical stage reorder they enabled. See DEVELOPMENT_PLAN
+"Curvature-guided seed ordering". Candidate follow-up: the multiface_planar /
+large_sphere masks may now be redundant with the junction mask and could be retired
+after verification.)
 
 # Deferred
 

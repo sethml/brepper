@@ -39,6 +39,27 @@ pub(super) struct BfsConfig {
     /// torus beats them in selection once it exists. Empty means "no
     /// information" (unit tests).
     pub large_sphere: Vec<bool>,
+    /// Per-face curvature-difference score (see stage2::compute_seed_scores).
+    /// Start faces are processed in ascending score order so interior faces
+    /// of uniform regions seed before junction faces — contaminated junction
+    /// seeds are usually absorbed by BFS growth before they ever run. Empty
+    /// means "use mesh index order" (unit tests).
+    pub seed_scores: Vec<f64>,
+    /// Per-face flag: true if the face sits at a surface transition (high
+    /// RAW curvature-difference score, pre-diffusion). Seed gathering
+    /// excludes these in pass 1 so seeds stay on one surface; pass 2
+    /// retries remaining undeduced faces without the filter, so small
+    /// all-junction surfaces (one-row fillets) still get seeded. Empty
+    /// means "no information" (unit tests).
+    pub junction_faces: Vec<bool>,
+}
+
+impl BfsConfig {
+    /// Whether `fi` should be excluded from seed gathering as a junction
+    /// face. Always false in relaxed (pass-2) seeding or without field data.
+    pub fn is_junction(&self, fi: usize, relaxed: bool) -> bool {
+        !relaxed && self.junction_faces.get(fi).copied().unwrap_or(false)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -83,9 +104,11 @@ pub(super) trait SurfaceType {
         Self::hypothesis_field(face) == Self::undeduced_value()
     }
 
-    /// Generate seed face sets anchored at face `fi`.
-    /// Returns an empty vec if `fi` is not a valid seed anchor.
-    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig) -> Vec<Seed>;
+    /// Generate seed face sets anchored at face `fi`. `relaxed` is true on
+    /// retry passes: junction-face exclusion is lifted so surfaces composed
+    /// entirely of transition faces can still seed.
+    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig, relaxed: bool)
+        -> Vec<Seed>;
 
     /// Fit a surface to the given faces and vertices.
     /// Returns None if fitting fails.
@@ -261,11 +284,26 @@ where
     // have lower indices and seed first). Pass 2 revisits only faces still
     // undeduced, whose seed gathering now excludes everything committed in
     // pass 1.
+    // Start-face order: ascending curvature-difference score (interior faces
+    // of uniform regions first), ties broken by index for determinism.
+    let seed_order: Vec<usize> = if config.seed_scores.len() == num_faces {
+        let mut order: Vec<usize> = (0..num_faces).collect();
+        order.sort_by(|&a, &b| {
+            config.seed_scores[a]
+                .partial_cmp(&config.seed_scores[b])
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.cmp(&b))
+        });
+        order
+    } else {
+        (0..num_faces).collect()
+    };
+
     'passes: for pass in 0..S::seeding_passes() {
         if pass > 0 && config.verbosity >= 3 {
             eprintln!("    {} pass 2: retrying remaining undeduced faces", S::name());
         }
-    for fi in 0..num_faces {
+    for &fi in &seed_order {
         if !S::face_eligible(&mesh.faces[fi]) {
             continue;
         }
@@ -283,7 +321,7 @@ where
         }
 
         let t_seed_gen = std::time::Instant::now();
-        let seeds = S::generate_seeds(mesh, fi, config);
+        let seeds = S::generate_seeds(mesh, fi, config, pass > 0);
         prof_time_seed_gen += t_seed_gen.elapsed();
         if seeds.is_empty() {
             continue;

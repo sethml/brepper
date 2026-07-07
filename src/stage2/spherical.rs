@@ -389,36 +389,71 @@ impl SurfaceType for SphericalSurface {
 
     fn undeduced_value() -> i32 { UNDEDUCED_SPHERICAL_HYPOTHESIS }
 
+    /// Two passes: pass 1 excludes junction faces from 1-ring seeds; pass 2
+    /// retries remaining undeduced faces without the filter.
+    fn seeding_passes() -> usize { 2 }
+
     fn face_eligible(face: &MeshFace) -> bool {
         face.spherical_hypothesis == UNDEDUCED_SPHERICAL_HYPOTHESIS
     }
 
-    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, _config: &BfsConfig) -> Vec<Seed> {
+    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig, relaxed: bool) -> Vec<Seed> {
         if mesh.faces[fi].normal.is_none() {
             return Vec::new();
         }
-        // 1-ring: collect all faces sharing any vertex with fi
+        // Junction faces (curvature transitions) produce contaminated
+        // 1-rings; pass 1 skips them as anchors and ring members.
+        if config.is_junction(fi, relaxed) {
+            return Vec::new();
+        }
+        // 1-ring: all faces sharing any vertex with fi. Gathered by 2-hop
+        // edge expansion + vertex-share filter (faces around a shared vertex
+        // are within 2 edge hops), instead of scanning the whole mesh per
+        // seed — the previous O(N) scan per start face made stage 2.3
+        // quadratic (20+ s on 26K-face meshes while finding nothing).
         let vc = mesh.faces[fi].vertex_count as usize;
+        let anchor_verts = &mesh.faces[fi].vertex_indices[..vc];
+        let shares_vertex = |fj: usize| -> bool {
+            let f = &mesh.faces[fj];
+            let fj_vc = f.vertex_count as usize;
+            f.vertex_indices[..fj_vc]
+                .iter()
+                .any(|vi| anchor_verts.contains(vi))
+        };
+        let eligible = |fj: usize| -> bool {
+            let f = &mesh.faces[fj];
+            f.normal.is_some()
+                && f.spherical_hypothesis == UNDEDUCED_SPHERICAL_HYPOTHESIS
+                && !config.is_junction(fj, relaxed)
+        };
         let mut seed_set: HashSet<usize> = HashSet::new();
         seed_set.insert(fi);
-        for &vi in &mesh.faces[fi].vertex_indices[..vc] {
-            // Find all faces incident on this vertex
-            for (fj, face) in mesh.faces.iter().enumerate() {
-                let fj_vc = face.vertex_count as usize;
-                for &fj_vi in &face.vertex_indices[..fj_vc] {
-                    if fj_vi == vi && face.normal.is_some() {
-                        if face.spherical_hypothesis == UNDEDUCED_SPHERICAL_HYPOTHESIS {
-                            seed_set.insert(fj);
+        let mut frontier: Vec<usize> = vec![fi];
+        let mut visited: HashSet<usize> = HashSet::new();
+        visited.insert(fi);
+        for _hop in 0..2 {
+            let mut next: Vec<usize> = Vec::new();
+            for &f in &frontier {
+                let f_vc = mesh.faces[f].vertex_count as usize;
+                for &ni in &mesh.faces[f].neighbors[..f_vc] {
+                    if ni >= 0 {
+                        let ni = ni as usize;
+                        if visited.insert(ni) {
+                            next.push(ni);
+                            if shares_vertex(ni) && eligible(ni) {
+                                seed_set.insert(ni);
+                            }
                         }
-                        break;
                     }
                 }
             }
+            frontier = next;
         }
         if seed_set.len() < 3 {
             return Vec::new();
         }
-        let faces: Vec<usize> = seed_set.into_iter().collect();
+        let mut faces: Vec<usize> = seed_set.into_iter().collect();
+        faces.sort_unstable();
         vec![Seed { faces }]
     }
 

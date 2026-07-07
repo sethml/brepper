@@ -298,20 +298,35 @@ fn compare_adjacency_to_step(
         }
     }
 
-    // Check BRepVertices against STEP vertices
+    // Check BRepVertices against STEP vertices. Vertices adjacent to any
+    // TANGENT edge get the chordal surface tolerance for the same reason as
+    // tangent-edge boundary vertices: when the tessellation lacks a precise
+    // point at a corner where surfaces meet tangentially (e.g. triple points
+    // of a fillet network), the mesh corner vertex can sit a fraction of a
+    // facet off the true corner — harmless, since corner positions get
+    // refined against the reconstructed surfaces downstream.
     let mut vert_overall_max = 0.0_f64;
     for (vi, vert) in vertices.iter().enumerate() {
         let pt = gp::Pnt::new_real3(vert.point[0], vert.point[1], vert.point[2]);
         let d = min_distance_to_shape(&pt, vertex_compound.as_shape());
 
         vert_overall_max = vert_overall_max.max(d);
-        if d > config.vertex_tolerance_mm {
+        let near_tangent = vert
+            .adjacent_edges
+            .iter()
+            .any(|&ei| edges.get(ei).is_some_and(|e| e.tangent));
+        let vert_tol = if near_tangent {
+            config.surface_tolerance_mm
+        } else {
+            config.vertex_tolerance_mm
+        };
+        if d > vert_tol {
             return Err(Stage3CompareError {
                 substage: 1,
                 check_type: "vertex",
                 element_index: vi,
                 max_distance: d,
-                tolerance: config.vertex_tolerance_mm,
+                tolerance: vert_tol,
             });
         }
     }

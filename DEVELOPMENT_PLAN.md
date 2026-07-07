@@ -218,7 +218,16 @@ Each `MeshFace` has a hypothesis index field per surface type (e.g., `planar_hyp
     e. **Commit**: if a best candidate was found, create a hypothesis and assign it to all of its faces (mutating `mesh.faces[].{type}_hypothesis`). Faces assigned here will be skipped by subsequent starting faces.
 3. After all starting faces have been processed: set any remaining `UNDEDUCED` faces to `NO_HYPOTHESIS`.
 
-**Computational cost**: For each starting face, the number of seed trials is typically small (1 for planar/spherical/toroidal, 1–6 for conical/cylindrical). Each trial BFS covers the connected surface region. Since most faces on the same surface will discover the same region, the work is dominated by the first few faces that discover the region before their neighbors get committed.
+**Curvature-guided seed ordering**: Start faces are processed in ascending order of a per-face *curvature-difference score* rather than mesh index order. The score is computed once per mesh (in stage 2, shared by all surface stages):
+
+1. **Per-face curvature summary**: for each mesh edge between adjacent faces, the discrete normal curvature along the crossing direction is κ ≈ θ/d (dihedral angle over centroid distance). A face's summary is the maximum κ over its edges — approximately its largest principal curvature.
+2. **Neighbor difference**: a face's raw score is the maximum |summary difference| against its edge neighbors. Interior faces of any uniform surface (plane, cylinder, cone, sphere, torus) score ≈ 0 — curvature is locally constant even where it is nonzero — while faces at surface transitions score high. Crucially, this includes **tangent junctions** (fillet↔plane, fillet↔cylinder), which are G1-continuous and therefore invisible to dihedral-angle checks, but G2-discontinuous: curvature jumps from 0 to 1/r.
+3. **Diffusion**: 3 Jacobi passes of neighbor averaging (new = ½·self + ½·mean(neighbors)) spread the junction signal a few hops, so ordering prefers deep-interior faces whose seed neighborhoods (1-ring / fan, radius ≈ 1–2) cannot touch a junction.
+4. **Junction mask**: separately from the diffused ordering score, faces whose RAW score exceeds 50% of the local curvature magnitude (max of own and neighbors' summaries) are flagged as junction faces. The criterion is local-relative, not mesh-global: sharp creases dominate a global maximum and tangent junctions — the primary target — would fall below any fraction of it.
+
+Effect: interior seeds run first and commit large, correctly-fitted hypotheses; junction faces are usually absorbed by BFS growth before they ever become start faces (committed faces do not seed). **Seed gathering exclusion**: in pass 1, junction faces are also excluded from seed neighborhoods (conical fans, spherical 1-rings, toroidal hop-expansion), so seeds stay on one surface; a second pass retries remaining undeduced faces without the filter so surfaces composed entirely of transition faces (one-row fillets) still seed. Toroidal gathering hop-expands (up to 3 hops, targeting ≥ 16 faces) since small fillet tubes have little interior across the tube but extend along the fillet axis. Ordering and masks are deterministic: ties break by face index.
+
+**Computational cost**: For each starting face, the number of seed trials is typically small (1 for planar/spherical/toroidal, 1–6 for conical/cylindrical). Each trial BFS covers the connected surface region. Since most faces on the same surface will discover the same region, the work is dominated by the first few faces that discover the region before their neighbors get committed. The curvature field costs O(N) plus three O(N) diffusion passes — negligible next to LM fitting.
 
 - With the `--compare` flag (applied to all surface types):
   - For each hypothesis, compute the centroid of each member face.
@@ -247,15 +256,19 @@ Because the vertex tolerance is tight for CAD meshes, the angular tolerance chec
 
 **Acceptance tests**: `face_count >= 2`. Single-face planes are not kept as hypotheses. Faces that end up in a single-face group are left as `NO_HYPOTHESIS`; stage 2.6 synthesizes single-face planar hypotheses for any faces that received no hypothesis from stages 2.1–2.5.
 
-**Execution order note**: Stage 2.3 (spherical) executes *before* stage 2.2
-(conical/cylindrical), keeping the historical stage numbering for CLI/viz
-compatibility. On a tessellated sphere, every band of quad rows lies exactly
-on some cone or cylinder (two rings of vertices always fit both), so the
-conical BFS would otherwise tile fine spheres with hundreds of bogus band
-hypotheses. Sphere detection is cheap and robust (its solid-angle coverage
-acceptance rejects band-like fits), so spheres are committed first and
-conical seeding skips sphere-committed faces (conical BFS *expansion* may
-still absorb them, so tangent junctions work).
+**Execution order note**: Stages execute planar (2.1) → spherical (2.3) →
+toroidal (2.5) → conical (2.2) → selection (2.6), keeping the historical
+stage numbering for CLI/viz compatibility. The principle is most-constrained
+surfaces first: every band of quad rows on a tessellated sphere lies exactly
+on some cone or cylinder, and any adjacent pair of quad rows on a torus tube
+likewise lies exactly on some cone — so if the conical stage ran first it
+would tile spheres and fillets with bogus band hypotheses (slow, and they
+starve the later stages' seeding). Sphere and torus acceptance tests are
+selective enough to run early (solid-angle coverage; normal-based tube-span
+coverage), and cylinders resist bogus torus fits cheaply (tube centers
+collapse onto the axis; the (h,r) profile is a constant-radius line).
+Conical seeding skips sphere- and torus-committed faces; conical BFS
+*expansion* may still absorb them, so tangent junctions work.
 
 #### 2.2 Deduce conical/cylindrical hypotheses
 

@@ -138,7 +138,7 @@ impl SurfaceType for PlanarSurface {
 
     fn undeduced_value() -> i32 { UNDEDUCED_PLANAR_HYPOTHESIS }
 
-    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, _config: &BfsConfig) -> Vec<Seed> {
+    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, _config: &BfsConfig, _relaxed: bool) -> Vec<Seed> {
         // Single-face seed, like C++ PlanarTraits
         if mesh.faces[fi].normal.is_none() {
             return Vec::new();

@@ -1283,7 +1283,7 @@ pub(super) struct ToroidalSurface;
 /// gathering its 3-ring edge neighborhood. Returns an empty vec unless the
 /// neighborhood spans ≥ 2 distinct conical hypotheses (evidence of major-arc
 /// curvature that a single cylinder cannot represent).
-fn strip_merge_seed(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig) -> Vec<Seed> {
+fn strip_merge_seed(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig, relaxed: bool) -> Vec<Seed> {
     let mut ring: Vec<usize> = vec![fi];
     let mut seen = vec![false; mesh.faces.len()];
     seen[fi] = true;
@@ -1311,6 +1311,7 @@ fn strip_merge_seed(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig) -> Vec<
                     && face.toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS
                     && !ni_large_sphere
                     && !config.multiface_planar.get(ni).copied().unwrap_or(false)
+                    && !config.is_junction(ni, relaxed)
                 {
                     ring.push(ni);
                     next.push(ni);
@@ -1383,8 +1384,13 @@ impl SurfaceType for ToroidalSurface {
     /// isolates the majority patch.
     fn seed_outlier_trimming() -> bool { true }
 
-    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig) -> Vec<Seed> {
+    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig, relaxed: bool) -> Vec<Seed> {
         if mesh.faces[fi].normal.is_none() {
+            return Vec::new();
+        }
+        // Junction faces (curvature transitions) produce contaminated seeds;
+        // pass 1 skips them as anchors and gathering members.
+        if config.is_junction(fi, relaxed) {
             return Vec::new();
         }
         // Exclude faces on LARGE spheres only: small spurious spheres (a
@@ -1417,27 +1423,49 @@ impl SurfaceType for ToroidalSurface {
         // hypotheses (a plain cylinder region is a single hypothesis and is
         // skipped cheaply).
         if mesh.faces[fi].conical_hypothesis >= 0 {
-            return strip_merge_seed(mesh, fi, config);
+            return strip_merge_seed(mesh, fi, config, relaxed);
         }
 
-        // 1-ring: collect all faces sharing any vertex with fi
-        let vc = mesh.faces[fi].vertex_count as usize;
+        // Gather the seed by hop-expansion from fi over edge neighbors,
+        // excluding committed/planar/junction faces, growing the radius (up
+        // to 3 hops) until the seed is large enough for a solid 7-DOF fit.
+        // Small fillets (e.g. r=0.5 tubes only 2-3 rows wide) have little or
+        // no interior left after junction exclusion across the tube, but
+        // extend far along the fillet axis — hop growth follows the strip.
+        let eligible = |fj: usize| -> bool {
+            let face = &mesh.faces[fj];
+            face.normal.is_some()
+                && face.toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS
+                && face.conical_hypothesis < 0
+                && !on_large_sphere(fj)
+                && !on_plane(fj)
+                && !config.is_junction(fj, relaxed)
+        };
         let mut seed_set: HashSet<usize> = HashSet::new();
         seed_set.insert(fi);
-        for &vi in &mesh.faces[fi].vertex_indices[..vc] {
-            for (fj, face) in mesh.faces.iter().enumerate() {
-                let fj_vc = face.vertex_count as usize;
-                let contains_vi = face.vertex_indices[..fj_vc].contains(&vi);
-                if contains_vi
-                    && face.normal.is_some()
-                    && face.toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS
-                    && face.conical_hypothesis < 0
-                    && !on_large_sphere(fj)
-                    && !on_plane(fj)
-                {
-                    seed_set.insert(fj);
+        let mut frontier: Vec<usize> = vec![fi];
+        const SEED_TARGET_FACES: usize = 16;
+        for _hop in 0..3 {
+            if seed_set.len() >= SEED_TARGET_FACES {
+                break;
+            }
+            let mut next: Vec<usize> = Vec::new();
+            for &f in &frontier {
+                let vc = mesh.faces[f].vertex_count as usize;
+                for &ni in &mesh.faces[f].neighbors[..vc] {
+                    if ni >= 0 {
+                        let ni = ni as usize;
+                        if !seed_set.contains(&ni) && eligible(ni) {
+                            seed_set.insert(ni);
+                            next.push(ni);
+                        }
+                    }
                 }
             }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
         }
 
         // Need enough faces and vertices for 7-DOF fit.
