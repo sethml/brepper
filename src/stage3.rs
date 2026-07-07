@@ -5021,7 +5021,7 @@ fn create_occt_faces_all(
             | SelectedSurface::Toroidal(_)
         );
 
-        // TEMP: debug segfault
+        // Human-readable surface type for the per-face verbose log below.
         let stype = match surface_type {
             SelectedSurface::Planar(_) => "planar",
             SelectedSurface::Conical(i) => {

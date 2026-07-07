@@ -342,6 +342,10 @@ The normal covariance eigenvector gives an unsigned axis direction. The cone dis
 
 In stage 3, conical faces are periodic (full-revolution) like cylindrical and spherical faces. The `is_periodic` check must include `SelectedSurface::Conical(_)` or conical faces will go through `create_planar_face` instead of `create_periodic_face`, causing segfaults when a full-circle edge is encountered.
 
+### `ShapeFix_*` can segfault on cone faces
+
+`create_wire_based_periodic_face` deliberately skips `ShapeFix_Wire`/`ShapeFix_Face` for non-sphere periodic faces: on cones, ShapeFix crashes (not just errors) due to pcurve/edge-curve interactions. Spheres tolerate it. So cone face repair must be done without ShapeFix. This constrains the proposed stage-3 shared-edge rework (DEVELOPMENT_PLAN §3.x): attach pcurves to shared edges directly with `BRep_Builder` rather than routing cone faces through ShapeFix to "fix up" a wire.
+
 ### OCCT cone convention: origin at apex, zero ref_radius
 
 `geom::ConicalSurface::new_ax3_real2(&ax3, half_angle, ref_radius)` — for brepper's cones, set origin at the apex and ref_radius=0. The Ax3 origin is the apex point, Z-direction points from apex toward the base.

@@ -656,6 +656,20 @@ So sewing is load-bearing, and the `ReconEdge.pcurves: [_; 2]` and `BRepVertex.u
 
 **Trigger to pull it forward earlier.** If a model becomes *unfixable* without tighter topology — i.e. the tangent-edge/corner tolerance relaxations stop merely loosening tolerances and start letting a real model fail — do the rework then rather than adding relaxation #N.
 
+**Where the code lives (cold-start entry points).** All of stage 3 is in `src/stage3.rs` (~5800 lines); entry `stage3()`. The assembler is `create_occt_faces_all`: it builds one shared `TopoDS_Vertex` per `BRepVertex`, one shared `TopoDS_Edge` per `ReconEdge` (from `ReconEdge.curve_3d`, held in the `topo_edges` vec indexed by edge id — this is the sharing that later gets defeated), then dispatches each face to `create_planar_face` or `create_periodic_face`. `create_periodic_face` (cones/spheres/tori) chooses among: natural-bounds (`MakeFace::new_handlegeomsurface_real`, complete closed surfaces with no edges); UV-bounds (`MakeFace::new_handlegeomsurface_real5`, full-revolution / all-closed-loop / reoriented-sphere); and wire-based `create_wire_based_periodic_face` (partial revolution — projects each edge's 3D curve to pcurve points, sets the pcurve on the shared edge via `BRep_Builder::update_edge_edge_...`, builds a `MakeWire`, then `MakeFace`). Sewing is `construct_shells` (`BRepBuilderAPI_Sewing`); solids and void-merging are §3.6. The both-sides representation to populate is already declared but unused: `ReconEdge.pcurves: [_; 2]` and `BRepVertex.uv_coords` (§3.0 data structures).
+
+**Hard OCCT constraints (established empirically — do not relearn by crashing).**
+- `ShapeFix_*` can **segfault on cone faces** (pcurve/edge-curve interaction); the wire path already skips ShapeFix for non-spheres for this reason. A shared-edge assembler that attaches pcurves directly and avoids `ShapeFix`/`MakeFace` edge-copying sidesteps this — but do not reintroduce ShapeFix on cone faces to "clean up" a wire.
+- `is_periodic` in `create_occt_faces_all` **must include `Conical(_)`** or cone faces route to `create_planar_face` and segfault on a full-circle edge (LEARNINGS: "Conical faces need is_periodic treatment").
+- `MakeEdge` on a periodic (circle) curve forces p1 < p2 and takes the forward arc V1→V2, so **vertex order selects which arc** — see the explicit first/last-parameter handling in `create_occt_faces_all` (the `d0_start`/`d1_start` block). This is the same complementary-arc trap that collapses the `cone_tangent_planes` apex caps.
+- Thread-safety of the OCCT calls used here: LEARNINGS "OCCT Thread Safety" (BRepExtrema, MakeEdge/Face/Vertex/Sewing, ShapeFix_* are all safe; only STEP Reader/Writer need serializing).
+
+**Reproduce & validate the motivating case.**
+- Repro: `./target/release/brepper tests/onshape/cone_tangent_planes_medium.stl --compare tests/onshape/cone_tangent_planes.step -o tmp/x.step` → completes (exit 0) but prints a stage-3.6 volume **WARNING** (6617 vs 14676 mm³) and three BRepCheck "face shape invalid" warnings.
+- Inspect: `--stage=3.4 -v` prints each face's `area=…` (the two bad caps come out 0.0001 and a wrong 130 mm²) and which faces fail BRepCheck; `--stage=3.1 -v` lists each face's surface type + fitted parameters and every edge as `faces [a,b] vertices [v0,v1]`.
+- Done = full suite green (`cargo test --release`, ~3 min) **and** `cone_tangent_planes` volume within 1% with no warning; regenerate `tests/RESULTS.md` via `./scripts/run_test_table.sh`.
+- Directly relevant LEARNINGS entries to read first: the "Partial revolution … wire-based … pcurves" note, the two sphere-pole-vertex entries, the cone "extend V to the apex" entry, and "Conical faces need is_periodic treatment".
+
 ---
 
 ### Stage 4: Output
