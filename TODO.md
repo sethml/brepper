@@ -1,22 +1,13 @@
 # Prioritized by value toward the project goal (README: "analytic and freeform surfaces")
 
-## 1. Fix stepped_block_toroidal_fillets (medium + fine)
-The most representative remaining model: a block with a network of interacting
-toroidal fillets. PROGRESS (curvature-guided seeding + toroidal-before-conical):
-the FINE variant now selects all 18 tori and all 37 cylinders, stage 2 runs in ~22 s
-(was ~119 s), and the full pipeline completes within the table timeout. REMAINING:
-- fine: fails stage 3.1 on ONE corner vertex 0.07 mm from the STEP vertex — a sharp
-  triple corner where a fillet terminates against two planes; the mesh corner vertex
-  lands a fraction of a facet off the CAD corner because one region boundary absorbs
-  a row differently near the corner. Needs either corner-vertex refinement (project
-  onto the three adjacent fitted surfaces and intersect) or a principled tolerance
-  for corners adjacent to tangent-terminating fillets.
-- medium: one corner vertex-blend torus (R=2.5, r=0.5 @ (−66.75,−64.5,−18.2)) still
-  undetected — at this resolution the blend patch is ~30 faces and has almost no
-  interior left after junction masking, so pass-1 seeds don't form and pass-2
-  (relaxed) seeds are contaminated. The fine variant finds it. A dedicated
-  small-patch path (seed from the patch's connected component of leftover faces
-  with outlier trimming) may close it.
+## 1. stepped_block_toroidal_fillets MEDIUM: one undetected corner-blend torus
+The FINE variant now passes the full pipeline (boundary refinement fixed its corner
+vertex; all 18 tori + 37 cylinders selected; ~95 s total). MEDIUM still fails: one
+corner vertex-blend torus (R=2.5, r=0.5 @ (−66.75,−64.5,−18.2)) is undetected — at
+this resolution the blend patch is ~30 faces with almost no interior after junction
+masking, so pass-1 seeds don't form and pass-2 (relaxed) seeds are contaminated. A
+dedicated small-patch path (seed from the patch's connected component of leftover
+faces with outlier trimming) may close it.
 
 ## 2. cone_tangent_planes: stage 3.4 partial-cone face construction
 DONE at stage 2: all 3 cones are now detected (normal-line axis rescue for narrow

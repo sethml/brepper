@@ -329,6 +329,20 @@ fn ccad_filleted_hole_block_stage41_compare() {
 }
 
 #[test]
+fn onshape_stepped_block_toroidal_fine_stage41_compare() {
+    // The heaviest model (51K triangles, 72 surfaces incl. 18 tori in a
+    // fillet network). Exercises curvature-guided seeding, boundary
+    // refinement, and sharp-corner vertex refinement end to end.
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/onshape/stepped_block_toroidal_fillets_fine.stl"),
+        &format!("{dir}/tmp/test_stepped_block_fine_cmp.step"),
+        &format!("{dir}/tests/onshape/stepped_block_toroidal_fillets.step"),
+    );
+    run_stage4(&config);
+}
+
+#[test]
 fn occt_full_torus_stage41_compare() {
     // Complete donut: exercises both U and V seams on the doubly-periodic
     // torus face (natural-bounds construction, no boundary edges).

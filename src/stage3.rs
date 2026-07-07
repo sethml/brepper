@@ -611,6 +611,141 @@ fn vertex_position(vi: usize, vertices: &[MeshVertex]) -> [f64; 3] {
 }
 
 /// Build stage 3.1 output: OCCT surfaces and adjacency graph.
+/// Project a point onto a selected surface's fitted geometry (analytic
+/// nearest-point for plane/cylinder/cone/sphere/torus).
+fn project_point_to_selected(
+    p: [f64; 3],
+    surface: &SelectedSurface,
+    stage2: &Stage2Output,
+) -> [f64; 3] {
+    match surface {
+        SelectedSurface::Planar(i) => {
+            let h = &stage2.planar_hypotheses[*i];
+            let d = h.normal[0] * p[0] + h.normal[1] * p[1] + h.normal[2] * p[2] - h.distance;
+            [
+                p[0] - d * h.normal[0],
+                p[1] - d * h.normal[1],
+                p[2] - d * h.normal[2],
+            ]
+        }
+        SelectedSurface::Conical(i) => {
+            let h = &stage2.conical_hypotheses[*i];
+            let d = [p[0] - h.apex[0], p[1] - h.apex[1], p[2] - h.apex[2]];
+            let a = h.axis_direction;
+            let ht = d[0] * a[0] + d[1] * a[1] + d[2] * a[2];
+            let radial = [d[0] - ht * a[0], d[1] - ht * a[1], d[2] - ht * a[2]];
+            let rd = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+            let surface_r = h.radius_at_apex + ht * h.half_angle.tan();
+            if rd > 1e-15 {
+                let sc = surface_r / rd;
+                [
+                    h.apex[0] + ht * a[0] + radial[0] * sc,
+                    h.apex[1] + ht * a[1] + radial[1] * sc,
+                    h.apex[2] + ht * a[2] + radial[2] * sc,
+                ]
+            } else {
+                p
+            }
+        }
+        SelectedSurface::Spherical(i) => {
+            let h = &stage2.spherical_hypotheses[*i];
+            let d = [p[0] - h.center[0], p[1] - h.center[1], p[2] - h.center[2]];
+            let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            if dist > 1e-15 {
+                let sc = h.radius / dist;
+                [
+                    h.center[0] + d[0] * sc,
+                    h.center[1] + d[1] * sc,
+                    h.center[2] + d[2] * sc,
+                ]
+            } else {
+                p
+            }
+        }
+        SelectedSurface::Toroidal(i) => {
+            let h = &stage2.toroidal_hypotheses[*i];
+            let d = [p[0] - h.center[0], p[1] - h.center[1], p[2] - h.center[2]];
+            let a = h.axis_direction;
+            let ax = d[0] * a[0] + d[1] * a[1] + d[2] * a[2];
+            let radial = [d[0] - ax * a[0], d[1] - ax * a[1], d[2] - ax * a[2]];
+            let rd = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+            if rd > 1e-15 {
+                let tc = [
+                    h.center[0] + h.major_radius * radial[0] / rd,
+                    h.center[1] + h.major_radius * radial[1] / rd,
+                    h.center[2] + h.major_radius * radial[2] / rd,
+                ];
+                let tv = [p[0] - tc[0], p[1] - tc[1], p[2] - tc[2]];
+                let td = (tv[0] * tv[0] + tv[1] * tv[1] + tv[2] * tv[2]).sqrt();
+                if td > 1e-15 {
+                    let sc = h.minor_radius / td;
+                    [tc[0] + tv[0] * sc, tc[1] + tv[1] * sc, tc[2] + tv[2] * sc]
+                } else {
+                    p
+                }
+            } else {
+                p
+            }
+        }
+    }
+}
+
+/// Refine corner vertex positions by cyclic projection onto the adjacent
+/// fitted surfaces (DEVELOPMENT_PLAN BRepVertex TODO). The raw mesh vertex
+/// at a corner is only as accurate as the tessellation puts it — where a
+/// fillet terminates, the mesh may have no vertex exactly at the CAD corner.
+/// Alternating projections converge to a point on the intersection of the
+/// adjacent surfaces. The refinement is kept only if it stays within
+/// 2× surface tolerance of the mesh vertex (safety against divergence on
+/// near-parallel surface configurations).
+fn refine_corner_vertices(
+    vertices: &mut [BRepVertex],
+    edges: &[ReconEdge],
+    face_descriptors: &[FaceDescriptor],
+    stage2: &Stage2Output,
+    config: &Config,
+) {
+    for vert in vertices.iter_mut() {
+        if vert.adjacent_faces.len() < 2 {
+            continue;
+        }
+        // Only refine SHARP corners: where any adjacent surface pair is
+        // tangent, the surfaces intersect along a curve rather than an
+        // isolated point, and cyclic projection slides along the tangent
+        // direction to an arbitrary point on it (observed drifting 0.57 mm).
+        // Tangent-adjacent corners keep the raw mesh vertex (and the relaxed
+        // chordal compare tolerance).
+        let near_tangent = vert
+            .adjacent_edges
+            .iter()
+            .any(|&ei| edges.get(ei).is_some_and(|e| e.tangent));
+        if near_tangent {
+            continue;
+        }
+        let original = vert.point;
+        let mut p = original;
+        for _iter in 0..30 {
+            let prev = p;
+            for &fi in &vert.adjacent_faces {
+                let surface =
+                    &stage2.selected_surfaces[face_descriptors[fi].selected_surface_idx];
+                p = project_point_to_selected(p, surface, stage2);
+            }
+            let dm = (p[0] - prev[0]).powi(2) + (p[1] - prev[1]).powi(2) + (p[2] - prev[2]).powi(2);
+            if dm < 1e-20 {
+                break;
+            }
+        }
+        let moved = ((p[0] - original[0]).powi(2)
+            + (p[1] - original[1]).powi(2)
+            + (p[2] - original[2]).powi(2))
+        .sqrt();
+        if moved <= config.surface_tolerance_mm * 2.0 {
+            vert.point = p;
+        }
+    }
+}
+
 fn build_surfaces_and_adjacency(
     input: Stage2Output,
     config: &Config,
@@ -905,8 +1040,10 @@ fn build_surfaces_and_adjacency(
             }
         }
     }
-    // Note: the stage 3.1 --compare check runs from stage3() after tangency
-    // detection, because tangent edges use a looser boundary-vertex tolerance.
+    // Note: corner vertex refinement and the stage 3.1 --compare check run
+    // from stage3() after tangency detection — refinement applies only to
+    // sharp corners, and tangent edges use a looser boundary-vertex
+    // tolerance.
 
     Ok(Stage3Output {
         stage2: input,
@@ -2138,36 +2275,82 @@ fn compute_tangent_edge_curve_torus_arc(
 ) -> Result<(), String> {
     let tor_idx = torus_idx_from_pair(ss0, ss1)?;
     let tor = &stage2.toroidal_hypotheses[tor_idx];
-    let axis = tor.axis_direction;
-    let center = tor.center;
 
-    // Compute circle center and radius from both vertices
-    let mut h_avg = 0.0;
-    let mut r_avg = 0.0;
-    for v in [v0, v1] {
-        let dp = [
-            v.point[0] - center[0],
-            v.point[1] - center[1],
-            v.point[2] - center[2],
-        ];
-        let h = dp[0] * axis[0] + dp[1] * axis[1] + dp[2] * axis[2];
-        let radial = [
-            dp[0] - h * axis[0],
-            dp[1] - h * axis[1],
-            dp[2] - h * axis[2],
-        ];
-        let r = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
-        h_avg += h;
-        r_avg += r;
+    // The junction circle is perpendicular to *some* axis — the torus axis
+    // for coaxial fillet junctions, or the adjacent cylinder/torus axis for
+    // tube-continuation junctions (same reasoning as the closed-loop case).
+    // A wrong axis choice projects both endpoint vertices to the SAME circle
+    // parameter (they differ only along that axis), producing a degenerate
+    // zero-span arc. Pick the candidate axis whose perpendicular circle best
+    // fits the edge's mesh boundary vertices.
+    let mut candidates: Vec<([f64; 3], [f64; 3])> = vec![(tor.center, tor.axis_direction)];
+    for ss in [ss0, ss1] {
+        match ss {
+            SelectedSurface::Conical(c) => {
+                let hyp = &stage2.conical_hypotheses[*c];
+                candidates.push((hyp.apex, hyp.axis_direction));
+            }
+            SelectedSurface::Toroidal(t2) if *t2 != tor_idx => {
+                let hyp = &stage2.toroidal_hypotheses[*t2];
+                candidates.push((hyp.center, hyp.axis_direction));
+            }
+            _ => {}
+        }
     }
-    h_avg /= 2.0;
-    r_avg /= 2.0;
 
-    let circle_center = [
-        center[0] + h_avg * axis[0],
-        center[1] + h_avg * axis[1],
-        center[2] + h_avg * axis[2],
-    ];
+    let boundary_pts: Vec<[f64; 3]> = edge
+        .mesh_boundary_vertices
+        .iter()
+        .map(|&vi| {
+            let v = &stage2.mesh.vertices[vi];
+            [v.x, v.y, v.z]
+        })
+        .collect();
+
+    let mut best: Option<(f64, [f64; 3], [f64; 3], f64)> = None; // (dev, center, axis, radius)
+    for (origin, axis) in candidates {
+        // Circle center and radius from the two endpoint vertices.
+        let mut h_avg = 0.0;
+        let mut r_avg = 0.0;
+        for v in [v0, v1] {
+            let dp = [
+                v.point[0] - origin[0],
+                v.point[1] - origin[1],
+                v.point[2] - origin[2],
+            ];
+            let h = dp[0] * axis[0] + dp[1] * axis[1] + dp[2] * axis[2];
+            let radial = [dp[0] - h * axis[0], dp[1] - h * axis[1], dp[2] - h * axis[2]];
+            let r = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+            h_avg += h;
+            r_avg += r;
+        }
+        h_avg /= 2.0;
+        r_avg /= 2.0;
+        if r_avg < 1e-9 {
+            continue;
+        }
+        let cc = [
+            origin[0] + h_avg * axis[0],
+            origin[1] + h_avg * axis[1],
+            origin[2] + h_avg * axis[2],
+        ];
+        // Max deviation of boundary vertices from this circle.
+        let mut max_dev = 0.0_f64;
+        for p in &boundary_pts {
+            let dp = [p[0] - cc[0], p[1] - cc[1], p[2] - cc[2]];
+            let h = dp[0] * axis[0] + dp[1] * axis[1] + dp[2] * axis[2];
+            let radial = [dp[0] - h * axis[0], dp[1] - h * axis[1], dp[2] - h * axis[2]];
+            let r = (radial[0] * radial[0] + radial[1] * radial[1] + radial[2] * radial[2]).sqrt();
+            let dev = ((r - r_avg) * (r - r_avg) + h * h).sqrt();
+            max_dev = max_dev.max(dev);
+        }
+        if best.as_ref().is_none_or(|(d, _, _, _)| max_dev < *d) {
+            best = Some((max_dev, cc, axis, r_avg));
+        }
+    }
+    let Some((_, circle_center, axis, r_avg)) = best else {
+        return Err("no valid axis candidate for torus tangent arc".to_string());
+    };
 
     let center_pnt = gp::Pnt::new_real3(circle_center[0], circle_center[1], circle_center[2]);
     let normal_dir = gp::Dir::new_real3(axis[0], axis[1], axis[2]);
@@ -5546,7 +5729,15 @@ pub fn stage3(config: &Config, input: Stage2Output, viz: Option<&crate::viz::Viz
     // chordal tolerance of both surfaces and harmless to reconstruction
     // (tangent junction curves are built from the fitted hypotheses, not
     // from these vertices).
-    let output = detect_tangency(output, config);
+    let mut output = detect_tangency(output, config);
+
+    // Refine sharp corner vertex positions onto the intersection of their
+    // adjacent fitted surfaces (mesh corner vertices can sit a fraction of a
+    // facet off the CAD corner, e.g. where a fillet terminates).
+    {
+        let Stage3Output { stage2, face_descriptors, edges, vertices, .. } = &mut output;
+        refine_corner_vertices(vertices, edges, face_descriptors, stage2, config);
+    }
 
     if config.compare_shape.is_some() {
         compare_adjacency_to_step(&output.edges, &output.vertices, &output.stage2.mesh, config)?;

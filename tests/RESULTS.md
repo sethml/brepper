@@ -20,45 +20,45 @@ Tests last run: 2026-07-06.
 
 | Test File | Status | Time | Notes |
 |-----------|--------|------|-------|
-| cube_on_plane.stl | FAIL | 0.14s | Error: stage 1.2 (compare): comparison failed: vertex 7 is 9.000000e0 mm from ne |
-| cube_shifted.stl | FAIL | 0.09s | Error: stage 1.2 (compare): comparison failed: vertex 7 is 6.928203e0 mm from ne |
-| degenerate_face.stl | FAIL | 0.08s | Error: stage 1.2 (validation): mesh contains 1 degenerate face(s): [0] |
-| inconsistent_winding.stl | FAIL | 0.07s | Error: stage 1.2 (validation): mesh contains 3 edge(s) with flipped orientation |
-| non_manifold_edge.stl | FAIL | 0.06s | Error: stage 1.2 (validation): mesh contains 1 non-manifold edge(s) with >2 inci |
+| cube_on_plane.stl | FAIL | 0.09s | Error: stage 1.2 (compare): comparison failed: vertex 7 is 9.000000e0 mm from ne |
+| cube_shifted.stl | FAIL | 0.05s | Error: stage 1.2 (compare): comparison failed: vertex 7 is 6.928203e0 mm from ne |
+| degenerate_face.stl | FAIL | 0.04s | Error: stage 1.2 (validation): mesh contains 1 degenerate face(s): [0] |
+| inconsistent_winding.stl | FAIL | 0.04s | Error: stage 1.2 (validation): mesh contains 3 edge(s) with flipped orientation |
+| non_manifold_edge.stl | FAIL | 0.04s | Error: stage 1.2 (validation): mesh contains 1 non-manifold edge(s) with >2 inci |
 
 ## ccad/generated
 
 | Test File | Status | Time | Notes |
 |-----------|--------|------|-------|
-| ball_on_cylinder.stl | ✓ | 2.68s | |
-| block_corner_hole.stl | ✓ | 0.15s | |
-| block_with_conical_hole.stl | ✓ | 1.37s | |
-| block_with_hole.stl | ✓ | 0.21s | |
-| cone_cylinder.stl | ✓ | 2.33s | |
-| cube.stl | ✓ | 0.08s | |
-| filleted_cylinder.stl | ✓ | 3.45s | |
-| filleted_hole_block.stl | ✓ | 3.26s | |
-| filleted_pipe.stl | ✓ | 5.53s | |
-| hemisphere.stl | ✓ | 0.19s | |
-| nosecone.stl | ✓ | 1.00s | |
-| pipe.stl | ✓ | 0.48s | |
-| simple_cone.stl | ✓ | 0.84s | |
+| ball_on_cylinder.stl | ✓ | 0.55s | |
+| block_corner_hole.stl | ✓ | 0.10s | |
+| block_with_conical_hole.stl | ✓ | 0.79s | |
+| block_with_hole.stl | ✓ | 0.15s | |
+| cone_cylinder.stl | ✓ | 0.66s | |
+| cube.stl | ✓ | 0.07s | |
+| filleted_cylinder.stl | ✓ | 0.93s | |
+| filleted_hole_block.stl | ✓ | 1.07s | |
+| filleted_pipe.stl | ✓ | 1.42s | |
+| hemisphere.stl | ✓ | 0.14s | |
+| nosecone.stl | ✓ | 0.70s | |
+| pipe.stl | ✓ | 0.47s | |
+| simple_cone.stl | ✓ | 0.82s | |
 | simple_cylinder.stl | ✓ | 0.34s | |
-| simple_sphere.stl | ✓ | 0.20s | |
-| spherical_pocket.stl | ✓ | 0.41s | |
-| staircase.stl | ✓ | 0.16s | |
-| stepped_cylinder.stl | ✓ | 0.30s | |
+| simple_sphere.stl | ✓ | 0.19s | |
+| spherical_pocket.stl | ✓ | 0.39s | |
+| staircase.stl | ✓ | 0.15s | |
+| stepped_cylinder.stl | ✓ | 0.29s | |
 | t_shape.stl | ✓ | 0.10s | |
-| two_holes.stl | ✓ | 0.37s | |
+| two_holes.stl | ✓ | 0.35s | |
 | wedge.stl | ✓ | 0.06s | |
 
 ## fusion
 
 | Test File | Status | Time | Notes |
 |-----------|--------|------|-------|
-| plate_with_hole_100x50_high.stl | ✓ | 0.51s | |
+| plate_with_hole_100x50_high.stl | ✓ | 0.48s | |
 | plate_with_hole_100x50_low.stl | ✓ | 0.16s | |
-| plate_with_hole_100x50_medium.stl | ✓ | 0.30s | |
+| plate_with_hole_100x50_medium.stl | ✓ | 0.23s | |
 
 ## manual
 
@@ -70,42 +70,42 @@ Tests last run: 2026-07-06.
 
 | Test File | Status | Time | Notes |
 |-----------|--------|------|-------|
-| full_torus.stl | ✓ | 0.36s | |
-| hollow_cube.stl | ✓ | 0.15s | |
+| full_torus.stl | ✓ | 0.30s | |
+| hollow_cube.stl | ✓ | 0.10s | |
 
 ## onshape
 
 | Test File | Status | Time | Notes |
 |-----------|--------|------|-------|
-| chamfered_cube_10_c1_medium.ascii.stl | ✓ | 0.20s | |
-| chamfered_cube_10_c1_medium.stl | ✓ | 0.24s | |
-| cone_15x20_medium.stl | ✓ | 0.65s | |
-| cone_tangent_planes_medium.stl | ✓ | 1.95s | |
+| chamfered_cube_10_c1_medium.ascii.stl | ✓ | 0.16s | |
+| chamfered_cube_10_c1_medium.stl | ✓ | 0.17s | |
+| cone_15x20_medium.stl | ✓ | 0.57s | |
+| cone_tangent_planes_medium.stl | ✓ | 1.96s | |
 | cone_truncated_medium.stl | ✓ | 0.81s | |
 | cylinder_10_r2_fine.stl | ✓ | 0.37s | |
 | cylinder_10x30_medium.stl | ✓ | 0.24s | |
-| dome_hemisphere_20_fine.stl | ✓ | 2.53s | |
-| l_bracket_simple_medium.stl | ✓ | 5.29s | |
-| nosecone_medium.stl | ✓ | 1.67s | |
-| nosecone_truncated_medium.stl | ✓ | 2.08s | |
+| dome_hemisphere_20_fine.stl | ✓ | 2.13s | |
+| l_bracket_simple_medium.stl | ✓ | 1.87s | |
+| nosecone_medium.stl | ✓ | 1.10s | |
+| nosecone_truncated_medium.stl | ✓ | 1.94s | |
 | part_rounded_cube_10_r2_coarse.stl | ✓ | 0.30s | |
-| part_rounded_cube_10_r2_fine.stl | ✓ | 3.76s | |
-| pill_coarse.stl | ✓ | 0.64s | |
-| pill_fine.stl | ✓ | 11.12s | |
-| pipe_elbow_10_fine.stl | ✓ | 3.50s | |
-| pipe_elbow_10_medium.stl | ✓ | 2.89s | |
-| plate_with_hole_100x50_coarse.stl | ✓ | 0.18s | |
-| rounded_cube_10_r2_coarse.stl | ✓ | 1.26s | |
-| rounded_cube_10_r2_fine.stl | ✓ | 15.30s | |
-| rounded_cube_10_r2_medium.stl | ✓ | 6.39s | |
+| part_rounded_cube_10_r2_fine.stl | ✓ | 3.15s | |
+| pill_coarse.stl | ✓ | 0.51s | |
+| pill_fine.stl | ✓ | 6.65s | |
+| pipe_elbow_10_fine.stl | ✓ | 3.29s | |
+| pipe_elbow_10_medium.stl | ✓ | 2.93s | |
+| plate_with_hole_100x50_coarse.stl | ✓ | 0.19s | |
+| rounded_cube_10_r2_coarse.stl | ✓ | 1.30s | |
+| rounded_cube_10_r2_fine.stl | ✓ | 15.29s | |
+| rounded_cube_10_r2_medium.stl | ✓ | 6.49s | |
 | sphere_25_fine.stl | ✓ | 1.83s | |
 | stepped_block_coarse.stl | ✓ | 0.20s | |
-| stepped_block_toroidal_fillets_fine.stl | FAIL | 94.77s | Error: stage 3.1 compare: vertex 29 is 7.034602e-2 mm from nearest STEP vertex ( |
-| stepped_block_toroidal_fillets_medium.stl | FAIL | 10.88s | Error: stage 3.1 compare: edge 4 is 3.583682e-1 mm from nearest STEP edge (toler |
+| stepped_block_toroidal_fillets_fine.stl | ✓ | 100.28s | |
+| stepped_block_toroidal_fillets_medium.stl | FAIL | 11.79s | Error: stage 3.1 compare: edge 22 is 1.564330e-1 mm from nearest STEP edge (tole |
 
 ## Summary
 
 - **Total test files**: 57
-- **Passing**: 50 / 57
+- **Passing**: 51 / 57
 - **Expected failures (bad/)**: 5
-- **Failing non-bad tests**: 2
+- **Failing non-bad tests**: 1

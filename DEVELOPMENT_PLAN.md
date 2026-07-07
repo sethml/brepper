@@ -400,18 +400,17 @@ The algorithm selects hypotheses greedily by total mesh face area, largest first
     - Measure distance from each projected centroid to the nearest surface in the reference STEP file.
     - For all hypotheses, report an error if distance exceeds `--surface-tolerance`.
 
-#### 2.6 Surface refitting (optional)
+#### 2.6 Surface refitting (boundary refinement — implemented)
 
-After stage 2.6 selects surfaces, some border faces may have been absorbed by a hypothesis that fits within tolerance but isn't the best fit. This step refines assignments and re-fits surfaces to improve accuracy.
+After selection and absorption, some border faces may have been absorbed by a hypothesis that fits within tolerance but isn't the best fit; the misassignment shifts the mesh region boundary by a row, which shifts reconstructed edge boundary vertices and corner vertices off the true feature curves.
 
-**Algorithm:**
-1. For each mesh face, check whether it belongs to more than one hypothesis (i.e., it has valid assignments in multiple hypothesis types — planar, cylindrical, spherical, conical, toroidal).
+**Algorithm (`refine_boundary_assignments`, as implemented):**
+1. Build the face → selected-surface map; walk every face that has a neighbor in a *different* selected surface (region-boundary faces — the original plan keyed on multi-hypothesis membership, but pruning/absorption destroy that; adjacency is the modern equivalent).
+2. Compute the face's max vertex distance to its own surface and to each adjacent selected surface.
+3. Move the face when an adjacent surface fits at least **2× better**. The margin prevents oscillation for true junction faces, whose vertices lie on both surfaces equally.
+4. Iterate to a fixpoint (≤ 10 rounds; boundaries only move locally), then rebuild the affected hypotheses' vertex lists and drop emptied surfaces. Hypothesis *geometry* is not re-fitted: the fits were validated during BFS; only the region map changes.
 
-2. For each such face, compute the vertex-to-surface distance for each candidate surface (using the selected surfaces from 2.6, not the raw hypotheses).
-3. Reassign the face to the selected surface with the smallest maximum vertex distance.
-4. After all reassignments, re-fit each affected surface from its updated face/vertex set to remove any bias introduced by the extra vertices.
-
-This step is expected to be most useful at boundaries between surfaces of different types (e.g., where a cylinder meets a plane), where BFS may have greedily absorbed a border face that technically fits within tolerance but belongs more naturally to the adjacent surface. It may be unnecessary if the greedy area-based selection in 2.6 already produces clean boundaries — implement only if stage 3 reconstruction reveals boundary accuracy problems.
+**Corner vertex refinement** (stage 3, `refine_corner_vertices`, runs after tangency detection): SHARP corner vertices are refined by cyclic projection onto their adjacent fitted surfaces — the raw mesh vertex at a corner is only as accurate as the tessellation puts it (where a fillet terminates, the mesh may have no vertex exactly at the CAD corner). Corners adjacent to any TANGENT edge are excluded: tangent surface pairs intersect along a curve rather than an isolated point, and cyclic projection slides along the tangent direction (observed drifting 0.57 mm). A safety guard keeps the original vertex if the refinement moves more than 2× surface tolerance.
 
 #### 2.7 NURBS fallback
 
@@ -459,7 +458,7 @@ A vector of `ReconEdge` structs:
 - `mesh_boundary_vertices: Vec<usize>` — Mesh vertex indices along this boundary, ordered along the boundary.
 
 A vector of `BRepVertex` structs:
-- `point: [f64; 3]` — 3D position (currently raw mesh vertex position; future: project onto adjacent surfaces and average).
+- `point: [f64; 3]` — 3D position: the mesh vertex position, refined for sharp corners by cyclic projection onto the adjacent fitted surfaces (see stage 2.6 refitting notes).
 - `adjacent_faces: Vec<usize>` — Indices of FaceDescriptors meeting at this vertex, in topological order.
 - `adjacent_edges: Vec<usize>` — Indices of ReconEdges meeting at this vertex, in topological order.
 - (TODO) `uv_coords: Vec<(f64, f64)>` — UV coordinates of this vertex on each adjacent face's surface.

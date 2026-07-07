@@ -983,6 +983,211 @@ fn vertex_distance_to_selected(
 /// (10× vertex tolerance) for multi-face S (case 1: exact overlap), and the
 /// looser surface tolerance for S with ≤ 2 faces (case 2: chordal sag).
 #[allow(clippy::too_many_arguments)]
+/// Refine surface assignments at region boundaries (DEVELOPMENT_PLAN §2.6
+/// "Surface refitting"). BFS greedily absorbs border faces that fit within
+/// tolerance but belong more naturally to the adjacent surface — e.g. a face
+/// one row past a fillet junction absorbed by the plane. The misassignment
+/// shifts the mesh region boundary by a row, which shifts reconstructed edge
+/// boundary vertices and corner vertices off the true feature curves.
+///
+/// For each face on a region boundary, compare the max vertex distance to
+/// its own surface against each adjacent selected surface, and move the face
+/// when an adjacent surface fits at least 2× better. The margin prevents
+/// oscillation for true junction faces (whose vertices lie on both surfaces
+/// equally). Iterates to a fixpoint (boundaries only ever move locally).
+/// Hypothesis geometry is NOT re-fitted: the fits were validated during BFS;
+/// only the region map (face membership) changes.
+#[allow(clippy::too_many_arguments)]
+fn refine_boundary_assignments(
+    mesh: &ConnectedMesh,
+    selected_surfaces: &mut Vec<SelectedSurface>,
+    planar_hypotheses: &mut [PlanarHypothesis],
+    conical_hypotheses: &mut [ConicalHypothesis],
+    spherical_hypotheses: &mut [SphericalHypothesis],
+    toroidal_hypotheses: &mut [ToroidalHypothesis],
+    config: &Config,
+) {
+    let num_faces = mesh.faces.len();
+
+    let face_max_dist = |fi: usize,
+                         surface: &SelectedSurface,
+                         planar: &[PlanarHypothesis],
+                         conical: &[ConicalHypothesis],
+                         spherical: &[SphericalHypothesis],
+                         toroidal: &[ToroidalHypothesis]|
+     -> f64 {
+        let face = &mesh.faces[fi];
+        let vc = face.vertex_count as usize;
+        face.vertex_indices[..vc]
+            .iter()
+            .map(|&vi| {
+                vertex_distance_to_selected(
+                    &mesh.vertices[vi], surface, planar, conical, spherical, toroidal,
+                )
+            })
+            .fold(0.0_f64, f64::max)
+    };
+
+    let mut total_moved = 0_usize;
+    for _iteration in 0..10 {
+        // Face → selected surface index map.
+        let mut face_to_surface = vec![usize::MAX; num_faces];
+        for (si, s) in selected_surfaces.iter().enumerate() {
+            let faces = match s {
+                SelectedSurface::Planar(i) => &planar_hypotheses[*i].faces,
+                SelectedSurface::Conical(i) => &conical_hypotheses[*i].faces,
+                SelectedSurface::Spherical(i) => &spherical_hypotheses[*i].faces,
+                SelectedSurface::Toroidal(i) => &toroidal_hypotheses[*i].faces,
+            };
+            for &fi in faces {
+                face_to_surface[fi] = si;
+            }
+        }
+
+        // Plan moves: (face, from surface, to surface).
+        let mut moves: Vec<(usize, usize, usize)> = Vec::new();
+        for fi in 0..num_faces {
+            let si = face_to_surface[fi];
+            if si == usize::MAX {
+                continue;
+            }
+            let face = &mesh.faces[fi];
+            let vc = face.vertex_count as usize;
+            let mut candidates: Vec<usize> = face.neighbors[..vc]
+                .iter()
+                .filter(|&&ni| ni >= 0)
+                .map(|&ni| face_to_surface[ni as usize])
+                .filter(|&sj| sj != usize::MAX && sj != si)
+                .collect();
+            if candidates.is_empty() {
+                continue;
+            }
+            candidates.sort_unstable();
+            candidates.dedup();
+
+            let d_own = face_max_dist(
+                fi, &selected_surfaces[si],
+                planar_hypotheses, conical_hypotheses,
+                spherical_hypotheses, toroidal_hypotheses,
+            );
+            let mut best: Option<(f64, usize)> = None;
+            for &sj in &candidates {
+                let d = face_max_dist(
+                    fi, &selected_surfaces[sj],
+                    planar_hypotheses, conical_hypotheses,
+                    spherical_hypotheses, toroidal_hypotheses,
+                );
+                if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+                    best = Some((d, sj));
+                }
+            }
+            if let Some((d_best, sj)) = best {
+                if d_best < d_own * 0.5 {
+                    moves.push((fi, si, sj));
+                }
+            }
+        }
+
+        if moves.is_empty() {
+            break;
+        }
+        total_moved += moves.len();
+
+        // Apply moves to hypothesis face lists.
+        let mut remove_from = |s: &SelectedSurface, fi: usize| {
+            let faces: &mut Vec<usize> = match s {
+                SelectedSurface::Planar(i) => &mut planar_hypotheses[*i].faces,
+                SelectedSurface::Conical(i) => &mut conical_hypotheses[*i].faces,
+                SelectedSurface::Spherical(i) => &mut spherical_hypotheses[*i].faces,
+                SelectedSurface::Toroidal(i) => &mut toroidal_hypotheses[*i].faces,
+            };
+            faces.retain(|&f| f != fi);
+        };
+        for &(fi, si, _) in &moves {
+            let s = selected_surfaces[si].clone();
+            remove_from(&s, fi);
+        }
+        let mut add_to = |s: &SelectedSurface, fi: usize| {
+            let faces: &mut Vec<usize> = match s {
+                SelectedSurface::Planar(i) => &mut planar_hypotheses[*i].faces,
+                SelectedSurface::Conical(i) => &mut conical_hypotheses[*i].faces,
+                SelectedSurface::Spherical(i) => &mut spherical_hypotheses[*i].faces,
+                SelectedSurface::Toroidal(i) => &mut toroidal_hypotheses[*i].faces,
+            };
+            faces.push(fi);
+        };
+        for &(fi, _, sj) in &moves {
+            let s = selected_surfaces[sj].clone();
+            add_to(&s, fi);
+        }
+
+        if config.verbosity >= 2 {
+            eprintln!("  Boundary refinement: moved {} face(s)", moves.len());
+        }
+    }
+
+    if total_moved > 0 {
+        // Rebuild vertex lists of all hypotheses from their face lists, and
+        // keep face lists sorted for determinism.
+        let rebuild = |faces: &mut Vec<usize>, vertices_out: &mut Vec<usize>| {
+            faces.sort_unstable();
+            let mut verts: Vec<usize> = Vec::new();
+            for &fi in faces.iter() {
+                let face = &mesh.faces[fi];
+                let vc = face.vertex_count as usize;
+                verts.extend_from_slice(&face.vertex_indices[..vc]);
+            }
+            verts.sort_unstable();
+            verts.dedup();
+            *vertices_out = verts;
+        };
+        for s in selected_surfaces.iter() {
+            match s {
+                SelectedSurface::Planar(i) => {
+                    let h = &mut planar_hypotheses[*i];
+                    let mut f = std::mem::take(&mut h.faces);
+                    rebuild(&mut f, &mut h.vertices);
+                    h.faces = f;
+                }
+                SelectedSurface::Conical(i) => {
+                    let h = &mut conical_hypotheses[*i];
+                    let mut f = std::mem::take(&mut h.faces);
+                    rebuild(&mut f, &mut h.vertices);
+                    h.faces = f;
+                }
+                SelectedSurface::Spherical(i) => {
+                    let h = &mut spherical_hypotheses[*i];
+                    let mut f = std::mem::take(&mut h.faces);
+                    rebuild(&mut f, &mut h.vertices);
+                    h.faces = f;
+                }
+                SelectedSurface::Toroidal(i) => {
+                    let h = &mut toroidal_hypotheses[*i];
+                    let mut f = std::mem::take(&mut h.faces);
+                    rebuild(&mut f, &mut h.vertices);
+                    h.faces = f;
+                }
+            }
+        }
+        // Drop selected surfaces that lost all their faces.
+        selected_surfaces.retain(|s| {
+            let faces = match s {
+                SelectedSurface::Planar(i) => &planar_hypotheses[*i].faces,
+                SelectedSurface::Conical(i) => &conical_hypotheses[*i].faces,
+                SelectedSurface::Spherical(i) => &spherical_hypotheses[*i].faces,
+                SelectedSurface::Toroidal(i) => &toroidal_hypotheses[*i].faces,
+            };
+            !faces.is_empty()
+        });
+        if config.verbosity >= 1 {
+            eprintln!(
+                "  Boundary refinement: {} face(s) reassigned to better-fitting adjacent surfaces",
+                total_moved,
+            );
+        }
+    }
+}
+
 fn absorb_redundant_surfaces(
     mesh: &ConnectedMesh,
     selected_surfaces: &mut Vec<SelectedSurface>,
@@ -1988,6 +2193,15 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
     // Merge spurious sub-fit surfaces and tangent-junction orphan facets
     // into larger adjacent surfaces before reconstruction.
     absorb_redundant_surfaces(
+        &mesh, &mut selected_surfaces, &mut planar_hypotheses,
+        &mut conical_hypotheses, &mut spherical_hypotheses,
+        &mut toroidal_hypotheses, config,
+    );
+
+    // Move border faces to the adjacent surface that fits them better —
+    // misassigned rows shift reconstructed edge/corner positions off the
+    // true feature curves (DEVELOPMENT_PLAN §2.6 surface refitting).
+    refine_boundary_assignments(
         &mesh, &mut selected_surfaces, &mut planar_hypotheses,
         &mut conical_hypotheses, &mut spherical_hypotheses,
         &mut toroidal_hypotheses, config,
