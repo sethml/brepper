@@ -427,6 +427,8 @@ For groups of adjacent faces that remain as single-face planar hypotheses after 
 
 *Comment: NURBS fitting is complex: parameterization quality strongly affects fit quality, degree/knot selection matters, and thin features may need special handling. Start with OCCT’s built-in B-spline fitter which handles degree selection and parameterization internally. For “freeform” regions that are nearly planar, a plane with small tolerance is preferable to a NURBS that overfits noise.*
 
+*Reconstruction note: when this stage is implemented, do the stage-3 reconstruction rework described in §3.x (proposed) first, as its foundation. NURBS patches have arbitrary trimmed boundaries that would stress the current projection-plus-geometric-sewing assembly exactly where it is most fragile (see the §3.x analysis and the `cone_tangent_planes` case), and the NURBS test models are also what finally give the more-general shared-edge assembler real coverage.*
+
 ---
 
 ### Algorithm Reference
@@ -630,6 +632,29 @@ Convert closed shells into `TopoDS_Solid` objects.
     - Count solids in the reference STEP file.
     - Compute volumes of both constructed and reference solids. Match by sorted volume. Report warning if relative volume difference exceeds 1%. All current test models achieve volume agreement within ~1e-7 relative difference.
     - Compute `BRepExtrema_DistShapeShape` between each constructed solid and the reference STEP shape. Report error if distance exceeds `--surface-tolerance`. This is the tightest geometric accuracy check.
+
+#### 3.x (proposed) Rework: shared-edge topological assembly instead of geometric sewing
+
+**Status: not started. Deliberately deferred and bound to the NURBS effort (see Future Enhancements). This section records the decision and its trigger so it is not rediscovered from scratch.**
+
+**The current design.** Stage 3.4 builds each face independently and stage 3.5 reconciles them with `BRepBuilderAPI_Sewing`, a *geometric* stitch that merges edges by proximity within a tolerance. Edges *are* created once as shared `TopoDS_Edge` objects (§3.1), but two things defeat that sharing by assembly time:
+- `MakeFace`/`MakeWire`/`ShapeFix` copy edges, so the "shared" edge in face A is no longer the identical object in face B.
+- The UV-bounds construction paths (full spheres, complete tori, full-revolution and — as of the cone-cap investigation — apex-cap cones) synthesize their *own* natural-bounds boundary edges that were never shared with a neighbour at all.
+
+So sewing is load-bearing, and the `ReconEdge.pcurves: [_; 2]` and `BRepVertex.uv_coords` fields (§3.0) that the original design earmarked for a both-sides-shared representation were never populated — the geometric sewing pass stands in for them. The face-construction + sewing block is ~2100 lines carrying ~150 pole/seam/apex/reorient/ShapeFix/degenerate special-cases.
+
+**Why this is the root of a whole class of fragility.** Every hard case in stage 3 — sphere pole caps, torus seams, cone apex caps, and the tangent-edge/corner-vertex *tolerance relaxations* (the "genuinely ambiguous junction rows") — is ultimately a symptom of trimming faces independently and matching them by geometric tolerance. `cone_tangent_planes` is the sharpest example: its two apex-cap cone faces are pie-slices-with-apex whose two boundary curves lie on the same iso-V line; the wire builder collapses them, and a pure UV-bounds cap gets the *area* right but only matches its neighbours along part of the boundary, so sewing leaves free edges → open shell. The problem spans segmentation → edge topology → trimming → sewing, which is exactly why patching any single layer only half-works.
+
+**The proposed design.** Build the B-rep topologically instead of geometrically:
+1. Build each edge once (shared `TopoDS_Edge` + shared vertices, with its 3D curve) — as today.
+2. For **both** adjacent faces of every edge, compute and attach the pcurve of that edge on that face's surface (populate `ReconEdge.pcurves`). Poles/seams are handled *only* here, in pcurve computation, uniformly for every periodic surface.
+3. Insert degenerate edges at UV poles (cone apex, sphere pole) and seam edges at periodic wraps, shared correctly, as first-class topology rather than per-surface fix-ups.
+4. Assemble each face and the shell directly with `BRep_Builder` from the shared edges — the shell is closed *by construction*. Drop `BRepBuilderAPI_Sewing`; it becomes at most a validation check.
+5. This makes construction lower-level and more controlled (avoid `ShapeFix`/`MakeFace` edge-copying that breaks sharing). The cone apex cap, sphere pole cap, and torus seam then all reduce to "attach the correct pcurve to the shared edge, plus a degenerate/seam edge" — one uniform mechanism instead of ~150 special-cases.
+
+**Why defer it.** 52/57 models pass; nothing is *blocked*. The only current beneficiary is one unusual model (`cone_tangent_planes`) that already writes valid-ish output with a volume warning. The full payoff arrives with **NURBS**: freeform patches have arbitrary trimmed boundaries and will stress this machinery hard, building NURBS on top of projection+sewing is building on sand, and NURBS is also what finally brings test coverage to validate a more general assembler (today it would be a more-general machine exercised only on the analytic surfaces the current code already handles). So the rework is the *foundation to lay when NURBS begins*, not a standalone task.
+
+**Trigger to pull it forward earlier.** If a model becomes *unfixable* without tighter topology — i.e. the tangent-edge/corner tolerance relaxations stop merely loosening tolerances and start letting a real model fail — do the rework then rather than adding relaxation #N.
 
 ---
 
