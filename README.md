@@ -20,7 +20,7 @@ GENERAL OPTIONS:
     --compare=<step>         STEP file to compare to at each step
     --vertex-tolerance=<value>  Fitting tolerance in STL units (default: 5e-5)
     --surface-tolerance=<value> Surface-to-face offset tolerance in STL units (default: 0.4)
-    --angular-tolerance=<deg>   Max dihedral angle between adjacent triangles on the same surface (default: 17.5)
+    --angular-tolerance=<deg>   Max dihedral angle between adjacent triangles on the same surface (default: 25)
     -v, --verbose[=LEVEL]    Verbosity level: 1 = stage summaries, 2 = per-hypothesis details,
                              3 = commit details/stats/profiles, 4 = per-seed details, 5 = BFS face trace
     -q, --quiet              Suppress non-error output
@@ -195,7 +195,7 @@ Integration tests in `tests/stage2_integration.rs` verify that:
 - All STL/STEP pairs pass `--compare` validation at stages 2.1, 2.2, 2.3, and 2.6
 - Deduced cylinder parameters (axis direction, axis position, radius) match STEP cylinder parameters for all cylindrical test models
 - Deduced sphere parameters (center, radius) match STEP sphere parameters for all spherical test models
-- Angular tolerance enforcement prevents spurious cylindrical/spherical hypotheses on planar-only models (e.g., cube faces meet at 90°, exceeding the 17.5° default)
+- Angular tolerance enforcement prevents spurious cylindrical/spherical hypotheses on planar-only models (e.g., cube faces meet at 90°, exceeding the 25° default)
 Integration tests in `tests/stage3_integration.rs` verify that:
 - Adjacency graph topology (faces, edges, vertices) is correct for known models (cube=6F/12E/8V, cylinder=3F/2E/0V, sphere=1F/0E/0V, etc.)
 - Euler's formula V-E+F=2 holds for genus-0 models

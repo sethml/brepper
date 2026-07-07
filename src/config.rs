@@ -147,8 +147,12 @@ struct CliArgs {
     #[arg(long, default_value = "0.4")]
     pub surface_tolerance: f64,
 
-    /// Max dihedral angle between adjacent triangles on same surface, in degrees.
-    #[arg(long, default_value = "17.5")]
+    /// Max dihedral angle between adjacent triangles on same surface, in
+    /// degrees. Medium-resolution CAD exports step small-radius fillets up
+    /// to ~24° between rows (Onshape "medium" enforces chordal deviation, so
+    /// small features get few segments regardless of the angular preset);
+    /// the default must admit those.
+    #[arg(long, default_value = "25")]
     pub angular_tolerance: f64,
 
     /// Increment verbosity by 1 per flag (-v = 1, -vv = 2, -vvv = 3).

@@ -1164,12 +1164,19 @@ fn determine_convexity(
 
 /// Validate that faces in a conical hypothesis have sufficient angular
 /// coverage around the cone — same algorithm as cylindrical.
+/// `max_gap` is the largest acceptable inter-centroid gap, applied only when
+/// the hypothesis already spans a substantial arc (≥45°): a coarse
+/// tessellation legitimately spaces the rows of a quarter/half-round fillet up
+/// to the BFS dihedral limit apart, so the span-proportional criterion alone
+/// would reject real coarse fillets (observed: 4 rows across 90° = 24° gaps >
+/// span/3 = 23° on stepped_block MEDIUM r=0.5 edge fillets). Pass 0 to disable.
 fn angular_coverage_valid(
     face_list: &[usize],
     apex: &[f64; 3],
     axis_direction: &[f64; 3],
     faces: &[MeshFace],
     vertices: &[MeshVertex],
+    max_gap: f64,
 ) -> bool {
     if face_list.len() < 3 {
         return false;
@@ -1216,7 +1223,21 @@ fn angular_coverage_valid(
         return false;
     }
 
-    second_largest <= span / 3.0
+    // The coarse-tessellation floor only applies to hypotheses that already
+    // span a substantial arc — a real quarter/half-round fillet, whose few
+    // wide-gap rows the strict span/3 rule wrongly rejects (stepped_block
+    // MEDIUM's corner edge fillets span ~70°). A narrow band (a thin slice of
+    // a cone fitted as a cylinder) has a small span and must keep the strict
+    // rule, else the floor admits a flood of bogus cylinder bands that
+    // over-segment smooth cones (nosecone_truncated's bands span ≤14°). The
+    // 45° gate sits well above those bands and below any genuine coarse
+    // quarter-round.
+    let floor = if span >= 45.0_f64.to_radians() {
+        max_gap.min(span / 2.0)
+    } else {
+        0.0
+    };
+    second_largest <= (span / 3.0).max(floor)
 }
 
 // ---------------------------------------------------------------------------
@@ -1682,7 +1703,7 @@ impl SurfaceType for ConicalSurface {
         mesh: &ConnectedMesh,
         face_list: &[usize],
         fit: &Self::Fit,
-        _config: &BfsConfig,
+        config: &BfsConfig,
     ) -> bool {
         let min_faces = if fit.half_angle < 1e-4 { MIN_CYLINDER_FACES } else { MIN_CONE_FACES };
         if face_list.len() < min_faces {
@@ -1719,9 +1740,23 @@ impl SurfaceType for ConicalSurface {
                 return false;
             }
         }
+        // The coarse-tessellation coverage allowance is for cylinders only.
+        // A true cone's spurious lookalikes are the narrow corner sphere-blend
+        // patches that fit a 6-face ~50° half-angle cone within tolerance;
+        // those must stay rejected by the strict span/3 rule (else they win
+        // selection over the correct sphere — observed on rounded_cube). A
+        // straight-edge fillet cylinder legitimately tessellates into a few
+        // wide-gap rows and needs the allowance (stepped_block MEDIUM r=0.5
+        // edge fillets).
+        let coverage_max_gap = if fit.half_angle < 1e-4 {
+            config.angular_tol * Self::angular_tol_multiplier()
+        } else {
+            0.0
+        };
         angular_coverage_valid(
             face_list, &fit.apex, &fit.axis_direction,
             &mesh.faces, &mesh.vertices,
+            coverage_max_gap,
         )
     }
 

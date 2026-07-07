@@ -1,15 +1,6 @@
 # Prioritized by value toward the project goal (README: "analytic and freeform surfaces")
 
-## 1. stepped_block_toroidal_fillets MEDIUM: one undetected corner-blend torus
-The FINE variant now passes the full pipeline (boundary refinement fixed its corner
-vertex; all 18 tori + 37 cylinders selected; ~95 s total). MEDIUM still fails: one
-corner vertex-blend torus (R=2.5, r=0.5 @ (−66.75,−64.5,−18.2)) is undetected — at
-this resolution the blend patch is ~30 faces with almost no interior after junction
-masking, so pass-1 seeds don't form and pass-2 (relaxed) seeds are contaminated. A
-dedicated small-patch path (seed from the patch's connected component of leftover
-faces with outlier trimming) may close it.
-
-## 2. cone_tangent_planes: stage 3.4 partial-cone face construction
+## 1. cone_tangent_planes: stage 3.4 partial-cone face construction
 DONE at stage 2: all 3 cones are now detected (normal-line axis rescue for narrow
 arcs; half-angle cap raised to 85°), and plane-cone tangent generator lines work in
 stage 3.3 (11/11 edge curves). REMAINING: the wire-based partial-revolution conical
@@ -18,11 +9,26 @@ invalid) and the solid volume comes out 6617 mm³ vs 14676 mm³ in STEP — one 
 cone faces cover the wrong UV region (complementary arc or wrong pcurves on narrow
 cone patches with vertices).
 
+(completed and removed: stepped_block_toroidal_fillets MEDIUM — all 18 tori + 37
+cylinders now selected and the model passes stage 4.1 (dedicated
+onshape_stepped_block_toroidal_medium_stage41_compare test). Three fixes: (a) the BFS
+final re-fit now keeps the incrementally-maintained fit when a fresh from-scratch LM
+converges worse — recovered the full-ring R=3.5 pocket-rim fillet torus that refit to
+0.87 mm; (b) the cylinder angular-coverage test admits coarse tessellation gaps up to
+the dihedral limit (medium fillets step ~24° per row, four rows across a 90° tube arc,
+which the span/3 rule rejected); (c) the default --angular-tolerance was raised from
+17.5° to 25° so seed-pair qualification accepts those 24° fillet rows. The coverage
+allowance is gated twice so it can't admit bogus bands: to cylinders (half_angle≈0), so
+narrow corner sphere-blend patches can't win selection as 6-face cones (else
+rounded_cube regresses); and to hypotheses already spanning ≥45°, so thin cylinder
+bands of a smooth cone stay rejected (else nosecone_truncated over-segments). See
+LEARNINGS "Medium-resolution tessellation".)
+
 (items completed and removed: multi-shell voids — hollow_cube passes stage 4.1 with
 one 7000 mm³ solid; full-torus seam coverage — full_torus (tests/occt/, R=10 r=3)
 passes stage 4.1 via natural-bounds face construction; partial-cone detection and
 plane-cone tangent generators — all 3 cone_tangent_planes cones detected, 11/11 edge
-curves, stage 3.4 face construction issue remains, see item 2.)
+curves, stage 3.4 face construction issue remains, see item 1.)
 
 (completed and removed: curvature-guided seeding stages 1+2 — per-face field with
 ascending seed ordering AND pass-1 junction exclusion from gathering, plus the

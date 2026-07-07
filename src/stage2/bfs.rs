@@ -783,34 +783,46 @@ where
                 prof_max_bfs_faces = trial_faces.len();
             }
 
-            // Final re-fit. Keep the refit only if it still satisfies the
-            // vertex tolerance for the accumulated trial: LM from a
-            // contaminated or marginal trial can drift to a fit whose
+            // Final re-fit. Adopt the fresh fit only if it beats the
+            // incrementally-maintained fit on the accumulated trial
+            // vertices: fitting from scratch can drift to a fit whose
             // error is orders of magnitude above tolerance (observed:
             // tilted r=3.37 "cylinders" with 2.6e-3 mm error committed on
             // corner wall patches, which then poisoned all torus seeding
-            // in the region).
+            // in the region), or converge to a wrong local minimum even
+            // when current_fit is exact (observed: the full-ring R=3.5
+            // pocket-rim fillet torus on stepped_block MEDIUM refits to
+            // 0.87 mm error although every trial vertex is within 1e-5 of
+            // current_fit). current_fit already satisfies the vertex
+            // tolerance for every accepted face by construction, so it is
+            // always a valid fallback.
+            let trial_max_err = |fit: &S::Fit| -> f64 {
+                trial_vertices
+                    .iter()
+                    .map(|&vi| {
+                        let v = &mesh.vertices[vi];
+                        S::vertex_distance(fit, &[v.x, v.y, v.z])
+                    })
+                    .fold(0.0_f64, f64::max)
+            };
             let t_final = std::time::Instant::now();
+            let mut final_max_err = trial_max_err(&current_fit);
             if let Some(final_fit) = S::fit_surface(
                 mesh,
                 &trial_faces,
                 &trial_vertices,
                 0,
             ) {
-                current_fit = final_fit;
+                let refit_err = trial_max_err(&final_fit);
+                if refit_err < final_max_err {
+                    current_fit = final_fit;
+                    final_max_err = refit_err;
+                }
             }
 
             // (Re-)determine convexity after final refit
             S::determine_convexity(mesh, &trial_faces, &mut current_fit);
             prof_time_final_fit += t_final.elapsed();
-
-            let final_max_err = trial_vertices
-                .iter()
-                .map(|&vi| {
-                    let v = &mesh.vertices[vi];
-                    S::vertex_distance(&current_fit, &[v.x, v.y, v.z])
-                })
-                .fold(0.0_f64, f64::max);
             if final_max_err > vtol * S::seed_vtol_multiplier() {
                 if config.verbosity >= 4 {
                     eprintln!(

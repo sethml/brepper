@@ -343,6 +343,23 @@ fn onshape_stepped_block_toroidal_fine_stage41_compare() {
 }
 
 #[test]
+fn onshape_stepped_block_toroidal_medium_stage41_compare() {
+    // Same model at MEDIUM resolution (2.3K triangles): small-radius fillets
+    // are tessellated with only ~4 rows across each 90° tube arc, so the
+    // ~24° row-to-row steps require the coarse-tessellation coverage
+    // allowance (angular_coverage_valid max_gap) and the raised default
+    // angular tolerance to detect the corner-blend tori. Fast (~3 s), unlike
+    // the fine variant, so it guards the medium-resolution path cheaply.
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/onshape/stepped_block_toroidal_fillets_medium.stl"),
+        &format!("{dir}/tmp/test_stepped_block_medium_cmp.step"),
+        &format!("{dir}/tests/onshape/stepped_block_toroidal_fillets.step"),
+    );
+    run_stage4(&config);
+}
+
+#[test]
 fn occt_full_torus_stage41_compare() {
     // Complete donut: exercises both U and V seams on the doubly-periodic
     // torus face (natural-bounds construction, no boundary edges).

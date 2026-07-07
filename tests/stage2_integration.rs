@@ -971,24 +971,37 @@ fn block_with_conical_hole_produces_one_concave_cone() {
 
 #[test]
 fn cone_cylinder_produces_one_cone_one_cylinder() {
+    // Assert on the stage-2.6 selection, not raw stage-2.2 hypotheses: a
+    // shallow-cone band lies exactly on a cylinder (and vice versa), so the
+    // raw stage may emit an extra band hypothesis that selection discards.
     let stl = format!("{}/tests/ccad/generated/cone_cylinder.stl", manifest_dir());
-    let config = config_for_stl_stage24(&stl);
+    let config = config_for_stl_stage26(&stl);
     let output = run_stage2(&config);
 
-    let cones = output.conical_hypotheses.iter().filter(|h| !h.is_cylinder()).collect::<Vec<_>>();
-    let cyls = cylinder_hypotheses(&output);
+    let cones: Vec<_> = output.selected_surfaces.iter()
+        .filter(|s| is_selected_cone(s, &output)).collect();
+    let cyls: Vec<_> = output.selected_surfaces.iter()
+        .filter(|s| is_selected_cylinder(s, &output)).collect();
     assert_eq!(
         cones.len(),
         1,
-        "cone_cylinder should have 1 conical hypothesis"
+        "cone_cylinder should select 1 conical surface"
     );
     assert_eq!(
         cyls.len(),
         1,
-        "cone_cylinder should have 1 cylindrical hypothesis"
+        "cone_cylinder should select 1 cylindrical surface"
     );
-    assert!(cones[0].convex, "cone should be convex");
-    assert!(cyls[0].convex, "cylinder should be convex");
+    let cone_hyp = match cones[0] {
+        stage2::SelectedSurface::Conical(i) => &output.conical_hypotheses[*i],
+        _ => unreachable!(),
+    };
+    let cyl_hyp = match cyls[0] {
+        stage2::SelectedSurface::Conical(i) => &output.conical_hypotheses[*i],
+        _ => unreachable!(),
+    };
+    assert!(cone_hyp.convex, "cone should be convex");
+    assert!(cyl_hyp.convex, "cylinder should be convex");
 }
 
 #[test]

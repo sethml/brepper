@@ -1757,6 +1757,17 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
     }
     bfs_config.seed_scores = seed_scores;
     bfs_config.junction_faces = junction_faces;
+    if config.verbosity >= 4 {
+        for (fi, face) in mesh.faces.iter().enumerate() {
+            let c = face_centroid(face, &mesh.vertices);
+            let n = face.normal.unwrap_or([0.0; 3]);
+            eprintln!(
+                "    mesh face {}: {}v centroid=[{:.4},{:.4},{:.4}] normal=[{:.3},{:.3},{:.3}] junction={}",
+                fi, face.vertex_count, c[0], c[1], c[2], n[0], n[1], n[2],
+                bfs_config.junction_faces[fi],
+            );
+        }
+    }
     let (mut planar_hypotheses, planar_quit) = bfs::generate_hypotheses::<PlanarSurface>(&mut mesh, &bfs_config, viz_21);
 
     // Record which faces belong to blob-like planar regions so the

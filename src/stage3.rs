@@ -992,12 +992,45 @@ fn build_surfaces_and_adjacency(
         if config.verbose {
             for (si, fd) in face_descriptors.iter().enumerate() {
                 let stype = match &input.selected_surfaces[si] {
-                    SelectedSurface::Planar(_) => "planar",
-                    SelectedSurface::Conical(i) => {
-                        if input.conical_hypotheses[*i].is_cylinder() { "cylindrical" } else { "conical" }
+                    SelectedSurface::Planar(i) => {
+                        let h = &input.planar_hypotheses[*i];
+                        format!(
+                            "planar n=[{:.4},{:.4},{:.4}] d={:.4}",
+                            h.normal[0], h.normal[1], h.normal[2], h.distance,
+                        )
                     }
-                    SelectedSurface::Spherical(_) => "spherical",
-                    SelectedSurface::Toroidal(_) => "toroidal",
+                    SelectedSurface::Conical(i) => {
+                        let h = &input.conical_hypotheses[*i];
+                        if h.is_cylinder() {
+                            format!(
+                                "cylindrical r={:.4} apex=[{:.4},{:.4},{:.4}] axis=[{:.4},{:.4},{:.4}]",
+                                h.radius_at_apex, h.apex[0], h.apex[1], h.apex[2],
+                                h.axis_direction[0], h.axis_direction[1], h.axis_direction[2],
+                            )
+                        } else {
+                            format!(
+                                "conical ha={:.2}deg apex=[{:.4},{:.4},{:.4}] axis=[{:.4},{:.4},{:.4}]",
+                                h.half_angle.to_degrees(), h.apex[0], h.apex[1], h.apex[2],
+                                h.axis_direction[0], h.axis_direction[1], h.axis_direction[2],
+                            )
+                        }
+                    }
+                    SelectedSurface::Spherical(i) => {
+                        let h = &input.spherical_hypotheses[*i];
+                        format!(
+                            "spherical r={:.4} center=[{:.4},{:.4},{:.4}]",
+                            h.radius, h.center[0], h.center[1], h.center[2],
+                        )
+                    }
+                    SelectedSurface::Toroidal(i) => {
+                        let h = &input.toroidal_hypotheses[*i];
+                        format!(
+                            "toroidal R={:.4} r={:.4} center=[{:.4},{:.4},{:.4}] axis=[{:.4},{:.4},{:.4}]",
+                            h.major_radius, h.minor_radius,
+                            h.center[0], h.center[1], h.center[2],
+                            h.axis_direction[0], h.axis_direction[1], h.axis_direction[2],
+                        )
+                    }
                 };
                 eprintln!(
                     "  Face {}: {} surface, {} adjacent faces, {} edges, {} vertices",
