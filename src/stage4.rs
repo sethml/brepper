@@ -44,19 +44,34 @@ impl From<Stage4CompareError> for Stage4Error {
 }
 
 #[derive(Debug)]
-pub struct Stage4CompareError {
-    pub check_type: &'static str,
-    pub max_distance: f64,
-    pub tolerance: f64,
+pub enum Stage4CompareError {
+    /// The written STEP file could not be read back for validation.
+    RoundTrip { path: String, error: String },
+    /// The output's volume differs from the reference beyond 1% relative.
+    Volume { rel_diff: f64 },
+    /// The output shape is farther from the reference than --surface-tolerance.
+    Distance { max_distance: f64, tolerance: f64 },
 }
 
 impl Display for Stage4CompareError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} distance {:.6e} exceeds tolerance {:.6e}",
-            self.check_type, self.max_distance, self.tolerance
-        )
+        match self {
+            Stage4CompareError::RoundTrip { path, error } => {
+                write!(f, "failed to re-read written STEP file {path}: {error}")
+            }
+            Stage4CompareError::Volume { rel_diff } => {
+                write!(
+                    f,
+                    "output volume differs from STEP by {rel_diff:.2e} relative (tolerance 1e-2)"
+                )
+            }
+            Stage4CompareError::Distance { max_distance, tolerance } => {
+                write!(
+                    f,
+                    "output STEP distance {max_distance:.6e} exceeds tolerance {tolerance:.6e}"
+                )
+            }
+        }
     }
 }
 
@@ -115,12 +130,17 @@ fn compare_output_to_step(
 ) -> Result<(), Stage4CompareError> {
     let compare_shape = config.compare_shape.as_ref().unwrap();
 
-    // Re-read the written STEP file to validate it round-trips correctly
+    // Re-read the written STEP file to validate it round-trips correctly.
+    // An unreadable output (including -o /dev/null) means the round-trip
+    // cannot be validated, which fails --compare.
     let output_shape = match crate::read_step_file(output_path) {
         Ok(shape) => shape,
         Err(e) => {
-            eprintln!("  Compare 4.1: WARNING failed to re-read written STEP file {output_path}: {e}");
-            return Ok(());
+            eprintln!("  Compare 4.1: ERROR failed to re-read written STEP file {output_path}: {e}");
+            return Err(Stage4CompareError::RoundTrip {
+                path: output_path.to_string(),
+                error: e,
+            });
         }
     };
 
@@ -141,8 +161,9 @@ fn compare_output_to_step(
 
     if rel_diff > 0.01 {
         eprintln!(
-            "  Compare 4.1: WARNING volume differs by {rel_diff:.2e} (>1%)",
+            "  Compare 4.1: ERROR volume differs by {rel_diff:.2e} (>1%)",
         );
+        return Err(Stage4CompareError::Volume { rel_diff });
     }
 
     // Compute BRepExtrema distance between output and reference
@@ -160,8 +181,7 @@ fn compare_output_to_step(
             eprintln!("  Compare 4.1: output distance to STEP = {dist:.6e} mm");
         }
         if dist > config.surface_tolerance_mm {
-            return Err(Stage4CompareError {
-                check_type: "output STEP",
+            return Err(Stage4CompareError::Distance {
                 max_distance: dist,
                 tolerance: config.surface_tolerance_mm,
             });

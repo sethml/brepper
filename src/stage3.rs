@@ -181,6 +181,13 @@ pub struct Stage3CompareError {
 
 impl Display for Stage3CompareError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if self.check_type == "solid volume" {
+            return write!(
+                f,
+                "solid {} volume differs from STEP by {:.2e} relative (tolerance {:.0e})",
+                self.element_index, self.max_distance, self.tolerance
+            );
+        }
         write!(
             f,
             "{} {} is {:.6e} mm from nearest STEP {} (tolerance: {:.6e} mm)",
@@ -1864,6 +1871,46 @@ fn repair_edge_curve_from_boundary(
     }
 }
 
+/// Last-resort edge curve when both the IntSS and tangent constructions
+/// fail: build it from the mesh boundary chain — the ground truth for any
+/// junction. Starts from the vertex-to-vertex line and lets the chain
+/// repair replace it with the chain's circle when the junction is curved.
+/// Stores the best curve on the edge and returns its chain deviation.
+fn edge_curve_from_boundary_chain(
+    edge: &mut ReconEdge,
+    vertices: &[BRepVertex],
+    mesh: &ConnectedMesh,
+    config: &Config,
+) -> Result<f64, String> {
+    if edge.vertex_indices[0] == usize::MAX || edge.vertex_indices[1] == usize::MAX {
+        return Err("edge has no vertex endpoints for a chain-based curve".to_string());
+    }
+    let v0 = &vertices[edge.vertex_indices[0]];
+    let v1 = &vertices[edge.vertex_indices[1]];
+    let d = [
+        v1.point[0] - v0.point[0],
+        v1.point[1] - v0.point[1],
+        v1.point[2] - v0.point[2],
+    ];
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    if len < 1e-15 {
+        return Err("edge has zero-length vertex span".to_string());
+    }
+    let p0 = gp::Pnt::new_real3(v0.point[0], v0.point[1], v0.point[2]);
+    let dir = gp::Dir::new_real3(d[0] / len, d[1] / len, d[2] / len);
+    let line = geom::Line::new_pnt_dir(&p0, &dir);
+    let line_handle = geom::Line::to_handle(line).to_handle_curve();
+    let trimmed = geom::TrimmedCurve::new_handlegeomcurve_real2(&line_handle, 0.0, len);
+    let trimmed_handle = geom::TrimmedCurve::to_handle(trimmed).to_handle_curve();
+
+    let [fi0, fi1] = edge.face_indices;
+    let repaired =
+        repair_edge_curve_from_boundary(trimmed_handle, edge, vertices, mesh, config, fi0, fi1);
+    let dev = boundary_chain_deviation(&repaired, &edge.mesh_boundary_vertices, mesh);
+    edge.curve_3d = Some(repaired);
+    Ok(dev)
+}
+
 /// Select the intersection curve closest to the mesh boundary vertices.
 /// Returns the 1-indexed line number.
 ///
@@ -2192,9 +2239,17 @@ fn compute_tangent_edge_curve_line(
     let line = geom::Line::new_pnt_dir(&p0, &dir);
     let line_handle = geom::Line::to_handle(line).to_handle_curve();
 
-    // Trim to vertex endpoints
-    let t_start = project_point_on_curve(&v0.point, &line_handle)?;
-    let t_end = project_point_on_curve(&v1.point, &line_handle)?;
+    // Trim to vertex endpoints. Line parameters are computed analytically
+    // (t = (p − origin)·dir): GeomAPI_ProjectPointOnCurve can return zero
+    // extrema for a point lying exactly on the line (e.g. v0 itself when
+    // the line was anchored there for cylinder-cylinder tangencies).
+    let line_param = |p: &[f64; 3]| -> f64 {
+        (p[0] - tangent_point[0]) * line_dir[0]
+            + (p[1] - tangent_point[1]) * line_dir[1]
+            + (p[2] - tangent_point[2]) * line_dir[2]
+    };
+    let t_start = line_param(&v0.point);
+    let t_end = line_param(&v1.point);
     let (t_lo, t_hi) = if t_start < t_end {
         (t_start, t_end)
     } else {
@@ -2850,6 +2905,7 @@ fn compute_edge_curves_all(
     let t = Instant::now();
     let mut success_count = 0;
     let mut fail_count = 0;
+    let mut chain_count = 0;
     let total = output.edges.len();
 
     for ei in 0..total {
@@ -3007,22 +3063,59 @@ fn compute_edge_curves_all(
                     }
             }
             Err(msg) => {
-                if !config.quiet {
-                    let fi0 = edge.face_indices[0];
-                    let fi1 = edge.face_indices[1];
-                    let s0 = &output.stage2.selected_surfaces[output.face_descriptors[fi0].selected_surface_idx];
-                    let s1 = &output.stage2.selected_surfaces[output.face_descriptors[fi1].selected_surface_idx];
-                    let sname = |s: &SelectedSurface| match s {
-                        SelectedSurface::Planar(_) => "plane",
-                        SelectedSurface::Conical(i) => {
-                            if output.stage2.conical_hypotheses[*i].is_cylinder() { "cylinder" } else { "cone" }
+                let fi0 = edge.face_indices[0];
+                let fi1 = edge.face_indices[1];
+                let s0 = &output.stage2.selected_surfaces[output.face_descriptors[fi0].selected_surface_idx];
+                let s1 = &output.stage2.selected_surfaces[output.face_descriptors[fi1].selected_surface_idx];
+                let sname = |s: &SelectedSurface| match s {
+                    SelectedSurface::Planar(_) => "plane",
+                    SelectedSurface::Conical(i) => {
+                        if output.stage2.conical_hypotheses[*i].is_cylinder() { "cylinder" } else { "cone" }
+                    }
+                    SelectedSurface::Spherical(_) => "sphere",
+                    SelectedSurface::Toroidal(_) => "torus",
+                };
+                // Last resort: build the curve from the mesh boundary chain.
+                match edge_curve_from_boundary_chain(
+                    edge,
+                    &output.vertices,
+                    &output.stage2.mesh,
+                    config,
+                ) {
+                    Ok(dev) if dev <= config.surface_tolerance_mm => {
+                        success_count += 1;
+                        chain_count += 1;
+                        if !config.quiet {
+                            eprintln!(
+                                "  Edge {ei}: {}-{} construction failed ({msg}); \
+                                 using mesh-boundary-chain curve (chain dev {dev:.2e} mm)",
+                                sname(s0),
+                                sname(s1),
+                            );
                         }
-                        SelectedSurface::Spherical(_) => "sphere",
-                        SelectedSurface::Toroidal(_) => "torus",
-                    };
-                    eprintln!("  Edge {ei}: FAILED ({}-{}) - {msg}", sname(s0), sname(s1));
+                    }
+                    Ok(dev) => {
+                        fail_count += 1;
+                        if !config.quiet {
+                            eprintln!(
+                                "  Edge {ei}: FAILED ({}-{}) - {msg}; best chain-based \
+                                 curve still {dev:.3} mm from the mesh boundary",
+                                sname(s0),
+                                sname(s1),
+                            );
+                        }
+                    }
+                    Err(msg2) => {
+                        fail_count += 1;
+                        if !config.quiet {
+                            eprintln!(
+                                "  Edge {ei}: FAILED ({}-{}) - {msg}; {msg2}",
+                                sname(s0),
+                                sname(s1),
+                            );
+                        }
+                    }
                 }
-                fail_count += 1;
             }
         }
     }
@@ -3032,6 +3125,12 @@ fn compute_edge_curves_all(
             "Stage 3.3 ({:.3}s): Computed {success_count}/{total} edge curves ({fail_count} failed)",
             t.elapsed().as_secs_f64(),
         );
+        if chain_count > 0 {
+            eprintln!(
+                "  {chain_count} edge curve(s) built from mesh boundary chains \
+                 (surface-surface construction failed)"
+            );
+        }
     }
 
     if fail_count > 0 && !config.quiet {
@@ -6640,8 +6739,15 @@ fn compare_solids_to_step(
 
         if rel_diff > 0.01 {
             eprintln!(
-                "  Compare 3.6: WARNING solid {our_idx} volume differs by {rel_diff:.2e} (>1%)",
+                "  Compare 3.6: ERROR solid {our_idx} volume differs by {rel_diff:.2e} (>1%)",
             );
+            return Err(Stage3CompareError {
+                substage: 6,
+                check_type: "solid volume",
+                element_index: our_idx,
+                max_distance: rel_diff,
+                tolerance: 0.01,
+            });
         }
     }
 

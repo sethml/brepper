@@ -74,9 +74,12 @@ for stl in $(find tests -name '*.stl' | sort); do
     fi
 
     tmpout=$(mktemp)
+    # Write a real STEP file so stage 4.1's round-trip re-read and volume
+    # comparison actually run (-o /dev/null cannot be re-read and fails).
+    outstep="$tmpout.step"
     start_time=$(python3 -c 'import time; print(time.monotonic())')
 
-    if timeout 120 "$BREPPER" "$stl" -o /dev/null $compare_flag $extra_flags > "$tmpout" 2>&1; then
+    if timeout 120 "$BREPPER" "$stl" -o "$outstep" $compare_flag $extra_flags > "$tmpout" 2>&1; then
         status="✓"
         is_pass=1
     else
@@ -119,7 +122,7 @@ for stl in $(find tests -name '*.stl' | sort); do
     # Print progress to stderr
     echo "  $status ($elapsed s) $stl" >&2
 
-    rm -f "$tmpout"
+    rm -f "$tmpout" "$outstep"
 done
 
 # Generate RESULTS.md
@@ -135,7 +138,7 @@ Each STL test file is run through brepper with `--compare` against
 its corresponding STEP file (when available):
 
 ```
-brepper <input.stl> -o /dev/null --compare <input.step>
+brepper <input.stl> -o <tmpfile>.step --compare <input.step>
 ```
 
 Special flags:

@@ -543,6 +543,7 @@ For each ReconEdge, compute the 3D intersection curve between the two adjacent s
 
 **Boundary-chain validation and repair (`repair_edge_curve_from_boundary`):**
 - The mesh boundary chain lies on the true junction within chordal tolerance, so it is the ground truth for every edge curve regardless of surface pair. After trimming, the curve is validated against a spread of chain vertices; when it strays beyond `--surface-tolerance` — the complementary-arc trap on a periodic junction, a degenerate IntSS result with an odd parameterization, or a straight-line stand-in for a curved junction — the curve is rebuilt as the circle through three spread chain vertices, re-trimmed to the endpoint vertices with a chain-supported arc (`select_arc_parameters`), and adopted if it fits the chain better. This is what recovers `cone_tangent_planes`' two apex-cap boundary arcs (IntSS between its near-tangent coaxial cones returns degenerate curves; the repair reduces a 14 mm chain deviation to ~3e-6 mm).
+- The chain is also the **last-resort constructor** (`edge_curve_from_boundary_chain`): when both the IntSS and tangent-analytic constructions fail outright, the edge curve is built from the chain directly (vertex-to-vertex line, upgraded to the chain's circle when curved) and accepted if it fits the chain within `--surface-tolerance`. Only edges where even the chain fails are left to fallback geometry, and those remain a stage-3.3 warning. (Recovers the two intersecting-fillet-cylinder junctions on `stepped_block_toroidal_fillets_fine` whose IntSS curves reject vertex projection.)
 
 **Pcurve computation (in stage 3.4):**
 - Pcurves are computed analytically per (edge, face) incidence by the shared-edge assembler and attached to the shared `TopoDS_Edge` objects — see stage 3.4.
@@ -617,7 +618,7 @@ Convert closed shells into `TopoDS_Solid` objects.
 
 - With the `--compare` flag:
     - Count solids in the reference STEP file.
-    - Compute volumes of both constructed and reference solids. Match by sorted volume. Report warning if relative volume difference exceeds 1%. All current test models achieve volume agreement within ~1e-7 relative difference.
+    - Compute volumes of both constructed and reference solids. Match by sorted volume. Report a hard **error** if relative volume difference exceeds 1% (a warning until 2026-07-08; a warning-only check let a 46% volume regression slip past a green test suite). Most models achieve volume agreement within ~1e-7 relative difference.
     - Compute `BRepExtrema_DistShapeShape` between each constructed solid and the reference STEP shape. Report error if distance exceeds `--surface-tolerance`. This is the tightest geometric accuracy check.
 
 #### 3.x Rework: shared-edge topological assembly instead of geometric sewing
@@ -654,10 +655,10 @@ Write constructed solid(s) to a STEP file.
 - Set STEP metadata: AP214 schema, product name "brepper" via `Interface_Static::set_c_val`.
 - Create a `STEPControl_Writer`, transfer the compound with `StepModelType::Asis` mode to preserve exact geometry.
 - Write the output file. Report error if transfer or write returns non-Done status.
-- With the `--compare` flag:
-    - Re-read the written STEP file via `STEPControl_Reader` to validate the round-trip.
-    - Compare volumes of the output shape vs reference shape using `BRepGProp::VolumeProperties`. Warn on >1% relative difference.
-    - Compute maximum distance between output and reference using `BRepExtrema_DistShapeShape`. Hard error if exceeds `--surface-tolerance`.
+- With the `--compare` flag (each check is a hard error as of 2026-07-08 — warning-only volume checks let a large regression slip past a green suite):
+    - Re-read the written STEP file via `STEPControl_Reader` to validate the round-trip. Error if unreadable (note this makes `-o /dev/null` incompatible with `--compare`; `run_test_table.sh` writes a real temp file).
+    - Compare volumes of the output shape vs reference shape using `BRepGProp::VolumeProperties`. Error on >1% relative difference.
+    - Compute maximum distance between output and reference using `BRepExtrema_DistShapeShape`. Error if exceeds `--surface-tolerance`.
 
 ---
 
