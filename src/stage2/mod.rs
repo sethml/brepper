@@ -961,28 +961,6 @@ fn vertex_distance_to_selected(
     }
 }
 
-/// Merge redundant/orphan selected surfaces into larger adjacent ones.
-///
-/// Two situations produce selected surfaces that duplicate a neighbor's
-/// geometry rather than describing a real model feature:
-///
-/// 1. **Spurious sub-fits**: a narrow band of faces on a cone/sphere can fit
-///    an "exact" cylinder (e.g. 3 azimuthal strips of a shallow cone have
-///    nearly coplanar normals) and get committed before the real surface's
-///    BFS reaches those faces. All of the band's vertices lie exactly on the
-///    real surface.
-/// 2. **Tangent-junction bridge facets**: a mesh facet spanning a tangent
-///    junction (e.g. cone–sphere) has vertices on both sides and can't be
-///    absorbed by either surface at vertex tolerance; it becomes an orphan
-///    single-face planar surface. Its chordal deviation from either surface
-///    is bounded by the tessellation's surface tolerance.
-///
-/// Both create fake edges/vertices that break stage 3 reconstruction. This
-/// pass merges a surface S into an adjacent, larger-area surface T when all
-/// of S's vertices lie within tolerance of T's geometry: a tight tolerance
-/// (10× vertex tolerance) for multi-face S (case 1: exact overlap), and the
-/// looser surface tolerance for S with ≤ 2 faces (case 2: chordal sag).
-#[allow(clippy::too_many_arguments)]
 /// Refine surface assignments at region boundaries (DEVELOPMENT_PLAN §2.6
 /// "Surface refitting"). BFS greedily absorbs border faces that fit within
 /// tolerance but belong more naturally to the adjacent surface — e.g. a face
@@ -1104,7 +1082,7 @@ fn refine_boundary_assignments(
             faces.retain(|&f| f != fi);
         };
         for &(fi, si, _) in &moves {
-            let s = selected_surfaces[si].clone();
+            let s = selected_surfaces[si];
             remove_from(&s, fi);
         }
         let mut add_to = |s: &SelectedSurface, fi: usize| {
@@ -1117,7 +1095,7 @@ fn refine_boundary_assignments(
             faces.push(fi);
         };
         for &(fi, _, sj) in &moves {
-            let s = selected_surfaces[sj].clone();
+            let s = selected_surfaces[sj];
             add_to(&s, fi);
         }
 
@@ -1188,6 +1166,28 @@ fn refine_boundary_assignments(
     }
 }
 
+/// Merge redundant/orphan selected surfaces into larger adjacent ones.
+///
+/// Two situations produce selected surfaces that duplicate a neighbor's
+/// geometry rather than describing a real model feature:
+///
+/// 1. **Spurious sub-fits**: a narrow band of faces on a cone/sphere can fit
+///    an "exact" cylinder (e.g. 3 azimuthal strips of a shallow cone have
+///    nearly coplanar normals) and get committed before the real surface's
+///    BFS reaches those faces. All of the band's vertices lie exactly on the
+///    real surface.
+/// 2. **Tangent-junction bridge facets**: a mesh facet spanning a tangent
+///    junction (e.g. cone–sphere) has vertices on both sides and can't be
+///    absorbed by either surface at vertex tolerance; it becomes an orphan
+///    single-face planar surface. Its chordal deviation from either surface
+///    is bounded by the tessellation's surface tolerance.
+///
+/// Both create fake edges/vertices that break stage 3 reconstruction. This
+/// pass merges a surface S into an adjacent, larger-area surface T when all
+/// of S's vertices lie within tolerance of T's geometry: a tight tolerance
+/// (10× vertex tolerance) for multi-face S (case 1: exact overlap), and the
+/// looser surface tolerance for S with ≤ 2 faces (case 2: chordal sag).
+#[allow(clippy::too_many_arguments)]
 fn absorb_redundant_surfaces(
     mesh: &ConnectedMesh,
     selected_surfaces: &mut Vec<SelectedSurface>,

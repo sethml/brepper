@@ -1,39 +1,8 @@
 # Prioritized by value toward the project goal (README: "analytic and freeform surfaces")
 
-## 1. cone_tangent_planes: stage 3.4 conical apex-cap face construction
-DONE at stage 2: all 3 cones detected (normal-line axis rescue for narrow arcs;
-half-angle cap 85°); stage 3.3 computes 11/11 edge curves incl. plane-cone tangent
-generator lines. The model completes and writes a STEP; the only symptom is a stage-3.6
-volume WARNING (6617 mm³ vs 14676 mm³) — the surfaces are all correct (max face sample
-distance 1.16e-6 mm), only the trimming of two cone faces is wrong.
-
-Sharpened diagnosis (2026-07-07): faces 1 (cone ha 84.25°) and 3 (cone ha 73.04°) are
-"pie-slice-with-apex" patches — the cone APEX is one of their boundary vertices, i.e. a
-UV U-pole. Both of each face's two boundary edges lie at the SAME iso-V line (same
-distance from the apex): e.g. face 1's edge 0 (junction with cone 0) and edge 4
-(junction with plane 2, a plane perpendicular to the cone axis tangent to the cone)
-both sit at V=11.35, U∈[4.76,7.34]. The generic wire builder (create_wire_based_periodic_
-face, is_sphere=false) then collapses the wire: both edges project onto the same iso-V
-arc, so the enclosed area is ~0 (face 3 came out 0.0001 mm²; face 1 mis-built to 130 mm²).
-
-Two dead ends already explored:
-- Pure UV-bounds "apex cap" (U=[0,2π], V=[0,V_arc], apex as degenerate V-pole, like the
-  spherical pole path): gets the AREA right (403 / 163 mm²) but breaks sewing — the cap's
-  boundary is OCCT-generated, not the shared edge objects, and it only geometrically
-  matches the neighbours along the 148° wedge, leaving the rest free → open shell →
-  stage 3.5 hard error. Strictly worse than the current warning-only state.
-- Detecting the cap via mesh U-span is unreliable: the apex is a U-pole, so apex-adjacent
-  mesh vertices scatter U across the full circle and a 148° wedge falsely reads as a 354°
-  full revolution.
-
-The real fix needs a wire-based cap that (a) REUSES the shared edges (edge 0/edge 4 for
-face 1) as the outer boundary — unwrapped to the correct arc so they don't stack on the
-same U-range — (b) inserts a degenerate edge at the apex U-pole (the sphere pole-insertion
-machinery in create_wire_based_periodic_face, currently gated behind is_sphere, generalized
-to the cone apex), and (c) picks the correct V-side. Caution: existing code notes ShapeFix
-segfaults on cones, so pole/degenerate handling for cones must be built without ShapeFix.
-Low value (one unusual model, already emits valid-ish output) — but this is now a concrete,
-well-scoped plan rather than a mystery.
+(completed and removed: stage-3 shared-edge assembly rework (DEVELOPMENT_PLAN §3.x)
+including cone_tangent_planes apex-cap face construction — volume now matches to
+~1e-7 relative. See DONE.md.)
 
 (completed and removed: stepped_block_toroidal_fillets MEDIUM — all 18 tori + 37
 cylinders now selected and the model passes stage 4.1 (dedicated

@@ -608,9 +608,9 @@ fn run_stage3_34(config: &config::Config) -> stage3::Stage3Output {
 /// Verify that every face descriptor has a corresponding OCCT face.
 fn check_all_faces_created(output: &stage3::Stage3Output) {
     assert_eq!(
-        output.make_faces.len(),
+        output.faces.len(),
         output.face_descriptors.len(),
-        "make_faces count should match face_descriptors count"
+        "faces count should match face_descriptors count"
     );
 }
 
@@ -622,7 +622,7 @@ fn cube_face_creation() {
     let config = config_for_stl_34(&stl);
     let output = run_stage3_34(&config);
     check_all_faces_created(&output);
-    assert_eq!(output.make_faces.len(), 6);
+    assert_eq!(output.faces.len(), 6);
 }
 
 // --- Wedge ---
@@ -633,7 +633,7 @@ fn wedge_face_creation() {
     let config = config_for_stl_34(&stl);
     let output = run_stage3_34(&config);
     check_all_faces_created(&output);
-    assert_eq!(output.make_faces.len(), 6);
+    assert_eq!(output.faces.len(), 6);
 }
 
 // --- Cylinder ---
@@ -644,7 +644,7 @@ fn simple_cylinder_face_creation() {
     let config = config_for_stl_34(&stl);
     let output = run_stage3_34(&config);
     check_all_faces_created(&output);
-    assert_eq!(output.make_faces.len(), 3);
+    assert_eq!(output.faces.len(), 3);
 }
 
 // --- Block with hole ---
@@ -655,7 +655,7 @@ fn block_with_hole_face_creation() {
     let config = config_for_stl_34(&stl);
     let output = run_stage3_34(&config);
     check_all_faces_created(&output);
-    assert_eq!(output.make_faces.len(), 7);
+    assert_eq!(output.faces.len(), 7);
 }
 
 // --- Pipe ---
@@ -666,7 +666,7 @@ fn pipe_face_creation() {
     let config = config_for_stl_34(&stl);
     let output = run_stage3_34(&config);
     check_all_faces_created(&output);
-    assert_eq!(output.make_faces.len(), 4);
+    assert_eq!(output.faces.len(), 4);
 }
 
 // --- Sphere ---
@@ -677,7 +677,7 @@ fn simple_sphere_face_creation() {
     let config = config_for_stl_34(&stl);
     let output = run_stage3_34(&config);
     check_all_faces_created(&output);
-    assert_eq!(output.make_faces.len(), 1);
+    assert_eq!(output.faces.len(), 1);
 }
 
 // --- Hemisphere ---
@@ -688,7 +688,7 @@ fn hemisphere_face_creation() {
     let config = config_for_stl_34(&stl);
     let output = run_stage3_34(&config);
     check_all_faces_created(&output);
-    assert_eq!(output.make_faces.len(), 2);
+    assert_eq!(output.faces.len(), 2);
 }
 
 // --- Ball on cylinder ---
@@ -699,7 +699,7 @@ fn ball_on_cylinder_face_creation() {
     let config = config_for_stl_34(&stl);
     let output = run_stage3_34(&config);
     check_all_faces_created(&output);
-    assert_eq!(output.make_faces.len(), 3);
+    assert_eq!(output.faces.len(), 3);
 }
 
 // --- Spherical pocket ---
@@ -710,7 +710,7 @@ fn spherical_pocket_face_creation() {
     let config = config_for_stl_34(&stl);
     let output = run_stage3_34(&config);
     check_all_faces_created(&output);
-    assert_eq!(output.make_faces.len(), 7);
+    assert_eq!(output.faces.len(), 7);
 }
 
 // --- Chamfered cube ---
@@ -721,7 +721,7 @@ fn chamfered_cube_face_creation() {
     let config = config_for_stl_34(&stl);
     let output = run_stage3_34(&config);
     check_all_faces_created(&output);
-    assert_eq!(output.make_faces.len(), 26);
+    assert_eq!(output.faces.len(), 26);
 }
 
 // ---------------------------------------------------------------------------
@@ -1319,7 +1319,7 @@ fn simple_cone_face_creation() {
     let config = config_for_stl_34(&stl);
     let output = run_stage3_34(&config);
     check_all_faces_created(&output);
-    assert_eq!(output.make_faces.len(), 3);
+    assert_eq!(output.faces.len(), 3);
 }
 
 #[test]

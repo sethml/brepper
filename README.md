@@ -203,8 +203,8 @@ Integration tests in `tests/stage3_integration.rs` verify that:
 - All STL/STEP pairs pass `--compare` validation at stage 3.1, verifying that reconstructed edge boundary vertices lie on STEP edges and BRep vertices coincide with STEP vertices
 - Tangency detection (stage 3.2) correctly identifies no tangent edges for models composed of planar, cylindrical, and spherical surfaces meeting at angles > 2°
 - Edge curve computation (stage 3.3) produces 3D curves for all edges via surface-surface intersection, verified across all test models (cube, cylinder, hemisphere, ball_on_cylinder, block_with_hole, chamfered_cube, spherical_pocket)
-- Face creation (stage 3.4) successfully creates OCCT `TopoDS_Face` objects for all test models: planar faces built from wire loops, cylindrical/spherical faces from UV parameter bounds. All STL/STEP pairs pass `--compare` validation at stage 3.4
-- Shell construction (stage 3.5) stitches faces via `BRepBuilderAPI_Sewing` and produces correctly oriented shells. All STL/STEP pairs pass `--compare` validation
+- Face creation (stage 3.4) successfully creates OCCT `TopoDS_Face` objects for all test models via shared-edge topological assembly: every edge is one `TopoDS_Edge` shared by both adjacent faces, with per-face pcurves, seam edges, and degenerate pole edges built uniformly for all surface types. All STL/STEP pairs pass `--compare` validation at stage 3.4
+- Shell construction (stage 3.5) assembles faces into shells directly from the shared-edge topology (closed by construction; no sewing) and produces correctly oriented shells. All STL/STEP pairs pass `--compare` validation
 - Solid construction (stage 3.6) creates solids from shells via `ShapeFix_Solid::SolidFromShell`. Volume comparison against STEP reference and `BRepExtrema_DistShapeShape` distance checks pass for all test models
 Integration tests in `tests/stage4_integration.rs` verify that:
 - STEP output files are written successfully for cube, cylinder, and sphere models

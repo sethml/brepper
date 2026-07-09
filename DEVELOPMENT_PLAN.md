@@ -427,7 +427,7 @@ For groups of adjacent faces that remain as single-face planar hypotheses after 
 
 *Comment: NURBS fitting is complex: parameterization quality strongly affects fit quality, degree/knot selection matters, and thin features may need special handling. Start with OCCT’s built-in B-spline fitter which handles degree selection and parameterization internally. For “freeform” regions that are nearly planar, a plane with small tolerance is preferable to a NURBS that overfits noise.*
 
-*Reconstruction note: when this stage is implemented, do the stage-3 reconstruction rework described in §3.x (proposed) first, as its foundation. NURBS patches have arbitrary trimmed boundaries that would stress the current projection-plus-geometric-sewing assembly exactly where it is most fragile (see the §3.x analysis and the `cone_tangent_planes` case), and the NURBS test models are also what finally give the more-general shared-edge assembler real coverage.*
+*Reconstruction note: the stage-3 shared-edge assembly rework (§3.x) is implemented and is the intended foundation for this stage. To reconstruct NURBS faces, extend `SurfaceChart` with a B-spline chart (point→UV via `ShapeAnalysis_Surface::ValueOfUV`, point_at via `Geom_Surface::Value`) and add the B-spline arm to `create_occt_surface`; the sampling/loop/winding/pcurve/wire machinery in stage 3.4 is surface-type-agnostic and needs no changes for non-periodic B-spline patches.*
 
 ---
 
@@ -547,18 +547,17 @@ For each ReconEdge, compute the 3D intersection curve between the two adjacent s
 - For non-periodic curves, ensure `t_start < t_end` (swap if needed).
 - The resulting `TrimmedCurve` is upcast to `HandleGeomCurve` via `.to_handle().to_handle_curve()` and stored in `edge.curve_3d`.
 
-**Pcurve computation (deferred to stage 3.4):**
-- Pcurves will be derived when creating `TopoDS_Edge` objects.
-- Options: analytic pcurves for simple cases (line on plane, circle on cylinder), or `ShapeFix_Wire::FixEdgeCurves` for general cases.
+**Boundary-chain validation and repair (`repair_edge_curve_from_boundary`):**
+- The mesh boundary chain lies on the true junction within chordal tolerance, so it is the ground truth for every edge curve regardless of surface pair. After trimming, the curve is validated against a spread of chain vertices; when it strays beyond `--surface-tolerance` — the complementary-arc trap on a periodic junction, a degenerate IntSS result with an odd parameterization, or a straight-line stand-in for a curved junction — the curve is rebuilt as the circle through three spread chain vertices, re-trimmed to the endpoint vertices with a chain-supported arc (`select_arc_parameters`), and adopted if it fits the chain better. This is what recovers `cone_tangent_planes`' two apex-cap boundary arcs (IntSS between its near-tangent coaxial cones returns degenerate curves; the repair reduces a 14 mm chain deviation to ~3e-6 mm).
 
-**Seam edges (future):**
-- A face adjacent to itself (e.g., a full cylinder wrapping around) requires a seam edge at a fixed U or V parameter. Create the seam as an iso-parametric curve on the surface.
-- Conical faces: full-revolution cones require a seam edge along one generator line (iso-U curve from apex to base).
-- Toroidal faces: full-revolution tori (360° around major axis) require a seam at one meridian (iso-U); full-tube tori (360° around minor circle) also need a seam at one parallel (iso-V). A complete torus needs both.
+**Pcurve computation (in stage 3.4):**
+- Pcurves are computed analytically per (edge, face) incidence by the shared-edge assembler and attached to the shared `TopoDS_Edge` objects — see stage 3.4.
 
+**Seam edges (implemented in stage 3.4):**
+- A face whose boundary wraps a periodic direction gets a seam edge along an isoline, with two pcurves (one per occurrence) on the shared edge — see stage 3.4. Complete closed surfaces with no boundary at all (full sphere, complete torus) use `MakeFace` natural bounds, which generates both seams of a complete torus automatically.
 
-**Vertex position consistency (future):**
-- OCCT requires all edges at a vertex to share the same `TopoDS_Vertex` (same 3D point). When edges computed independently disagree slightly about vertex position, use the averaged position from the ReconVertex and set the vertex tolerance to the maximum deviation.
+**Vertex position consistency:**
+- OCCT requires all edges at a vertex to share the same `TopoDS_Vertex`. All edges are built from the shared per-BRepVertex `TopoDS_Vertex` objects; vertex tolerances are raised adaptively to cover each vertex's distance from its curve endpoints (stage 3.4), and pcurve endpoints snap to the shared vertex's UV so wires close in 2D at their vertices.
 
 - With the `--compare` flag:
     - For each ReconEdge with a computed `curve_3d`, sample points along the trimmed curve (e.g., 10 evenly-spaced parameter values between start and end). For each sample point, compute the distance to the nearest edge in the reference STEP file using `BRepExtrema_DistShapeShape`. Report an error if any sample exceeds `--vertex-tolerance`.
@@ -566,54 +565,48 @@ For each ReconEdge, compute the 3D intersection curve between the two adjacent s
     - This validates that the computed intersection curves not only connect the right vertices but also follow the correct geometric path between them.
 
 #### 3.4 Create OCCT faces
-For each ReconFace, construct a `TopoDS_Face` from the surface and bounding wires.
+For each ReconFace, construct a `TopoDS_Face` from the surface and the shared edges — **shared-edge topological assembly** (the §3.x rework, implemented). Every ReconEdge is exactly one `TopoDS_Edge` used by both adjacent faces; each face attaches its own pcurve to the shared edge and assembles its wires and the face directly with `BRep_Builder`. `MakeWire`/`MakeFace`-from-wire/`ShapeFix` (which copy edges and would break the sharing) are not used; one uniform mechanism covers planes, cylinders, cones, spheres, and tori alike, and is the intended foundation for NURBS faces.
 
 **Algorithm (as implemented):**
 
-*Stage 1: Create TopoDS_Edge for each ReconEdge.*
-- For each `ReconEdge`, create a `BRepBuilderAPI_MakeEdge` using the trimmed 3D curve and shared `TopoDS_Vertex` endpoints from stage 3.3. For periodic curves (circles from cylinder/sphere intersections), vertex order is matched to the curve parameterization direction: V1 corresponds to `first_parameter()` and V2 to `last_parameter()`. This is critical because `MakeEdge` strips `TrimmedCurve` wrappers and uses `ElCLib::AdjustPeriodic` on the base periodic curve, which always selects the forward (CCW) arc from V1 to V2.
-- **Adaptive vertex tolerance**: Before each `MakeEdge`, the distance between each vertex position and its curve endpoint is computed. The OCCT vertex tolerance is updated to at least that distance (with 1% margin), accommodating imprecisely-fitted surface intersection curves that don't pass exactly through mesh vertex positions. This replaces the earlier fixed `vertex_tolerance_mm` approach.
+*Step 1: Shared vertices and edges.*
+- One `TopoDS_Vertex` per `BRepVertex` (tolerance `vertex_tolerance_mm`).
+- One `TopoDS_Edge` per `ReconEdge` via `BRepBuilderAPI_MakeEdge` from the trimmed 3D curve with explicit parameters. For periodic curves (circles), vertex order is matched to the curve parameterization direction: V1 corresponds to `first_parameter()` and V2 to `last_parameter()`. This is critical because `MakeEdge` strips `TrimmedCurve` wrappers and uses `ElCLib::AdjustPeriodic` on the base periodic curve, which always selects the forward (CCW) arc from V1 to V2.
+- **Adaptive vertex tolerance**: before each `MakeEdge`, each vertex's distance to its curve endpoint is computed and the OCCT vertex tolerance raised to cover it (1% margin) — intersection curves of imprecisely-fitted surfaces don't pass exactly through mesh vertex positions.
 
-*Stage 2: Create OCCT faces.*
-- **Planar faces** use wire-based construction:
-  - Group the face's edges into wire loops based on `BRepVertex` connectivity. Edges sharing a vertex index are grouped together; closed-loop edges (vertex_indices both `usize::MAX`) each form a separate wire.
-  - Build `BRepBuilderAPI_MakeWire` for each group by sequentially adding `TopoDS_Edge` objects.
-  - Identify the outer wire as the group with the most edges (heuristic).
-  - Create `BRepBuilderAPI_MakeFace` with the surface handle and outer wire, then add inner wires as holes.
+*Step 2: Per-face UV analysis (`scan_face`).*
+- Each face gets an analytic **chart** (`SurfaceChart`) mirroring the gp_Ax3 frame of its OCCT surface, with closed-form point→(U,V) and (U,V)→point maps for all five surface types (a future NURBS chart can substitute `ShapeAnalysis_Surface::ValueOfUV`). All UV work — sampling, windows, orientation tests — is analytic; `GeomAPI_ProjectPointOnSurf` is no longer used in face construction.
+- **Sphere gauge choice**: a sphere's axis is a free gauge, so it is pointed at the mesh region's mean centroid direction from the center. The region's boundary then never passes near a UV pole: poles land strictly inside the region (a polar cap — handled by a degenerate pole edge) or strictly outside. This one choice replaces all of the old pole-proximity reorientation and pole-vertex special cases.
+- Each boundary edge's stored curve (read back from the `TopoDS_Edge`, so `MakeEdge` parameter adjustments are respected) is sampled to branch-continuous UV arrays; U values within `pole_radius_eps` of a chart pole are backfilled from the nearest well-defined sample.
+- Boundary edges are grouped into loops by `BRepVertex` connectivity and each loop is **branch-aligned**: consecutive edges' UV endpoints are matched by whole-period shifts. The loop's net **winding** around each periodic direction classifies the face: a loop with winding ±1 wraps the surface. U-jumps across pole junctions (a boundary loop passing through a cone apex or sphere pole vertex) are recorded as pole gaps rather than winding.
 
-- **Cylindrical, spherical, conical, and toroidal faces** use three approaches:
+*Step 3: Seam planning (`plan_seam_anchors`).*
+- A face whose boundary winds a periodic direction needs a **seam edge**; its endpoints must be vertices of the winding loops. Anchors: an existing `BRepVertex` on the loop when there is one; otherwise the (single) closed-loop edge is rebuilt to start at the seam azimuth and gains an anchor vertex at both ends. Because the anchor vertex becomes part of the *shared* edge, every face using that edge sees the same anchor — cross-face consistency is forced by sharing, not by tolerances. Faces are planned in waves so chains of wrapped faces (e.g. plane–cylinder–torus stacks) adopt one consistent seam azimuth; a face whose winding loops carry incompatible pre-determined anchors is a hard error (edge splitting is the recorded future extension).
 
-  - **Full revolution** (all boundary edges are closed loops): UV-bounds construction via `MakeFace::new_handlegeomsurface_real5(surface, umin, umax, vmin, vmax, tol)`. UV bounds are computed from edge projections using a circular gap algorithm that handles periodicity. This automatically creates seam edges for proper B-Rep topology.
-  - **Spherical faces with closed-loop edges near poles** (e.g., pill/capsule hemispheres or dome hemispheres cut by a meridional plane): The boundary circles may pass through or near the sphere's UV singularities (poles at V=±π/2 where U is undefined). When any boundary circle passes within 45° of either pole (detected via `ProjectPointOnCurve` + chord-length formula), the sphere surface is recreated with its Z-axis aligned to a reorientation axis. The axis is determined from: (a) the adjacent cylinder's axis direction for tangent edges, or (b) the boundary circle's plane normal for non-tangent edges (computed from 3 sampled points on the curve). This is safe because for all-closed-loop boundaries, the reorientation axis is unique. The face's V bounds are computed by projecting samples of each boundary circle onto the oriented surface: for sphere-cylinder tangencies the junction is a great circle (V=0), but for sphere-cone tangencies it sits at a nonzero latitude, so fixed hemisphere bounds would misplace the boundary. With a single boundary circle, the face spans from that circle's latitude to the pole on the side occupied by the mesh (determined by projecting a mesh face centroid and checking the V-sign); with two, it spans between them.
-  - **Spherical faces with pole vertices** (e.g., rounded cube corners where cylinders meet at a sphere pole): When a spherical face's UV bounds include V=±π/2, vertex U values at the pole are undefined (singularity). The `compute_uv_bounds_from_edges` function excludes pole U values (within 0.01 radians of ±π/2) from the circular gap algorithm to avoid corrupted U spans. The face is then constructed via UV-bounds `MakeFace::new_handlegeomsurface_real5`, producing a triangular-topology face (3 edges, 2 meridians + 1 parallel; pole collapsed to a vertex). These faces have a harmless BRepCheck edge failure (tolerance ~0) on the first edge, resolved by sewing.
-  - **Partial revolution** (open edges with vertices): Wire-based construction with pre-set pcurves. Before building the wire, `BRep_Builder::update_edge` sets `Geom2d_Line` pcurves on each IntSS edge for the periodic surface, mapping the edge's 3D parameter range to (u(t), v(t)) in surface UV space. This ensures MakeFace selects the correct arc and shares edges with adjacent planar faces for sewing.
-  - **Conical faces**: Same approaches as cylinder: full revolution via UV-bounds (with circular gap for U and cone apex V-extension), partial via wire+pcurves. The cone apex vertex is handled as a UV singularity (V extended to 0 for non-truncated cones). All test models pass: simple_cone, cone_cylinder, nosecone, block_with_conical_hole.
-  - **Toroidal faces**: UV-bounds construction for complete torus patches. The torus UV space is doubly periodic: U ∈ [0,2π) around the major axis, V ∈ [0,2π) around the tube. Boundary edges are classified from per-edge projected samples: *iso-V* circles (fillet junctions: constant tube angle, spanning U) give a face full in U with V from the circular gap algorithm; *iso-U* circles (tube-continuation junctions, e.g. pipe elbows: constant major angle, spanning the full tube) give a face full in V with U from the circular gap algorithm over the edges' U positions, disambiguated by mesh centroid projections. Multiple sample points per edge curve (3 instead of 1) define the V window; mesh face centroid projections only *disambiguate* which of the two candidate arcs the face spans — they never extend the bounds (a cap triangle whose three vertices all lie on the plane-torus junction circle is legitimately absorbed by the torus hypothesis, but its centroid projects slightly past the tangent circle and would otherwise shift the face boundary off the junction, breaking sewing). Fillet patches typically span a small V arc (e.g., π/2 for a 90° fillet).
+*Step 4: Per-face assembly (`assemble_face`).*
+- **Window**: wrapped faces span `[c, c+2π]` in the wrap direction, bordered by the seam at the anchor coordinate; other periodic directions use the circular-gap window over boundary samples with mesh-centroid majority disambiguation (`circular_window`). Winding loops are rotated to start at their anchor and oriented for a counterclockwise composite; plain loops are lifted into the window.
+- **Seam edge**: 3D curve = `Geom_Surface::u_iso`/`v_iso` at the seam coordinate (parameterized exactly by the other coordinate, for every surface type), trimmed between the two anchors (or anchor and pole), built with `MakeEdge` + explicit parameters. It carries **two pcurves** (`BRep_Builder::update_edge` two-pcurve variant): PC1 for its FORWARD occurrence at the window's high border, PC2 for REVERSED at the low border (OCCT resolves FORWARD→PCurve1; verified against a `BRepPrimAPI_MakeCylinder` seam).
+- **Degenerate pole edges**: at a cone apex or sphere pole the UV boundary closes across the pole with a degenerate edge — no 3D curve, `degenerated` flag, a constant-V pcurve line spanning the U gap, the pole vertex at both ends. Used both for wrapped pole caps (apex/pole interior to the face, e.g. `cone_tangent_planes`' apex-cap disks and `simple_cone`'s lateral face) and for pole gaps inside ordinary loops (a boundary through an apex vertex). This is the *only* pole mechanism, identical for cones and spheres.
+- **Pcurves** (`build_pcurve`): for every (edge, face) incidence, UV samples of the edge's stored curve are interpolated (`Geom2dAPI_Interpolate`) with the curve's own parameters, so SameParameter holds by construction. Endpoint samples snap to the shared vertex's analytic UV (branch-lifted), making wires closed in 2D at their vertices even when a mesh vertex sits slightly off this face's fitted surface. Seam pcurves pin the wrap coordinate to the window borders exactly. Sampling densifies (33→257 points) until the pcurve reproduces the 3D curve within `vertex_tolerance/10` or the deviation plateaus (a 3D curve off the fitted surface by its fit residual cannot be represented away); the achieved deviation — measured at samples *and* midpoints, *including endpoints* — sets the edge tolerance (OCCT's in-context BRepCheck validates pcurve/curve agreement over the whole range against it). The pcurves are recorded in `ReconEdge.pcurves` and vertex UVs in `BRepVertex.uv_coords`.
+- **Wires and orientation**: the composite wire of a wrapped face is emitted in counterclockwise window order (e.g. bottom loop +U, seam up, top loop −U, seam down). Plain loops are oriented by the mesh ground truth: the loop that winds around interior mesh-centroid UV points is the outer wire (counterclockwise); loops containing no interior points are holes (clockwise). Wires are `BRep_Builder`-built from the shared edges with per-occurrence orientations; the face is `BRep_Builder::make_face` + wires + `natural_restriction(false)`.
+- **Faces with no boundary edges** (full sphere, complete torus) use `MakeFace` natural bounds — OCCT generates their seam/degenerate edges and there are no shared edges to preserve.
+- A face is flagged **concave** when its hypothesis is concave: its natural surface normal points into the material, so stage 3.5 adds it to the shell REVERSED.
 
-  - Full spheres (no edges) use `MakeFace::new_handlegeomsurface_real(surface, tolerance)` with natural bounds.
-
-*Stage 3: Validate and compare.*
-- Validate each face with `BRepCheck_Analyzer`. For invalid faces, run detailed `BRepCheck_Face` diagnostics (intersect_wires, classify_wires, orientation_of_wires, is_unorientable) and sub-shape analysis (edge tolerance, vertex checks). Faces where the only failure is edges with near-zero tolerance (< `vertex_tolerance_mm`) are treated as harmless (occurs on UV-bounds sphere pole faces, resolved by sewing) and not counted as failures.
-- Wire orientation fix: after adding inner wires (holes) to a face, apply `ShapeFix_Face::fix_orientation()` to ensure inner wires are oriented opposite to the outer wire. This eliminates BRepCheck "bad orientation of sub-shape" warnings that previously appeared on all planar faces with holes.
+*Step 5: Validate and compare.*
+- Validate each face with `BRepCheck_Analyzer`; invalid faces get detailed `BRepCheck_Face` diagnostics plus a structural dump (wire order, orientations, pcurve endpoints, vertex parameters) under `-v`. Note `BRepCheck_Analyzer::IsValid(face)` reflects subshape statuses *in the face's context* (e.g. `InvalidCurveOnSurface`), which is why the edge tolerance accounting above matters.
 - With `--compare`: for each face, sample a representative mesh face centroid from the surface's mesh faces and compute distance to the reference STEP shape using `BRepExtrema_DistShapeShape`. Report face count comparison. Error if max distance exceeds `--surface-tolerance`.
 
 #### 3.5 Construct shells
-Group faces into shells using `BRepBuilderAPI_Sewing`.
+Assemble faces into shells directly from the shared-edge topology. Faces already share their `TopoDS_Edge` objects, so shells are **closed by construction** — `BRepBuilderAPI_Sewing` is no longer used, and `ShapeAnalysis_Shell` remains as validation only.
 
 **Algorithm (as implemented):**
-- Create a `BRepBuilderAPI_Sewing` instance with tolerance set to `vertex_tolerance`.
-- Add all `TopoDS_Face` objects to the sewing operation.
-- After `Perform()`, extract the sewed shape and iterate over its sub-shapes:
-  - `Shell` sub-shapes are used directly.
-  - Individual `Face` sub-shapes (e.g., a single-face model like `simple_sphere`) are wrapped in a new `TopoDS_Shell` via `BRep_Builder`.
-  - `Solid`, `Compound`, and `Compsolid` sub-shapes are explored recursively for `Shell` children.
-- Apply `ShapeFix_Shell::Perform()` (which calls `ShapeFix_Face::Perform()` on each face to re-add pcurves that sewing may have discarded, and `FixFaceOrientation` for edge consistency). Face orientation is NOT post-processed — `FixFaceOrientation` handles edge consistency and `SolidFromShell` (stage 3.6) handles global orientation via `PerformInfinitePoint`. Investigation showed that flipping individual face orientations breaks edge consistency and causes volume computation errors.
-- Validate with `ShapeAnalysis_Shell::CheckOrientedShells` and report inconsistencies.
-- Report sewing statistics: free edges, multiple edges, contiguous edges.
+- Group faces into connected components over the ReconEdge adjacency (multi-solid models produce one shell per component, e.g. hollow_cube's outer and void shells).
+- For each component, `BRep_Builder::make_shell` and add every face — FORWARD for convex/planar faces, REVERSED for concave ones — then set the shell's closed flag. Orientation is consistent outward by construction: mesh normals point outward (stage 1 validation) and the hypothesis convexity flags encode each surface's relation to the material.
+- Validate with `ShapeAnalysis_Shell::CheckOrientedShells` (free edges, orientation inconsistencies) and report.
 
 - With the `--compare` flag:
     - Count shells in the reference STEP file by exploring for `Shell` sub-shapes.
-    - Report an error if the sewing produced free edges (edges not shared by any pair of faces), as this indicates incomplete stitching.
+    - Report an error if any shell has free edges (an edge used by only one face), which would indicate broken shared-edge topology.
     - Report shell count comparison and orientation check results.
 
 #### 3.6 Construct solids
@@ -633,42 +626,27 @@ Convert closed shells into `TopoDS_Solid` objects.
     - Compute volumes of both constructed and reference solids. Match by sorted volume. Report warning if relative volume difference exceeds 1%. All current test models achieve volume agreement within ~1e-7 relative difference.
     - Compute `BRepExtrema_DistShapeShape` between each constructed solid and the reference STEP shape. Report error if distance exceeds `--surface-tolerance`. This is the tightest geometric accuracy check.
 
-#### 3.x (proposed) Rework: shared-edge topological assembly instead of geometric sewing
+#### 3.x Rework: shared-edge topological assembly instead of geometric sewing
 
-**Status: not started. Deliberately deferred and bound to the NURBS effort (see Future Enhancements). This section records the decision and its trigger so it is not rediscovered from scratch.**
+**Status: IMPLEMENTED (2026-07-08).** Stages 3.4/3.5 above describe the result; this section records the original motivation and what the rework changed, since it reshaped stage 3's architecture.
 
-**The current design.** Stage 3.4 builds each face independently and stage 3.5 reconciles them with `BRepBuilderAPI_Sewing`, a *geometric* stitch that merges edges by proximity within a tolerance. Edges *are* created once as shared `TopoDS_Edge` objects (§3.1), but two things defeat that sharing by assembly time:
-- `MakeFace`/`MakeWire`/`ShapeFix` copy edges, so the "shared" edge in face A is no longer the identical object in face B.
-- The UV-bounds construction paths (full spheres, complete tori, full-revolution and — as of the cone-cap investigation — apex-cap cones) synthesize their *own* natural-bounds boundary edges that were never shared with a neighbour at all.
+**The old design and why it was fragile.** Stage 3.4 used to build each face independently (`MakeWire`/`MakeFace`/UV-bounds/`ShapeFix` paths) and stage 3.5 reconciled them with `BRepBuilderAPI_Sewing`, a *geometric* stitch that merges edges by proximity within a tolerance. Edges were created once as shared `TopoDS_Edge` objects, but `MakeFace`/`MakeWire`/`ShapeFix` copy edges, and the UV-bounds paths synthesized their own boundary edges — so the sharing was defeated by assembly time and sewing was load-bearing. Every hard case — sphere pole caps, torus seams, cone apex caps, tangent-edge tolerance relaxations — was a symptom of trimming faces independently and matching them by geometric tolerance. `cone_tangent_planes` was the sharpest example: its two apex-cap cone faces (full disks whose boundary circles are split into two arcs by two vertices, with the apex an interior U-pole) could not be expressed by any of the per-case paths, and a pure UV-bounds cap broke sewing (free edges → open shell).
 
-So sewing is load-bearing, and the `ReconEdge.pcurves: [_; 2]` and `BRepVertex.uv_coords` fields (§3.0) that the original design earmarked for a both-sides-shared representation were never populated — the geometric sewing pass stands in for them. The face-construction + sewing block is ~2100 lines carrying ~150 pole/seam/apex/reorient/ShapeFix/degenerate special-cases.
+**What the rework did (all in stage 3.4/3.5 above):**
+1. Each edge is built once (shared `TopoDS_Edge` + shared vertices, with its 3D curve) and *stays* the same object in both faces.
+2. For both adjacent faces of every edge, the pcurve on that face's surface is computed analytically and attached to the shared edge (`ReconEdge.pcurves` is now populated, as is `BRepVertex.uv_coords`).
+3. Degenerate edges at UV poles (cone apex, sphere pole) and seam edges at periodic wraps are first-class topology built by one uniform mechanism (winding classification → seam anchors on shared vertices → iso-curve seam with two pcurves; pole gaps → degenerate edges).
+4. Faces and shells are assembled directly with `BRep_Builder`; shells are closed by construction. `BRepBuilderAPI_Sewing` and all `ShapeFix` calls in face construction are gone (stage 3.6's solid-level fixing remains).
+5. Stage 3.3 gained boundary-chain validation/repair of edge curves — the mesh boundary chain is ground truth for every junction, which is also what fixed `cone_tangent_planes`' degenerate cone-cone IntSS curves.
 
-**Why this is the root of a whole class of fragility.** Every hard case in stage 3 — sphere pole caps, torus seams, cone apex caps, and the tangent-edge/corner-vertex *tolerance relaxations* (the "genuinely ambiguous junction rows") — is ultimately a symptom of trimming faces independently and matching them by geometric tolerance. `cone_tangent_planes` is the sharpest example: its two apex-cap cone faces are pie-slices-with-apex whose two boundary curves lie on the same iso-V line; the wire builder collapses them, and a pure UV-bounds cap gets the *area* right but only matches its neighbours along part of the boundary, so sewing leaves free edges → open shell. The problem spans segmentation → edge topology → trimming → sewing, which is exactly why patching any single layer only half-works.
-
-**The proposed design.** Build the B-rep topologically instead of geometrically:
-1. Build each edge once (shared `TopoDS_Edge` + shared vertices, with its 3D curve) — as today.
-2. For **both** adjacent faces of every edge, compute and attach the pcurve of that edge on that face's surface (populate `ReconEdge.pcurves`). Poles/seams are handled *only* here, in pcurve computation, uniformly for every periodic surface.
-3. Insert degenerate edges at UV poles (cone apex, sphere pole) and seam edges at periodic wraps, shared correctly, as first-class topology rather than per-surface fix-ups.
-4. Assemble each face and the shell directly with `BRep_Builder` from the shared edges — the shell is closed *by construction*. Drop `BRepBuilderAPI_Sewing`; it becomes at most a validation check.
-5. This makes construction lower-level and more controlled (avoid `ShapeFix`/`MakeFace` edge-copying that breaks sharing). The cone apex cap, sphere pole cap, and torus seam then all reduce to "attach the correct pcurve to the shared edge, plus a degenerate/seam edge" — one uniform mechanism instead of ~150 special-cases.
-
-**Why defer it.** 52/57 models pass; nothing is *blocked*. The only current beneficiary is one unusual model (`cone_tangent_planes`) that already writes valid-ish output with a volume warning. The full payoff arrives with **NURBS**: freeform patches have arbitrary trimmed boundaries and will stress this machinery hard, building NURBS on top of projection+sewing is building on sand, and NURBS is also what finally brings test coverage to validate a more general assembler (today it would be a more-general machine exercised only on the analytic surfaces the current code already handles). So the rework is the *foundation to lay when NURBS begins*, not a standalone task.
-
-**Trigger to pull it forward earlier.** If a model becomes *unfixable* without tighter topology — i.e. the tangent-edge/corner tolerance relaxations stop merely loosening tolerances and start letting a real model fail — do the rework then rather than adding relaxation #N.
-
-**Where the code lives (cold-start entry points).** All of stage 3 is in `src/stage3.rs` (~5800 lines); entry `stage3()`. The assembler is `create_occt_faces_all`: it builds one shared `TopoDS_Vertex` per `BRepVertex`, one shared `TopoDS_Edge` per `ReconEdge` (from `ReconEdge.curve_3d`, held in the `topo_edges` vec indexed by edge id — this is the sharing that later gets defeated), then dispatches each face to `create_planar_face` or `create_periodic_face`. `create_periodic_face` (cones/spheres/tori) chooses among: natural-bounds (`MakeFace::new_handlegeomsurface_real`, complete closed surfaces with no edges); UV-bounds (`MakeFace::new_handlegeomsurface_real5`, full-revolution / all-closed-loop / reoriented-sphere); and wire-based `create_wire_based_periodic_face` (partial revolution — projects each edge's 3D curve to pcurve points, sets the pcurve on the shared edge via `BRep_Builder::update_edge_edge_...`, builds a `MakeWire`, then `MakeFace`). Sewing is `construct_shells` (`BRepBuilderAPI_Sewing`); solids and void-merging are §3.6. The both-sides representation to populate is already declared but unused: `ReconEdge.pcurves: [_; 2]` and `BRepVertex.uv_coords` (§3.0 data structures).
+Result: full test suite green, `cone_tangent_planes` volume matches to ~1e-7 relative (was 60% off), `stepped_block_toroidal_fillets` volume improved (2.7e-3 → 1.6e-3 relative), and every remaining pole/seam behavior is a consequence of the uniform mechanism rather than a per-surface special case. The NURBS effort (§2.7) can now add freeform faces by supplying a chart (point→UV map) and reusing the whole assembler unchanged.
 
 **Hard OCCT constraints (established empirically — do not relearn by crashing).**
-- `ShapeFix_*` can **segfault on cone faces** (pcurve/edge-curve interaction); the wire path already skips ShapeFix for non-spheres for this reason. A shared-edge assembler that attaches pcurves directly and avoids `ShapeFix`/`MakeFace` edge-copying sidesteps this — but do not reintroduce ShapeFix on cone faces to "clean up" a wire.
-- `is_periodic` in `create_occt_faces_all` **must include `Conical(_)`** or cone faces route to `create_planar_face` and segfault on a full-circle edge (LEARNINGS: "Conical faces need is_periodic treatment").
-- `MakeEdge` on a periodic (circle) curve forces p1 < p2 and takes the forward arc V1→V2, so **vertex order selects which arc** — see the explicit first/last-parameter handling in `create_occt_faces_all` (the `d0_start`/`d1_start` block). This is the same complementary-arc trap that collapses the `cone_tangent_planes` apex caps.
-- Thread-safety of the OCCT calls used here: LEARNINGS "OCCT Thread Safety" (BRepExtrema, MakeEdge/Face/Vertex/Sewing, ShapeFix_* are all safe; only STEP Reader/Writer need serializing).
-
-**Reproduce & validate the motivating case.**
-- Repro: `./target/release/brepper tests/onshape/cone_tangent_planes_medium.stl --compare tests/onshape/cone_tangent_planes.step -o tmp/x.step` → completes (exit 0) but prints a stage-3.6 volume **WARNING** (6617 vs 14676 mm³) and three BRepCheck "face shape invalid" warnings.
-- Inspect: `--stage=3.4 -v` prints each face's `area=…` (the two bad caps come out 0.0001 and a wrong 130 mm²) and which faces fail BRepCheck; `--stage=3.1 -v` lists each face's surface type + fitted parameters and every edge as `faces [a,b] vertices [v0,v1]`.
-- Done = full suite green (`cargo test --release`, ~3 min) **and** `cone_tangent_planes` volume within 1% with no warning; regenerate `tests/RESULTS.md` via `./scripts/run_test_table.sh`.
-- Directly relevant LEARNINGS entries to read first: the "Partial revolution … wire-based … pcurves" note, the two sphere-pole-vertex entries, the cone "extend V to the apex" entry, and "Conical faces need is_periodic treatment".
+- `ShapeFix_*` can **segfault on cone faces** (pcurve/edge-curve interaction). The assembler attaches pcurves directly with `BRep_Builder` and never routes faces through ShapeFix; do not reintroduce ShapeFix on cone faces to "clean up" a wire. (Stage 3.6's `ShapeFix_Solid`/`ShapeFix_Shape` on assembled solids has been safe.)
+- `MakeEdge` on a periodic (circle) curve forces p1 < p2 and takes the forward arc V1→V2, so **vertex order selects which arc** — see the `d0_start`/`d1_start` block in `create_occt_faces_all`. The same trap applies when *trimming* periodic curves in stage 3.3; the boundary-chain repair is the safety net.
+- `BRep_Tool::CurveOnSurface` resolves a seam edge's FORWARD occurrence to PCurve1 and REVERSED to PCurve2; OCCT's own cylinder puts the FORWARD occurrence at the high U border (verified via `BRepPrimAPI_MakeCylinder`).
+- `Geom_Surface::u_iso(u)`/`v_iso(v)` return curves parameterized exactly by the other surface coordinate (verified in ElSLib for cone/sphere/torus/cylinder) — this is what makes seam construction surface-type-agnostic.
+- Thread-safety of the OCCT calls used here: LEARNINGS "OCCT Thread Safety" (BRepExtrema, MakeEdge/Face/Vertex, ShapeFix_* are all safe; only STEP Reader/Writer need serializing).
 
 ---
 

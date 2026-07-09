@@ -256,3 +256,18 @@ cone_tangent_planes: 3 of 3 cones detected (normal-line axis rescue with profile
 
 ## Full-torus seam coverage
 full_torus test model (complete donut R=10, r=3) passes the full pipeline: complete tori use natural-bounds face construction (both seams created by OCCT automatically).
+
+## Stage-3 shared-edge topological assembly (DEVELOPMENT_PLAN §3.x rework)
+Stage 3.4/3.5 rebuilt around shared edges: every ReconEdge is one TopoDS_Edge used by
+both adjacent faces, with per-face pcurves computed analytically (SurfaceChart) and
+attached via BRep_Builder; boundary loops are branch-aligned in UV and their winding
+classifies wrapped faces; seam edges (iso-curves anchored at shared vertices) and
+degenerate pole edges (cone apex, sphere pole) are first-class topology built by one
+uniform mechanism; sphere axes point at the region's mean direction so boundaries never
+graze UV poles; wires/faces/shells are BRep_Builder-assembled (no MakeWire/MakeFace-
+from-wire/ShapeFix in face construction) and shells are closed by construction, so
+BRepBuilderAPI_Sewing is gone. Stage 3.3 gained mesh-boundary-chain validation/repair
+of edge curves (the chain is ground truth for any junction). Fixes cone_tangent_planes
+(apex-cap disks; volume 60% off → 1e-7 relative) and improves stepped_block_toroidal
+volume (2.7e-3 → 1.6e-3); ReconEdge.pcurves and BRepVertex.uv_coords are now populated.
+Full suite green; 52/57 models pass (only bad/ fail, by design).

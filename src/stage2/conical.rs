@@ -749,8 +749,10 @@ fn fit_cone(
             .fold(0.0_f64, f64::max)
     };
 
+    // (apex, axis direction, half-angle) with its max vertex error.
+    type ScoredConeFit = (f64, ([f64; 3], [f64; 3], f64));
     let primary = fit_cone_primary(face_indices, vertex_set, faces, vertices);
-    let mut best: Option<(f64, ([f64; 3], [f64; 3], f64))> = None;
+    let mut best: Option<ScoredConeFit> = None;
     if let Some(fit) = primary {
         best = Some((max_err(&fit), fit));
     }
