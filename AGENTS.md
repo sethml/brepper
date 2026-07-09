@@ -2,38 +2,10 @@
 
 This file contains guidelines for AI/LLM coding assistants working on this project. Read ALL of AGENTS.md - no just the first 100 lines.
 
-## IMPORTANT: Surviving Context Compaction
-
-When the user says `/iterate`, **immediately add the full iteration checklist (steps 1-13) to your todo list before doing any work**. BE SURE to include step 10 Final chat log export. The todo list survives compaction; file contents, verbal instructions, and even the user's original prompt wording do not.
-
-When compacting, include the user's prompt in the conversation summary as guidance. Also include the hashline-edit tool usage instructions.
-
-If you notice a `<conversation-summary>` in your context, that means compaction has occurred — **re-read this file (AGENTS.md) immediately** before continuing work.
-
-## When the user says `/iterate`:
-
-The `/iterate` command triggers the full development cycle below. This is the primary workflow command — when you see it, follow this checklist IN ORDER. Do not skip steps. Do not reorder.
-
-1. Read LEARNINGS.md, README.md, and DEVELOPMENT_PLAN.md.
-2. If given instructions on work to do, add them as an item to the top of TODO.me then follow them. Otherwise find the first item in TODO.md and implement it.
-3. Don't worry about running tests for now. We're making changes such that a bunch of tests are broken.
-4. Update README.md (if user-facing behavior changed) and DEVELOPMENT_PLAN.md to reflect your changes. When updating DEVELOPMENT_PLAN.md, ensure the algorithm descriptions in the Architecture section accurately describe the code as implemented — if the implementation differs from the original plan, update the plan to match reality.
-5. When complete, move the item from TODO.md to the end of DONE.md.
-6. Do an initial chat log export by running `../vscode-export-chat-log/export-chat-log.py`. Then read the **full output** of `git diff agent-logs/` (not piped through head or tail) to understand all of the work completed in this session, not just what's in your current context window.
-7. Think about whether items in LEARNINGS.md are obsolete - if so, delete or rewrite them. If you modified surface fitting code, update SURFACE_FITTING.md.
-8. Think about whether you've learned things that may be useful to a future AI agent editing the code - if so, add them to LEARNINGS.md.
-9. Commit your changes (see Commit Messages and Commit Checklist below), including any pre-existing staged files.
-10. Think about whether you encountered code that would be clearer or more correct if refactored or improved. If so, make the improvements, test, and commit.
-11. Do a final chat log export by running `( ../vscode-export-chat-log/export-chat-log.py --wait && git add agent-logs/ && git commit --amend --no-edit ) &`.
-12. Tell the user a limerick inspired by your work this session.
-13. Stop. Do not continue to the next iteration unless the user says to.
-
 ### Commit Checklist (MANDATORY — verify before every commit)
 
 - `cargo clippy` emits no warnings.
 - Build passes with no errors or warnings.
-- Commit message uses a temporary file with model name and user prompts (see Commit Messages)
-- Chat log exported after commit (see Chat Log Export)
 
 ## Project Layout
 
@@ -67,10 +39,6 @@ The project uses the `opencascade-sys` crate (auto-generated Rust FFI bindings t
 
 The `builtin` feature (default) compiles OCCT from source — first build takes ~8 minutes. Subsequent builds are fast.
 
-## Previous Versions
-
-There's an abandoned incomplete C++ implementation of this tool in git branch `brepper-cpp2-abandoned` and directory ../brepper-cpp2. You're in the process of porting some improvements from the C++ implementation to this implementation.
-
 ## Commit Messages
 
 All commit messages must include:
@@ -94,8 +62,6 @@ User prompt(s):
   (include context for prompts that reference previous options/decisions)
 ```
 
-**Always** write the commit message to a temporary file using your file editing tools (not a shell command!) and `git commit -F tmp/COMMITMSG` to avoid shell parsing issues.
-
 ## Development Plan Maintenance
 
 Keep DEVELOPMENT_PLAN.md up to date with each commit:
@@ -115,46 +81,12 @@ Keep README.md up to date when changes affect user-facing behavior:
 4. **New features** - Add brief descriptions of significant new capabilities
 5. **Include in commit** - README updates should be part of the same commit as the feature work
 
-## File Editing
-
-When reading files for editing, use `#tool:hashlineRead` instead of the
-built-in file read tool. It returns lines tagged with content hashes in the
-format `{lineNumber}:{hash}|{content}`.
-
-When editing files, use `#tool:hashlineEdit` instead of string-replace tools.
-Reference lines by their `{line}:{hash}` pairs from the read output. This
-avoids needing to reproduce existing file content and prevents edits to stale
-files.
-
-Example workflow:
-1. Read: `hashline_read({filePath: "src/app.ts", startLine: 1, endLine: 20})`
-   Returns: `1:qk|import React...`
-2. Edit: `hashline_edit({edits: [{filePath: "src/app.ts", lineHashes: "3:fn,4:mp,5:ze", content: "export function App() {\n  return <div>Goodbye</div>;\n}"}]})`
-
-Operations:
-- **Replace**: set `lineHashes` to the lines being replaced (e.g. `"3:fn,4:mp,5:ze"`), `content` to new text
-- **Replace large range**: provide at least 3 hashes at each end, e.g. `"167:or,168:dd,169:yj-479:ge,480:dd,481:ea"`
-- **Insert after**: set `insertAfter: true`, `lineHashes` to anchor line
-- **Insert at file start**: set `insertAfter: true`, `lineHashes` to `"0:"`
-- **Delete**: set `content` to empty string
-- Multiple edits can be batched in one call across files
-
-### IMPORTANT: Don't Truncate Build or Test Output
-
-**NEVER** pipe build or test commands through `head`, `tail`, `| grep`, or other truncating/filtering commands:
-- Errors often appear at unexpected locations in the output
-- Truncating can hide the actual failure while showing misleading context
-- Build systems and test frameworks already produce focused error output
-- If output is too long, read the full output file instead of truncating
-
 ### IMPORTANT: Time Builds and Tests
 
 **Always** prefix build and test commands with `time`. When they take more than 2 minutes ask the user whether to speed them up.
 
 Correct: `time make -j4 2>&1`
 Correct: `time ctest --output-on-failure -j4 2>&1`
-Wrong: `make -j4 2>&1 | tail -10`
-Wrong: `ctest -j4 2>&1 | tail -20`
 
 ## Temporary Test Code
 
