@@ -144,6 +144,10 @@ brepper <input.stl> -o <tmpfile>.step --compare <input.step>
 Special flags:
 - `rounded_cube_10_r2_coarse`: `--angular-tolerance 20`
 
+Models in `nurbs/` target the planned DEVELOPMENT_PLAN §2.7 NURBS fallback
+and are EXPECTED to fail until it lands (see tests/nurbs/README.md); they
+are counted under "failing non-bad" below to keep the scoreboard honest.
+
 HEADER
 
     echo "Tests last run: $(date +%Y-%m-%d)."

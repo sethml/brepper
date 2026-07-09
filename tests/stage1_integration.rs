@@ -138,6 +138,19 @@ test_stl_stage1!(
     "tests/fusion/plate_with_hole_100x50_medium.stl"
 );
 
+// --- tests/nurbs/ (freeform models; scripted meshes must be valid solids) ---
+test_stl_stage1!(nurbs_elliptical_arch_stage1, "tests/nurbs/elliptical_arch.stl");
+test_stl_stage1!(
+    nurbs_elliptical_cylinder_stage1,
+    "tests/nurbs/elliptical_cylinder.stl"
+);
+test_stl_stage1!(nurbs_bspline_hill_stage1, "tests/nurbs/bspline_hill.stl");
+test_stl_stage1!(nurbs_bspline_saddle_stage1, "tests/nurbs/bspline_saddle.stl");
+test_stl_stage1!(nurbs_bspline_terrain_stage1, "tests/nurbs/bspline_terrain.stl");
+test_stl_stage1!(nurbs_bspline_blister_stage1, "tests/nurbs/bspline_blister.stl");
+test_stl_stage1!(nurbs_bspline_wave_stage1, "tests/nurbs/bspline_wave.stl");
+test_stl_stage1!(nurbs_hill_with_hole_stage1, "tests/nurbs/hill_with_hole.stl");
+
 // ===========================================================================
 // Good cases: all test STL/STEP pairs should pass --compare
 // ===========================================================================
@@ -312,6 +325,48 @@ test_stl_step_compare!(
     fusion_plate_medium_compare,
     "tests/fusion/plate_with_hole_100x50_medium.stl",
     "tests/fusion/plate_with_hole_100x50.step"
+);
+
+// --- tests/nurbs/ (mesh vertices sampled exactly on the reference surfaces) ---
+test_stl_step_compare!(
+    nurbs_elliptical_arch_compare,
+    "tests/nurbs/elliptical_arch.stl",
+    "tests/nurbs/elliptical_arch.step"
+);
+test_stl_step_compare!(
+    nurbs_elliptical_cylinder_compare,
+    "tests/nurbs/elliptical_cylinder.stl",
+    "tests/nurbs/elliptical_cylinder.step"
+);
+test_stl_step_compare!(
+    nurbs_bspline_hill_compare,
+    "tests/nurbs/bspline_hill.stl",
+    "tests/nurbs/bspline_hill.step"
+);
+test_stl_step_compare!(
+    nurbs_bspline_saddle_compare,
+    "tests/nurbs/bspline_saddle.stl",
+    "tests/nurbs/bspline_saddle.step"
+);
+test_stl_step_compare!(
+    nurbs_bspline_terrain_compare,
+    "tests/nurbs/bspline_terrain.stl",
+    "tests/nurbs/bspline_terrain.step"
+);
+test_stl_step_compare!(
+    nurbs_bspline_blister_compare,
+    "tests/nurbs/bspline_blister.stl",
+    "tests/nurbs/bspline_blister.step"
+);
+test_stl_step_compare!(
+    nurbs_bspline_wave_compare,
+    "tests/nurbs/bspline_wave.stl",
+    "tests/nurbs/bspline_wave.step"
+);
+test_stl_step_compare!(
+    nurbs_hill_with_hole_compare,
+    "tests/nurbs/hill_with_hole.stl",
+    "tests/nurbs/hill_with_hole.step"
 );
 
 // ===========================================================================

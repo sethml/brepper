@@ -78,10 +78,14 @@ In theory "Normal Deviation" should be the maximum angular error of the face rel
 
 ### OCCT-Generated Test Models
 
-Models in `tests/occt/` are generated directly via OCCT by the `gen-test-models`
-binary (`./scripts/generate_occt_models.sh`) — used for models that ccad cannot
-express, e.g. `hollow_cube` (a solid with a fully enclosed internal void, for
-multi-shell solid support). The generated STL/STEP pairs are committed.
+Models in `tests/occt/` and `tests/nurbs/` are generated directly via OCCT by
+the `gen-test-models` binary (`./scripts/generate_occt_models.sh`) — used for
+models that ccad cannot express. `tests/occt/` holds analytic models such as
+`hollow_cube` (a solid with a fully enclosed internal void, for multi-shell
+solid support). `tests/nurbs/` holds freeform models (exact B-spline patches,
+conic/B-spline extrusions) targeting the planned NURBS fallback; they are
+expected to fail full `--compare` until that stage exists — see
+`tests/nurbs/README.md`. The generated STL/STEP pairs are committed.
 
 ### Generating Test Models
 
