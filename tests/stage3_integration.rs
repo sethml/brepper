@@ -849,7 +849,7 @@ fn onshape_part_rounded_cube_stage34_compare() {
 }
 
 // ===========================================================================
-// Stage 3.5 tests — shell construction via BRepBuilderAPI_Sewing
+// Stage 3.5 tests — shell assembly from the shared-edge topology
 // ===========================================================================
 
 fn config_for_stl_35(stl_path: &str) -> config::Config {
@@ -1259,8 +1259,8 @@ fn hollow_cube_stage36_compare() {
 }
 
 /// Rounded cube (coarse) must produce a BRepCheck-valid solid.
-/// This catches sewing-induced wire corruption (e.g., sphere face wires getting
-/// cylinder edges inserted by BRepBuilderAPI_Sewing).
+/// This historically caught sewing-induced wire corruption; it now guards the
+/// shared-edge assembly's face/wire integrity end-to-end.
 /// Uses --angular-tolerance=20: the coarse tessellation has inter-facet
 /// dihedral angles that exceed the 17.5° default (see tests/RESULTS.md),
 /// which fragments the fillet fits.

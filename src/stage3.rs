@@ -35,7 +35,8 @@ pub struct FaceDescriptor {
     /// OCCT surface object (Geom_Plane, Geom_CylindricalSurface, or Geom_SphericalSurface),
     /// type-erased as HandleGeomSurface.
     pub surface: OwnedPtr<geom::HandleGeomSurface>,
-    // TODO: OCCT face object (TopoDS_Face) — populated in stage 3.4
+    // The TopoDS_Face objects built from these descriptors live in
+    // Stage3Output.faces (parallel to face_descriptors), populated in 3.4.
     /// Indices of adjacent FaceDescriptors, ordered topologically around this face's boundary.
     /// A face connecting to this one via multiple edges will appear multiple times.
     pub adjacent_faces: Vec<usize>,
@@ -119,7 +120,7 @@ pub struct Stage3Output {
     /// Faces whose natural surface normal points into the material (their
     /// shell orientation is Reversed).
     pub concave_faces: Vec<bool>,
-    /// OCCT shell(s) created in stage 3.5 by sewing faces.
+    /// OCCT shell(s) assembled in stage 3.5 from the shared-edge faces.
     pub shells: Vec<OwnedPtr<topo_ds::Shell>>,
     /// OCCT solid(s) created in stage 3.6.
     pub solids: Vec<OwnedPtr<topo_ds::Solid>>,
@@ -3260,8 +3261,7 @@ fn validate_faces(output: &Stage3Output, config: &Config) -> Result<(), Stage3Er
 }
 
 /// Detailed BRepCheck_Face diagnostics for a face that failed the analyzer.
-/// Returns true if the face should count as invalid (false when the only
-/// failures are harmless near-zero-tolerance edges resolved by sewing).
+/// Returns true (the face counts as invalid) and prints what failed.
 fn validate_face_detailed(
     fi: usize,
     face: &topo_ds::Face,
@@ -3281,7 +3281,6 @@ fn validate_face_detailed(
 
             // Check sub-shape edges
             let mut edge_issues = Vec::new();
-            let mut only_near_zero_tol_edges = true;
             {
                 let mut exp = top_exp::Explorer::new_shape_shapeenum2(
                     face.as_shape(),
@@ -3297,9 +3296,6 @@ fn validate_face_detailed(
                         echk.minimum();
                         let tol = echk.tolerance();
                         edge_issues.push(format!("edge {ei} (tol={tol:.2e})"));
-                        if tol > config.vertex_tolerance_mm {
-                            only_near_zero_tol_edges = false;
-                        }
                     }
                     ei += 1;
                     exp.next();
@@ -3325,23 +3321,7 @@ fn validate_face_detailed(
                 }
             }
 
-            let has_face_issues = intersect != b_rep_check::Status::Noerror
-                || classify != b_rep_check::Status::Noerror
-                || orient != b_rep_check::Status::Noerror
-                || unorientable;
-
-            // If the only failures are edges with near-zero tolerance,
-            // skip the warning. This occurs on UV-bounds sphere faces near
-            // poles and is resolved by sewing.
-            if !has_face_issues
-                && vertex_issues.is_empty()
-                && !edge_issues.is_empty()
-                && only_near_zero_tol_edges
             {
-                // Harmless: edge BRepCheck failure with ~zero tolerance on
-                // sphere pole face, resolved by sewing
-                false
-            } else {
                 if !config.quiet {
                     let surface = &output.stage2.selected_surfaces
                         [output.face_descriptors[fi].selected_surface_idx];
@@ -4064,7 +4044,9 @@ fn sample_edge_uv(
         raw.push((u, v, rad));
     }
     // Backfill pole-degenerate U values and unwrap U (and torus V) so the
-    // samples are branch-continuous along the edge.
+    // samples are branch-continuous along the edge. Unwrapping applies only
+    // to periodic directions — on a plane chart U/V are Cartesian
+    // coordinates and reducing their steps mod 2π corrupts them.
     let good = |i: usize| raw[i].2 >= pole_eps;
     let first_good = (0..raw.len()).find(|&i| good(i))?;
     let mut us = vec![0.0; raw.len()];
@@ -4073,7 +4055,9 @@ fn sample_edge_uv(
     for i in 0..raw.len() {
         let u = if good(i) {
             let mut u = raw[i].0;
-            u -= TWO_PI * ((u - prev_u) / TWO_PI).round();
+            if chart.u_periodic() {
+                u -= TWO_PI * ((u - prev_u) / TWO_PI).round();
+            }
             prev_u = u;
             u
         } else {
@@ -4771,7 +4755,11 @@ fn build_pcurve(
             Stage3Error::AdjacencyError("edge lost its 3D curve during assembly".into())
         })?;
         // Pin the branch to the basis used during face planning.
-        let shift = TWO_PI * ((spec.basis_first_u - uv.us[0]) / TWO_PI).round();
+        let shift = if chart.u_periodic() {
+            TWO_PI * ((spec.basis_first_u - uv.us[0]) / TWO_PI).round()
+        } else {
+            0.0
+        };
         for u in uv.us.iter_mut() {
             *u += shift + spec.u_off;
         }
@@ -4788,9 +4776,14 @@ fn build_pcurve(
                 *v = exact_v;
             }
         }
-        // Snap endpoints to their shared vertex UVs (branch-lifted).
+        // Snap endpoints to their shared vertex UVs (branch-lifted in
+        // periodic directions only).
         let snap = |i: usize, target: (f64, f64), uv: &mut EdgeUv| {
-            let tu = target.0 + TWO_PI * ((uv.us[i] - target.0) / TWO_PI).round();
+            let tu = if chart.u_periodic() {
+                target.0 + TWO_PI * ((uv.us[i] - target.0) / TWO_PI).round()
+            } else {
+                target.0
+            };
             let tv = if chart.v_periodic() {
                 target.1 + TWO_PI * ((uv.vs[i] - target.1) / TWO_PI).round()
             } else {

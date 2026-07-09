@@ -58,24 +58,18 @@ This section enumerates the OCCT classes and functions needed, for evaluating Ru
 
 *Topology (B-Rep construction):*
 - `TopoDS_Vertex`, `TopoDS_Edge`, `TopoDS_Wire`, `TopoDS_Face`, `TopoDS_Shell`, `TopoDS_Solid`, `TopoDS_Compound` — Topological entities
-- `BRep_Builder` — Low-level topology construction
+- `BRep_Builder` — Low-level topology construction (wires, faces, shells, pcurve/seam/degenerate-edge attachment — the stage-3.4/3.5 assembler)
 - `BRepBuilderAPI_MakeVertex` — Create vertices
-- `BRepBuilderAPI_MakeEdge` — Create edges from curves (with optional pcurves)
-- `BRepBuilderAPI_MakeWire` — Assemble edges into wires
-- `BRepBuilderAPI_MakeFace` — Create faces from surface + bounding wires
-- `BRepBuilderAPI_Sewing` — Stitch faces into shells
-- `BRepBuilderAPI_MakeSolid` — Create solids from shells
+- `BRepBuilderAPI_MakeEdge` — Create edges from curves with explicit parameters and vertices
+- `BRepBuilderAPI_MakeFace` — Natural-bounds faces for complete closed surfaces only (full sphere, complete torus); bounded faces are BRep_Builder-assembled
 
 *Topology exploration:*
 - `TopExp_Explorer` — Iterate over sub-shapes
 - `TopExp::MapShapes` — Build maps of topology
 - `BRep_Tool` — Extract geometry from topology (IsSeam, SameParameter, etc.)
 
-*Shape healing and fixing:*
-- `ShapeFix_Shape` — General shape repair
-- `ShapeFix_Face` — Face-specific repairs
-- `ShapeFix_Wire` — Wire repairs, including `FixEdgeCurves` for pcurve computation
-- `ShapeFix_Shell` — Shell orientation fixing
+*Shape healing and fixing (stage 3.6 only — face/wire/shell construction uses none):*
+- `ShapeFix_Shape` — General shape repair on assembled solids
 - `ShapeFix_Solid` — Solid creation/repair, `SolidFromShell`
 
 *Shape analysis and validation:*
@@ -449,13 +443,13 @@ A vector of `FaceDescriptor` structs, one per selected surface:
 - `adjacent_faces: Vec<usize>` — Indices of adjacent FaceDescriptors, ordered topologically around this face's boundary. A face may appear multiple times if it shares multiple edges with this face (e.g., a cylindrical face adjacent to itself via a seam edge).
 - `edge_indices: Vec<usize>` — ReconEdge indices. `edge_indices[i]` is the edge between this face and `adjacent_faces[i]`.
 - `vertex_indices: Vec<usize>` — BRepVertex indices at corners. `vertex_indices[i]` is the vertex between `edge_indices[i]` and `edge_indices[(i+1) % N]`.
-- (TODO) `occt_face: Option<TopoDS_Face>` — Populated in 3.4.
+- The `TopoDS_Face` objects built from these descriptors live in `Stage3Output.faces` (parallel to `face_descriptors`), populated in 3.4, with `Stage3Output.concave_faces` flagging faces whose natural normal points into the material.
 
 A vector of `ReconEdge` structs:
 - `face_indices: [usize; 2]` — Indices of the two adjacent FaceDescriptors.
 - `vertex_indices: [usize; 2]` — Indices of the two BRepVertices at each end. For closed-loop edges (no vertices), both are `usize::MAX`.
 - `curve_3d: Option<OwnedPtr<HandleGeomCurve>>` — 3D intersection curve, trimmed to vertex endpoints (populated in 3.3).
-- (TODO) `pcurves: [Handle<Geom2d_Curve>; 2]` — 2D parametric curve on each adjacent face's surface.
+- `pcurves: [Option<OwnedPtr<HandleGeom2dCurve>>; 2]` — pcurve on each adjacent face's surface, parallel to `face_indices` (populated in 3.4 by the shared-edge assembler).
 - `tangent: bool` — Whether the adjacent surfaces are tangent along this edge (detected in 3.2).
 - `mesh_boundary_vertices: Vec<usize>` — Mesh vertex indices along this boundary, ordered along the boundary.
 
@@ -463,8 +457,8 @@ A vector of `BRepVertex` structs:
 - `point: [f64; 3]` — 3D position: the mesh vertex position, refined for sharp corners by cyclic projection onto the adjacent fitted surfaces (see stage 2.6 refitting notes).
 - `adjacent_faces: Vec<usize>` — Indices of FaceDescriptors meeting at this vertex, in topological order.
 - `adjacent_edges: Vec<usize>` — Indices of ReconEdges meeting at this vertex, in topological order.
-- (TODO) `uv_coords: Vec<(f64, f64)>` — UV coordinates of this vertex on each adjacent face's surface.
-- (TODO) `tolerance: f64` — Maximum deviation from any adjacent surface.
+- `uv_coords: Vec<(f64, f64)>` — UV coordinates of this vertex on each adjacent face's surface, parallel to `adjacent_faces` (populated in 3.4).
+- Per-vertex tolerances live on the shared `TopoDS_Vertex` objects, raised adaptively in 3.4 to cover each vertex's distance from its curve endpoints.
 
 #### 3.1 Create OCCT surface objects and build adjacency graph
 
