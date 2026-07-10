@@ -2,6 +2,8 @@
 
 This file contains guidelines for AI/LLM coding assistants working on this project. Read ALL of AGENTS.md - no just the first 100 lines.
 
+The shell is zsh. Use zsh quoting conventions. "echo ===" will fail, and globs in flags must be quoted.
+
 ### Commit Checklist (MANDATORY — verify before every commit)
 
 - `cargo clippy` emits no warnings.

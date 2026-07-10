@@ -22,21 +22,35 @@
 //! Geom_BSplineSurface lattices, conic/B-spline extrusions, and booleans of
 //! those. No surface is produced by fitting sampled points: the recognizer
 //! will use OCCT's fitting APIs, so a fitted reference would be circular
-//! (shared biases cancel) and merely approximate. STLs are derived from the
-//! same exact geometry by direct sampling (vertices lie exactly on the
-//! reference surface), except hill_with_hole which uses OCCT tessellation
-//! to provide one realistically irregular CAD-export-style mesh.
+//! (shared biases cancel) and merely approximate.
+//!
+//! STLs come in two styles. The doubly-curved patch models are scripted
+//! regular grids with vertices sampled exactly on the reference surface —
+//! the cleanest possible first inputs for a fitter. The ruled/extruded
+//! models (elliptical_arch, elliptical_cylinder, bspline_wave) arrive as
+//! STRIP meshes — full-length quads with NO interior vertices along the
+//! ruling, which is how real CAD exporters tessellate extrusions — kept
+//! deliberately so the NURBS recognizer is built against realistic strip
+//! meshes from day one. The two conic models get their strips from genuine
+//! OCCT tessellation; the wave's strips are scripted because BRepMesh
+//! internally grid-refines B-spline-based surfaces (interior nodes appear
+//! at any deflection/angle setting). hill_with_hole is a plain OCCT
+//! tessellation: one realistically irregular CAD-export-style mesh. Every
+//! written STL is parsed back and validated (closed oriented manifold,
+//! volume against the B-rep).
 //!
 //! In roughly increasing order of recognizer difficulty:
 //! - elliptical_arch: half-ellipse profile extruded — the simplest freeform
-//!   target: one non-periodic singly-curved patch with sharp boundaries.
+//!   target: one non-periodic singly-curved patch with sharp boundaries
+//!   (arriving as a strip mesh: 2 vertex rings along the extrusion).
 //! - bspline_hill: doubly-curved dome patch on a slab (explicit pole
 //!   lattice), the canonical height-field-style B-spline target.
 //! - bspline_saddle: negative Gaussian curvature everywhere (hyperbolic-
 //!   paraboloid-shaped pole net).
-//! - bspline_wave: B-spline profile curve extruded along Y. Singly curved
-//!   with alternating curvature sign; crest/trough radii ~3 mm sit in
-//!   fillet territory and bait the cylinder detector into over-segmenting.
+//! - bspline_wave: B-spline profile curve extruded along Y (strip mesh).
+//!   Singly curved with alternating curvature sign; crest/trough radii
+//!   ~3 mm sit in fillet territory and bait the cylinder detector into
+//!   over-segmenting.
 //! - bspline_terrain: bump + dip + ripple in one patch; wide curvature
 //!   variation in sign and magnitude.
 //! - bspline_blister: raised center on an OTHERWISE EXACTLY PLANAR top
@@ -87,6 +101,28 @@ fn write_pair(shape: &topo_ds::Shape, dir: &str, name: &str) {
     write_step(shape, dir, name);
 }
 
+/// Parse a just-written STL back and validate it: closed oriented manifold,
+/// and enclosed volume within `rel_tol` of the closest of `brep_vols`
+/// (tessellation loses volume to chordal sag, and the two BRepGProp
+/// quadratures disagree on freeform faces — see shape_volume /
+/// shape_volume_adaptive). Returns the mesh volume.
+fn validate_written_stl(dir: &str, name: &str, brep_vols: &[f64], rel_tol: f64) -> f64 {
+    let mesh = MeshBuf::from_stl_file(&format!("{dir}/{name}.stl"));
+    mesh.assert_closed_manifold(name);
+    let vol = mesh.volume();
+    let best = brep_vols
+        .iter()
+        .copied()
+        .min_by(|a, b| (a - vol).abs().total_cmp(&(b - vol).abs()))
+        .expect("brep_vols must be non-empty");
+    let rel = (vol - best).abs() / best;
+    assert!(
+        rel < rel_tol,
+        "{name}: STL volume {vol:.3} vs B-rep volumes {brep_vols:?} (rel {rel:.2e})"
+    );
+    vol
+}
+
 /// Volume via fixed-order Gauss quadrature: exact for planar/conic faces
 /// (used with tight asserts on the analytic prism models), but
 /// under-integrates B-spline faces with localized bumps by ~0.5%.
@@ -134,6 +170,29 @@ impl MeshBuf {
         MeshBuf { tris: Vec::new() }
     }
 
+    /// Parse a binary STL back into a MeshBuf (all triangles kept verbatim,
+    /// bypassing `tri`'s zero-area filter, so closure checks see exactly
+    /// what was written).
+    fn from_stl_file(path: &str) -> Self {
+        let data = std::fs::read(path).expect("failed to read back STL");
+        assert!(data.len() >= 84, "{path}: truncated binary STL");
+        let n = u32::from_le_bytes(data[80..84].try_into().unwrap()) as usize;
+        assert_eq!(data.len(), 84 + 50 * n, "{path}: bad binary STL length");
+        let mut tris = Vec::with_capacity(n);
+        for t in 0..n {
+            let base = 84 + 50 * t + 12; // skip the stored normal
+            let mut tri = [[0.0f64; 3]; 3];
+            for (v, corner) in tri.iter_mut().enumerate() {
+                for (c, coord) in corner.iter_mut().enumerate() {
+                    let off = base + 12 * v + 4 * c;
+                    *coord = f32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as f64;
+                }
+            }
+            tris.push(tri);
+        }
+        MeshBuf { tris }
+    }
+
     fn tri(&mut self, a: [f64; 3], b: [f64; 3], c: [f64; 3]) {
         let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
         let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
@@ -144,14 +203,6 @@ impl MeshBuf {
             return;
         }
         self.tris.push([a, b, c]);
-    }
-
-    fn tri_oriented(&mut self, a: [f64; 3], b: [f64; 3], c: [f64; 3], flip: bool) {
-        if flip {
-            self.tri(a, c, b);
-        } else {
-            self.tri(a, b, c);
-        }
     }
 
     /// Quad split into two triangles; `alt` flips the diagonal so grid
@@ -183,7 +234,12 @@ impl MeshBuf {
         for t in &self.tris {
             for (p, q) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
                 let (kp, kq) = (vkey(p), vkey(q));
-                assert_ne!(kp, kq, "{name}: degenerate edge in mesh");
+                // A zero-length edge (two corners rounding to the same f32
+                // triple in a parsed STL) pairs with nothing; skip it — the
+                // sliver's remaining edges still participate in closure.
+                if kp == kq {
+                    continue;
+                }
                 // +1 in lexicographically increasing direction, -1 reverse.
                 if kp < kq {
                     *edges.entry((kp, kq)).or_insert(0) += 1;
@@ -239,30 +295,6 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 fn norm(a: [f64; 3]) -> f64 {
     dot(a, a).sqrt()
-}
-
-/// Triangulate the region between two x-monotone chains that share their
-/// first and last points (e.g. an elliptical arc and its chord). Emits
-/// triangles wound (upper, upper_next, lower) / (upper, lower_next, lower);
-/// pass `flip` to reverse.
-fn strip_between_chains(m: &mut MeshBuf, upper: &[[f64; 3]], lower: &[[f64; 3]], flip: bool) {
-    let (mut i, mut j) = (0usize, 0usize);
-    while i + 1 < upper.len() || j + 1 < lower.len() {
-        let advance_upper = if j + 1 >= lower.len() {
-            true
-        } else if i + 1 >= upper.len() {
-            false
-        } else {
-            upper[i + 1][0] <= lower[j + 1][0]
-        };
-        if advance_upper {
-            m.tri_oriented(upper[i], upper[i + 1], lower[j], flip);
-            i += 1;
-        } else {
-            m.tri_oriented(upper[i], lower[j + 1], lower[j], flip);
-            j += 1;
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +378,7 @@ fn bisect_param(f: &dyn Fn(f64) -> f64, mut lo: f64, mut hi: f64, target: f64) -
 }
 
 // ---------------------------------------------------------------------------
-// Slab-under-surface models (bspline_hill / saddle / terrain / blister / wave)
+// Slab-under-surface models (bspline_hill / saddle / terrain / blister)
 //
 // The exact surface overhangs the box footprint (pole lattice padded beyond
 // it). The reference solid is Cut(box, Prism(face(surface), +Z)): the box
@@ -439,11 +471,24 @@ fn slab_mesh(spec: &SlabSpec) -> (MeshBuf, f64, f64) {
     (m, zmin, zmax)
 }
 
-/// Trapezoid-rule volume under the sampled top grid (for cross-checking the
-/// B-rep volume; grid x/y spacing is slightly non-uniform in x,y).
-fn mesh_volume_estimate(spec: &SlabSpec, mesh: &MeshBuf) -> f64 {
-    let _ = spec;
-    mesh.volume()
+/// Prism the (overhanging) exact-surface face upward and cut it from the
+/// box: the box material above the surface is removed, leaving a slab whose
+/// top is the untouched exact surface and whose walls/bottom are box planes.
+fn slab_solid(
+    name: &str,
+    face_shape: &topo_ds::Shape,
+    dims: (f64, f64, f64),
+) -> OwnedPtr<b_rep_algo_api::Cut> {
+    let (bx, by, bz) = dims;
+    let prism_vec = gp::Vec::new_real3(0.0, 0.0, bz + 30.0);
+    let mut prism = b_rep_prim_api::MakePrism::new_shape_vec(face_shape, &prism_vec);
+    let mut boxm = b_rep_prim_api::MakeBox::new_real3(bx, by, bz);
+    let progress = message::ProgressRange::new();
+    let mut cut =
+        b_rep_algo_api::Cut::new_shape2_progressrange(boxm.shape(), prism.shape(), &progress);
+    assert!(cut.is_done(), "{name}: box-minus-prism boolean failed");
+    assert_shape_valid(cut.shape(), name);
+    cut
 }
 
 /// Build the reference solid, cross-validate, and write the STL/STEP pair.
@@ -451,15 +496,8 @@ fn emit_slab_model(dir: &str, spec: &SlabSpec, face_shape: &topo_ds::Shape) {
     let (mesh, zmin, zmax) = slab_mesh(spec);
     mesh.assert_closed_manifold(spec.name);
 
-    let prism_vec = gp::Vec::new_real3(0.0, 0.0, spec.bz + 30.0);
-    let mut prism = b_rep_prim_api::MakePrism::new_shape_vec(face_shape, &prism_vec);
-    let mut boxm = b_rep_prim_api::MakeBox::new_real3(spec.bx, spec.by, spec.bz);
-    let progress = message::ProgressRange::new();
-    let mut cut =
-        b_rep_algo_api::Cut::new_shape2_progressrange(boxm.shape(), prism.shape(), &progress);
-    assert!(cut.is_done(), "{}: box-minus-prism boolean failed", spec.name);
+    let mut cut = slab_solid(spec.name, face_shape, (spec.bx, spec.by, spec.bz));
     let solid = cut.shape();
-    assert_shape_valid(solid, spec.name);
 
     // Cross-check the B-rep against the mesh (whose vertices lie exactly on
     // the surface, with only chordal-sag error). Neither BRepGProp variant
@@ -467,7 +505,7 @@ fn emit_slab_model(dir: &str, spec: &SlabSpec, face_shape: &topo_ds::Shape) {
     // the hill's localized bump, while the adaptive variant is ~4% HIGH on
     // the extrusion-of-B-spline solid — so accept the B-rep if either
     // independent quadrature agrees with the mesh.
-    let stl_vol = mesh_volume_estimate(spec, &mesh);
+    let stl_vol = mesh.volume();
     let fixed_vol = shape_volume(solid);
     let adaptive_vol = shape_volume_adaptive(solid);
     let brep_vol = if (fixed_vol - stl_vol).abs() < (adaptive_vol - stl_vol).abs() {
@@ -588,66 +626,11 @@ fn elliptical_arch(dir: &str) {
         "elliptical_arch: volume {vol} vs analytic {expected}"
     );
 
-    // Scripted mesh: vault rings sampled on the exact ellipse.
-    let (nt, ny, ncx) = (48usize, 20usize, 30usize);
-    let ring = |k: usize| -> [f64; 2] {
-        // (x, z) of ring k; endpoints snapped exactly onto the chord plane.
-        if k == 0 {
-            return [5.0, 0.0];
-        }
-        if k == nt {
-            return [35.0, 0.0];
-        }
-        let t = PI * k as f64 / nt as f64;
-        [20.0 - a * t.cos(), b * t.sin()]
-    };
-    let ys: Vec<f64> = (0..=ny).map(|j| len * j as f64 / ny as f64).collect();
-    let mut m = MeshBuf::new();
-    // Vault: outward normal ≈ P'(t) × ŷ.
-    for k in 0..nt {
-        let ([x0, z0], [x1, z1]) = (ring(k), ring(k + 1));
-        for j in 0..ny {
-            m.quad(
-                [x0, ys[j], z0],
-                [x1, ys[j], z1],
-                [x1, ys[j + 1], z1],
-                [x0, ys[j + 1], z0],
-                false,
-            );
-        }
-    }
-    // Caps: strip between the arc chain and the chord chain.
-    let xs_chord: Vec<f64> = (0..=ncx).map(|i| 5.0 + 30.0 * i as f64 / ncx as f64).collect();
-    for (y, flip) in [(0.0, true), (len, false)] {
-        let arc_chain: Vec<[f64; 3]> = (0..=nt)
-            .map(|k| {
-                let [x, z] = ring(k);
-                [x, y, z]
-            })
-            .collect();
-        let chord_chain: Vec<[f64; 3]> = xs_chord.iter().map(|&x| [x, y, 0.0]).collect();
-        strip_between_chains(&mut m, &arc_chain, &chord_chain, flip);
-    }
-    // Bottom: grid at z=0, normals down. Columns reuse chord xs, rows the
-    // vault ys, so boundaries match the caps and vault exactly.
-    for i in 0..ncx {
-        for j in 0..ny {
-            m.quad(
-                [xs_chord[i], ys[j], 0.0],
-                [xs_chord[i], ys[j + 1], 0.0],
-                [xs_chord[i + 1], ys[j + 1], 0.0],
-                [xs_chord[i + 1], ys[j], 0.0],
-                false,
-            );
-        }
-    }
-    m.assert_closed_manifold("elliptical_arch");
-    let stl_vol = m.volume();
-    assert!(
-        (stl_vol - vol).abs() / vol < 0.01,
-        "elliptical_arch: STL volume {stl_vol} vs B-rep {vol}"
-    );
-    m.write_stl(dir, "elliptical_arch");
+    // Real CAD exporters subdivide an extrusion only along its profile, so
+    // the vault arrives as full-length strips (2 vertex rings along Y); the
+    // NURBS recognizer must cope with ruling-direction sampling this sparse.
+    write_tessellated_stl(solid, dir, "elliptical_arch", 0.05, 10.0);
+    let stl_vol = validate_written_stl(dir, "elliptical_arch", &[vol], 0.02);
     write_step(solid, dir, "elliptical_arch");
     println!("  elliptical_arch: volume {vol:.2} mm³ (mesh {stl_vol:.2})");
 }
@@ -677,39 +660,10 @@ fn elliptical_cylinder(dir: &str) {
         "elliptical_cylinder: volume {vol} vs analytic {expected}"
     );
 
-    let (nt, nz) = (76usize, 10usize);
-    let ring = |k: usize| -> [f64; 2] {
-        let t = 2.0 * PI * (k % nt) as f64 / nt as f64;
-        [cx + a * t.cos(), cy + b * t.sin()]
-    };
-    let zs: Vec<f64> = (0..=nz).map(|j| h * j as f64 / nz as f64).collect();
-    let mut m = MeshBuf::new();
-    for k in 0..nt {
-        let ([x0, y0], [x1, y1]) = (ring(k), ring(k + 1));
-        for j in 0..nz {
-            m.quad(
-                [x0, y0, zs[j]],
-                [x1, y1, zs[j]],
-                [x1, y1, zs[j + 1]],
-                [x0, y0, zs[j + 1]],
-                false,
-            );
-        }
-    }
-    for (z, flip) in [(h, false), (0.0, true)] {
-        let c = [cx, cy, z];
-        for k in 0..nt {
-            let ([x0, y0], [x1, y1]) = (ring(k), ring(k + 1));
-            m.tri_oriented(c, [x0, y0, z], [x1, y1, z], flip);
-        }
-    }
-    m.assert_closed_manifold("elliptical_cylinder");
-    let stl_vol = m.volume();
-    assert!(
-        (stl_vol - vol).abs() / vol < 0.01,
-        "elliptical_cylinder: STL volume {stl_vol} vs B-rep {vol}"
-    );
-    m.write_stl(dir, "elliptical_cylinder");
+    // Strip mesh: the wall tessellates into full-height strips (2 vertex
+    // rings), exactly how CAD exporters emit extrusions.
+    write_tessellated_stl(solid, dir, "elliptical_cylinder", 0.05, 10.0);
+    let stl_vol = validate_written_stl(dir, "elliptical_cylinder", &[vol], 0.02);
     write_step(solid, dir, "elliptical_cylinder");
     println!("  elliptical_cylinder: volume {vol:.2} mm³ (mesh {stl_vol:.2})");
 }
@@ -786,46 +740,116 @@ fn bspline_blister(dir: &str) {
 
 fn bspline_wave(dir: &str) {
     // Exact B-spline profile curve extruded along +Y: crest/trough radii in
-    // fillet territory to bait cylinder over-segmentation.
+    // fillet territory to bait cylinder over-segmentation. Built like the
+    // arch — closed profile wire swept with MakePrism — so the reference is
+    // a plain prism solid. The STL is a SCRIPTED strip mesh (top quads span
+    // the full 30 mm of Y between 2 vertex rings): mainstream CAD exporters
+    // emit exactly such strips for extrusions, but OCCT's own mesher cannot
+    // be used here — BRepMesh internally grid-refines B-spline-based
+    // surfaces (interior nodes appear even at 0.1 mm / 20° settings),
+    // unlike the conic extrusions of elliptical_arch/elliptical_cylinder
+    // which it tessellates into true strips.
+    let (bx, by) = (40.0, 30.0);
     let pattern = [0.0, 1.0, 0.0, -1.0];
-    let zs: Vec<f64> = (0..15).map(|i| 8.0 + 3.2 * pattern[i % 4]).collect();
-    let curve = profile_bspline_curve(-8.0, 4.0, &zs);
-    let ydir = gp::Dir::new_real3(0.0, 1.0, 0.0);
-    let surf = geom::SurfaceOfLinearExtrusion::new_handlegeomcurve_dir(
-        &curve.to_handle_curve(),
-        &ydir,
-    );
-    let handle = geom::SurfaceOfLinearExtrusion::to_handle(surf);
+    let zs: Vec<f64> = (0..11).map(|i| 8.0 + 3.2 * pattern[i % 4]).collect();
+    let curve = profile_bspline_curve(0.0, bx / 10.0, &zs);
+    let kmax = (zs.len() - 3) as f64;
 
-    let (bx, by, bz) = (40.0, 30.0, 12.0);
-    let kmax = 12.0;
-    let x_of_u = |u: f64| curve.get().value(u).x();
-    let u_range = (bisect_param(&x_of_u, 0.0, kmax, 0.0), bisect_param(&x_of_u, 0.0, kmax, bx));
-    // Extrusion parameterization: (u, v) → curve(u) + v·ŷ, so v is y.
-    let eval = |u: f64, v: f64| {
-        let p = curve.get().value(u);
-        [p.x(), v, p.z()]
-    };
-    let spec = SlabSpec {
-        name: "bspline_wave",
-        eval: &eval,
-        u_range,
-        v_range: (0.0, by),
-        bx,
-        by,
-        bz,
-        nu: 80,
-        nv: 15,
-    };
-    let mut face = b_rep_builder_api::MakeFace::new_handlegeomsurface_real5(
-        &handle.to_handle_surface(),
-        0.0,
-        kmax,
-        -5.0,
-        by + 5.0,
-        1e-7,
+    // z-range sanity (z depends only on the curve parameter), and the exact
+    // profile area by dense trapezoid integration of z·dx — an analytic-
+    // quality volume reference independent of BRepGProp.
+    let samples = 200_000usize;
+    let (mut zmin, mut zmax, mut area) = (f64::INFINITY, f64::NEG_INFINITY, 0.0);
+    let mut prev: Option<(f64, f64)> = None;
+    for i in 0..=samples {
+        let p = curve.get().value(kmax * i as f64 / samples as f64);
+        let (x, z) = (p.x(), p.z());
+        zmin = zmin.min(z);
+        zmax = zmax.max(z);
+        if let Some((px, pz)) = prev {
+            area += 0.5 * (z + pz) * (x - px);
+        }
+        prev = Some((x, z));
+    }
+    assert!(zmin > 0.5, "bspline_wave: profile z dips to {zmin:.2}");
+
+    // Closed profile wire in the XZ plane: wavy top from (0,0,8) to
+    // (40,0,8), then down, across, and up three straight edges.
+    let p_ne = gp::Pnt::new_real3(bx, 0.0, 8.0);
+    let p_se = gp::Pnt::new_real3(bx, 0.0, 0.0);
+    let p_sw = gp::Pnt::new_real3(0.0, 0.0, 0.0);
+    let p_nw = gp::Pnt::new_real3(0.0, 0.0, 8.0);
+    let mut top = b_rep_builder_api::MakeEdge::new_handlegeomcurve(&curve.to_handle_curve());
+    let mut down = b_rep_builder_api::MakeEdge::new_pnt2(&p_ne, &p_se);
+    let mut across = b_rep_builder_api::MakeEdge::new_pnt2(&p_se, &p_sw);
+    let mut up = b_rep_builder_api::MakeEdge::new_pnt2(&p_sw, &p_nw);
+    let mut wire = b_rep_builder_api::MakeWire::new_edge4(
+        top.edge(),
+        down.edge(),
+        across.edge(),
+        up.edge(),
     );
-    emit_slab_model(dir, &spec, face.shape());
+    let mut face = b_rep_builder_api::MakeFace::new_wire_bool(wire.wire(), true);
+    let sweep = gp::Vec::new_real3(0.0, by, 0.0);
+    let mut prism = b_rep_prim_api::MakePrism::new_shape_vec(face.shape(), &sweep);
+    let solid = prism.shape();
+    assert_shape_valid(solid, "bspline_wave");
+
+    let expected = area * by;
+    let vol = shape_volume(solid);
+    // The profile integral is machine-exact; fixed-order Gauss carries
+    // ~4e-5 relative error on the B-spline-extrusion face (quadrature
+    // cells don't align with knot spans), so the bound is 1e-4, not 1e-9.
+    assert!(
+        (vol - expected).abs() / expected < 1e-4,
+        "bspline_wave: volume {vol} vs profile integral {expected}"
+    );
+
+    // Scripted strip mesh: profile sampled at nu chords (~0.5 mm at the
+    // crests, comparable to a fine CAD export), every quad spanning the
+    // full extrusion length. Caps are triangulated as vertical slices on
+    // the same x samples (a corner fan would poke above the troughs), the
+    // bottom reuses those x samples, and each side wall is a single quad —
+    // so every shared boundary vertex is bit-identical and the mesh closes.
+    let nu = 80usize;
+    let profile: Vec<[f64; 3]> = (0..=nu)
+        .map(|k| {
+            let p = curve.get().value(kmax * k as f64 / nu as f64);
+            let mut pt = [p.x(), 0.0, p.z()];
+            if k == 0 || k == nu {
+                let want_x = if k == 0 { 0.0 } else { bx };
+                assert!(
+                    (pt[0] - want_x).abs() < 1e-9 && (pt[2] - 8.0).abs() < 1e-9,
+                    "bspline_wave: profile endpoint off by {:.2e}",
+                    (pt[0] - want_x).abs().max((pt[2] - 8.0).abs())
+                );
+                pt = [want_x, 0.0, 8.0];
+            }
+            pt
+        })
+        .collect();
+    let mut m = MeshBuf::new();
+    for k in 0..nu {
+        let ([x0, _, z0], [x1, _, z1]) = (profile[k], profile[k + 1]);
+        // Top strip (normal up, tilting with the wave).
+        m.quad([x0, 0.0, z0], [x1, 0.0, z1], [x1, by, z1], [x0, by, z0], false);
+        // Caps at y=0 (normal -y) and y=by (normal +y), as vertical slices.
+        m.quad([x0, 0.0, z0], [x0, 0.0, 0.0], [x1, 0.0, 0.0], [x1, 0.0, z1], false);
+        m.quad([x1, by, z1], [x1, by, 0.0], [x0, by, 0.0], [x0, by, z0], false);
+        // Bottom strip (normal down).
+        m.quad([x0, 0.0, 0.0], [x0, by, 0.0], [x1, by, 0.0], [x1, 0.0, 0.0], false);
+    }
+    // Side walls x=0 (normal -x) and x=bx (normal +x).
+    m.quad([0.0, 0.0, 0.0], [0.0, 0.0, 8.0], [0.0, by, 8.0], [0.0, by, 0.0], false);
+    m.quad([bx, 0.0, 0.0], [bx, by, 0.0], [bx, by, 8.0], [bx, 0.0, 8.0], false);
+    m.assert_closed_manifold("bspline_wave");
+    m.write_stl(dir, "bspline_wave");
+    let stl_vol = validate_written_stl(dir, "bspline_wave", &[expected], 0.02);
+    write_step(solid, dir, "bspline_wave");
+    println!(
+        "  bspline_wave: volume {vol:.2} mm³ (adaptive {:.2}, mesh {stl_vol:.2}), top z ∈ [{zmin:.2}, {zmax:.2}]",
+        shape_volume_adaptive(solid)
+    );
 }
 
 /// bspline_hill minus an off-center vertical cylinder: inner loop on the
@@ -835,13 +859,7 @@ fn hill_with_hole(dir: &str, hill: &geom::HandleGeomBSplineSurface) {
     let (bx, by, bz) = (40.0, 40.0, 16.0);
     let mut face =
         b_rep_builder_api::MakeFace::new_handlegeomsurface_real(&hill.to_handle_surface(), 1e-7);
-    let prism_vec = gp::Vec::new_real3(0.0, 0.0, bz + 30.0);
-    let mut prism = b_rep_prim_api::MakePrism::new_shape_vec(face.shape(), &prism_vec);
-    let mut boxm = b_rep_prim_api::MakeBox::new_real3(bx, by, bz);
-    let progress = message::ProgressRange::new();
-    let mut slab =
-        b_rep_algo_api::Cut::new_shape2_progressrange(boxm.shape(), prism.shape(), &progress);
-    assert!(slab.is_done(), "hill_with_hole: slab boolean failed");
+    let mut slab = slab_solid("hill_with_hole slab", face.shape(), (bx, by, bz));
     let slab_vol = shape_volume_adaptive(slab.shape());
 
     let hole_center = gp::Pnt::new_real3(28.0, 14.0, -2.0);
@@ -884,6 +902,7 @@ fn hill_with_hole(dir: &str, hill: &geom::HandleGeomBSplineSurface) {
     );
 
     write_tessellated_stl(solid, dir, "hill_with_hole", 0.05, 10.0);
+    validate_written_stl(dir, "hill_with_hole", &[shape_volume(solid), vol], 0.02);
     write_step(solid, dir, "hill_with_hole");
     println!("  hill_with_hole: volume {vol:.2} mm³ (hill {slab_vol:.2}, hole {removed:.2})");
 }

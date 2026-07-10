@@ -138,7 +138,8 @@ test_stl_stage1!(
     "tests/fusion/plate_with_hole_100x50_medium.stl"
 );
 
-// --- tests/nurbs/ (freeform models; scripted meshes must be valid solids) ---
+// --- tests/nurbs/ (freeform models; scripted grid and tessellated strip
+// meshes must both be valid solids) ---
 test_stl_stage1!(nurbs_elliptical_arch_stage1, "tests/nurbs/elliptical_arch.stl");
 test_stl_stage1!(
     nurbs_elliptical_cylinder_stage1,
@@ -327,7 +328,7 @@ test_stl_step_compare!(
     "tests/fusion/plate_with_hole_100x50.step"
 );
 
-// --- tests/nurbs/ (mesh vertices sampled exactly on the reference surfaces) ---
+// --- tests/nurbs/ (mesh vertices lie on the exact reference surfaces) ---
 test_stl_step_compare!(
     nurbs_elliptical_arch_compare,
     "tests/nurbs/elliptical_arch.stl",
