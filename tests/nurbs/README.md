@@ -1,11 +1,11 @@
 # NURBS Recognizer Test Models
 
-Targets for the DEVELOPMENT_PLAN §2.7 NURBS fallback. Every model contains at
-least one surface outside brepper's analytic set (plane / cylinder / sphere /
-cone / torus), so **all of these are expected to FAIL full `--compare` until
-§2.7 lands** — they are the goal posts for that work, listed in RESULTS.md as
-their own group. Stage 1 (mesh validity and STL↔STEP vertex agreement) passes
-today and is covered by `stage1_integration.rs`.
+Targets for the DEVELOPMENT_PLAN §2.7 NURBS fallback (implemented
+2026-07-10). Every model contains at least one surface outside brepper's
+analytic set (plane / cylinder / sphere / cone / torus). **7 of the 8 pass
+full `--compare`**; `elliptical_cylinder` (closed periodic freeform wall
+needing a periodic B-spline face + seam) remains out of scope for the first
+§2.7 pass and fails by design, listed in RESULTS.md as its own group.
 
 Regenerate with `./scripts/generate_occt_models.sh` (see
 `src/bin/gen_test_models.rs`).
@@ -57,11 +57,15 @@ Regenerate with `./scripts/generate_occt_models.sh` (see
 | hill_with_hole | bspline_hill minus off-center vertical cylinder r=5 | Freeform × analytic interaction: inner loop on the B-spline face, cylinder∩B-spline edge curves, irregular tessellated mesh. |
 | elliptical_cylinder | full ellipse (12×7) prism, 18 tall | Stretch case: closed periodic freeform wall needs a periodic B-spline face + seam (out of scope for the first §2.7 pass). Strip mesh: full-height wall strips. |
 
-Current failure mode (recorded 2026-07-09): stage 2 leaves each freeform
-region as single-face planar hypotheses (39 surfaces for the elliptical_arch
-strip mesh, 53 for bspline_wave, 935 for the gridded bspline_hill) and the
-stage 3.1 compare hard-errors with reconstructed vertices up to millimeters
-from the reference. The strip-mesh models fail fast (~1 s); the dense grid
-patches take ~35–105 s (bspline_hill ~104 s, near the 120 s run_test_table
-timeout). Both will drop once stage 2.7 collapses those regions into single
-surfaces.
+Status (2026-07-10, §2.7 implemented): each freeform region collapses into a
+single fitted B-spline surface (elliptical_arch: 4 selected surfaces
+matching the reference's 4 faces; bspline_blister's exactly-planar margin is
+tangent-merged into the freeform top, matching the reference topology).
+Volumes agree with the exact references to 2.7e-6 … 5.2e-3 relative — well
+inside the 1% hard gate. `elliptical_cylinder`'s wall is rejected cleanly at
+parameterization (a closed wall flattens to an annulus, not a disk) and the
+model still fails `--compare` as expected. The pre-2.7 failure mode — every
+freeform region as hundreds of single-face planar surfaces, stage 3.1
+hard-erroring with reconstructed vertices millimeters off — is gone, and the
+dense grid models dropped from ~35–105 s to the cost of stage 2's analytic
+BFS passes (~60 s, dominated by cylinder/torus seeding, not by §2.7).

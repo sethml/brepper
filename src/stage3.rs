@@ -15,10 +15,11 @@ use opencascade_sys::{
     b_rep, b_rep_adaptor, b_rep_bnd_lib, b_rep_builder_api, b_rep_check, b_rep_extrema,
     b_rep_g_prop, b_rep_lib,
     bnd, extrema,
-    geom, geom2d, geom2d_api, geom_api, g_prop, gp, message, shape_analysis,
+    geom, geom2d, geom2d_api, geom_abs, geom_api, g_prop, gp, message, shape_analysis,
     shape_fix,
     t_col_std, t_colgp, top_abs, top_exp, top_loc, topo_ds, OwnedPtr,
 };
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 use std::error::Error;
@@ -419,6 +420,11 @@ fn create_occt_surface(
             );
             geom::ToroidalSurface::to_handle(torus).to_handle_surface()
         }
+        SelectedSurface::BSpline(idx) => {
+            // Not a reconstruction: a fresh handle to the exact fitted
+            // Geom_BSplineSurface object owned by the stage-2.7 hypothesis.
+            output.bspline_hypotheses[*idx].surface.to_handle_surface()
+        }
     }
 }
 
@@ -429,6 +435,7 @@ fn surface_faces<'a>(surface: &SelectedSurface, output: &'a Stage2Output) -> &'a
         SelectedSurface::Conical(idx) => &output.conical_hypotheses[*idx].faces,
         SelectedSurface::Spherical(idx) => &output.spherical_hypotheses[*idx].faces,
         SelectedSurface::Toroidal(idx) => &output.toroidal_hypotheses[*idx].faces,
+        SelectedSurface::BSpline(idx) => &output.bspline_hypotheses[*idx].faces,
     }
 }
 /// Canonical (undirected) representation of a mesh edge for hashing.
@@ -700,6 +707,7 @@ fn project_point_to_selected(
                 p
             }
         }
+        SelectedSurface::BSpline(i) => stage2.bspline_hypotheses[*i].project_point(&p),
     }
 }
 
@@ -733,6 +741,19 @@ fn refine_corner_vertices(
             .iter()
             .any(|&ei| edges.get(ei).is_some_and(|e| e.tangent));
         if near_tangent {
+            continue;
+        }
+        // B-spline-adjacent corners also keep the raw mesh vertex: the
+        // fitted surface only approximates the mesh (to fit tolerance,
+        // ~1e-2 mm), so cyclic projection onto it can only degrade a mesh
+        // corner that sits exactly on the true feature curve.
+        let near_bspline = vert.adjacent_faces.iter().any(|&fi| {
+            matches!(
+                stage2.selected_surfaces[face_descriptors[fi].selected_surface_idx],
+                SelectedSurface::BSpline(_)
+            )
+        });
+        if near_bspline {
             continue;
         }
         let original = vert.point;
@@ -1046,6 +1067,14 @@ fn build_surfaces_and_adjacency(
                             h.axis_direction[0], h.axis_direction[1], h.axis_direction[2],
                         )
                     }
+                    SelectedSurface::BSpline(i) => {
+                        let h = &input.bspline_hypotheses[*i];
+                        format!(
+                            "bspline deg=({},{}) poles=({},{}) vtx_err_max={:.2e}",
+                            h.u_degree, h.v_degree, h.nb_u_poles, h.nb_v_poles,
+                            h.error_max,
+                        )
+                    }
                 };
                 eprintln!(
                     "  Face {}: {} surface, {} adjacent faces, {} edges, {} vertices",
@@ -1215,6 +1244,11 @@ fn surface_normal_at_point(
                 n = [-n[0], -n[1], -n[2]];
             }
             Some(n)
+        }
+        SelectedSurface::BSpline(idx) => {
+            // The fit orients the surface's natural normal outward
+            // (concave is always false), so d1u × d1v needs no sign logic.
+            stage2.bspline_hypotheses[*idx].normal_at(point)
         }
     }
 }
@@ -1785,8 +1819,10 @@ fn boundary_chain_deviation(
 }
 
 /// Validate an edge curve against the mesh boundary chain; on failure, try
-/// the circle through three spread chain vertices (falling back to the
-/// original curve when the chain is straight or the repair doesn't help).
+/// the circle through three spread chain vertices and a B-spline curve fit
+/// through the whole chain, keeping whichever candidate deviates least
+/// (genuinely freeform junctions — e.g. a fitted patch meeting a plane
+/// along an elliptical profile — are neither lines nor circles).
 fn repair_edge_curve_from_boundary(
     curve: OwnedPtr<geom::HandleGeomCurve>,
     edge: &ReconEdge,
@@ -1805,69 +1841,116 @@ fn repair_edge_curve_from_boundary(
         return curve;
     }
 
-    // Fit the circle through three spread chain vertices.
     let chain = &edge.mesh_boundary_vertices;
+    let has_endpoints =
+        edge.vertex_indices[0] != usize::MAX && edge.vertex_indices[1] != usize::MAX;
+
+    // Trim a full repair curve to the edge's endpoint vertices (chain-
+    // supported side for periodic candidates), or keep it whole for
+    // closed-loop edges.
+    let trim_to_endpoints = |full: &geom::HandleGeomCurve| -> Option<OwnedPtr<geom::HandleGeomCurve>> {
+        if !has_endpoints {
+            return None;
+        }
+        let v0 = &vertices[edge.vertex_indices[0]];
+        let v1 = &vertices[edge.vertex_indices[1]];
+        match (
+            project_point_on_curve(&v0.point, full),
+            project_point_on_curve(&v1.point, full),
+        ) {
+            (Ok(t0), Ok(t1)) => {
+                let (t_lo, t_hi) = select_arc_parameters(t0, t1, chain, full, mesh);
+                let arc = geom::TrimmedCurve::new_handlegeomcurve_real2(full, t_lo, t_hi);
+                Some(geom::TrimmedCurve::to_handle(arc).to_handle_curve())
+            }
+            _ => None,
+        }
+    };
+
+    let mut best_dev = dev;
+    let mut best: Option<(OwnedPtr<geom::HandleGeomCurve>, &'static str)> = None;
+
+    // Candidate 1: the circle through three spread chain vertices.
     let pnt_at = |i: usize| {
         let v = &mesh.vertices[chain[i]];
         gp::Pnt::new_real3(v.x, v.y, v.z)
     };
     let (p0, p1, p2) = (pnt_at(0), pnt_at(chain.len() / 2), pnt_at(chain.len() - 1));
-    let Some(circle) = reconstruct_full_circle(&p0, &p1, &p2) else {
-        if !config.quiet {
-            eprintln!(
-                "  Warning: edge (f{fi0},f{fi1}) curve is {dev:.3} mm from its mesh \
-                 boundary chain and the chain is straight — keeping the curve"
-            );
-        }
-        return curve;
-    };
-
-    // Trim to the endpoint vertices with a chain-supported arc, or keep the
-    // full circle for closed-loop edges.
-    let repaired: Option<OwnedPtr<geom::HandleGeomCurve>> = if edge.vertex_indices[0] != usize::MAX
-        && edge.vertex_indices[1] != usize::MAX
-    {
-        let v0 = &vertices[edge.vertex_indices[0]];
-        let v1 = &vertices[edge.vertex_indices[1]];
-        match (
-            project_point_on_curve(&v0.point, &circle),
-            project_point_on_curve(&v1.point, &circle),
-        ) {
-            (Ok(t0), Ok(t1)) => {
-                let (t_lo, t_hi) =
-                    select_arc_parameters(t0, t1, &edge.mesh_boundary_vertices, &circle, mesh);
-                let arc = geom::TrimmedCurve::new_handlegeomcurve_real2(&circle, t_lo, t_hi);
-                Some(geom::TrimmedCurve::to_handle(arc).to_handle_curve())
+    if let Some(circle) = reconstruct_full_circle(&p0, &p1, &p2) {
+        let candidate = if has_endpoints {
+            trim_to_endpoints(&circle)
+        } else {
+            Some(circle)
+        };
+        if let Some(c) = candidate {
+            let d = boundary_chain_deviation(&c, chain, mesh);
+            if d < best_dev {
+                best_dev = d;
+                best = Some((c, "circle"));
             }
-            _ => None,
         }
-    } else {
-        Some(circle)
-    };
+    }
 
-    match repaired {
-        Some(repaired) => {
-            let new_dev =
-                boundary_chain_deviation(&repaired, &edge.mesh_boundary_vertices, mesh);
-            if new_dev < dev {
-                if !config.quiet {
-                    eprintln!(
-                        "  Edge (f{fi0},f{fi1}): curve was {dev:.3} mm from its mesh boundary \
-                         chain; repaired with the chain's circle ({new_dev:.2e} mm)"
-                    );
+    // Candidate 2: a B-spline curve through the chain vertices (open chains
+    // only — the approximator is not periodic). The chain is ground truth
+    // for any junction, so an ordered fit through it handles freeform
+    // junction curves no analytic construction covers.
+    if has_endpoints && chain.len() >= 4 {
+        let mut pts = t_colgp::Array1OfPnt::new_int2(1, chain.len() as i32);
+        for (k, &vi) in chain.iter().enumerate() {
+            let v = &mesh.vertices[vi];
+            let p = gp::Pnt::new_real3(v.x, v.y, v.z);
+            pts.set_value(k as i32 + 1, &p);
+        }
+        let fit_tol = (config.surface_tolerance_mm / 10.0).max(config.vertex_tolerance_mm * 10.0);
+        let fit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            geom_api::PointsToBSpline::new_array1ofpnt_int2_shape_real(
+                &pts,
+                3,
+                8,
+                geom_abs::Shape::C2,
+                fit_tol,
+            )
+        }));
+        if let Ok(fit) = fit {
+            if fit.is_done() {
+                let full = fit.curve().to_handle_curve();
+                if let Some(c) = trim_to_endpoints(&full) {
+                    let d = boundary_chain_deviation(&c, chain, mesh);
+                    if d < best_dev {
+                        best_dev = d;
+                        best = Some((c, "B-spline"));
+                    }
                 }
-                if new_dev > tol && !config.quiet {
+            }
+        }
+    }
+
+    match best {
+        Some((repaired, kind)) => {
+            if !config.quiet {
+                eprintln!(
+                    "  Edge (f{fi0},f{fi1}): curve was {dev:.3} mm from its mesh boundary \
+                     chain; repaired with the chain's {kind} ({best_dev:.2e} mm)"
+                );
+                if best_dev > tol {
                     eprintln!(
-                        "  Warning: edge (f{fi0},f{fi1}) repaired curve still {new_dev:.3} mm \
+                        "  Warning: edge (f{fi0},f{fi1}) repaired curve still {best_dev:.3} mm \
                          from its mesh boundary chain"
                     );
                 }
-                repaired
-            } else {
-                curve
             }
+            repaired
         }
-        None => curve,
+        None => {
+            if !config.quiet {
+                eprintln!(
+                    "  Warning: edge (f{fi0},f{fi1}) curve is {dev:.3} mm from its mesh \
+                     boundary chain and no chain-based repair improved it — keeping the curve"
+                );
+            }
+            curve
+        }
     }
 }
 
@@ -2863,6 +2946,12 @@ fn viz_surface_normal_at_point(
             let sign: f64 = if hyp.convex { 1.0 } else { -1.0 };
             [(sign * tv[0] / tv_len) as f32, (sign * tv[1] / tv_len) as f32, (sign * tv[2] / tv_len) as f32]
         }
+        SelectedSurface::BSpline(i) => {
+            match stage2.bspline_hypotheses[*i].normal_at(&point) {
+                Some(n) => [n[0] as f32, n[1] as f32, n[2] as f32],
+                None => [0.0_f32, 0.0, 1.0],
+            }
+        }
     }
 }
 
@@ -2878,6 +2967,7 @@ fn viz_selected_surface_centroid(
         SelectedSurface::Conical(i) => &stage2.conical_hypotheses[*i].vertices,
         SelectedSurface::Spherical(i) => &stage2.spherical_hypotheses[*i].vertices,
         SelectedSurface::Toroidal(i) => &stage2.toroidal_hypotheses[*i].vertices,
+        SelectedSurface::BSpline(i) => &stage2.bspline_hypotheses[*i].vertices,
     };
     let mut cx = 0.0_f64;
     let mut cy = 0.0_f64;
@@ -2955,6 +3045,7 @@ fn compute_edge_curves_all(
                                 SelectedSurface::Conical(i) => &output.stage2.conical_hypotheses[*i].faces,
                                 SelectedSurface::Spherical(i) => &output.stage2.spherical_hypotheses[*i].faces,
                                 SelectedSurface::Toroidal(i) => &output.stage2.toroidal_hypotheses[*i].faces,
+                                SelectedSurface::BSpline(i) => &output.stage2.bspline_hypotheses[*i].faces,
                             };
                             overlay.face_highlights.push(crate::viz::FaceHighlight {
                                 face_indices: mesh_faces.to_vec(),
@@ -3034,6 +3125,7 @@ fn compute_edge_curves_all(
                                 SelectedSurface::Conical(i) => &output.stage2.conical_hypotheses[*i].faces,
                                 SelectedSurface::Spherical(i) => &output.stage2.spherical_hypotheses[*i].faces,
                                 SelectedSurface::Toroidal(i) => &output.stage2.toroidal_hypotheses[*i].faces,
+                                SelectedSurface::BSpline(i) => &output.stage2.bspline_hypotheses[*i].faces,
                             };
                             overlay.face_highlights.push(crate::viz::FaceHighlight {
                                 face_indices: mesh_faces.to_vec(),
@@ -3074,6 +3166,7 @@ fn compute_edge_curves_all(
                     }
                     SelectedSurface::Spherical(_) => "sphere",
                     SelectedSurface::Toroidal(_) => "torus",
+                    SelectedSurface::BSpline(_) => "bspline",
                 };
                 // Last resort: build the curve from the mesh boundary chain.
                 match edge_curve_from_boundary_chain(
@@ -3431,6 +3524,7 @@ fn validate_face_detailed(
                         }
                         SelectedSurface::Spherical(_) => "spherical",
                         SelectedSurface::Toroidal(_) => "toroidal",
+                        SelectedSurface::BSpline(_) => "bspline",
                     };
                     let mut issues = Vec::new();
                     if intersect != b_rep_check::Status::Noerror {
@@ -3787,6 +3881,7 @@ fn compare_surface_orientations_to_step(
             }
             SelectedSurface::Spherical(_) => "spherical",
             SelectedSurface::Toroidal(_) => "toroidal",
+            SelectedSurface::BSpline(_) => "bspline",
         };
 
         let is_convex = match surface {
@@ -3864,15 +3959,20 @@ fn compare_surface_orientations_to_step(
 // BRepBuilderAPI_Sewing is not used for construction (stage 3.5 validates).
 // ===========================================================================
 
-/// Analytic parameterization chart of a face's surface. Mirrors the gp_Ax3
-/// frame of the corresponding Geom surface, so UVs computed here agree
-/// exactly with OCCT's parameterization of that surface.
+/// Parameterization chart of a face's surface. For analytic kinds it
+/// mirrors the gp_Ax3 frame of the corresponding Geom surface, so UVs
+/// computed here agree exactly with OCCT's parameterization of that surface.
+/// For B-spline faces the chart wraps the exact fitted Geom_BSplineSurface
+/// (via ShapeAnalysis_Surface projection) — UVs are OCCT's own.
 struct SurfaceChart {
     origin: [f64; 3],
     x: [f64; 3],
     y: [f64; 3],
     z: [f64; 3],
     kind: ChartKind,
+    /// Populated exactly when `kind == ChartKind::BSpline` (kept out of
+    /// `ChartKind` so the enum stays `Copy` for the many by-value matches).
+    bspline: Option<BSplineChartData>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -3886,6 +3986,57 @@ enum ChartKind {
     Sphere { radius: f64 },
     /// U around the main axis, V around the tube; doubly periodic.
     Torus { major_radius: f64, minor_radius: f64 },
+    /// Fitted freeform patch: non-periodic in both directions, no poles.
+    /// Every seam/winding/degenerate-edge mechanism self-disables.
+    BSpline,
+}
+
+/// Chart data for a B-spline face: the exact fitted surface object (shared
+/// with `FaceDescriptor.surface`) and a cached ShapeAnalysis_Surface
+/// projector. The projector caches internally (hence RefCell), and each
+/// query is seeded from the previous solution (`NextValueOfUV`) — the
+/// B-spline analog of the analytic charts' branch-continuity unwrap.
+struct BSplineChartData {
+    surf: OwnedPtr<geom::HandleGeomSurface>,
+    sas: RefCell<OwnedPtr<shape_analysis::Surface>>,
+    seed: std::cell::Cell<Option<(f64, f64)>>,
+}
+
+impl BSplineChartData {
+    fn point_uv(&self, p: &[f64; 3]) -> (f64, f64) {
+        use crate::stage2::bspline::{PROJ_GAP_RECHECK, PROJ_MAX_PRECISION, PROJ_PRECISION};
+        let pnt = gp::Pnt::new_real3(p[0], p[1], p[2]);
+        let mut sas = self.sas.borrow_mut();
+        let mut best = match self.seed.get() {
+            Some((su, sv)) => {
+                let prev = gp::Pnt2d::new_real2(su, sv);
+                let uv = sas.next_value_of_uv(&prev, &pnt, PROJ_PRECISION, PROJ_MAX_PRECISION);
+                (uv.x(), uv.y(), sas.gap())
+            }
+            None => {
+                let uv = sas.value_of_uv(&pnt, PROJ_PRECISION);
+                (uv.x(), uv.y(), sas.gap())
+            }
+        };
+        // Re-verify suspicious seeded solutions with a fresh global search:
+        // NextValueOfUV's Newton step can settle in a nearby local minimum
+        // without triggering its internal fallback.
+        if self.seed.get().is_some() && best.2 > PROJ_GAP_RECHECK {
+            let uv = sas.value_of_uv(&pnt, PROJ_PRECISION);
+            let gap = sas.gap();
+            if gap < best.2 {
+                best = (uv.x(), uv.y(), gap);
+            }
+        }
+        self.seed.set(Some((best.0, best.1)));
+        (best.0, best.1)
+    }
+
+    fn point_at(&self, u: f64, v: f64) -> [f64; 3] {
+        let mut pnt = gp::Pnt::new_real3(0.0, 0.0, 0.0);
+        self.surf.get().d0(u, v, &mut pnt);
+        [pnt.x(), pnt.y(), pnt.z()]
+    }
 }
 
 const TWO_PI: f64 = 2.0 * std::f64::consts::PI;
@@ -3896,7 +4047,7 @@ fn dot3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
 
 impl SurfaceChart {
     fn u_periodic(&self) -> bool {
-        !matches!(self.kind, ChartKind::Plane)
+        !matches!(self.kind, ChartKind::Plane | ChartKind::BSpline)
     }
 
     fn v_periodic(&self) -> bool {
@@ -3908,6 +4059,12 @@ impl SurfaceChart {
     /// meaningless when that distance is ~0. u is reduced to [0, 2π) for
     /// periodic charts; v is reduced to [0, 2π) for the torus.
     fn point_uv(&self, p: &[f64; 3]) -> (f64, f64, f64) {
+        if let Some(bs) = &self.bspline {
+            // Fitted patches have no UV degeneracies: pole radius is ∞,
+            // like the plane chart.
+            let (u, v) = bs.point_uv(p);
+            return (u, v, f64::INFINITY);
+        }
         let d = [p[0] - self.origin[0], p[1] - self.origin[1], p[2] - self.origin[2]];
         let dx = dot3(&d, &self.x);
         let dy = dot3(&d, &self.y);
@@ -3932,11 +4089,15 @@ impl SurfaceChart {
                 let v = dz.atan2(rad - major_radius).rem_euclid(TWO_PI);
                 (dy.atan2(dx).rem_euclid(TWO_PI), v, rad)
             }
+            ChartKind::BSpline => unreachable!("handled by the early return above"),
         }
     }
 
     /// Evaluate the surface at (u, v). Used for pcurve deviation checks.
     fn point_at(&self, u: f64, v: f64) -> [f64; 3] {
+        if let Some(bs) = &self.bspline {
+            return bs.point_at(u, v);
+        }
         let (cu, su) = (u.cos(), u.sin());
         let (rad, h) = match self.kind {
             ChartKind::Plane => {
@@ -3952,6 +4113,7 @@ impl SurfaceChart {
             ChartKind::Torus { major_radius, minor_radius } => {
                 (major_radius + minor_radius * v.cos(), minor_radius * v.sin())
             }
+            ChartKind::BSpline => unreachable!("handled by the early return above"),
         };
         [
             self.origin[0] + rad * (cu * self.x[0] + su * self.y[0]) + h * self.z[0],
@@ -4027,7 +4189,7 @@ fn build_face_chart(
                 hyp.normal[2] * hyp.distance,
             ];
             let (x, y, z) = ax3_frame(origin, hyp.normal);
-            (SurfaceChart { origin, x, y, z, kind: ChartKind::Plane }, None)
+            (SurfaceChart { origin, x, y, z, kind: ChartKind::Plane, bspline: None }, None)
         }
         SelectedSurface::Conical(idx) => {
             let hyp = &stage2.conical_hypotheses[*idx];
@@ -4037,7 +4199,7 @@ fn build_face_chart(
             } else {
                 ChartKind::Cone { half_angle: hyp.half_angle }
             };
-            (SurfaceChart { origin: hyp.apex, x, y, z, kind }, None)
+            (SurfaceChart { origin: hyp.apex, x, y, z, kind, bspline: None }, None)
         }
         SelectedSurface::Spherical(idx) => {
             let hyp = &stage2.spherical_hypotheses[*idx];
@@ -4073,6 +4235,7 @@ fn build_face_chart(
                     y,
                     z,
                     kind: ChartKind::Sphere { radius: hyp.radius },
+                    bspline: None,
                 },
                 Some(handle),
             )
@@ -4090,6 +4253,32 @@ fn build_face_chart(
                         major_radius: hyp.major_radius,
                         minor_radius: hyp.minor_radius,
                     },
+                    bspline: None,
+                },
+                None,
+            )
+        }
+        SelectedSurface::BSpline(idx) => {
+            // The chart must wrap the exact fitted Geom_BSplineSurface
+            // stored in the hypothesis (and shared by fd.surface) — never a
+            // reconstruction. Both periodic flags are false and the pole
+            // radius is ∞, so the seam/winding/degenerate-pole machinery
+            // self-disables and these faces take the plain-loop path.
+            let hyp = &stage2.bspline_hypotheses[*idx];
+            let surf = hyp.surface.to_handle_surface();
+            let sas = shape_analysis::Surface::new_handlegeomsurface(&surf);
+            (
+                SurfaceChart {
+                    origin: [0.0; 3],
+                    x: [1.0, 0.0, 0.0],
+                    y: [0.0, 1.0, 0.0],
+                    z: [0.0, 0.0, 1.0],
+                    kind: ChartKind::BSpline,
+                    bspline: Some(BSplineChartData {
+                        surf,
+                        sas: RefCell::new(sas),
+                        seed: std::cell::Cell::new(None),
+                    }),
                 },
                 None,
             )
@@ -5823,6 +6012,8 @@ fn assemble_face(
         SelectedSurface::Spherical(idx) => !output.stage2.spherical_hypotheses[*idx].convex,
         SelectedSurface::Toroidal(idx) => !output.stage2.toroidal_hypotheses[*idx].convex,
         SelectedSurface::Planar(_) => false,
+        // B-spline fits orient the natural normal outward at fit time.
+        SelectedSurface::BSpline(_) => false,
     };
 
     let mut vertex_uvs = Vec::new();
@@ -6083,6 +6274,7 @@ fn create_occt_faces_all(
             }
             SelectedSurface::Spherical(_) => "spherical",
             SelectedSurface::Toroidal(_) => "toroidal",
+            SelectedSurface::BSpline(_) => "bspline",
         };
 
         let (face, is_concave) = if fd.edge_indices.is_empty() {

@@ -83,9 +83,9 @@ the `gen-test-models` binary (`./scripts/generate_occt_models.sh`) — used for
 models that ccad cannot express. `tests/occt/` holds analytic models such as
 `hollow_cube` (a solid with a fully enclosed internal void, for multi-shell
 solid support). `tests/nurbs/` holds freeform models (exact B-spline patches,
-conic/B-spline extrusions) targeting the planned NURBS fallback; they are
-expected to fail full `--compare` until that stage exists — see
-`tests/nurbs/README.md`. The generated STL/STEP pairs are committed.
+conic/B-spline extrusions) exercising the stage 2.7 NURBS fallback; 7 of the
+8 pass full `--compare` (the closed periodic `elliptical_cylinder` is out of
+scope for the first pass) — see `tests/nurbs/README.md`. The generated STL/STEP pairs are committed.
 
 ### Generating Test Models
 
@@ -126,7 +126,7 @@ At each BFS step, the window shows the STL mesh with highlighted faces: seed fac
 | Skip to face seed | `Click` on a face |
 | Quit visualization | `Q` |
 
-Supported stages: `2.1` (planar), `2.2` (cylindrical), `2.3` (spherical), `2.4` (conical), `2.6` (surface selection), `3.3` (edge curves), `3.4` (faces), `3.5` (shells), `3.6` (solids).
+Supported stages: `2.1` (planar), `2.2` (cylindrical), `2.3` (spherical), `2.4` (conical), `2.6` (surface selection), `2.7` (NURBS fallback), `3.3` (edge curves), `3.4` (faces), `3.5` (shells), `3.6` (solids).
 
 
 ## Viewer

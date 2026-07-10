@@ -16,7 +16,7 @@ impl Stage {
     fn last_minor(major: u8) -> u8 {
         match major {
             1 => 3,
-            2 => 6,
+            2 => 7,
             3 => 6,
             4 => 1,
             _ => 0,

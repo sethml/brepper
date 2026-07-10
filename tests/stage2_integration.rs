@@ -1624,6 +1624,7 @@ fn all_faces_covered_by_selection() {
                 stage2::SelectedSurface::Conical(i) => &output.conical_hypotheses[*i].faces,
                 stage2::SelectedSurface::Spherical(i) => &output.spherical_hypotheses[*i].faces,
                 stage2::SelectedSurface::Toroidal(i) => &output.toroidal_hypotheses[*i].faces,
+                stage2::SelectedSurface::BSpline(i) => &output.bspline_hypotheses[*i].faces,
             };
             for &fi in faces {
                 covered_faces.insert(fi);
@@ -2366,3 +2367,75 @@ test_stl_step_stage25_compare!(
     "tests/ccad/generated/filleted_pipe.stl",
     "tests/ccad/generated/filleted_pipe.step"
 );
+// ---------------------------------------------------------------------------
+// Stage 2.7: NURBS fallback (tests/nurbs models)
+// ---------------------------------------------------------------------------
+
+fn config_for_compare_stage27(stl_path: &str, step_path: &str) -> config::Config {
+    let mut config =
+        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=2.7", "-q"])
+            .unwrap();
+    config.load_compare_step().unwrap();
+    config
+}
+
+/// Count selected surfaces by (planar, bspline); assert nothing else was
+/// selected. Assertions are on stage 2.6 *selected* surfaces, per policy.
+fn planar_bspline_selection_counts(output: &stage2::Stage2Output) -> (usize, usize) {
+    let mut planar = 0;
+    let mut bspline = 0;
+    for s in &output.selected_surfaces {
+        match s {
+            stage2::SelectedSurface::Planar(_) => planar += 1,
+            stage2::SelectedSurface::BSpline(_) => bspline += 1,
+            other => panic!("unexpected selected surface type: {other:?}"),
+        }
+    }
+    (planar, bspline)
+}
+
+/// elliptical_arch: one non-periodic singly-curved patch over a strip mesh
+/// (2 vertex rings along the extrusion), plus bottom and two end walls.
+#[test]
+fn nurbs_elliptical_arch_stage27_selection() {
+    let stl = format!("{}/tests/nurbs/elliptical_arch.stl", manifest_dir());
+    let step = format!("{}/tests/nurbs/elliptical_arch.step", manifest_dir());
+    let config = config_for_compare_stage27(&stl, &step);
+    let output = run_stage2(&config);
+    let (planar, bspline) = planar_bspline_selection_counts(&output);
+    assert_eq!(bspline, 1, "arch surface should be one B-spline");
+    assert_eq!(planar, 3, "bottom + two end walls");
+    let hyp = &output.bspline_hypotheses[0];
+    assert!(
+        hyp.error_max <= config.surface_tolerance_mm,
+        "fit must respect surface tolerance (got {})",
+        hyp.error_max
+    );
+}
+
+/// bspline_wave: alternating-curvature extrusion over a strip mesh. The
+/// over-segmentation trap: accidental coplanar strip pairs at inflections
+/// must be absorbed into the freeform region, not fragment it.
+#[test]
+fn nurbs_bspline_wave_stage27_selection() {
+    let stl = format!("{}/tests/nurbs/bspline_wave.stl", manifest_dir());
+    let step = format!("{}/tests/nurbs/bspline_wave.step", manifest_dir());
+    let config = config_for_compare_stage27(&stl, &step);
+    let output = run_stage2(&config);
+    let (planar, bspline) = planar_bspline_selection_counts(&output);
+    assert_eq!(bspline, 1, "wave surface should be one B-spline, not fragments");
+    assert_eq!(planar, 5, "bottom + four walls");
+}
+
+/// chamfered_cube must be untouched by the NURBS fallback: every face is a
+/// single-face planar selection (45° chamfer junctions are sharp, and no
+/// component reaches the minimum size).
+#[test]
+fn nurbs_leaves_chamfered_cube_planar() {
+    let stl = format!("{}/tests/onshape/chamfered_cube_10_c1_medium.stl", manifest_dir());
+    let config = config::parse_config_from(["brepper", &stl, "--stage=2.7", "-q"]).unwrap();
+    let output = run_stage2(&config);
+    let (planar, bspline) = planar_bspline_selection_counts(&output);
+    assert_eq!(bspline, 0, "no freeform surfaces on a chamfered cube");
+    assert_eq!(planar, 26, "6 cube faces + 12 chamfers + 8 corner triangles");
+}

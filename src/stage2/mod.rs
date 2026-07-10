@@ -5,13 +5,17 @@
 //! 2.3: Deduce spherical hypotheses
 //! 2.4: Deduce toroidal hypotheses
 //! 2.5: Select surfaces for reconstruction
+//! 2.7: NURBS fallback — fit B-spline surfaces to leftover freeform regions
 
 mod bfs;
+pub(crate) mod bspline;
 mod conical;
 mod cylindrical;
 mod planar;
 mod spherical;
 mod toroidal;
+
+pub use self::bspline::BSplineHypothesis;
 
 use crate::config::Config;
 use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex};
@@ -196,8 +200,6 @@ pub struct ToroidalHypothesis {
     pub error_abs_sum: f64,
 }
 
-// TODO: Stage 2.8 - NURBS hypothesis
-
 /// Identifies a selected surface hypothesis by type and index.
 /// `Conical` indexes into `conical_hypotheses` and covers both cylinders (half_angle≈0) and true cones.
 #[derive(Debug, Clone, Copy)]
@@ -207,6 +209,8 @@ pub enum SelectedSurface {
     Conical(usize),
     Spherical(usize),
     Toroidal(usize),
+    /// Index into bspline_hypotheses (stage 2.7 NURBS fallback).
+    BSpline(usize),
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +251,9 @@ pub struct Stage2Output {
     pub spherical_hypotheses: Vec<SphericalHypothesis>,
     /// Selected toroidal hypotheses (after stage 2.6 pruning).
     pub toroidal_hypotheses: Vec<ToroidalHypothesis>,
+    /// B-spline hypotheses fitted by the stage 2.7 NURBS fallback. These own
+    /// the actual OCCT surfaces (stage 3 reuses the same objects).
+    pub bspline_hypotheses: Vec<BSplineHypothesis>,
     /// Surfaces selected in stage 2.6 for reconstruction. Each face is
     /// covered by exactly one selected surface. Indices point into the
     /// (pruned) hypothesis vectors above.
@@ -930,8 +937,12 @@ fn vertex_distance_to_selected(
     conical_hypotheses: &[ConicalHypothesis],
     spherical_hypotheses: &[SphericalHypothesis],
     toroidal_hypotheses: &[ToroidalHypothesis],
+    bspline_hypotheses: &[BSplineHypothesis],
 ) -> f64 {
     match surface {
+        SelectedSurface::BSpline(i) => {
+            bspline_hypotheses[*i].distance(&[v.x, v.y, v.z])
+        }
         SelectedSurface::Planar(i) => {
             let h = &planar_hypotheses[*i];
             (h.normal[0] * v.x + h.normal[1] * v.y + h.normal[2] * v.z - h.distance).abs()
@@ -983,6 +994,7 @@ fn refine_boundary_assignments(
     conical_hypotheses: &mut [ConicalHypothesis],
     spherical_hypotheses: &mut [SphericalHypothesis],
     toroidal_hypotheses: &mut [ToroidalHypothesis],
+    bspline_hypotheses: &mut [BSplineHypothesis],
     config: &Config,
 ) {
     let num_faces = mesh.faces.len();
@@ -992,7 +1004,8 @@ fn refine_boundary_assignments(
                          planar: &[PlanarHypothesis],
                          conical: &[ConicalHypothesis],
                          spherical: &[SphericalHypothesis],
-                         toroidal: &[ToroidalHypothesis]|
+                         toroidal: &[ToroidalHypothesis],
+                         bspline: &[BSplineHypothesis]|
      -> f64 {
         let face = &mesh.faces[fi];
         let vc = face.vertex_count as usize;
@@ -1001,6 +1014,7 @@ fn refine_boundary_assignments(
             .map(|&vi| {
                 vertex_distance_to_selected(
                     &mesh.vertices[vi], surface, planar, conical, spherical, toroidal,
+                    bspline,
                 )
             })
             .fold(0.0_f64, f64::max)
@@ -1016,6 +1030,7 @@ fn refine_boundary_assignments(
                 SelectedSurface::Conical(i) => &conical_hypotheses[*i].faces,
                 SelectedSurface::Spherical(i) => &spherical_hypotheses[*i].faces,
                 SelectedSurface::Toroidal(i) => &toroidal_hypotheses[*i].faces,
+                SelectedSurface::BSpline(i) => &bspline_hypotheses[*i].faces,
             };
             for &fi in faces {
                 face_to_surface[fi] = si;
@@ -1031,11 +1046,18 @@ fn refine_boundary_assignments(
             }
             let face = &mesh.faces[fi];
             let vc = face.vertex_count as usize;
+            // B-spline surfaces are not move targets (same domain-extension
+            // hazard as in absorption: the fit doesn't vouch for faces
+            // outside the region it was built from).
             let mut candidates: Vec<usize> = face.neighbors[..vc]
                 .iter()
                 .filter(|&&ni| ni >= 0)
                 .map(|&ni| face_to_surface[ni as usize])
-                .filter(|&sj| sj != usize::MAX && sj != si)
+                .filter(|&sj| {
+                    sj != usize::MAX
+                        && sj != si
+                        && !matches!(selected_surfaces[sj], SelectedSurface::BSpline(_))
+                })
                 .collect();
             if candidates.is_empty() {
                 continue;
@@ -1046,14 +1068,14 @@ fn refine_boundary_assignments(
             let d_own = face_max_dist(
                 fi, &selected_surfaces[si],
                 planar_hypotheses, conical_hypotheses,
-                spherical_hypotheses, toroidal_hypotheses,
+                spherical_hypotheses, toroidal_hypotheses, bspline_hypotheses,
             );
             let mut best: Option<(f64, usize)> = None;
             for &sj in &candidates {
                 let d = face_max_dist(
                     fi, &selected_surfaces[sj],
                     planar_hypotheses, conical_hypotheses,
-                    spherical_hypotheses, toroidal_hypotheses,
+                    spherical_hypotheses, toroidal_hypotheses, bspline_hypotheses,
                 );
                 if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
                     best = Some((d, sj));
@@ -1078,6 +1100,7 @@ fn refine_boundary_assignments(
                 SelectedSurface::Conical(i) => &mut conical_hypotheses[*i].faces,
                 SelectedSurface::Spherical(i) => &mut spherical_hypotheses[*i].faces,
                 SelectedSurface::Toroidal(i) => &mut toroidal_hypotheses[*i].faces,
+                SelectedSurface::BSpline(i) => &mut bspline_hypotheses[*i].faces,
             };
             faces.retain(|&f| f != fi);
         };
@@ -1091,6 +1114,7 @@ fn refine_boundary_assignments(
                 SelectedSurface::Conical(i) => &mut conical_hypotheses[*i].faces,
                 SelectedSurface::Spherical(i) => &mut spherical_hypotheses[*i].faces,
                 SelectedSurface::Toroidal(i) => &mut toroidal_hypotheses[*i].faces,
+                SelectedSurface::BSpline(i) => &mut bspline_hypotheses[*i].faces,
             };
             faces.push(fi);
         };
@@ -1145,6 +1169,12 @@ fn refine_boundary_assignments(
                     rebuild(&mut f, &mut h.vertices);
                     h.faces = f;
                 }
+                SelectedSurface::BSpline(i) => {
+                    let h = &mut bspline_hypotheses[*i];
+                    let mut f = std::mem::take(&mut h.faces);
+                    rebuild(&mut f, &mut h.vertices);
+                    h.faces = f;
+                }
             }
         }
         // Drop selected surfaces that lost all their faces.
@@ -1154,6 +1184,7 @@ fn refine_boundary_assignments(
                 SelectedSurface::Conical(i) => &conical_hypotheses[*i].faces,
                 SelectedSurface::Spherical(i) => &spherical_hypotheses[*i].faces,
                 SelectedSurface::Toroidal(i) => &toroidal_hypotheses[*i].faces,
+                SelectedSurface::BSpline(i) => &bspline_hypotheses[*i].faces,
             };
             !faces.is_empty()
         });
@@ -1187,6 +1218,10 @@ fn refine_boundary_assignments(
 /// of S's vertices lie within tolerance of T's geometry: a tight tolerance
 /// (10× vertex tolerance) for multi-face S (case 1: exact overlap), and the
 /// looser surface tolerance for S with ≤ 2 faces (case 2: chordal sag).
+/// The loose rule additionally requires T to have > 2 faces (a real
+/// surface): on a smooth freeform region every single-face strip lies
+/// within chordal tolerance of its neighbor, and orphan-to-orphan chaining
+/// would dissolve the regions the stage 2.7 NURBS fallback must gather.
 #[allow(clippy::too_many_arguments)]
 fn absorb_redundant_surfaces(
     mesh: &ConnectedMesh,
@@ -1195,19 +1230,22 @@ fn absorb_redundant_surfaces(
     conical_hypotheses: &mut [ConicalHypothesis],
     spherical_hypotheses: &mut [SphericalHypothesis],
     toroidal_hypotheses: &mut [ToroidalHypothesis],
+    bspline_hypotheses: &mut [BSplineHypothesis],
     config: &Config,
 ) {
     let surface_faces = |s: &SelectedSurface,
                          planar: &[PlanarHypothesis],
                          conical: &[ConicalHypothesis],
                          spherical: &[SphericalHypothesis],
-                         toroidal: &[ToroidalHypothesis]|
+                         toroidal: &[ToroidalHypothesis],
+                         bspline: &[BSplineHypothesis]|
      -> Vec<usize> {
         match s {
             SelectedSurface::Planar(i) => planar[*i].faces.clone(),
             SelectedSurface::Conical(i) => conical[*i].faces.clone(),
             SelectedSurface::Spherical(i) => spherical[*i].faces.clone(),
             SelectedSurface::Toroidal(i) => toroidal[*i].faces.clone(),
+            SelectedSurface::BSpline(i) => bspline[*i].faces.clone(),
         }
     };
 
@@ -1218,7 +1256,7 @@ fn absorb_redundant_surfaces(
         for (si, s) in selected_surfaces.iter().enumerate() {
             for fi in surface_faces(
                 s, planar_hypotheses, conical_hypotheses,
-                spherical_hypotheses, toroidal_hypotheses,
+                spherical_hypotheses, toroidal_hypotheses, bspline_hypotheses,
             ) {
                 face_to_surface[fi] = si;
                 areas[si] += face_area(&mesh.faces[fi], &mesh.vertices);
@@ -1230,18 +1268,17 @@ fn absorb_redundant_surfaces(
         for (si, s) in selected_surfaces.iter().enumerate() {
             let faces = surface_faces(
                 s, planar_hypotheses, conical_hypotheses,
-                spherical_hypotheses, toroidal_hypotheses,
+                spherical_hypotheses, toroidal_hypotheses, bspline_hypotheses,
             );
             if faces.is_empty() {
                 continue;
             }
-            let tol = if faces.len() <= 2 {
-                config.surface_tolerance_mm
-            } else {
-                config.vertex_tolerance_mm * 10.0
-            };
 
-            // Collect adjacent surfaces with strictly larger area.
+            // Collect adjacent surfaces with strictly larger area. B-spline
+            // surfaces are never absorption targets: the fit only vouches
+            // for the faces it was built from, and chordal absorption would
+            // extend the face beyond the fitted domain, where the OCCT
+            // surface extrapolates (observed as a 1.7% volume error).
             let mut adjacent: Vec<usize> = Vec::new();
             for &fi in &faces {
                 let face = &mesh.faces[fi];
@@ -1251,7 +1288,11 @@ fn absorb_redundant_surfaces(
                         continue;
                     }
                     let ti = face_to_surface[ni as usize];
-                    if ti != usize::MAX && ti != si && areas[ti] > areas[si] {
+                    if ti != usize::MAX
+                        && ti != si
+                        && areas[ti] > areas[si]
+                        && !matches!(selected_surfaces[ti], SelectedSurface::BSpline(_))
+                    {
                         adjacent.push(ti);
                     }
                 }
@@ -1273,6 +1314,21 @@ fn absorb_redundant_surfaces(
 
             for ti in adjacent {
                 let target = &selected_surfaces[ti];
+                // Loose (chordal) tolerance only for a ≤2-face orphan S
+                // absorbing into a real multi-face surface T. On a smooth
+                // freeform region every strip is within chordal tolerance of
+                // its neighbor, so orphan-to-orphan chaining would dissolve
+                // the single-face planar regions stage 2.7 needs to see.
+                let target_face_count = surface_faces(
+                    target, planar_hypotheses, conical_hypotheses,
+                    spherical_hypotheses, toroidal_hypotheses, bspline_hypotheses,
+                )
+                .len();
+                let tol = if faces.len() <= 2 && target_face_count > 2 {
+                    config.surface_tolerance_mm
+                } else {
+                    config.vertex_tolerance_mm * 10.0
+                };
                 let max_vert_dist = verts
                     .iter()
                     .map(|&vi| {
@@ -1280,6 +1336,7 @@ fn absorb_redundant_surfaces(
                             &mesh.vertices[vi], target,
                             planar_hypotheses, conical_hypotheses,
                             spherical_hypotheses, toroidal_hypotheses,
+                            bspline_hypotheses,
                         )
                     })
                     .fold(0.0_f64, f64::max);
@@ -1297,6 +1354,7 @@ fn absorb_redundant_surfaces(
                             &MeshVertex::from_xyz(c[0], c[1], c[2]), target,
                             planar_hypotheses, conical_hypotheses,
                             spherical_hypotheses, toroidal_hypotheses,
+                            bspline_hypotheses,
                         )
                     })
                     .fold(0.0_f64, f64::max);
@@ -1334,7 +1392,7 @@ fn absorb_redundant_surfaces(
             }
             let faces = surface_faces(
                 &selected_surfaces[si], planar_hypotheses, conical_hypotheses,
-                spherical_hypotheses, toroidal_hypotheses,
+                spherical_hypotheses, toroidal_hypotheses, bspline_hypotheses,
             );
             let mut verts: Vec<usize> = Vec::new();
             for &fi in &faces {
@@ -1347,17 +1405,19 @@ fn absorb_redundant_surfaces(
                         planar: &mut [PlanarHypothesis],
                         conical: &mut [ConicalHypothesis],
                         spherical: &mut [SphericalHypothesis],
-                        toroidal: &mut [ToroidalHypothesis]| {
+                        toroidal: &mut [ToroidalHypothesis],
+                        bspline: &mut [BSplineHypothesis]| {
                 match s {
                     SelectedSurface::Planar(i) => planar[*i].faces.clear(),
                     SelectedSurface::Conical(i) => conical[*i].faces.clear(),
                     SelectedSurface::Spherical(i) => spherical[*i].faces.clear(),
                     SelectedSurface::Toroidal(i) => toroidal[*i].faces.clear(),
+                    SelectedSurface::BSpline(i) => bspline[*i].faces.clear(),
                 }
             };
             take(
                 &selected_surfaces[si], planar_hypotheses, conical_hypotheses,
-                spherical_hypotheses, toroidal_hypotheses,
+                spherical_hypotheses, toroidal_hypotheses, bspline_hypotheses,
             );
             match &selected_surfaces[ti] {
                 SelectedSurface::Planar(i) => {
@@ -1384,6 +1444,12 @@ fn absorb_redundant_surfaces(
                     toroidal_hypotheses[*i].vertices.sort_unstable();
                     toroidal_hypotheses[*i].vertices.dedup();
                 }
+                SelectedSurface::BSpline(i) => {
+                    bspline_hypotheses[*i].faces.extend_from_slice(&faces);
+                    bspline_hypotheses[*i].vertices.extend_from_slice(&verts);
+                    bspline_hypotheses[*i].vertices.sort_unstable();
+                    bspline_hypotheses[*i].vertices.dedup();
+                }
             }
             merged_any = true;
         }
@@ -1392,7 +1458,7 @@ fn absorb_redundant_surfaces(
         selected_surfaces.retain(|s| {
             !surface_faces(
                 s, planar_hypotheses, conical_hypotheses,
-                spherical_hypotheses, toroidal_hypotheses,
+                spherical_hypotheses, toroidal_hypotheses, bspline_hypotheses,
             )
             .is_empty()
         });
@@ -1413,6 +1479,7 @@ fn prune_unselected_hypotheses(
     conical_hypotheses: &mut Vec<ConicalHypothesis>,
     spherical_hypotheses: &mut Vec<SphericalHypothesis>,
     toroidal_hypotheses: &mut Vec<ToroidalHypothesis>,
+    bspline_hypotheses: &mut Vec<BSplineHypothesis>,
     selected_surfaces: &mut [SelectedSurface],
 ) {
     // Collect which old indices are selected for each type.
@@ -1420,6 +1487,7 @@ fn prune_unselected_hypotheses(
     let mut conical_used = vec![false; conical_hypotheses.len()];
     let mut spherical_used = vec![false; spherical_hypotheses.len()];
     let mut toroidal_used = vec![false; toroidal_hypotheses.len()];
+    let mut bspline_used = vec![false; bspline_hypotheses.len()];
 
     for s in selected_surfaces.iter() {
         match s {
@@ -1427,6 +1495,7 @@ fn prune_unselected_hypotheses(
             SelectedSurface::Conical(i) => conical_used[*i] = true,
             SelectedSurface::Spherical(i) => spherical_used[*i] = true,
             SelectedSurface::Toroidal(i) => toroidal_used[*i] = true,
+            SelectedSurface::BSpline(i) => bspline_used[*i] = true,
         }
     }
 
@@ -1449,6 +1518,7 @@ fn prune_unselected_hypotheses(
     let conical_map = compact(conical_hypotheses, &conical_used);
     let spherical_map = compact(spherical_hypotheses, &spherical_used);
     let toroidal_map = compact(toroidal_hypotheses, &toroidal_used);
+    let bspline_map = compact(bspline_hypotheses, &bspline_used);
 
     // Remap all SelectedSurface indices.
     for s in selected_surfaces.iter_mut() {
@@ -1457,6 +1527,7 @@ fn prune_unselected_hypotheses(
             SelectedSurface::Conical(i) => *i = conical_map[*i],
             SelectedSurface::Spherical(i) => *i = spherical_map[*i],
             SelectedSurface::Toroidal(i) => *i = toroidal_map[*i],
+            SelectedSurface::BSpline(i) => *i = bspline_map[*i],
         }
     }
 }
@@ -1469,6 +1540,7 @@ fn compare_selected_surfaces(
     conical_hypotheses: &[ConicalHypothesis],
     spherical_hypotheses: &[SphericalHypothesis],
     toroidal_hypotheses: &[ToroidalHypothesis],
+    bspline_hypotheses: &[BSplineHypothesis],
     mesh: &ConnectedMesh,
     config: &Config,
 ) -> Result<(), Stage2CompareError> {
@@ -1483,12 +1555,16 @@ fn compare_selected_surfaces(
             }
             SelectedSurface::Spherical(i) => ("spherical", &spherical_hypotheses[*i].faces),
             SelectedSurface::Toroidal(i) => ("toroidal", &toroidal_hypotheses[*i].faces),
+            SelectedSurface::BSpline(i) => ("bspline", &bspline_hypotheses[*i].faces),
         };
 
         let projected_points: Vec<[f64; 3]> = face_indices.iter().map(|&fi| {
             let centroid = face_centroid(&mesh.faces[fi], &mesh.vertices);
 
             match surface {
+                SelectedSurface::BSpline(i) => {
+                    bspline_hypotheses[*i].project_point(&centroid)
+                }
                 SelectedSurface::Planar(i) => {
                     let hyp = &planar_hypotheses[*i];
                     let dist_to_plane = hyp.normal[0] * centroid[0]
@@ -1890,6 +1966,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
             conical_hypotheses: Vec::new(),
             spherical_hypotheses: Vec::new(),
             toroidal_hypotheses: Vec::new(),
+            bspline_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -1903,6 +1980,7 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
             conical_hypotheses: Vec::new(),
             spherical_hypotheses: Vec::new(),
             toroidal_hypotheses: Vec::new(),
+            bspline_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -2001,6 +2079,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             conical_hypotheses: Vec::new(),
             spherical_hypotheses,
             toroidal_hypotheses: Vec::new(),
+            bspline_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -2086,6 +2165,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
             conical_hypotheses: Vec::new(),
             spherical_hypotheses,
             toroidal_hypotheses,
+            bspline_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -2163,6 +2243,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
             conical_hypotheses,
             spherical_hypotheses,
             toroidal_hypotheses,
+            bspline_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -2177,6 +2258,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
             conical_hypotheses,
             spherical_hypotheses,
             toroidal_hypotheses,
+            bspline_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -2188,6 +2270,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
             conical_hypotheses,
             spherical_hypotheses,
             toroidal_hypotheses,
+            bspline_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
         });
     }
@@ -2201,12 +2284,30 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
         config.verbosity,
     );
 
+    let mut bspline_hypotheses: Vec<BSplineHypothesis> = Vec::new();
+
+    // Stage 2.7: NURBS fallback — fit B-spline surfaces to connected
+    // components of leftover single-face planar selections. This runs on
+    // the raw selection, BEFORE absorption: the absorb pass legitimately
+    // grows small accidental analytic fits (e.g. cylinder ribbons on a
+    // freeform surface) with the exactly-on-surface facets around them,
+    // which would hide them from the freeform region gathering.
+    if config.stage.at_least(2, 7) {
+        let viz_27 = if config.viz_active(2, 7) { viz } else { None };
+        bspline::deduce_bspline_surfaces(
+            &mesh, &mut selected_surfaces, &mut planar_hypotheses,
+            &conical_hypotheses, &spherical_hypotheses, &toroidal_hypotheses,
+            &mut bspline_hypotheses, viz_27, config,
+        );
+    }
+
     // Merge spurious sub-fit surfaces and tangent-junction orphan facets
-    // into larger adjacent surfaces before reconstruction.
+    // into larger adjacent surfaces (including freshly fitted B-splines)
+    // before reconstruction.
     absorb_redundant_surfaces(
         &mesh, &mut selected_surfaces, &mut planar_hypotheses,
         &mut conical_hypotheses, &mut spherical_hypotheses,
-        &mut toroidal_hypotheses, config,
+        &mut toroidal_hypotheses, &mut bspline_hypotheses, config,
     );
 
     // Move border faces to the adjacent surface that fits them better —
@@ -2215,14 +2316,14 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
     refine_boundary_assignments(
         &mesh, &mut selected_surfaces, &mut planar_hypotheses,
         &mut conical_hypotheses, &mut spherical_hypotheses,
-        &mut toroidal_hypotheses, config,
+        &mut toroidal_hypotheses, &mut bspline_hypotheses, config,
     );
 
     // Prune hypotheses that were not selected, keeping only the winning ones.
     prune_unselected_hypotheses(
         &mut planar_hypotheses, &mut conical_hypotheses,
         &mut spherical_hypotheses, &mut toroidal_hypotheses,
-        &mut selected_surfaces,
+        &mut bspline_hypotheses, &mut selected_surfaces,
     );
 
     if config.verbosity >= 1 {
@@ -2231,6 +2332,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
         let mut spherical_count = 0;
         let mut conical_count = 0;
         let mut toroidal_count = 0;
+        let mut bspline_count = 0;
         for s in &selected_surfaces {
             match s {
                 SelectedSurface::Planar(_) => planar_count += 1,
@@ -2243,10 +2345,11 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
                 }
                 SelectedSurface::Spherical(_) => spherical_count += 1,
                 SelectedSurface::Toroidal(_) => toroidal_count += 1,
+                SelectedSurface::BSpline(_) => bspline_count += 1,
             }
         }
         eprintln!(
-            "Stage 2.6 ({:.3}s): Selected {} surfaces ({} planar, {} cylindrical, {} spherical, {} conical, {} toroidal) covering {} faces",
+            "Stage 2.6 ({:.3}s): Selected {} surfaces ({} planar, {} cylindrical, {} spherical, {} conical, {} toroidal, {} bspline) covering {} faces",
             t.elapsed().as_secs_f64(),
             selected_surfaces.len(),
             planar_count,
@@ -2254,6 +2357,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
             spherical_count,
             conical_count,
             toroidal_count,
+            bspline_count,
             mesh.faces.len(),
         );
     }
@@ -2262,7 +2366,8 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
     if config.compare_shape.is_some() {
         compare_selected_surfaces(
             &selected_surfaces, &planar_hypotheses, &conical_hypotheses,
-            &spherical_hypotheses, &toroidal_hypotheses, &mesh, config,
+            &spherical_hypotheses, &toroidal_hypotheses, &bspline_hypotheses,
+            &mesh, config,
         )?;
         if config.verbosity >= 1 {
             eprintln!("  Compare: all selected surface centroids within tolerance");
@@ -2275,6 +2380,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
         conical_hypotheses,
         spherical_hypotheses,
         toroidal_hypotheses,
+        bspline_hypotheses,
         selected_surfaces,
     })
 }

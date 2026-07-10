@@ -144,9 +144,10 @@ brepper <input.stl> -o <tmpfile>.step --compare <input.step>
 Special flags:
 - `rounded_cube_10_r2_coarse`: `--angular-tolerance 20`
 
-Models in `nurbs/` target the planned DEVELOPMENT_PLAN §2.7 NURBS fallback
-and are EXPECTED to fail until it lands (see tests/nurbs/README.md); they
-are counted under "failing non-bad" below to keep the scoreboard honest.
+Models in `nurbs/` exercise the DEVELOPMENT_PLAN §2.7 NURBS fallback (see
+tests/nurbs/README.md). `elliptical_cylinder` (closed periodic freeform
+wall) is out of scope for the first §2.7 pass and EXPECTED to fail; it is
+counted under "failing non-bad" below to keep the scoreboard honest.
 
 HEADER
 

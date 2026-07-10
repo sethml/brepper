@@ -271,3 +271,24 @@ of edge curves (the chain is ground truth for any junction). Fixes cone_tangent_
 (apex-cap disks; volume 60% off → 1e-7 relative) and improves stepped_block_toroidal
 volume (2.7e-3 → 1.6e-3); ReconEdge.pcurves and BRepVertex.uv_coords are now populated.
 Full suite green; 52/57 models pass (only bad/ fail, by design).
+
+## Stage 2.7 NURBS fallback (DEVELOPMENT_PLAN §2.7)
+Freeform regions — connected components of leftover single-face planar selections,
+grown across smooth edges and absorbing the small accidental analytic fits freeform
+surfaces bait (coplanar strip pairs at inflections, cylinder ribbons, bump-peak
+cones) — are Floater-mean-value parameterized onto the unit square, resampled at
+mesh-vertex-aligned grid stations, fitted with GeomAPI_PointsToBSplineSurface
+(interpolation first; OCCT's approximator overshoots its Tol3D near curved patch
+boundaries), and validated per-vertex against --surface-tolerance with
+own-UV-seeded projections. Stage 3 reconstructs them through a B-spline
+SurfaceChart wrapping the exact fitted surface (ShapeAnalysis_Surface with a
+local-minimum gap re-check); the seam/winding/pole machinery self-disables.
+Planes tangent to a region along their entire shared boundary merge in (blister's
+exactly-planar margin); B-splines are never absorption/refinement targets (the
+fit doesn't vouch beyond its region). The boundary-chain edge repair gained its
+B-spline third arm (line/circle/B-spline, best by chain deviation) — first
+demanded by the arch's elliptical junctions. Runs before absorption so accidental
+analytic fits can't hide from gathering. 7 of the 8 tests/nurbs models pass full
+--compare (volumes 2.7e-6…5.2e-3 relative to the exact references);
+elliptical_cylinder (closed periodic wall needing a seam) remains out of scope.
+59/65 zoo models pass; full suite green (476 tests).
