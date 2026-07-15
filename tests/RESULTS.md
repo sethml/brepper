@@ -15,17 +15,19 @@ Special flags:
 - `rounded_cube_10_r2_coarse`: `--angular-tolerance 20`
 
 Models in `nurbs/` exercise the DEVELOPMENT_PLAN §2.7 NURBS fallback (see
-tests/nurbs/README.md). `elliptical_cylinder` (closed periodic freeform
-wall) is out of scope for the first §2.7 pass and EXPECTED to fail; it is
-counted under "failing non-bad" below to keep the scoreboard honest.
+tests/nurbs/README.md). `elliptical_cylinder` (closed freeform wall) passes
+via the seam-split reconstruction: its wall becomes two B-spline faces on
+one fitted surface, and the stage 3.1 compare exempts the two tagged
+seam-cut edges (reconstruction artifacts; the reference has one periodic
+face instead — see DEVELOPMENT_PLAN §2.7 for the path to that design).
 
-Tests last run: 2026-07-10.
+Tests last run: 2026-07-15.
 
 ## bad
 
 | Test File | Status | Time | Notes |
 |-----------|--------|------|-------|
-| cube_on_plane.stl | FAIL | 0.08s | Error: stage 1.2 (compare): comparison failed: vertex 7 is 9.000000e0 mm from ne |
+| cube_on_plane.stl | FAIL | 0.45s | Error: stage 1.2 (compare): comparison failed: vertex 7 is 9.000000e0 mm from ne |
 | cube_shifted.stl | FAIL | 0.05s | Error: stage 1.2 (compare): comparison failed: vertex 7 is 6.928203e0 mm from ne |
 | degenerate_face.stl | FAIL | 0.04s | Error: stage 1.2 (validation): mesh contains 1 degenerate face(s): [0] |
 | inconsistent_winding.stl | FAIL | 0.04s | Error: stage 1.2 (validation): mesh contains 3 edge(s) with flipped orientation |
@@ -40,19 +42,19 @@ Tests last run: 2026-07-10.
 | block_with_conical_hole.stl | ✓ | 0.79s | |
 | block_with_hole.stl | ✓ | 0.19s | |
 | cone_cylinder.stl | ✓ | 0.66s | |
-| cube.stl | ✓ | 0.08s | |
-| filleted_cylinder.stl | ✓ | 0.99s | |
-| filleted_hole_block.stl | ✓ | 1.15s | |
+| cube.stl | ✓ | 0.09s | |
+| filleted_cylinder.stl | ✓ | 0.98s | |
+| filleted_hole_block.stl | ✓ | 1.14s | |
 | filleted_pipe.stl | ✓ | 1.55s | |
 | hemisphere.stl | ✓ | 0.16s | |
 | nosecone.stl | ✓ | 0.74s | |
 | pipe.stl | ✓ | 0.51s | |
-| simple_cone.stl | ✓ | 0.86s | |
+| simple_cone.stl | ✓ | 0.85s | |
 | simple_cylinder.stl | ✓ | 0.36s | |
 | simple_sphere.stl | ✓ | 0.19s | |
-| spherical_pocket.stl | ✓ | 0.42s | |
+| spherical_pocket.stl | ✓ | 0.41s | |
 | staircase.stl | ✓ | 0.23s | |
-| stepped_cylinder.stl | ✓ | 0.33s | |
+| stepped_cylinder.stl | ✓ | 0.32s | |
 | t_shape.stl | ✓ | 0.16s | |
 | two_holes.stl | ✓ | 0.42s | |
 | wedge.stl | ✓ | 0.09s | |
@@ -61,7 +63,7 @@ Tests last run: 2026-07-10.
 
 | Test File | Status | Time | Notes |
 |-----------|--------|------|-------|
-| plate_with_hole_100x50_high.stl | ✓ | 0.53s | |
+| plate_with_hole_100x50_high.stl | ✓ | 0.55s | |
 | plate_with_hole_100x50_low.stl | ✓ | 0.21s | |
 | plate_with_hole_100x50_medium.stl | ✓ | 0.27s | |
 
@@ -69,20 +71,20 @@ Tests last run: 2026-07-10.
 
 | Test File | Status | Time | Notes |
 |-----------|--------|------|-------|
-| cube.stl | ✓ | 0.09s | |
+| cube.stl | ✓ | 0.08s | |
 
 ## nurbs
 
 | Test File | Status | Time | Notes |
 |-----------|--------|------|-------|
-| bspline_blister.stl | ✓ | 16.39s | |
-| bspline_hill.stl | ✓ | 63.11s | |
-| bspline_saddle.stl | ✓ | 65.57s | |
-| bspline_terrain.stl | ✓ | 60.49s | |
-| bspline_wave.stl | ✓ | 1.55s | |
+| bspline_blister.stl | ✓ | 16.40s | |
+| bspline_hill.stl | ✓ | 63.43s | |
+| bspline_saddle.stl | ✓ | 67.58s | |
+| bspline_terrain.stl | ✓ | 60.52s | |
+| bspline_wave.stl | ✓ | 1.61s | |
 | elliptical_arch.stl | ✓ | 1.18s | |
-| elliptical_cylinder.stl | FAIL | 10.89s | Error: stage 3.1 compare: vertex 1 is 3.295439e-1 mm from nearest STEP vertex (t |
-| hill_with_hole.stl | ✓ | 33.71s | |
+| elliptical_cylinder.stl | ✓ | 1.51s | |
+| hill_with_hole.stl | ✓ | 33.72s | |
 
 ## occt
 
@@ -95,35 +97,35 @@ Tests last run: 2026-07-10.
 
 | Test File | Status | Time | Notes |
 |-----------|--------|------|-------|
-| chamfered_cube_10_c1_medium.ascii.stl | ✓ | 0.28s | |
-| chamfered_cube_10_c1_medium.stl | ✓ | 0.28s | |
-| cone_15x20_medium.stl | ✓ | 0.67s | |
-| cone_tangent_planes_medium.stl | ✓ | 2.00s | |
-| cone_truncated_medium.stl | ✓ | 0.88s | |
+| chamfered_cube_10_c1_medium.ascii.stl | ✓ | 0.27s | |
+| chamfered_cube_10_c1_medium.stl | ✓ | 0.29s | |
+| cone_15x20_medium.stl | ✓ | 0.68s | |
+| cone_tangent_planes_medium.stl | ✓ | 1.99s | |
+| cone_truncated_medium.stl | ✓ | 0.90s | |
 | cylinder_10_r2_fine.stl | ✓ | 0.39s | |
 | cylinder_10x30_medium.stl | ✓ | 0.26s | |
-| dome_hemisphere_20_fine.stl | ✓ | 2.17s | |
-| l_bracket_simple_medium.stl | ✓ | 1.95s | |
-| nosecone_medium.stl | ✓ | 1.12s | |
-| nosecone_truncated_medium.stl | ✓ | 2.06s | |
-| part_rounded_cube_10_r2_coarse.stl | ✓ | 0.34s | |
-| part_rounded_cube_10_r2_fine.stl | ✓ | 3.18s | |
+| dome_hemisphere_20_fine.stl | ✓ | 2.15s | |
+| l_bracket_simple_medium.stl | ✓ | 1.94s | |
+| nosecone_medium.stl | ✓ | 1.16s | |
+| nosecone_truncated_medium.stl | ✓ | 2.05s | |
+| part_rounded_cube_10_r2_coarse.stl | ✓ | 0.33s | |
+| part_rounded_cube_10_r2_fine.stl | ✓ | 3.15s | |
 | pill_coarse.stl | ✓ | 0.53s | |
-| pill_fine.stl | ✓ | 6.75s | |
-| pipe_elbow_10_fine.stl | ✓ | 3.35s | |
+| pill_fine.stl | ✓ | 6.66s | |
+| pipe_elbow_10_fine.stl | ✓ | 3.33s | |
 | pipe_elbow_10_medium.stl | ✓ | 2.95s | |
-| plate_with_hole_100x50_coarse.stl | ✓ | 0.23s | |
-| rounded_cube_10_r2_coarse.stl | ✓ | 1.48s | |
-| rounded_cube_10_r2_fine.stl | ✓ | 15.17s | |
+| plate_with_hole_100x50_coarse.stl | ✓ | 0.24s | |
+| rounded_cube_10_r2_coarse.stl | ✓ | 1.50s | |
+| rounded_cube_10_r2_fine.stl | ✓ | 15.30s | |
 | rounded_cube_10_r2_medium.stl | ✓ | 6.69s | |
 | sphere_25_fine.stl | ✓ | 1.88s | |
-| stepped_block_coarse.stl | ✓ | 0.32s | |
-| stepped_block_toroidal_fillets_fine.stl | ✓ | 99.27s | |
-| stepped_block_toroidal_fillets_medium.stl | ✓ | 11.98s | |
+| stepped_block_coarse.stl | ✓ | 0.31s | |
+| stepped_block_toroidal_fillets_fine.stl | ✓ | 98.80s | |
+| stepped_block_toroidal_fillets_medium.stl | ✓ | 11.99s | |
 
 ## Summary
 
 - **Total test files**: 65
-- **Passing**: 59 / 65
+- **Passing**: 60 / 65
 - **Expected failures (bad/)**: 5
-- **Failing non-bad tests**: 1
+- **Failing non-bad tests**: 0

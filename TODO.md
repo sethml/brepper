@@ -37,18 +37,22 @@ Freeform regions are gathered from leftover single-face planar selections (plus
 small accidental analytic fits) across smooth edges, Floater-mean-value
 parameterized, resampled at mesh-vertex-aligned stations, fitted with
 `GeomAPI_PointsToBSplineSurface` (interpolation first), and reconstructed through
-stage 3 via a B-spline chart wrapping the exact fitted surface. 7 of the 8
-tests/nurbs models pass full `--compare` (volumes 2.7e-6…5.2e-3 relative); see
-DEVELOPMENT_PLAN §2.7 for the as-built algorithm and its measured design rules.)
+stage 3 via a B-spline chart wrapping the exact fitted surface. All 8
+tests/nurbs models pass full `--compare` (volumes 2.7e-6…5.2e-3 relative;
+elliptical_cylinder via the seam-split, see below); see DEVELOPMENT_PLAN §2.7
+for the as-built algorithm and its measured design rules.)
 
 # Deferred
 
 ## NURBS follow-ups
-- `elliptical_cylinder` (last of the tests/nurbs ladder): a closed periodic freeform
-  wall needs a periodic B-spline face + seam. The parameterization correctly rejects
-  it today (a closed wall flattens to an annulus, not a disk); support means a
-  periodic fit path plus seam handling in stage 3.4 (the analytic seam machinery is
-  chart-driven and could extend).
+- Non-compromised closed-band reconstruction: `elliptical_cylinder` passes via the
+  seam-split (two B-spline faces on one fitted surface, two tagged artificial edges
+  exempted from the stage 3.1 compare). CAD kernels and the reference write ONE
+  periodic face with a seam edge instead. DEVELOPMENT_PLAN §2.7 "Path to the
+  non-compromised design" lists the steps (periodic Interpolate, U-knot rescale to
+  2π so the existing wrapped-face machinery applies, periodic chart flag, seam
+  anchors, periodic chain repair); the acceptance test is removing the compare
+  exemption.
 - Periodic chain repair: `repair_edge_curve_from_boundary`'s B-spline arm covers open
   chains only; a closed freeform junction that IntSS misses would need a periodic
   interpolation (`GeomAPI_Interpolate` with the periodic flag).

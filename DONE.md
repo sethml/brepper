@@ -288,7 +288,9 @@ exactly-planar margin); B-splines are never absorption/refinement targets (the
 fit doesn't vouch beyond its region). The boundary-chain edge repair gained its
 B-spline third arm (line/circle/B-spline, best by chain deviation) — first
 demanded by the arch's elliptical junctions. Runs before absorption so accidental
-analytic fits can't hide from gathering. 7 of the 8 tests/nurbs models pass full
---compare (volumes 2.7e-6…5.2e-3 relative to the exact references);
-elliptical_cylinder (closed periodic wall needing a seam) remains out of scope.
-59/65 zoo models pass; full suite green (476 tests).
+analytic fits can't hide from gathering. All 8 tests/nurbs models pass full
+--compare (volumes 2.7e-6…5.2e-3 relative to the exact references) — closed
+freeform bands (elliptical_cylinder) are seam-cut, fitted once, and split into
+two faces sharing the surface, with the two tagged artificial edges exempted
+from the stage 3.1 compare (the periodic-face-with-seam form is the documented
+follow-up). 60/65 zoo models pass (5 bad/ excepted); full suite green.

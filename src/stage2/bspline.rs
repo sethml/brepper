@@ -25,7 +25,7 @@
 //! grid — the ruling direction simply has no interior unknowns to solve.
 
 use crate::config::Config;
-use crate::stage1::{ConnectedMesh, MeshVertex};
+use crate::stage1::ConnectedMesh;
 use crate::viz::{self, VizAction, VizSender};
 use opencascade_sys::{
     approx, geom, geom_abs, geom_api, gp, shape_analysis, t_colgp, OwnedPtr,
@@ -118,6 +118,11 @@ pub struct BSplineHypothesis {
     pub v_degree: i32,
     pub nb_u_poles: i32,
     pub nb_v_poles: i32,
+    /// Set (to a common value) on the two hypotheses produced by seam-
+    /// splitting one fitted closed-band surface: the edges between them are
+    /// reconstruction artifacts with no reference counterpart, and the
+    /// stage 3.1 compare exempts exactly those.
+    pub shared_surface_group: Option<usize>,
 }
 
 impl std::fmt::Debug for BSplineHypothesis {
@@ -130,6 +135,7 @@ impl std::fmt::Debug for BSplineHypothesis {
             .field("centroid_error_max", &self.centroid_error_max)
             .field("degree", &(self.u_degree, self.v_degree))
             .field("poles", &(self.nb_u_poles, self.nb_v_poles))
+            .field("shared_surface_group", &self.shared_surface_group)
             .finish()
     }
 }
@@ -157,6 +163,7 @@ impl BSplineHypothesis {
             v_degree,
             nb_u_poles,
             nb_v_poles,
+            shared_surface_group: None,
         }
     }
 
@@ -255,21 +262,36 @@ impl BSplineHypothesis {
 // Region extraction
 // ---------------------------------------------------------------------------
 
+/// Sentinel "outside selection" id for boundary edges created by a seam
+/// cut: they were interior mesh edges, so no outside selection exists. A
+/// distinct value from usize::MAX (open mesh boundary) so corner detection
+/// sees transitions exactly at the cut endpoints.
+const CUT_OUTSIDE: usize = usize::MAX - 1;
+
 /// A connected freeform region: faces, triangulated geometry, and ordered
 /// boundary loops (region on the left of each directed boundary edge, i.e.
-/// counter-clockwise seen from outside the solid).
+/// counter-clockwise seen from outside the solid). Vertices are indexed
+/// LOCALLY: a seam cut duplicates the cut-path vertices, so one global mesh
+/// vertex can appear as two local vertices.
 struct Region {
     faces: Vec<usize>,
-    /// Region triangulation (quads split along the v0–v2 diagonal), global
+    /// Region triangulation (quads split along the v0–v2 diagonal), local
     /// vertex indices, mesh winding preserved.
     tris: Vec<[usize; 3]>,
-    /// Sorted unique global vertex indices.
+    /// Region face index (into `faces`) of each triangle.
+    tri_face: Vec<usize>,
+    /// Local → global mesh vertex index (seam-cut clones repeat one).
     verts: Vec<usize>,
-    /// Global → local vertex index.
-    local: HashMap<usize, usize>,
-    /// Boundary loops as ordered (vertex, outside_surface_id) pairs: the
-    /// directed boundary edge starts at `vertex` and is shared with a face
-    /// of selected surface `outside_surface_id`.
+    /// Local vertex positions (clones repeat their original's).
+    positions: Vec<[f64; 3]>,
+    /// Global → one local index (originals win over clones), for seeding.
+    global_to_local: HashMap<usize, usize>,
+    /// Outside selection id per undirected GLOBAL vertex pair of the
+    /// original region boundary (global keys are clone-transparent).
+    outside: HashMap<(usize, usize), usize>,
+    /// Boundary loops as ordered (local vertex, outside_surface_id) pairs:
+    /// the directed boundary edge starts at `vertex` and is shared with a
+    /// face of selected surface `outside_surface_id` (or CUT_OUTSIDE).
     loops: Vec<Vec<(usize, usize)>>,
 }
 
@@ -279,27 +301,42 @@ fn build_region(
     face_to_selected: &[usize],
     in_region: &[bool],
 ) -> Result<Region, String> {
-    let mut tris = Vec::with_capacity(faces.len() * 2);
     let mut vert_set = HashSet::new();
-    // Directed boundary edges: (a → b, outside surface id).
-    let mut boundary_next: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
-    let mut n_boundary_edges = 0usize;
-
     for &fi in &faces {
+        let face = &mesh.faces[fi];
+        for &v in &face.vertex_indices[..face.vertex_count as usize] {
+            vert_set.insert(v);
+        }
+    }
+    let mut verts: Vec<usize> = vert_set.into_iter().collect();
+    verts.sort_unstable();
+    let global_to_local: HashMap<usize, usize> =
+        verts.iter().enumerate().map(|(li, &vi)| (vi, li)).collect();
+    let positions: Vec<[f64; 3]> = verts
+        .iter()
+        .map(|&vi| {
+            let v = &mesh.vertices[vi];
+            [v.x, v.y, v.z]
+        })
+        .collect();
+
+    let mut tris = Vec::with_capacity(faces.len() * 2);
+    let mut tri_face = Vec::with_capacity(faces.len() * 2);
+    let mut outside: HashMap<(usize, usize), usize> = HashMap::new();
+    for (rf, &fi) in faces.iter().enumerate() {
         let face = &mesh.faces[fi];
         let vc = face.vertex_count as usize;
         let vi = &face.vertex_indices;
-        for &v in &vi[..vc] {
-            vert_set.insert(v);
-        }
-        tris.push([vi[0], vi[1], vi[2]]);
+        let l = |g: usize| global_to_local[&g];
+        tris.push([l(vi[0]), l(vi[1]), l(vi[2])]);
+        tri_face.push(rf);
         if vc == 4 {
-            tris.push([vi[0], vi[2], vi[3]]);
+            tris.push([l(vi[0]), l(vi[2]), l(vi[3])]);
+            tri_face.push(rf);
         }
         for k in 0..vc {
             let ni = face.neighbors[k];
-            let outside = ni >= 0 && !in_region[ni as usize];
-            if ni < 0 || outside {
+            if ni < 0 || !in_region[ni as usize] {
                 let a = vi[k];
                 let b = vi[(k + 1) % vc];
                 let outside_id = if ni >= 0 {
@@ -307,14 +344,63 @@ fn build_region(
                 } else {
                     usize::MAX
                 };
-                boundary_next.entry(a).or_default().push((b, outside_id));
-                n_boundary_edges += 1;
+                outside.insert((a.min(b), a.max(b)), outside_id);
             }
         }
     }
 
-    // Chain directed boundary edges into loops. Start each loop at its
-    // smallest unconsumed vertex for determinism.
+    let mut region = Region {
+        faces,
+        tris,
+        tri_face,
+        verts,
+        positions,
+        global_to_local,
+        outside,
+        loops: Vec::new(),
+    };
+    region.loops = chain_boundary_loops(&region)?;
+    if region.loops.is_empty() {
+        return Err("region has no boundary loop".to_string());
+    }
+    Ok(region)
+}
+
+/// Chain the triangulation's boundary edges (edges with exactly one
+/// incident triangle) into ordered loops, region on the left. Outside ids
+/// come from the region's global-pair map; edges absent from it are
+/// seam-cut edges.
+fn chain_boundary_loops(region: &Region) -> Result<Vec<Vec<(usize, usize)>>, String> {
+    // Count incidences per undirected local edge; remember the directed
+    // form each edge takes in its (unique, for boundary edges) triangle.
+    let mut count: HashMap<(usize, usize), (u32, (usize, usize))> = HashMap::new();
+    for tri in &region.tris {
+        for k in 0..3 {
+            let (a, b) = (tri[k], tri[(k + 1) % 3]);
+            let e = count.entry((a.min(b), a.max(b))).or_insert((0, (a, b)));
+            e.0 += 1;
+            e.1 = (a, b);
+        }
+    }
+    let mut boundary_next: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+    let mut n_boundary_edges = 0usize;
+    for (&key, &(c, (a, b))) in &count {
+        if c == 1 {
+            let ga = region.verts[key.0];
+            let gb = region.verts[key.1];
+            let outside_id = region
+                .outside
+                .get(&(ga.min(gb), ga.max(gb)))
+                .copied()
+                .unwrap_or(CUT_OUTSIDE);
+            boundary_next.entry(a).or_default().push((b, outside_id));
+            n_boundary_edges += 1;
+        }
+    }
+    // Deterministic chaining: smallest start vertex, smallest next first.
+    for outs in boundary_next.values_mut() {
+        outs.sort_unstable();
+    }
     let mut loops = Vec::new();
     let mut consumed = 0usize;
     while consumed < n_boundary_edges {
@@ -330,11 +416,11 @@ fn build_region(
             let outs = boundary_next
                 .get_mut(&cur)
                 .filter(|o| !o.is_empty())
-                .ok_or_else(|| format!("open boundary chain at vertex {cur}"))?;
+                .ok_or_else(|| format!("open boundary chain at local vertex {cur}"))?;
             // A vertex can have two outgoing boundary edges when the region
             // touches itself at a vertex; taking any unconsumed edge still
             // partitions the boundary into valid loops.
-            let (next, outside_id) = outs.swap_remove(0);
+            let (next, outside_id) = outs.remove(0);
             lp.push((cur, outside_id));
             consumed += 1;
             cur = next;
@@ -349,41 +435,250 @@ fn build_region(
             loops.push(lp);
         }
     }
-    if loops.is_empty() {
-        return Err("region has no boundary loop".to_string());
-    }
+    Ok(loops)
+}
 
-    let mut verts: Vec<usize> = vert_set.into_iter().collect();
-    verts.sort_unstable();
-    let local: HashMap<usize, usize> =
-        verts.iter().enumerate().map(|(li, &vi)| (vi, li)).collect();
-
-    Ok(Region { faces, tris, verts, local, loops })
+/// Squared bounding-box diagonal of each boundary loop.
+fn loop_diags_sq(region: &Region) -> Vec<f64> {
+    region
+        .loops
+        .iter()
+        .map(|lp| {
+            let mut lo = [f64::INFINITY; 3];
+            let mut hi = [f64::NEG_INFINITY; 3];
+            for &(li, _) in lp {
+                let p = region.positions[li];
+                for d in 0..3 {
+                    lo[d] = lo[d].min(p[d]);
+                    hi[d] = hi[d].max(p[d]);
+                }
+            }
+            (0..3).map(|d| (hi[d] - lo[d]).powi(2)).sum::<f64>()
+        })
+        .collect()
 }
 
 /// Index (into `loops`) of the outer boundary loop: the one with the largest
 /// 3D bounding-box diagonal. Other loops are holes and float freely in the
 /// parameterization.
-fn outer_loop_index(region: &Region, vertices: &[MeshVertex]) -> usize {
-    let mut best = 0;
-    let mut best_diag = -1.0;
-    for (li, lp) in region.loops.iter().enumerate() {
-        let mut lo = [f64::INFINITY; 3];
-        let mut hi = [f64::NEG_INFINITY; 3];
-        for &(vi, _) in lp {
-            let v = &vertices[vi];
-            for (d, val) in [v.x, v.y, v.z].iter().enumerate() {
-                lo[d] = lo[d].min(*val);
-                hi[d] = hi[d].max(*val);
-            }
-        }
-        let diag = (0..3).map(|d| (hi[d] - lo[d]).powi(2)).sum::<f64>();
-        if diag > best_diag {
-            best_diag = diag;
-            best = li;
+fn outer_loop_index(region: &Region) -> usize {
+    loop_diags_sq(region)
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .map(|(i, _)| i)
+        .unwrap_or(0)
+}
+
+/// True when the region is a closed band (annulus) rather than a disk with
+/// holes: it has a second boundary loop of extent comparable to the largest
+/// (≥ half its bounding-box diagonal). A small hole floats freely in the
+/// disk parameterization; a comparable second loop means the region wraps
+/// around (e.g. the wall of a closed prism) and must be seam-cut first.
+fn is_closed_band(region: &Region) -> bool {
+    let mut d = loop_diags_sq(region);
+    if d.len() < 2 {
+        return false;
+    }
+    d.sort_by(|a, b| b.partial_cmp(a).unwrap());
+    d[1] >= 0.25 * d[0]
+}
+
+/// Cut a closed-band region into a disk along a shortest vertex path
+/// between its two largest boundary loops. The path vertices are
+/// duplicated: triangles on the path's right side (region winding) switch
+/// to the clones, and the boundary is re-chained — the two loops merge
+/// into one, with the two cut copies flagged CUT_OUTSIDE. Clones keep
+/// their original's global index and position, so the sampled seam columns
+/// at the parameter extremes carry identical 3D data and the fitted
+/// surface closes exactly.
+fn cut_region_seam(
+    mut region: Region,
+    mesh: &ConnectedMesh,
+    verbosity: u8,
+) -> Result<Region, String> {
+    // The two largest loops.
+    let diags = loop_diags_sq(&region);
+    let mut order: Vec<usize> = (0..diags.len()).collect();
+    order.sort_by(|&a, &b| diags[b].partial_cmp(&diags[a]).unwrap());
+    let (la, lb) = (order[0], order[1]);
+    let on_a: HashSet<usize> = region.loops[la].iter().map(|&(li, _)| li).collect();
+    let on_b: HashSet<usize> = region.loops[lb].iter().map(|&(li, _)| li).collect();
+
+    // Vertex adjacency over the region faces' PERIMETER edges — never quad
+    // diagonals: a path along a diagonal would split that quad's two
+    // triangles onto opposite sides of the cut, and the face partition
+    // downstream must follow the cut exactly.
+    let nv = region.verts.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); nv];
+    for &fi in &region.faces {
+        let face = &mesh.faces[fi];
+        let vc = face.vertex_count as usize;
+        for k in 0..vc {
+            let a = region.global_to_local[&face.vertex_indices[k]];
+            let b = region.global_to_local[&face.vertex_indices[(k + 1) % vc]];
+            adj[a].push(b);
+            adj[b].push(a);
         }
     }
-    best
+    for l in adj.iter_mut() {
+        l.sort_unstable();
+        l.dedup();
+    }
+
+    // Multi-source BFS (hop count) from loop A to loop B; deterministic
+    // frontier order.
+    let mut parent = vec![usize::MAX; nv];
+    let mut seen = vec![false; nv];
+    let mut frontier: Vec<usize> = {
+        let mut f: Vec<usize> = on_a.iter().copied().collect();
+        f.sort_unstable();
+        f
+    };
+    for &s in &frontier {
+        seen[s] = true;
+    }
+    let mut hit = None;
+    'bfs: while !frontier.is_empty() {
+        let mut next = Vec::new();
+        for &v in &frontier {
+            for &w in &adj[v] {
+                if !seen[w] {
+                    seen[w] = true;
+                    parent[w] = v;
+                    if on_b.contains(&w) {
+                        hit = Some(w);
+                        break 'bfs;
+                    }
+                    next.push(w);
+                }
+            }
+        }
+        frontier = next;
+    }
+    let Some(end) = hit else {
+        return Err("closed band: no path between boundary loops".to_string());
+    };
+    let mut path = vec![end];
+    while parent[*path.last().unwrap()] != usize::MAX {
+        path.push(parent[*path.last().unwrap()]);
+    }
+    path.reverse(); // loop A → loop B
+    if verbosity >= 2 {
+        eprintln!(
+            "  Stage 2.7: closed band — seam cut along {} vertices from \
+             [{:.3},{:.3},{:.3}] to [{:.3},{:.3},{:.3}]",
+            path.len(),
+            region.positions[path[0]][0],
+            region.positions[path[0]][1],
+            region.positions[path[0]][2],
+            region.positions[path[path.len() - 1]][0],
+            region.positions[path[path.len() - 1]][1],
+            region.positions[path[path.len() - 1]][2],
+        );
+    }
+
+    // Classify the triangles flanking each path edge: with consistent mesh
+    // winding, the triangle whose winding contains pi→pi+1 is on the LEFT
+    // of the directed path; the one containing pi+1→pi is on the RIGHT.
+    // Right-side fans switch to the clones.
+    let path_edge: HashSet<(usize, usize)> = path
+        .windows(2)
+        .map(|w| (w[0].min(w[1]), w[0].max(w[1])))
+        .collect();
+    let mut right_seed: HashMap<usize, Vec<usize>> = HashMap::new(); // path vtx → tri ids
+    for (ti, tri) in region.tris.iter().enumerate() {
+        for k in 0..3 {
+            let (a, b) = (tri[k], tri[(k + 1) % 3]);
+            if path_edge.contains(&(a.min(b), a.max(b))) {
+                // Directed path order: does (a, b) match path direction?
+                let pa = path.iter().position(|&p| p == a).unwrap();
+                let along = pa + 1 < path.len() && path[pa + 1] == b;
+                if !along {
+                    // Contains the reversed edge → right side.
+                    right_seed.entry(a).or_default().push(ti);
+                    right_seed.entry(b).or_default().push(ti);
+                }
+            }
+        }
+    }
+
+    // Per path vertex: flood its star from the right-side seeds without
+    // crossing path edges; those triangles get the clone.
+    let mut vert_tris: Vec<Vec<usize>> = vec![Vec::new(); nv];
+    for (ti, tri) in region.tris.iter().enumerate() {
+        for &v in tri {
+            vert_tris[v].push(ti);
+        }
+    }
+    for (pi, &pv) in path.iter().enumerate() {
+        let clone = region.verts.len();
+        region.verts.push(region.verts[pv]);
+        region.positions.push(region.positions[pv]);
+        vert_tris.push(Vec::new());
+
+        let star: Vec<usize> = vert_tris[pv].clone();
+        let seeds: Vec<usize> = right_seed.get(&pv).cloned().unwrap_or_default();
+        if seeds.is_empty() {
+            return Err(format!("seam cut: path vertex {pi} has no right-side triangle"));
+        }
+        // Star adjacency: two star triangles are connected iff they share
+        // an edge incident to pv that is not a path edge.
+        let mut in_right: HashSet<usize> = seeds.iter().copied().collect();
+        let mut stack = seeds;
+        while let Some(ti) = stack.pop() {
+            let tri = region.tris[ti];
+            for k in 0..3 {
+                let (a, b) = (tri[k], tri[(k + 1) % 3]);
+                if a != pv && b != pv {
+                    continue; // not incident to pv
+                }
+                let key = (a.min(b), a.max(b));
+                if path_edge.contains(&key) {
+                    continue; // never cross the cut
+                }
+                for &tj in &vert_tris[pv] {
+                    if tj != ti && !in_right.contains(&tj) {
+                        let tjt = region.tris[tj];
+                        let has_edge = (0..3).any(|m| {
+                            let (c, d) = (tjt[m], tjt[(m + 1) % 3]);
+                            (c.min(d), c.max(d)) == key
+                        });
+                        if has_edge {
+                            in_right.insert(tj);
+                            stack.push(tj);
+                        }
+                    }
+                }
+            }
+        }
+        if in_right.len() >= star.len() {
+            return Err(format!(
+                "seam cut: path vertex {pi} star did not split ({} of {} triangles on the right)",
+                in_right.len(),
+                star.len(),
+            ));
+        }
+        for &ti in &in_right {
+            for v in region.tris[ti].iter_mut() {
+                if *v == pv {
+                    *v = clone;
+                }
+            }
+            vert_tris[clone].push(ti);
+        }
+        vert_tris[pv].retain(|ti| !in_right.contains(ti));
+    }
+
+    region.loops = chain_boundary_loops(&region)?;
+    if region.loops.len() != diags.len() - 1 {
+        return Err(format!(
+            "seam cut did not merge the loops ({} before, {} after)",
+            diags.len(),
+            region.loops.len(),
+        ));
+    }
+    Ok(region)
 }
 
 // ---------------------------------------------------------------------------
@@ -398,15 +693,15 @@ fn outer_loop_index(region: &Region, vertices: &[MeshVertex]) -> usize {
 /// well-formed; the corners are then a gauge choice, not a feature claim.
 fn choose_corners(
     lp: &[(usize, usize)],
-    vertices: &[MeshVertex],
+    positions: &[[f64; 3]],
 ) -> Vec<usize> {
     let n = lp.len();
     // Cumulative chord length at each loop position.
     let mut cum = vec![0.0_f64; n + 1];
     for i in 0..n {
-        let a = &vertices[lp[i].0];
-        let b = &vertices[lp[(i + 1) % n].0];
-        let d = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)).sqrt();
+        let a = positions[lp[i].0];
+        let b = positions[lp[(i + 1) % n].0];
+        let d = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
         cum[i + 1] = cum[i] + d;
     }
     let total = cum[n];
@@ -465,9 +760,8 @@ fn arc_dist(a: f64, b: f64, total: f64) -> f64 {
 fn map_outer_loop_to_square(
     lp: &[(usize, usize)],
     corners: &[usize],
-    vertices: &[MeshVertex],
+    positions: &[[f64; 3]],
     uv: &mut [(f64, f64)],
-    local: &HashMap<usize, usize>,
 ) {
     let n = lp.len();
     for s in 0..4 {
@@ -478,18 +772,17 @@ fn map_outer_loop_to_square(
         let mut side_cum = vec![0.0_f64; len + 1];
         for e in 0..len {
             let i = (c0 + e) % n;
-            let a = &vertices[lp[i].0];
-            let b = &vertices[lp[(i + 1) % n].0];
-            let d =
-                ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)).sqrt();
+            let a = positions[lp[i].0];
+            let b = positions[lp[(i + 1) % n].0];
+            let d = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2))
+                .sqrt();
             side_cum[e + 1] = side_cum[e] + d;
         }
         let side_total = side_cum[len].max(1e-30);
         for (e, &cum_e) in side_cum[..len].iter().enumerate() {
             let i = (c0 + e) % n;
             let t = cum_e / side_total;
-            let li = local[&lp[i].0];
-            uv[li] = match s {
+            uv[lp[i].0] = match s {
                 0 => (t, 0.0),
                 1 => (1.0, t),
                 2 => (1.0 - t, 1.0),
@@ -509,7 +802,6 @@ fn map_outer_loop_to_square(
 /// Plain Gauss–Seidel; the systems here are at most a few thousand unknowns.
 fn solve_interior_uv(
     region: &Region,
-    vertices: &[MeshVertex],
     pinned: &[bool],
     uv: &mut [(f64, f64)],
     verbosity: u8,
@@ -517,19 +809,15 @@ fn solve_interior_uv(
     let nv = region.verts.len();
     // Accumulate weights in BTreeMaps for deterministic iteration order.
     let mut weights: Vec<BTreeMap<usize, f64>> = vec![BTreeMap::new(); nv];
-    let pos = |vi: usize| {
-        let v = &vertices[vi];
-        [v.x, v.y, v.z]
-    };
     for tri in &region.tris {
         for k in 0..3 {
-            let i = region.local[&tri[k]];
+            let i = tri[k];
             if pinned[i] {
                 continue;
             }
-            let pi = pos(tri[k]);
-            let pa = pos(tri[(k + 1) % 3]);
-            let pb = pos(tri[(k + 2) % 3]);
+            let pi = region.positions[tri[k]];
+            let pa = region.positions[tri[(k + 1) % 3]];
+            let pb = region.positions[tri[(k + 2) % 3]];
             let ea = [pa[0] - pi[0], pa[1] - pi[1], pa[2] - pi[2]];
             let eb = [pb[0] - pi[0], pb[1] - pi[1], pb[2] - pi[2]];
             let la = (ea[0] * ea[0] + ea[1] * ea[1] + ea[2] * ea[2]).sqrt();
@@ -542,8 +830,8 @@ fn solve_interior_uv(
             let sing = (1.0 - cosg * cosg).sqrt();
             // tan(γ/2), stable form; clamp near-degenerate angles.
             let tan_half = if 1.0 + cosg < 1e-12 { 1e6 } else { sing / (1.0 + cosg) };
-            let a = region.local[&tri[(k + 1) % 3]];
-            let b = region.local[&tri[(k + 2) % 3]];
+            let a = tri[(k + 1) % 3];
+            let b = tri[(k + 2) % 3];
             *weights[i].entry(a).or_insert(0.0) += tan_half / la;
             *weights[i].entry(b).or_insert(0.0) += tan_half / lb;
         }
@@ -611,17 +899,16 @@ fn solve_interior_uv(
 struct UvSampler<'a> {
     region: &'a Region,
     uv: &'a [(f64, f64)],
-    vertices: &'a [MeshVertex],
     bins: Vec<Vec<usize>>,
     nbins: usize,
 }
 
 impl<'a> UvSampler<'a> {
-    fn new(region: &'a Region, uv: &'a [(f64, f64)], vertices: &'a [MeshVertex]) -> Self {
+    fn new(region: &'a Region, uv: &'a [(f64, f64)]) -> Self {
         let nbins = 64usize;
         let mut bins = vec![Vec::new(); nbins * nbins];
         for (ti, tri) in region.tris.iter().enumerate() {
-            let uvs = tri.map(|vi| uv[region.local[&vi]]);
+            let uvs = tri.map(|li| uv[li]);
             let (mut lo_u, mut hi_u) = (f64::INFINITY, f64::NEG_INFINITY);
             let (mut lo_v, mut hi_v) = (f64::INFINITY, f64::NEG_INFINITY);
             for (u, v) in uvs {
@@ -637,7 +924,7 @@ impl<'a> UvSampler<'a> {
                 }
             }
         }
-        UvSampler { region, uv, vertices, bins, nbins }
+        UvSampler { region, uv, bins, nbins }
     }
 
     /// 3D point at parameter (u, v), or None when (u, v) is not covered by
@@ -693,7 +980,7 @@ impl<'a> UvSampler<'a> {
     /// coordinate (≥ 0 means inside).
     fn barycentric(&self, ti: usize, u: f64, v: f64) -> (f64, [f64; 3]) {
         let tri = self.region.tris[ti];
-        let [a, b, c] = tri.map(|vi| self.uv[self.region.local[&vi]]);
+        let [a, b, c] = tri.map(|li| self.uv[li]);
         let det = (b.0 - a.0) * (c.1 - a.1) - (c.0 - a.0) * (b.1 - a.1);
         if det.abs() < 1e-30 {
             return (f64::NEG_INFINITY, [0.0; 3]);
@@ -701,10 +988,7 @@ impl<'a> UvSampler<'a> {
         let l1 = ((u - a.0) * (c.1 - a.1) - (c.0 - a.0) * (v - a.1)) / det;
         let l2 = ((b.0 - a.0) * (v - a.1) - (u - a.0) * (b.1 - a.1)) / det;
         let l0 = 1.0 - l1 - l2;
-        let p3 = tri.map(|vi| {
-            let vv = &self.vertices[vi];
-            [vv.x, vv.y, vv.z]
-        });
+        let p3 = tri.map(|li| self.region.positions[li]);
         let pt = [
             l0 * p3[0][0] + l1 * p3[1][0] + l2 * p3[2][0],
             l0 * p3[0][1] + l1 * p3[1][1] + l2 * p3[2][1],
@@ -725,11 +1009,8 @@ impl<'a> UvSampler<'a> {
         }
         // Outside: closest point lies on one of the edges.
         let tri = self.region.tris[ti];
-        let uvs = tri.map(|vi| self.uv[self.region.local[&vi]]);
-        let p3 = tri.map(|vi| {
-            let vv = &self.vertices[vi];
-            [vv.x, vv.y, vv.z]
-        });
+        let uvs = tri.map(|li| self.uv[li]);
+        let p3 = tri.map(|li| self.region.positions[li]);
         let mut best: Option<(f64, [f64; 3])> = None;
         for e in 0..3 {
             let (a, b) = (uvs[e], uvs[(e + 1) % 3]);
@@ -956,27 +1237,36 @@ fn fit_component(
     face_to_selected: &[usize],
     in_region: &[bool],
     config: &Config,
-) -> Result<BSplineHypothesis, String> {
+) -> Result<Vec<BSplineHypothesis>, String> {
     let region = build_region(mesh, component, face_to_selected, in_region)?;
-    let outer = outer_loop_index(&region, &mesh.vertices);
+    // A closed band (e.g. the wall of a closed prism) cannot be flattened
+    // to a disk; cut it along a seam path first. The fitted surface is then
+    // split into two faces (see split_cut_hypothesis) — its two parameter-
+    // extreme boundary curves coincide, and a single face would need the
+    // full periodic-seam machinery (DEVELOPMENT_PLAN §2.7 follow-up).
+    let cut = is_closed_band(&region);
+    let region = if cut {
+        cut_region_seam(region, mesh, config.verbosity)?
+    } else {
+        region
+    };
+    let outer = outer_loop_index(&region);
     if config.verbosity >= 2 {
         let loop_lens: Vec<usize> = region.loops.iter().map(|l| l.len()).collect();
         eprintln!(
-            "  Stage 2.7: region {} faces, {} verts, {} tris, boundary loops {:?} (outer = #{outer})",
+            "  Stage 2.7: region {} faces, {} verts, {} tris, boundary loops {:?} (outer = #{outer}{})",
             region.faces.len(),
             region.verts.len(),
             region.tris.len(),
             loop_lens,
+            if cut { ", seam-cut" } else { "" },
         );
     }
     if config.verbosity >= 3 {
         let pts: Vec<[f64; 3]> = region.loops[outer]
             .iter()
             .step_by((region.loops[outer].len() / 24).max(1))
-            .map(|&(vi, _)| {
-                let v = &mesh.vertices[vi];
-                [v.x, v.y, v.z]
-            })
+            .map(|&(li, _)| region.positions[li])
             .collect();
         eprintln!("  Stage 2.7: outer loop samples: {pts:.3?}");
     }
@@ -987,18 +1277,18 @@ fn fit_component(
     let mut uv = vec![(0.0_f64, 0.0_f64); nv];
     let mut pinned = vec![false; nv];
     let lp = &region.loops[outer];
-    let corners = choose_corners(lp, &mesh.vertices);
+    let corners = choose_corners(lp, &region.positions);
     if corners.len() != 4 {
         return Err(format!(
             "could not pin 4 boundary corners (found {})",
             corners.len()
         ));
     }
-    map_outer_loop_to_square(lp, &corners, &mesh.vertices, &mut uv, &region.local);
-    for &(vi, _) in lp {
-        pinned[region.local[&vi]] = true;
+    map_outer_loop_to_square(lp, &corners, &region.positions, &mut uv);
+    for &(li, _) in lp {
+        pinned[li] = true;
     }
-    solve_interior_uv(&region, &mesh.vertices, &pinned, &mut uv, config.verbosity)?;
+    solve_interior_uv(&region, &pinned, &mut uv, config.verbosity)?;
 
     // Grid resolution baseline: the mesh's own boundary density (sides of
     // the square). Oversampled to avoid aliasing between vertices; the
@@ -1013,10 +1303,7 @@ fn fit_component(
     if config.verbosity >= 2 {
         let corner_pts: Vec<[f64; 3]> = corners
             .iter()
-            .map(|&c| {
-                let v = &mesh.vertices[lp[c].0];
-                [v.x, v.y, v.z]
-            })
+            .map(|&c| region.positions[lp[c].0])
             .collect();
         eprintln!(
             "  Stage 2.7: sides {}x{} verts, corners at {:?}",
@@ -1031,7 +1318,7 @@ fn fit_component(
         let len = (corners[(s + 1) % 4] + n - corners[s]) % n;
         let mut out: Vec<f64> = (0..=len)
             .map(|e| {
-                let li = region.local[&lp[(corners[s] + e) % n].0];
+                let li = lp[(corners[s] + e) % n].0;
                 if take_u { uv[li].0 } else { uv[li].1 }
             })
             .collect();
@@ -1041,7 +1328,7 @@ fn fit_component(
     let (u_side_a, u_side_b) = (side_coords(0, true), side_coords(2, true));
     let (v_side_a, v_side_b) = (side_coords(1, false), side_coords(3, false));
 
-    let sampler = UvSampler::new(&region, &uv, &mesh.vertices);
+    let sampler = UvSampler::new(&region, &uv);
     let maps = AxisMaps::build(&sampler);
     let mut last_err = String::new();
     for (density, cap) in [(1.5, 121), (2.5, 181), (3.5, 241)] {
@@ -1054,7 +1341,13 @@ fn fit_component(
         let u_stations = axis_stations(&u_side_a, &u_side_b, target, &maps.u_profile);
         let v_stations = axis_stations(&v_side_a, &v_side_b, target, &maps.v_profile);
         match fit_grid(mesh, &region, &sampler, &maps, &u_stations, &v_stations, config) {
-            Ok(hyp) => return Ok(hyp),
+            Ok(hyp) => {
+                return if cut {
+                    split_cut_hypothesis(hyp, mesh, &region, &uv)
+                } else {
+                    Ok(vec![hyp])
+                };
+            }
             Err(e) => {
                 if config.verbosity >= 2 {
                     eprintln!(
@@ -1072,6 +1365,94 @@ fn fit_component(
         }
     }
     Err(last_err)
+}
+
+/// Split the fitted hypothesis of a seam-cut closed band into two halves
+/// along the around-the-band axis. Both halves share the SAME fitted
+/// surface object; the caller tags them with a common
+/// `shared_surface_group` so downstream code can recognize the two edges
+/// between them as reconstruction artifacts (they have no counterpart in a
+/// reference model, which would use one periodic face with a seam). Each
+/// half spans only part of the surface's parameter range, so its two cut
+/// edges are geometrically distinct and no periodic-seam machinery is
+/// needed.
+fn split_cut_hypothesis(
+    hyp: BSplineHypothesis,
+    mesh: &ConnectedMesh,
+    region: &Region,
+    uv: &[(f64, f64)],
+) -> Result<Vec<BSplineHypothesis>, String> {
+    // The around axis runs from cut copy to cut copy: cut vertices sit at
+    // that axis's parameter extremes.
+    let cut_uv = region
+        .loops
+        .iter()
+        .flatten()
+        .find(|&&(_, out)| out == CUT_OUTSIDE)
+        .map(|&(li, _)| uv[li])
+        .ok_or("seam-cut region has no cut boundary")?;
+    let around_u = cut_uv.0.min(1.0 - cut_uv.0) < cut_uv.1.min(1.0 - cut_uv.1);
+
+    // Mean around-coordinate per region face, from its triangles.
+    let mut face_sum = vec![(0.0_f64, 0usize); region.faces.len()];
+    for (ti, tri) in region.tris.iter().enumerate() {
+        let rf = region.tri_face[ti];
+        for &li in tri {
+            face_sum[rf].0 += if around_u { uv[li].0 } else { uv[li].1 };
+            face_sum[rf].1 += 1;
+        }
+    }
+    let mut faces_a = Vec::new();
+    let mut faces_b = Vec::new();
+    for (rf, &fi) in region.faces.iter().enumerate() {
+        let mean = face_sum[rf].0 / face_sum[rf].1.max(1) as f64;
+        if std::env::var_os("BREPPER_DEBUG_SPLIT").is_some() && !(0.05..=0.95).contains(&mean) {
+            let corners: Vec<(usize, f64, f64)> = region
+                .tris
+                .iter()
+                .enumerate()
+                .filter(|(ti, _)| region.tri_face[*ti] == rf)
+                .flat_map(|(_, tri)| tri.iter().map(|&li| (li, uv[li].0, uv[li].1)))
+                .collect();
+            eprintln!("      split face {fi}: mean={mean:.4} corners={corners:.4?}");
+        }
+        if mean < 0.5 {
+            faces_a.push(fi);
+        } else {
+            faces_b.push(fi);
+        }
+    }
+    if faces_a.is_empty() || faces_b.is_empty() {
+        return Err("seam split left one half empty".to_string());
+    }
+    let verts_of = |faces: &[usize]| -> Vec<usize> {
+        let mut vs: Vec<usize> = faces
+            .iter()
+            .flat_map(|&fi| {
+                let f = &mesh.faces[fi];
+                f.vertex_indices[..f.vertex_count as usize].to_vec()
+            })
+            .collect();
+        vs.sort_unstable();
+        vs.dedup();
+        vs
+    };
+
+    let surface_b = hyp
+        .surface
+        .to_handle_surface()
+        .downcast_to_b_spline_surface()
+        .ok_or("could not mint a second handle to the fitted surface")?;
+    let mut hyp_b = BSplineHypothesis::new(surface_b, faces_b.clone(), verts_of(&faces_b));
+    hyp_b.error_max = hyp.error_max;
+    hyp_b.centroid_error_max = hyp.centroid_error_max;
+    hyp_b.error_abs_sum = hyp.error_abs_sum;
+
+    let mut hyp_a = hyp;
+    hyp_a.vertices = verts_of(&faces_a);
+    hyp_a.faces = faces_a;
+
+    Ok(vec![hyp_a, hyp_b])
 }
 
 /// Grid stations for one axis. The base stations are the boundary
@@ -1257,13 +1638,18 @@ fn validate_fit(
     grid: &[[f64; 3]],
     config: &Config,
 ) -> Result<BSplineHypothesis, String> {
-    let mut hyp = BSplineHypothesis::new(surface, region.faces.clone(), region.verts.clone());
+    // Hypothesis vertices are unique GLOBAL mesh vertices (region.verts may
+    // repeat globals for seam-cut clones).
+    let mut hyp_verts = region.verts.clone();
+    hyp_verts.sort_unstable();
+    hyp_verts.dedup();
+    let mut hyp = BSplineHypothesis::new(surface, region.faces.clone(), hyp_verts);
     let tol = config.surface_tolerance_mm;
     // The fit's parameter is ~linear in arc fraction (the grid stations
     // equalize arc), and its v axis is reversed when the grid was flipped
     // for outward orientation.
-    let seed_of = |vi: usize| -> (f64, f64) {
-        let (u, v) = uv[region.local[&vi]];
+    let seed_of = |li: usize| -> (f64, f64) {
+        let (u, v) = uv[li];
         let gu = AxisMaps::arc_fraction(&maps.u_profile, u);
         let gv = AxisMaps::arc_fraction(&maps.v_profile, v);
         (gu, if flip { 1.0 - gv } else { gv })
@@ -1289,9 +1675,9 @@ fn validate_fit(
             max_at[0], max_at[1], max_at[2],
         );
     }
-    for &vi in &region.verts {
-        let v = &mesh.vertices[vi];
-        let d = hyp.distance_seeded(&[v.x, v.y, v.z], seed_of(vi));
+    for (li, &vi) in region.verts.iter().enumerate() {
+        let p = region.positions[li];
+        let d = hyp.distance_seeded(&p, seed_of(li));
         hyp.error_max = hyp.error_max.max(d);
         hyp.error_abs_sum += d;
         if hyp.error_max > tol {
@@ -1299,24 +1685,25 @@ fn validate_fit(
                 // Fold detector: sampling the flattening at this vertex's
                 // own UV must reproduce the vertex; anything else means an
                 // overlapping (folded) triangle wins the point location.
-                let (u, vv) = uv[region.local[&vi]];
-                if let Some(s) = UvSampler::new(region, uv, &mesh.vertices).sample(u, vv) {
+                let (u, vv) = uv[li];
+                if let Some(smp) = UvSampler::new(region, uv).sample(u, vv) {
                     eprintln!(
                         "  Stage 2.7: vertex {vi} uv=({u:.4},{vv:.4}); sampler there gives \
                          [{:.3},{:.3},{:.3}] (vertex is [{:.3},{:.3},{:.3}])",
-                        s[0], s[1], s[2], v.x, v.y, v.z,
+                        smp[0], smp[1], smp[2], p[0], p[1], p[2],
                     );
                 }
             }
             return Err(format!(
                 "fit misses vertex {vi} [{:.3},{:.3},{:.3}] by {:.3e} mm (tolerance {tol:.3e})",
-                v.x, v.y, v.z, hyp.error_max
+                p[0], p[1], p[2], hyp.error_max
             ));
         }
     }
     for &fi in &region.faces {
         let c = face_centroid(&mesh.faces[fi], &mesh.vertices);
-        let d = hyp.distance_seeded(&c, seed_of(mesh.faces[fi].vertex_indices[0]));
+        let seed_li = region.global_to_local[&mesh.faces[fi].vertex_indices[0]];
+        let d = hyp.distance_seeded(&c, seed_of(seed_li));
         hyp.centroid_error_max = hyp.centroid_error_max.max(d);
         if hyp.centroid_error_max > tol {
             return Err(format!(
@@ -1642,16 +2029,29 @@ pub(super) fn deduce_bspline_surfaces(
             (0..num_faces).map(|fi| comp_set.contains(&fi)).collect()
         };
         match fit_component(mesh, comp.clone(), &face_to_selected, &in_region, config) {
-            Ok(hyp) => {
+            Ok(mut hyps) => {
+                // Two hypotheses = a seam-split closed band sharing one
+                // surface; tag them so downstream code can recognize the
+                // edges between them as reconstruction artifacts.
+                if hyps.len() == 2 {
+                    let group = bspline_hypotheses.len();
+                    for h in &mut hyps {
+                        h.shared_surface_group = Some(group);
+                    }
+                }
+                let split = hyps.len() == 2;
                 if config.verbosity >= 1 {
+                    let hyp = &hyps[0];
                     eprintln!(
                         "  Stage 2.7: fitted B-spline (deg {}×{}, {}×{} poles) to {} faces, \
-                         vtx_err_max={:.2e}, cen_err_max={:.2e}",
+                         vtx_err_max={:.2e}, cen_err_max={:.2e}{}",
                         hyp.u_degree, hyp.v_degree, hyp.nb_u_poles, hyp.nb_v_poles,
                         comp_len, hyp.error_max, hyp.centroid_error_max,
+                        if split { " (closed band: seam-split into two faces)" } else { "" },
                     );
                 }
                 if let Some(viz_sender) = viz {
+                    let hyp = &hyps[0];
                     let mut overlay = viz::VizOverlay::new();
                     overlay.face_highlights.push(viz::FaceHighlight {
                         face_indices: comp.clone(),
@@ -1666,10 +2066,12 @@ pub(super) fn deduce_bspline_surfaces(
                     // must still be committed consistently below.
                     let _ = viz_sender.show_and_wait(overlay) == VizAction::Quit;
                 }
-                let bi = bspline_hypotheses.len();
-                bspline_hypotheses.push(hyp);
+                for hyp in hyps {
+                    let bi = bspline_hypotheses.len();
+                    bspline_hypotheses.push(hyp);
+                    selected_surfaces.push(SelectedSurface::BSpline(bi));
+                }
                 consumed_selected.extend(comp.iter().map(|&fi| face_to_selected[fi]));
-                selected_surfaces.push(SelectedSurface::BSpline(bi));
                 fitted += 1;
                 covered_faces += comp_len;
             }

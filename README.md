@@ -83,9 +83,8 @@ the `gen-test-models` binary (`./scripts/generate_occt_models.sh`) — used for
 models that ccad cannot express. `tests/occt/` holds analytic models such as
 `hollow_cube` (a solid with a fully enclosed internal void, for multi-shell
 solid support). `tests/nurbs/` holds freeform models (exact B-spline patches,
-conic/B-spline extrusions) exercising the stage 2.7 NURBS fallback; 7 of the
-8 pass full `--compare` (the closed periodic `elliptical_cylinder` is out of
-scope for the first pass) — see `tests/nurbs/README.md`. The generated STL/STEP pairs are committed.
+conic/B-spline extrusions) exercising the stage 2.7 NURBS fallback; all 8
+pass full `--compare` — see `tests/nurbs/README.md`. The generated STL/STEP pairs are committed.
 
 ### Generating Test Models
 

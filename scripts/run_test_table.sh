@@ -145,9 +145,11 @@ Special flags:
 - `rounded_cube_10_r2_coarse`: `--angular-tolerance 20`
 
 Models in `nurbs/` exercise the DEVELOPMENT_PLAN §2.7 NURBS fallback (see
-tests/nurbs/README.md). `elliptical_cylinder` (closed periodic freeform
-wall) is out of scope for the first §2.7 pass and EXPECTED to fail; it is
-counted under "failing non-bad" below to keep the scoreboard honest.
+tests/nurbs/README.md). `elliptical_cylinder` (closed freeform wall) passes
+via the seam-split reconstruction: its wall becomes two B-spline faces on
+one fitted surface, and the stage 3.1 compare exempts the two tagged
+seam-cut edges (reconstruction artifacts; the reference has one periodic
+face instead — see DEVELOPMENT_PLAN §2.7 for the path to that design).
 
 HEADER
 

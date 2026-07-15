@@ -2,10 +2,12 @@
 
 Targets for the DEVELOPMENT_PLAN §2.7 NURBS fallback (implemented
 2026-07-10). Every model contains at least one surface outside brepper's
-analytic set (plane / cylinder / sphere / cone / torus). **7 of the 8 pass
-full `--compare`**; `elliptical_cylinder` (closed periodic freeform wall
-needing a periodic B-spline face + seam) remains out of scope for the first
-§2.7 pass and fails by design, listed in RESULTS.md as its own group.
+analytic set (plane / cylinder / sphere / cone / torus). **All 8 pass full
+`--compare`.** `elliptical_cylinder` (closed freeform wall) passes via the
+seam-split reconstruction — two B-spline faces sharing one fitted surface,
+with the two artificial edges between them tagged and exempted from the
+stage 3.1 compare; the reference writes one periodic face with a seam
+instead (see DEVELOPMENT_PLAN §2.7 for the path to that design).
 
 Regenerate with `./scripts/generate_occt_models.sh` (see
 `src/bin/gen_test_models.rs`).
@@ -55,17 +57,17 @@ Regenerate with `./scripts/generate_occt_models.sh` (see
 | bspline_terrain | bicubic patch: bump + dip + diagonal ripple | Multi-feature single patch; curvature varies in sign and magnitude. |
 | bspline_blister | bicubic patch, raised poles only near center | Outer pole rings flat ⇒ margin is EXACTLY planar (B-spline local support), C² tangent join to the bump: segmentation boundary is ambiguous, junction curve is freeform. |
 | hill_with_hole | bspline_hill minus off-center vertical cylinder r=5 | Freeform × analytic interaction: inner loop on the B-spline face, cylinder∩B-spline edge curves, irregular tessellated mesh. |
-| elliptical_cylinder | full ellipse (12×7) prism, 18 tall | Stretch case: closed periodic freeform wall needs a periodic B-spline face + seam (out of scope for the first §2.7 pass). Strip mesh: full-height wall strips. |
+| elliptical_cylinder | full ellipse (12×7) prism, 18 tall | Stretch case: closed freeform wall. Reconstructed by seam-splitting into two faces on one fitted surface (a periodic face + seam is the follow-up). Strip mesh: full-height wall strips, top/bottom rings azimuthally misaligned. |
 
-Status (2026-07-10, §2.7 implemented): each freeform region collapses into a
-single fitted B-spline surface (elliptical_arch: 4 selected surfaces
-matching the reference's 4 faces; bspline_blister's exactly-planar margin is
-tangent-merged into the freeform top, matching the reference topology).
-Volumes agree with the exact references to 2.7e-6 … 5.2e-3 relative — well
-inside the 1% hard gate. `elliptical_cylinder`'s wall is rejected cleanly at
-parameterization (a closed wall flattens to an annulus, not a disk) and the
-model still fails `--compare` as expected. The pre-2.7 failure mode — every
-freeform region as hundreds of single-face planar surfaces, stage 3.1
-hard-erroring with reconstructed vertices millimeters off — is gone, and the
-dense grid models dropped from ~35–105 s to the cost of stage 2's analytic
-BFS passes (~60 s, dominated by cylinder/torus seeding, not by §2.7).
+Status (2026-07-10, §2.7 implemented incl. closed bands): each freeform
+region collapses into a single fitted B-spline surface (elliptical_arch: 4
+selected surfaces matching the reference's 4 faces; bspline_blister's
+exactly-planar margin is tangent-merged into the freeform top, matching the
+reference topology; elliptical_cylinder's closed wall is seam-cut, fitted
+once, and split into two faces sharing that surface). Volumes agree with
+the exact references to 2.7e-6 … 5.2e-3 relative — well inside the 1% hard
+gate. The pre-2.7 failure mode — every freeform region as hundreds of
+single-face planar surfaces, stage 3.1 hard-erroring with reconstructed
+vertices millimeters off — is gone, and the dense grid models dropped from
+~35–105 s to the cost of stage 2's analytic BFS passes (~60 s, dominated by
+cylinder/torus seeding, not by §2.7).

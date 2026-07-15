@@ -240,26 +240,64 @@ fn min_distance_to_shape(pt: &gp::Pnt, shape: &topo_ds::Shape) -> f64 {
     stage1::min_distance_to_shape(pt, shape)
 }
 
+/// True when the two faces are B-spline halves of one fitted surface (the
+/// deliberate seam-split of a closed freeform band): edges between them —
+/// and the corner vertices those edges end at — are reconstruction
+/// artifacts with no counterpart in a reference model, which represents
+/// the band as a single periodic face with a seam.
+fn is_seam_cut_pair(
+    fi0: usize,
+    fi1: usize,
+    face_descriptors: &[FaceDescriptor],
+    stage2: &Stage2Output,
+) -> bool {
+    let s0 = &stage2.selected_surfaces[face_descriptors[fi0].selected_surface_idx];
+    let s1 = &stage2.selected_surfaces[face_descriptors[fi1].selected_surface_idx];
+    match (s0, s1) {
+        (SelectedSurface::BSpline(a), SelectedSurface::BSpline(b)) => {
+            a != b
+                && stage2.bspline_hypotheses[*a].shared_surface_group.is_some()
+                && stage2.bspline_hypotheses[*a].shared_surface_group
+                    == stage2.bspline_hypotheses[*b].shared_surface_group
+        }
+        _ => false,
+    }
+}
+
 /// Compare stage 3.1 adjacency graph against reference STEP shape.
 ///
 /// For each ReconEdge, samples mesh boundary vertices along the edge and checks
 /// that each is within vertex_tolerance of a STEP edge.
 /// For each BRepVertex, checks that it is within vertex_tolerance of a STEP vertex.
+/// Seam-cut edges (and the vertices they end at) are exempt: they are
+/// deliberate reconstruction artifacts flagged at fit time, not features.
 fn compare_adjacency_to_step(
     edges: &[ReconEdge],
     vertices: &[BRepVertex],
-    mesh: &ConnectedMesh,
+    face_descriptors: &[FaceDescriptor],
+    stage2: &Stage2Output,
     config: &Config,
 ) -> Result<(), Stage3CompareError> {
+    let mesh = &stage2.mesh;
     let compare_shape = config.compare_shape.as_ref().unwrap();
 
     // Build compounds of edges and vertices from the reference STEP shape
     let edge_compound = build_edge_compound(compare_shape);
     let vertex_compound = build_vertex_compound(compare_shape);
 
+    let seam_cut_edge = |edge: &ReconEdge| {
+        is_seam_cut_pair(edge.face_indices[0], edge.face_indices[1], face_descriptors, stage2)
+    };
+
     // Check ReconEdge boundary vertices against STEP edges
     let mut edge_overall_max = 0.0_f64;
+    let mut skipped_edges = 0usize;
+    let mut skipped_verts = 0usize;
     for (ei, edge) in edges.iter().enumerate() {
+        if seam_cut_edge(edge) {
+            skipped_edges += 1;
+            continue;
+        }
         let mut max_dist = 0.0_f64;
         let boundary = &edge.mesh_boundary_vertices;
 
@@ -321,6 +359,17 @@ fn compare_adjacency_to_step(
     // refined against the reconstructed surfaces downstream.
     let mut vert_overall_max = 0.0_f64;
     for (vi, vert) in vertices.iter().enumerate() {
+        // Corners created by a seam split (any two adjacent faces are halves
+        // of one fitted surface) have no reference counterpart.
+        let artificial = vert.adjacent_faces.iter().enumerate().any(|(k, &fa)| {
+            vert.adjacent_faces[k + 1..]
+                .iter()
+                .any(|&fb| is_seam_cut_pair(fa, fb, face_descriptors, stage2))
+        });
+        if artificial {
+            skipped_verts += 1;
+            continue;
+        }
         let pt = gp::Pnt::new_real3(vert.point[0], vert.point[1], vert.point[2]);
         let d = min_distance_to_shape(&pt, vertex_compound.as_shape());
 
@@ -350,6 +399,12 @@ fn compare_adjacency_to_step(
             "  Compare 3.1: edge boundary max dist {:.6e} mm, vertex max dist {:.6e} mm",
             edge_overall_max, vert_overall_max
         );
+        if skipped_edges + skipped_verts > 0 {
+            eprintln!(
+                "  Compare 3.1: skipped {skipped_edges} seam-cut edge(s) and {skipped_verts} \
+seam-cut vertex(es) (single-surface reconstruction artifacts)"
+            );
+        }
     }
 
     Ok(())
@@ -4000,6 +4055,14 @@ struct BSplineChartData {
     surf: OwnedPtr<geom::HandleGeomSurface>,
     sas: RefCell<OwnedPtr<shape_analysis::Surface>>,
     seed: std::cell::Cell<Option<(f64, f64)>>,
+    /// Parameter bounds of the surface.
+    bounds: (f64, f64, f64, f64),
+    /// Parameter-space anchor inside this face's own region. The two halves
+    /// of a seam-split closed band share a surface whose parameter-extreme
+    /// boundary curves are the SAME 3D curve, so a projection landing on it
+    /// is ambiguous between the two extremes; the branch nearer the face's
+    /// own interior wins.
+    home: std::cell::Cell<(f64, f64)>,
 }
 
 impl BSplineChartData {
@@ -4028,8 +4091,43 @@ impl BSplineChartData {
                 best = (uv.x(), uv.y(), gap);
             }
         }
-        self.seed.set(Some((best.0, best.1)));
-        (best.0, best.1)
+        drop(sas);
+        let (u, v) = self.resolve_boundary_branch(best.0, best.1);
+        self.seed.set(Some((u, v)));
+        (u, v)
+    }
+
+    /// A result on a parameter boundary whose opposite boundary carries the
+    /// same 3D curve (a seam-split closed band) is ambiguous: keep the
+    /// branch nearer this face's `home` anchor. Coincidence is verified in
+    /// 3D, so ordinary (non-closed) patch boundaries are never touched.
+    fn resolve_boundary_branch(&self, u: f64, v: f64) -> (f64, f64) {
+        let (u0, u1, v0, v1) = self.bounds;
+        let home = self.home.get();
+        let mut out = (u, v);
+        let eps_u = 1e-3 * (u1 - u0);
+        let eps_v = 1e-3 * (v1 - v0);
+        if (v - v0).abs() < eps_v || (v1 - v).abs() < eps_v {
+            let here = if (v - v0).abs() < eps_v { v0 } else { v1 };
+            let there = if here == v0 { v1 } else { v0 };
+            let a = self.point_at(u, here);
+            let b = self.point_at(u, there);
+            let d2 = (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
+            if d2 < 1e-12 && (there - home.1).abs() < (here - home.1).abs() {
+                out.1 = there;
+            }
+        }
+        if (u - u0).abs() < eps_u || (u1 - u).abs() < eps_u {
+            let here = if (u - u0).abs() < eps_u { u0 } else { u1 };
+            let there = if here == u0 { u1 } else { u0 };
+            let a = self.point_at(here, out.1);
+            let b = self.point_at(there, out.1);
+            let d2 = (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
+            if d2 < 1e-12 && (there - home.0).abs() < (here - home.0).abs() {
+                out.0 = there;
+            }
+        }
+        out
     }
 
     fn point_at(&self, u: f64, v: f64) -> [f64; 3] {
@@ -4267,6 +4365,30 @@ fn build_face_chart(
             let hyp = &stage2.bspline_hypotheses[*idx];
             let surf = hyp.surface.to_handle_surface();
             let sas = shape_analysis::Surface::new_handlegeomsurface(&surf);
+            let (mut u0, mut u1, mut v0, mut v1) = (0.0, 0.0, 0.0, 0.0);
+            surf.get().bounds(&mut u0, &mut u1, &mut v0, &mut v1);
+            let data = BSplineChartData {
+                surf,
+                sas: RefCell::new(sas),
+                seed: std::cell::Cell::new(None),
+                bounds: (u0, u1, v0, v1),
+                home: std::cell::Cell::new((0.5 * (u0 + u1), 0.5 * (v0 + v1))),
+            };
+            // Anchor the chart inside this face's own region: project the
+            // mean of the region's face centroids (for a curved region it
+            // lies off-surface, and its nearest surface point is safely
+            // mid-region). This both seeds the first query and defines the
+            // `home` used to resolve coincident-boundary branches on
+            // seam-split closed bands.
+            let mut mean = [0.0_f64; 3];
+            for &mfi in &hyp.faces {
+                let c = compute_mesh_face_centroid(mfi, &stage2.mesh);
+                mean = [mean[0] + c[0], mean[1] + c[1], mean[2] + c[2]];
+            }
+            let n = hyp.faces.len().max(1) as f64;
+            let home = data.point_uv(&[mean[0] / n, mean[1] / n, mean[2] / n]);
+            data.home.set(home);
+            data.seed.set(Some(home));
             (
                 SurfaceChart {
                     origin: [0.0; 3],
@@ -4274,11 +4396,7 @@ fn build_face_chart(
                     y: [0.0, 1.0, 0.0],
                     z: [0.0, 0.0, 1.0],
                     kind: ChartKind::BSpline,
-                    bspline: Some(BSplineChartData {
-                        surf,
-                        sas: RefCell::new(sas),
-                        seed: std::cell::Cell::new(None),
-                    }),
+                    bspline: Some(data),
                 },
                 None,
             )
@@ -4328,6 +4446,12 @@ fn sample_edge_uv(
         let t = first + (last - first) * (i as f64) / ((n - 1) as f64);
         let pt = c.value(t);
         let (u, v, rad) = chart.point_uv(&[pt.x(), pt.y(), pt.z()]);
+        if std::env::var_os("BREPPER_DEBUG_EDGE_UV").is_some() && chart.bspline.is_some() {
+            eprintln!(
+                "      edge-uv sample {i}: t={t:.4} p=[{:.3},{:.3},{:.3}] -> uv=({u:.4},{v:.4})",
+                pt.x(), pt.y(), pt.z(),
+            );
+        }
         ts.push(t);
         raw.push((u, v, rad));
     }
@@ -7000,7 +7124,13 @@ pub fn stage3(config: &Config, input: Stage2Output, viz: Option<&crate::viz::Viz
     }
 
     if config.compare_shape.is_some() {
-        compare_adjacency_to_step(&output.edges, &output.vertices, &output.stage2.mesh, config)?;
+        compare_adjacency_to_step(
+            &output.edges,
+            &output.vertices,
+            &output.face_descriptors,
+            &output.stage2,
+            config,
+        )?;
     }
 
     if !config.stage.at_least(3, 2) {

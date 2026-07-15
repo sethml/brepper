@@ -2439,3 +2439,25 @@ fn nurbs_leaves_chamfered_cube_planar() {
     assert_eq!(bspline, 0, "no freeform surfaces on a chamfered cube");
     assert_eq!(planar, 26, "6 cube faces + 12 chamfers + 8 corner triangles");
 }
+
+/// elliptical_cylinder: a closed freeform wall (annulus topology) is
+/// seam-cut, fitted once, and split into two B-spline faces sharing the
+/// fitted surface — tagged as one shared-surface group so stage 3 treats
+/// the edges between them as reconstruction artifacts.
+#[test]
+fn nurbs_elliptical_cylinder_stage27_selection() {
+    let stl = format!("{}/tests/nurbs/elliptical_cylinder.stl", manifest_dir());
+    let step = format!("{}/tests/nurbs/elliptical_cylinder.step", manifest_dir());
+    let config = config_for_compare_stage27(&stl, &step);
+    let output = run_stage2(&config);
+    let (planar, bspline) = planar_bspline_selection_counts(&output);
+    assert_eq!(bspline, 2, "closed wall should split into two B-spline faces");
+    assert_eq!(planar, 2, "top and bottom caps");
+    let groups: Vec<Option<usize>> = output
+        .bspline_hypotheses
+        .iter()
+        .map(|h| h.shared_surface_group)
+        .collect();
+    assert_eq!(groups[0], groups[1], "both halves carry one group tag");
+    assert!(groups[0].is_some(), "the halves must be tagged as seam-split");
+}
