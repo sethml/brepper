@@ -1310,7 +1310,6 @@ fn strip_merge_seed(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig, relaxed
                 if face.normal.is_some()
                     && face.toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS
                     && !ni_large_sphere
-                    && !config.multiface_planar.get(ni).copied().unwrap_or(false)
                     && !config.is_junction(ni, relaxed)
                 {
                     ring.push(ni);
@@ -1406,14 +1405,10 @@ impl SurfaceType for ToroidalSurface {
         if on_large_sphere(fi) {
             return Vec::new();
         }
-        // Flat facets poison small torus fits (e.g. top-face quads pulled
-        // into corner vertex-blend seeds), so multi-face planar faces are
-        // excluded both as start faces and from seed gathering below.
-        let on_plane =
-            |f: usize| -> bool { config.multiface_planar.get(f).copied().unwrap_or(false) };
-        if on_plane(fi) {
-            return Vec::new();
-        }
+        // (Flat facets in seeds — e.g. top-face quads pulled into corner
+        // vertex-blend seeds — were excluded by a multiface_planar mask
+        // until 2026-07-15; the junction mask plus seed outlier trimming
+        // proved to cover that failure, so the mask was retired.)
         // Faces committed to a cylinder may still lie on a torus: a coarsely
         // tessellated torus (e.g. a pipe elbow) is tiled by narrow cylinder
         // strips in stage 2.2, each spanning too little of the major arc for
@@ -1438,7 +1433,6 @@ impl SurfaceType for ToroidalSurface {
                 && face.toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS
                 && face.conical_hypothesis < 0
                 && !on_large_sphere(fj)
-                && !on_plane(fj)
                 && !config.is_junction(fj, relaxed)
         };
         let mut seed_set: HashSet<usize> = HashSet::new();

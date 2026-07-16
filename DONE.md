@@ -331,3 +331,23 @@ DELETED; elliptical_cylinder passes full --compare at 8.6e-5 relative volume
 as an untagged fallback (currently exercised by no model) whose artificial
 edges the fully-armed edge compare would correctly flag. OCCT conventions
 probed in tmp/probe_periodic.rs.
+
+## Seeding-mask verification: multiface_planar retired, large_sphere kept
+The curvature-guided seeding follow-up ("are the multiface_planar /
+large_sphere torus-seeding masks redundant with the pass-1 junction mask?")
+answered by measurement, neutralizing each mask against the full 477-test
+suite. multiface_planar (blob-shaped planar regions excluded from torus
+seeds, added 2026-07-06 hours BEFORE the junction mask): fully redundant —
+suite green with it off, timings unchanged (its motivating failure,
+top-face quads poisoning corner vertex-blend seeds, is covered by the
+junction mask in pass 1 and seed outlier trimming in pass 2) — DELETED,
+along with its blob-shape population pass. large_sphere: NOT redundant —
+with it off the suite still passes but takes 18.5 min instead of 3.3
+(pill_fine stage 2: 1.2 s → 429 s, 358x; rounded_cube_fine: 4.0 s → 479 s),
+because sphere interiors have uniform curvature (never junction-flagged)
+and every adjacent quad-row band on a sphere lies exactly on some torus, so
+torus seeding/BFS tile large spheres with bogus-but-valid fits that only
+die in selection — KEPT, with the measurement recorded in its doc comments.
+Bycatch: strip_merge_seed is unreachable since the toroidal-before-conical
+reorder (its trigger needs conical hypotheses, which don't exist yet when
+toroidal runs); recorded in TODO.md for a probe-then-delete pass.

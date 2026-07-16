@@ -6,9 +6,12 @@ recorded in DONE.md.)
 # Deferred
 
 ## Other
-- Verify whether the multiface_planar / large_sphere seeding masks are now redundant
-  with the pass-1 junction mask (from curvature-guided seeding, see DONE.md) and
-  retire them if so.
+- Retire `strip_merge_seed` (src/stage2/toroidal.rs) if it is truly dead: its
+  trigger is `conical_hypothesis >= 0` on the start face, but since the
+  toroidal-before-conical reorder no face has a conical hypothesis when the
+  toroidal stage runs — pipe_elbow now recovers its torus via the direct
+  seeding path. Verify with an execution probe across the suite, then delete
+  (~70 lines). Discovered during the 2026-07-15 seeding-mask verification.
 - Support for OBJ, PLY input formats.
 - IGES export option.
 

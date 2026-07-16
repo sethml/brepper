@@ -26,18 +26,15 @@ pub(super) struct BfsConfig {
     pub verbosity: u8,
     /// Viz detail level: 1=commits, 2=seeds, 3=BFS faces
     pub viz_level: u8,
-    /// Per-face flag: true if the face belongs to a multi-face planar
-    /// hypothesis from stage 2.1. Curved-surface seed gathering excludes
-    /// such faces — a flat facet in a small torus/sphere seed poisons the
-    /// fit (e.g. top-face quads pulled into corner vertex-blend seeds).
-    /// Empty means "no information" (unit tests).
-    pub multiface_planar: Vec<bool>,
     /// Per-face flag: true if the face belongs to a LARGE spherical
     /// hypothesis from stage 2.3. Torus seed gathering excludes only these:
     /// small spurious spheres (a corner vertex-blend patch locally fits a
     /// sphere of the tube radius) must not block torus seeding — the real
     /// torus beats them in selection once it exists. Empty means "no
-    /// information" (unit tests).
+    /// information" (unit tests). NOT redundant with `junction_faces`
+    /// (verified 2026-07-15): sphere interiors are uniform-curvature and
+    /// never junction-flagged, and torus seeding would tile them with
+    /// bogus-but-valid band fits (pill_fine stage 2: 1.2 s → 429 s).
     pub large_sphere: Vec<bool>,
     /// Per-face curvature-difference score (see stage2::compute_seed_scores).
     /// Start faces are processed in ascending score order so interior faces
