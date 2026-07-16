@@ -24,6 +24,8 @@ GENERAL OPTIONS:
     -v, --verbose[=LEVEL]    Verbosity level: 1 = stage summaries, 2 = per-hypothesis details,
                              3 = commit details/stats/profiles, 4 = per-seed details, 5 = BFS face trace
     -q, --quiet              Suppress non-error output
+    --strict-mesh            Fail on degenerate mesh faces instead of repairing them
+                             (dropping duplicate-vertex faces, stitching T-junction slivers)
     --debug                  Enable debug output and intermediate files
     --stage=<stage>          Stop after stage, e.g. 2.2 (default: 4.1). --stage=2 stops after all of stage2
     --viz-stages=<stages>    Open interactive 3D visualization at specified stages (e.g. 2.1,2.2,2.3)

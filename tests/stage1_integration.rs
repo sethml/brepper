@@ -375,15 +375,27 @@ test_stl_step_compare!(
 // ===========================================================================
 
 #[test]
-fn bad_degenerate_face() {
+fn bad_degenerate_face_strict() {
     let stl = format!("{}/tests/bad/degenerate_face.stl", manifest_dir());
-    let config = config_for_stl(&stl);
+    let config =
+        config::parse_config_from(["brepper", &stl, "--stage=1", "-q", "--strict-mesh"]).unwrap();
     let err = stage1::stage1(&config).expect_err("should fail with degenerate face");
     let msg = err.to_string();
     assert!(
         msg.contains("degenerate"),
         "error should mention degenerate faces, got: {msg}"
     );
+}
+
+#[test]
+fn bad_degenerate_face_repaired_by_default() {
+    let stl = format!("{}/tests/bad/degenerate_face.stl", manifest_dir());
+    let config = config_for_stl(&stl);
+    let mesh = stage1::stage1(&config).expect("degenerate face should be repaired by default");
+    assert_eq!(mesh.stats.mesh_faces_degenerate, 0);
+    // The sliver is removed and its neighbor split; the fixture's genuinely
+    // missing bottom triangle remains as an open hole.
+    assert_eq!(mesh.stats.mesh_edges_open, 4);
 }
 
 #[test]

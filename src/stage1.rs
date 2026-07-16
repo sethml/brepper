@@ -1,7 +1,8 @@
 //! Stage 1: Mesh Input & Preprocessing
 //!
 //! 1.1: Read STL file into ConnectedMesh with welded vertices.
-//! 1.2: Validate mesh topology, compute normals and neighbors.
+//! 1.2: Repair degenerate faces (unless --strict-mesh), then validate mesh
+//!      topology, compute normals and neighbors.
 
 use crate::config::Config;
 use opencascade_sys::{b_rep_builder_api, b_rep_extrema, extrema, gp, message, rw_stl};
@@ -563,6 +564,175 @@ impl ConnectedMesh {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Mesh repair (Stage 1.2, skipped with --strict-mesh)
+// ---------------------------------------------------------------------------
+
+/// Counts of defects handled by [`ConnectedMesh::repair_degenerate_faces`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MeshRepairStats {
+    /// Faces with repeated vertex indices (duplicate points collapsed by
+    /// welding), dropped outright.
+    pub faces_dropped_duplicate_vertex: usize,
+    /// Zero-area collinear sliver faces removed (T-junction stitches).
+    pub faces_dropped_sliver: usize,
+    /// Faces split at a T-junction vertex exposed by a removed sliver.
+    pub faces_split: usize,
+    /// Removed slivers whose long edge had no remaining face to split;
+    /// the crack is left open for validation to report.
+    pub splits_unresolved: usize,
+}
+
+impl MeshRepairStats {
+    pub fn repaired_anything(&self) -> bool {
+        self.faces_dropped_duplicate_vertex > 0 || self.faces_dropped_sliver > 0
+    }
+}
+
+impl ConnectedMesh {
+    /// Repair degenerate triangles so validation can pass on real-world STL
+    /// exports. Two defect classes are handled (both present in 3DBenchy.stl):
+    ///
+    /// 1. Triangles with repeated vertex indices (duplicate points collapsed
+    ///    by vertex welding) — dropped; they contribute only a doubled edge.
+    /// 2. Exactly-collinear zero-area slivers. These are usually T-junction
+    ///    stitches: one side of the mesh has a long edge A–B, the other side
+    ///    splits it as A–C, C–B, and the sliver A-B-C fills the crack.
+    ///    Dropping the sliver alone would leave open edges, so the neighbor
+    ///    face across the long edge A–B is split at C, restoring a closed
+    ///    manifold. Chained slivers (one sliver stitching another sliver's
+    ///    long edge) resolve iteratively: later splits target the faces
+    ///    produced by earlier ones.
+    ///
+    /// Must run before quad fusion (stage 1.3): only triangles are repaired.
+    pub fn repair_degenerate_faces(&mut self) -> MeshRepairStats {
+        let mut stats = MeshRepairStats::default();
+        let mut alive = vec![true; self.faces.len()];
+        // Each removed sliver requests a split of its long edge at the
+        // vertex opposite it (for exactly-collinear points, that vertex lies
+        // between the long edge's endpoints).
+        let mut pending_splits: Vec<(EdgeKey, usize)> = Vec::new();
+
+        for (face_idx, face) in self.faces.iter().enumerate() {
+            if face.vertex_count != 3 {
+                continue;
+            }
+            let [a, b, c, _] = face.vertex_indices;
+            if a == b || b == c || a == c {
+                alive[face_idx] = false;
+                stats.faces_dropped_duplicate_vertex += 1;
+                continue;
+            }
+            if compute_face_normal(face, &self.vertices).is_some() {
+                continue;
+            }
+            alive[face_idx] = false;
+            stats.faces_dropped_sliver += 1;
+            let d2 = |p: usize, q: usize| {
+                let (vp, vq) = (self.vertices[p], self.vertices[q]);
+                let (dx, dy, dz) = (vp.x - vq.x, vp.y - vq.y, vp.z - vq.z);
+                dx * dx + dy * dy + dz * dz
+            };
+            let (p, q, interior) = [(a, b, c), (b, c, a), (c, a, b)]
+                .into_iter()
+                .max_by(|x, y| d2(x.0, x.1).total_cmp(&d2(y.0, y.1)))
+                .unwrap();
+            pending_splits.push((EdgeKey::new(p, q), interior));
+        }
+
+        if !stats.repaired_anything() {
+            return stats;
+        }
+
+        // Edge → face lookup over surviving faces, extended as splits create
+        // new faces. Dead faces are filtered at lookup time.
+        let mut edge_map: HashMap<EdgeKey, Vec<usize>> = HashMap::new();
+        let register_face_edges =
+            |face: &MeshFace, face_idx: usize, edge_map: &mut HashMap<EdgeKey, Vec<usize>>| {
+                let vc = face.vertex_count as usize;
+                for i in 0..vc {
+                    let key = EdgeKey::new(
+                        face.vertex_indices[i],
+                        face.vertex_indices[(i + 1) % vc],
+                    );
+                    edge_map.entry(key).or_default().push(face_idx);
+                }
+            };
+        for (face_idx, face) in self.faces.iter().enumerate() {
+            if alive[face_idx] {
+                register_face_edges(face, face_idx, &mut edge_map);
+            }
+        }
+
+        // A split may only become possible after another split has produced
+        // its target face (chained slivers), so retry until no progress.
+        loop {
+            let mut unresolved = Vec::new();
+            let mut progress = false;
+
+            for (edge, interior) in pending_splits {
+                let targets: Vec<usize> = edge_map
+                    .get(&edge)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|&f| alive[f] && self.faces[f].vertex_count == 3)
+                    .collect();
+                if targets.is_empty() {
+                    unresolved.push((edge, interior));
+                    continue;
+                }
+
+                for t in targets {
+                    // Split triangle (u, v, w) with u→v on the long edge into
+                    // (u, c, w) and (c, v, w); winding is preserved.
+                    let tri = self.faces[t].clone();
+                    let i = (0..3)
+                        .find(|&i| {
+                            EdgeKey::new(tri.vertex_indices[i], tri.vertex_indices[(i + 1) % 3])
+                                == edge
+                        })
+                        .expect("edge_map entry must correspond to a face edge");
+                    let (u, v, w) = (
+                        tri.vertex_indices[i],
+                        tri.vertex_indices[(i + 1) % 3],
+                        tri.vertex_indices[(i + 2) % 3],
+                    );
+                    alive[t] = false;
+                    for child_indices in [[u, interior, w, 0], [interior, v, w, 0]] {
+                        let child = MeshFace {
+                            vertex_count: 3,
+                            vertex_indices: child_indices,
+                            neighbors: [-1, -1, -1, -1],
+                            normal: None,
+                            planar_hypothesis: UNDEDUCED_PLANAR_HYPOTHESIS,
+                            conical_hypothesis: UNDEDUCED_CONICAL_HYPOTHESIS,
+                            spherical_hypothesis: UNDEDUCED_SPHERICAL_HYPOTHESIS,
+                            toroidal_hypothesis: UNDEDUCED_TOROIDAL_HYPOTHESIS,
+                        };
+                        let child_idx = self.faces.len();
+                        register_face_edges(&child, child_idx, &mut edge_map);
+                        self.faces.push(child);
+                        alive.push(true);
+                    }
+                    stats.faces_split += 1;
+                }
+                progress = true;
+            }
+
+            if unresolved.is_empty() || !progress {
+                stats.splits_unresolved = unresolved.len();
+                break;
+            }
+            pending_splits = unresolved;
+        }
+
+        let mut keep = alive.into_iter();
+        self.faces.retain(|_| keep.next().unwrap());
+        stats
+    }
+}
+
 fn compute_face_normal(face: &MeshFace, vertices: &[MeshVertex]) -> Option<[f64; 3]> {
     let vertex_count = face.vertex_count as usize;
     if !(3..=4).contains(&vertex_count) {
@@ -984,7 +1154,25 @@ pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
         return Ok(mesh);
     }
 
-    // Stage 1.2: Validate and populate topology
+    // Stage 1.2: Repair degenerate faces (unless --strict-mesh), then
+    // validate and populate topology.
+    if !config.strict_mesh {
+        let t = Instant::now();
+        let repair = mesh.repair_degenerate_faces();
+        if repair.repaired_anything() && !config.quiet {
+            eprintln!(
+                "Stage 1.2 ({:.3}s): Repaired mesh: dropped {} duplicate-vertex face(s), removed {} sliver face(s), split {} face(s) at T-junctions",
+                t.elapsed().as_secs_f64(),
+                repair.faces_dropped_duplicate_vertex,
+                repair.faces_dropped_sliver,
+                repair.faces_split,
+            );
+            if repair.splits_unresolved > 0 {
+                eprintln!("  {} T-junction(s) could not be re-stitched", repair.splits_unresolved);
+            }
+        }
+    }
+
     let t = Instant::now();
     mesh.validate_and_populate_topology()?;
 
@@ -1148,5 +1336,133 @@ mod tests {
             MeshValidationError::NonManifoldEdges { edge_count: 1 }
         ));
         assert_eq!(mesh.stats.mesh_edges_non_manifold, 1);
+    }
+
+    #[test]
+    fn repair_drops_duplicate_vertex_face() {
+        let mut mesh = ConnectedMesh {
+            vertices: vec![
+                MeshVertex::from_xyz(0.0, 0.0, 0.0),
+                MeshVertex::from_xyz(1.0, 0.0, 0.0),
+                MeshVertex::from_xyz(0.0, 1.0, 0.0),
+            ],
+            faces: vec![
+                make_triangle_face(0, 1, 2),
+                make_triangle_face(0, 0, 1), // duplicate vertex index
+            ],
+            ..ConnectedMesh::default()
+        };
+
+        let stats = mesh.repair_degenerate_faces();
+
+        assert_eq!(stats.faces_dropped_duplicate_vertex, 1);
+        assert_eq!(stats.faces_dropped_sliver, 0);
+        assert_eq!(stats.faces_split, 0);
+        assert_eq!(mesh.faces.len(), 1);
+        mesh.validate_and_populate_topology()
+            .expect("repaired mesh should validate");
+    }
+
+    #[test]
+    fn repair_stitches_t_junction_sliver() {
+        // Flat patch: below the x-axis one triangle spans the long edge A-B;
+        // above it two triangles use the split edges A-C and C-B. The
+        // zero-area sliver (A, B, C) stitches the T-junction at C.
+        let mut mesh = ConnectedMesh {
+            vertices: vec![
+                MeshVertex::from_xyz(0.0, 0.0, 0.0),  // 0: A
+                MeshVertex::from_xyz(2.0, 0.0, 0.0),  // 1: B
+                MeshVertex::from_xyz(1.0, 0.0, 0.0),  // 2: C (midpoint of A-B)
+                MeshVertex::from_xyz(1.0, -1.0, 0.0), // 3: D (below)
+                MeshVertex::from_xyz(1.0, 1.0, 0.0),  // 4: E (above)
+            ],
+            faces: vec![
+                make_triangle_face(1, 0, 3), // below, uses long edge B->A
+                make_triangle_face(0, 1, 2), // sliver
+                make_triangle_face(2, 1, 4), // above right, uses C->B
+                make_triangle_face(0, 2, 4), // above left, uses A->C
+            ],
+            ..ConnectedMesh::default()
+        };
+
+        let stats = mesh.repair_degenerate_faces();
+
+        assert_eq!(stats.faces_dropped_sliver, 1);
+        assert_eq!(stats.faces_split, 1);
+        assert_eq!(stats.splits_unresolved, 0);
+        assert_eq!(mesh.faces.len(), 4);
+        mesh.validate_and_populate_topology()
+            .expect("repaired mesh should validate");
+        assert_eq!(mesh.stats.mesh_faces_degenerate, 0);
+        // Only the outer boundary remains open; the T-junction is stitched.
+        assert_eq!(mesh.stats.mesh_edges_open, 4);
+        assert_eq!(mesh.stats.mesh_edges_inconsistent_orientation, 0);
+    }
+
+    #[test]
+    fn repair_stitches_chained_slivers() {
+        // Like the T-junction case, but the long edge A-B is split twice
+        // above (A-C1, C1-C2, C2-B) and stitched by two nested slivers:
+        // sliver2's long edge A-C2 is an edge of sliver1, so its split
+        // target only exists after sliver1's split runs. Sliver2 is listed
+        // first to exercise the retry loop.
+        let mut mesh = ConnectedMesh {
+            vertices: vec![
+                MeshVertex::from_xyz(0.0, 0.0, 0.0),  // 0: A
+                MeshVertex::from_xyz(3.0, 0.0, 0.0),  // 1: B
+                MeshVertex::from_xyz(1.0, 0.0, 0.0),  // 2: C1
+                MeshVertex::from_xyz(2.0, 0.0, 0.0),  // 3: C2
+                MeshVertex::from_xyz(1.5, -1.0, 0.0), // 4: D (below)
+                MeshVertex::from_xyz(1.5, 1.0, 0.0),  // 5: E (above)
+            ],
+            faces: vec![
+                make_triangle_face(0, 3, 2), // sliver2: long edge A-C2, interior C1
+                make_triangle_face(1, 0, 4), // below, uses long edge B->A
+                make_triangle_face(0, 1, 3), // sliver1: long edge A-B, interior C2
+                make_triangle_face(0, 2, 5), // above, uses A->C1
+                make_triangle_face(2, 3, 5), // above, uses C1->C2
+                make_triangle_face(3, 1, 5), // above, uses C2->B
+            ],
+            ..ConnectedMesh::default()
+        };
+
+        let stats = mesh.repair_degenerate_faces();
+
+        assert_eq!(stats.faces_dropped_sliver, 2);
+        assert_eq!(stats.faces_split, 2);
+        assert_eq!(stats.splits_unresolved, 0);
+        assert_eq!(mesh.faces.len(), 6);
+        mesh.validate_and_populate_topology()
+            .expect("repaired mesh should validate");
+        assert_eq!(mesh.stats.mesh_faces_degenerate, 0);
+        assert_eq!(mesh.stats.mesh_edges_open, 4);
+        assert_eq!(mesh.stats.mesh_edges_inconsistent_orientation, 0);
+    }
+
+    #[test]
+    fn repair_leaves_unmatched_sliver_crack_open() {
+        // A sliver whose long edge has no neighbor face: the sliver is
+        // removed but there is nothing to split.
+        let mut mesh = ConnectedMesh {
+            vertices: vec![
+                MeshVertex::from_xyz(0.0, 0.0, 0.0),  // 0: A
+                MeshVertex::from_xyz(2.0, 0.0, 0.0),  // 1: B
+                MeshVertex::from_xyz(1.0, 0.0, 0.0),  // 2: C
+                MeshVertex::from_xyz(1.0, 1.0, 0.0),  // 3: E
+            ],
+            faces: vec![
+                make_triangle_face(0, 1, 2), // sliver, long edge A-B unshared
+                make_triangle_face(2, 1, 3),
+                make_triangle_face(0, 2, 3),
+            ],
+            ..ConnectedMesh::default()
+        };
+
+        let stats = mesh.repair_degenerate_faces();
+
+        assert_eq!(stats.faces_dropped_sliver, 1);
+        assert_eq!(stats.faces_split, 0);
+        assert_eq!(stats.splits_unresolved, 1);
+        assert_eq!(mesh.faces.len(), 2);
     }
 }

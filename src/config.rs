@@ -173,6 +173,10 @@ struct CliArgs {
     #[arg(short = 'q', long)]
     pub quiet: bool,
 
+    /// Fail on degenerate mesh faces instead of repairing them.
+    #[arg(long)]
+    pub strict_mesh: bool,
+
     /// Enable debug output and intermediate files.
     #[arg(long)]
     pub debug: bool,
@@ -225,6 +229,8 @@ pub struct Config {
     pub verbose: bool,
     /// Suppress non-error output.
     pub quiet: bool,
+    /// Fail on degenerate mesh faces instead of repairing them.
+    pub strict_mesh: bool,
     /// Enable debug output and intermediate files.
     pub debug: bool,
     /// Stop after this stage.
@@ -250,6 +256,7 @@ impl std::fmt::Debug for Config {
             .field("verbosity", &self.verbosity)
             .field("verbose", &self.verbose)
             .field("quiet", &self.quiet)
+            .field("strict_mesh", &self.strict_mesh)
             .field("debug", &self.debug)
             .field("stage", &self.stage)
             .field("viz_stages", &self.viz_stages)
@@ -275,6 +282,7 @@ impl Config {
             verbosity: args.verbose_level.unwrap_or(0).max(args.verbose_short),
             verbose: args.verbose_level.unwrap_or(0).max(args.verbose_short) >= 1,
             quiet: args.quiet,
+            strict_mesh: args.strict_mesh,
             debug: args.debug,
             stage: args.stage.unwrap_or_default(),
             viz_stages: args.viz_stages.unwrap_or_default(),
@@ -398,6 +406,12 @@ mod tests {
         let s2 = Stage(2, 0);
         assert!(s2.at_least(2, 6));
         assert!(!s2.at_least(3, 1));
+    }
+
+    #[test]
+    fn strict_mesh_flag() {
+        assert!(!parse(&["input.stl"]).strict_mesh);
+        assert!(parse(&["input.stl", "--strict-mesh"]).strict_mesh);
     }
 
     #[test]
