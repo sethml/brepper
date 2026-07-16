@@ -299,3 +299,35 @@ freeform bands (elliptical_cylinder) are seam-cut, fitted once, and split into
 two faces sharing the surface, with the two tagged artificial edges exempted
 from the stage 3.1 compare (the periodic-face-with-seam form is the documented
 follow-up). 60/65 zoo models pass (5 bad/ excepted); full suite green.
+
+## Closed freeform bands: one periodic B-spline face with a real seam (§2.7 non-compromised design)
+Replaced the seam-split compromise (two faces sharing one fitted surface, two
+tagged artificial edges exempted from the stage 3.1 compare) with the form CAD
+kernels write: ONE U-periodic B-spline face with a real seam edge. Stage 2.7
+fits closed bands with `GeomAPI_PointsToBSplineSurface::Interpolate(periodic)` —
+around-the-band axis as the array's first index (transposed when that axis is v,
+orientation flip XOR'd with the transpose), closing station omitted (OCCT
+appends the wrap itself; closure is C1, measured) — then rescales the around
+knots to exactly [0, 2π] via `SetUKnots` so stage 3.4's 2π-hard-coded
+wrapped-face machinery (branch unwrap, winding, seam planning, pcurve shifts)
+applies verbatim once the B-spline chart reports `u_periodic()`. The chart
+returns principal U like the analytic charts; U=0 is exactly the cut path
+(chord-length parameters start at the first supplied row), so the seam gauge is
+free and `plan_seam_anchors`' vertex-pair search (which would hit the
+edge-splitting error on the azimuthally-misaligned strip rings) is never
+consulted. Two stage 3.3 junction mechanisms were both required: closed-loop
+edges must carry PERIODIC curves for seam re-anchoring, so (a) closed-but-non-
+periodic IntSS curves (Geom_TrimmedCurve, exact) are converted via
+`GeomConvert::CurveToBSplineCurve` + `SetPeriodic`, and (b) genuine partial-arc
+IntSS results fall to the boundary-chain repair's new closed-chain arm —
+periodic C2 interpolation through the chain vertices (`GeomAPI_Interpolate`
+periodic, 4e-15 chain deviation), which also closes the deferred "periodic
+chain repair" TODO. Partial-arc detection now keys on endpoint gap, not
+parameter span (a closed B-spline junction arrives over [0,1]; the span≠2π test
+replaced it with a bogus circle costing 12% volume). Acceptance delivered: the
+stage 3.1 exemption, `shared_surface_group`, and `is_seam_cut_pair` are
+DELETED; elliptical_cylinder passes full --compare at 8.6e-5 relative volume
+(was 5.2e-3), all 477 tests green, clippy clean. The clamped seam-split remains
+as an untagged fallback (currently exercised by no model) whose artificial
+edges the fully-armed edge compare would correctly flag. OCCT conventions
+probed in tmp/probe_periodic.rs.

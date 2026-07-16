@@ -28,7 +28,7 @@ use crate::config::Config;
 use crate::stage1::ConnectedMesh;
 use crate::viz::{self, VizAction, VizSender};
 use opencascade_sys::{
-    approx, geom, geom_abs, geom_api, gp, shape_analysis, t_colgp, OwnedPtr,
+    approx, geom, geom_abs, geom_api, gp, shape_analysis, t_col_std, t_colgp, OwnedPtr,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -118,11 +118,11 @@ pub struct BSplineHypothesis {
     pub v_degree: i32,
     pub nb_u_poles: i32,
     pub nb_v_poles: i32,
-    /// Set (to a common value) on the two hypotheses produced by seam-
-    /// splitting one fitted closed-band surface: the edges between them are
-    /// reconstruction artifacts with no reference counterpart, and the
-    /// stage 3.1 compare exempts exactly those.
-    pub shared_surface_group: Option<usize>,
+    /// True for a closed freeform band fitted periodically around the band:
+    /// the surface is U-periodic with its U knots rescaled to exactly
+    /// [0, 2π] (the period stage 3.4's wrapped-face machinery hard-codes),
+    /// and the U=0 iso is the gauge seam at the region's cut path.
+    pub u_periodic: bool,
 }
 
 impl std::fmt::Debug for BSplineHypothesis {
@@ -135,7 +135,7 @@ impl std::fmt::Debug for BSplineHypothesis {
             .field("centroid_error_max", &self.centroid_error_max)
             .field("degree", &(self.u_degree, self.v_degree))
             .field("poles", &(self.nb_u_poles, self.nb_v_poles))
-            .field("shared_surface_group", &self.shared_surface_group)
+            .field("u_periodic", &self.u_periodic)
             .finish()
     }
 }
@@ -163,7 +163,7 @@ impl BSplineHypothesis {
             v_degree,
             nb_u_poles,
             nb_v_poles,
-            shared_surface_group: None,
+            u_periodic: false,
         }
     }
 
@@ -1240,10 +1240,11 @@ fn fit_component(
 ) -> Result<Vec<BSplineHypothesis>, String> {
     let region = build_region(mesh, component, face_to_selected, in_region)?;
     // A closed band (e.g. the wall of a closed prism) cannot be flattened
-    // to a disk; cut it along a seam path first. The fitted surface is then
-    // split into two faces (see split_cut_hypothesis) — its two parameter-
-    // extreme boundary curves coincide, and a single face would need the
-    // full periodic-seam machinery (DEVELOPMENT_PLAN §2.7 follow-up).
+    // to a disk; cut it along a seam path first. The band is then fitted
+    // PERIODICALLY around the cut (one surface, one face, a real seam edge
+    // in stage 3.4 — the form CAD kernels write). The clamped fit + seam
+    // split into two faces remains as a fallback for closed bands the
+    // periodic fit cannot validate.
     let cut = is_closed_band(&region);
     let region = if cut {
         cut_region_seam(region, mesh, config.verbosity)?
@@ -1330,60 +1331,65 @@ fn fit_component(
 
     let sampler = UvSampler::new(&region, &uv);
     let maps = AxisMaps::build(&sampler);
+    // Fit modes, in order of preference: a cut band tries the periodic fit
+    // around the band first, then falls back to the clamped fit that gets
+    // seam-split into two faces sharing the surface.
+    let modes: Vec<Option<bool>> = if cut {
+        vec![Some(cut_around_axis(&region, &uv)?), None]
+    } else {
+        vec![None]
+    };
     let mut last_err = String::new();
-    for (density, cap) in [(1.5, 121), (2.5, 181), (3.5, 241)] {
-        // Interior data density sets the enrichment target: an axis's
-        // boundary can be much coarser than the region it bounds (flat
-        // margins tessellate coarsely — an 8-vertex side on a 946-vertex
-        // region).
-        let target = ((region.verts.len() as f64).sqrt() * density).round() as usize;
-        let target = target.clamp(8, cap);
-        let u_stations = axis_stations(&u_side_a, &u_side_b, target, &maps.u_profile);
-        let v_stations = axis_stations(&v_side_a, &v_side_b, target, &maps.v_profile);
-        match fit_grid(mesh, &region, &sampler, &maps, &u_stations, &v_stations, config) {
-            Ok(hyp) => {
-                return if cut {
-                    split_cut_hypothesis(hyp, mesh, &region, &uv)
-                } else {
-                    Ok(vec![hyp])
-                };
-            }
-            Err(e) => {
-                if config.verbosity >= 2 {
-                    eprintln!(
-                        "  Stage 2.7: {}x{} grid attempt failed: {e}",
-                        u_stations.len(),
-                        v_stations.len(),
-                    );
+    for around in modes {
+        for (density, cap) in [(1.5, 121), (2.5, 181), (3.5, 241)] {
+            // Interior data density sets the enrichment target: an axis's
+            // boundary can be much coarser than the region it bounds (flat
+            // margins tessellate coarsely — an 8-vertex side on a 946-vertex
+            // region).
+            let target = ((region.verts.len() as f64).sqrt() * density).round() as usize;
+            let target = target.clamp(8, cap);
+            let u_stations = axis_stations(&u_side_a, &u_side_b, target, &maps.u_profile);
+            let v_stations = axis_stations(&v_side_a, &v_side_b, target, &maps.v_profile);
+            match fit_grid(
+                mesh, &region, &sampler, &maps, &u_stations, &v_stations, around, config,
+            ) {
+                Ok(hyp) => {
+                    return if cut && around.is_none() {
+                        if config.verbosity >= 1 {
+                            eprintln!(
+                                "  Stage 2.7: periodic fit failed for the closed band \
+                                 ({last_err}); falling back to the clamped seam-split"
+                            );
+                        }
+                        split_cut_hypothesis(hyp, mesh, &region, &uv)
+                    } else {
+                        Ok(vec![hyp])
+                    };
                 }
-                // A collapsed parameterization won't improve with density.
-                if e.contains("parameterization covers") {
-                    return Err(e);
+                Err(e) => {
+                    if config.verbosity >= 2 {
+                        eprintln!(
+                            "  Stage 2.7: {}x{}{} grid attempt failed: {e}",
+                            u_stations.len(),
+                            v_stations.len(),
+                            if around.is_some() { " periodic" } else { "" },
+                        );
+                    }
+                    // A collapsed parameterization won't improve with density.
+                    if e.contains("parameterization covers") {
+                        return Err(e);
+                    }
+                    last_err = e;
                 }
-                last_err = e;
             }
         }
     }
     Err(last_err)
 }
 
-/// Split the fitted hypothesis of a seam-cut closed band into two halves
-/// along the around-the-band axis. Both halves share the SAME fitted
-/// surface object; the caller tags them with a common
-/// `shared_surface_group` so downstream code can recognize the two edges
-/// between them as reconstruction artifacts (they have no counterpart in a
-/// reference model, which would use one periodic face with a seam). Each
-/// half spans only part of the surface's parameter range, so its two cut
-/// edges are geometrically distinct and no periodic-seam machinery is
-/// needed.
-fn split_cut_hypothesis(
-    hyp: BSplineHypothesis,
-    mesh: &ConnectedMesh,
-    region: &Region,
-    uv: &[(f64, f64)],
-) -> Result<Vec<BSplineHypothesis>, String> {
-    // The around axis runs from cut copy to cut copy: cut vertices sit at
-    // that axis's parameter extremes.
+/// Which unit-square axis runs around a seam-cut band (from cut copy to cut
+/// copy): the cut vertices sit at that axis's parameter extremes.
+fn cut_around_axis(region: &Region, uv: &[(f64, f64)]) -> Result<bool, String> {
     let cut_uv = region
         .loops
         .iter()
@@ -1391,7 +1397,25 @@ fn split_cut_hypothesis(
         .find(|&&(_, out)| out == CUT_OUTSIDE)
         .map(|&(li, _)| uv[li])
         .ok_or("seam-cut region has no cut boundary")?;
-    let around_u = cut_uv.0.min(1.0 - cut_uv.0) < cut_uv.1.min(1.0 - cut_uv.1);
+    Ok(cut_uv.0.min(1.0 - cut_uv.0) < cut_uv.1.min(1.0 - cut_uv.1))
+}
+
+/// FALLBACK for closed bands the periodic fit cannot validate: split the
+/// clamped fitted hypothesis of a seam-cut band into two halves along the
+/// around-the-band axis. Both halves share the SAME fitted surface object.
+/// Each half spans only part of the surface's parameter range, so its two
+/// cut edges are geometrically distinct and no periodic-seam machinery is
+/// needed — but those two edges are reconstruction artifacts a reference
+/// model (one periodic face with a real seam) does not have, so the
+/// stage 3.1 edge compare will flag them.
+fn split_cut_hypothesis(
+    hyp: BSplineHypothesis,
+    mesh: &ConnectedMesh,
+    region: &Region,
+    uv: &[(f64, f64)],
+) -> Result<Vec<BSplineHypothesis>, String> {
+    // The around axis runs from cut copy to cut copy.
+    let around_u = cut_around_axis(region, uv)?;
 
     // Mean around-coordinate per region face, from its triangles.
     let mut face_sum = vec![(0.0_f64, 0usize); region.faces.len()];
@@ -1493,6 +1517,10 @@ fn axis_stations(
 
 /// One fit attempt at fixed grid stations: resample, orient, fit,
 /// validate against `--surface-tolerance`.
+///
+/// `around` selects the fit mode: None = clamped fit of an open (disk)
+/// region; Some(around_u) = periodic fit of a seam-cut closed band whose
+/// around-the-band unit-square axis is u (true) or v (false).
 #[allow(clippy::too_many_arguments)]
 fn fit_grid(
     mesh: &ConnectedMesh,
@@ -1501,6 +1529,7 @@ fn fit_grid(
     maps: &AxisMaps,
     u_stations: &[f64],
     v_stations: &[f64],
+    around: Option<bool>,
     config: &Config,
 ) -> Result<BSplineHypothesis, String> {
     let (n_u, n_v) = (u_stations.len(), v_stations.len());
@@ -1551,13 +1580,28 @@ fn fit_grid(
     let mesh_n = region_normal_near(mesh, region, center);
     let flip = dot3(grid_n, mesh_n) < 0.0;
 
-    let mut pts = t_colgp::Array2OfPnt::new_int4(1, n_u as i32, 1, n_v as i32);
-    for i in 0..n_u {
-        for j in 0..n_v {
-            let jj = if flip { n_v - 1 - j } else { j };
-            let p = grid[idx(i, jj)];
+    // Array layout: the fitted surface's U is the array's FIRST index. A
+    // periodic fit needs the around-the-band axis there (transpose when the
+    // around axis is v), with its closing station — the second cut copy,
+    // whose column duplicates the first — omitted: OCCT's periodic
+    // Interpolate appends the wrap-around copy of the first row itself
+    // (probed, see DEVELOPMENT_PLAN §2.7). Orientation: transposing negates
+    // d1u×d1v, so the outward flip reverses the SECOND index and accounts
+    // for the transpose.
+    let (n_a, n_b, transpose) = match around {
+        Some(false) => (n_v - 1, n_u, true),
+        Some(true) => (n_u - 1, n_v, false),
+        None => (n_u, n_v, false),
+    };
+    let flip_b = flip != transpose;
+    let mut pts = t_colgp::Array2OfPnt::new_int4(1, n_a as i32, 1, n_b as i32);
+    for a in 0..n_a {
+        for b in 0..n_b {
+            let bb = if flip_b { n_b - 1 - b } else { b };
+            let (i, j) = if transpose { (bb, a) } else { (a, bb) };
+            let p = grid[idx(i, j)];
             let pnt = gp::Pnt::new_real3(p[0], p[1], p[2]);
-            pts.set_value(i as i32 + 1, j as i32 + 1, &pnt);
+            pts.set_value(a as i32 + 1, b as i32 + 1, &pnt);
         }
     }
     // Interpolation first: the grid is sampled from an exact-on-surface
@@ -1565,13 +1609,20 @@ fn fit_grid(
     // reconstruction (OCCT's least-squares approximator reports IsDone
     // while overshooting its Tol3D by millimeters near strongly curved
     // patch boundaries — measured on the saddle model). The approximator
-    // remains as a fallback for data interpolation can't handle.
+    // remains as a fallback for data interpolation can't handle — except on
+    // the periodic path, which is interpolation-only (the approximator
+    // binding carries no periodic flag).
     let approx_tols = [
         (config.surface_tolerance_mm / 8.0).max(1e-4),
         (config.surface_tolerance_mm / 2.0).max(1e-4),
     ];
+    let methods: &[Option<f64>] = if around.is_some() {
+        &[None]
+    } else {
+        &[None, Some(approx_tols[0]), Some(approx_tols[1])]
+    };
     let mut last_err = String::new();
-    for method in [None, Some(approx_tols[0]), Some(approx_tols[1])] {
+    for &method in methods {
         let surface = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let fit = match method {
                 None => {
@@ -1579,7 +1630,7 @@ fn fit_grid(
                     fit.interpolate_array2ofpnt_parametrizationtype_bool(
                         &pts,
                         approx::ParametrizationType::Chordlength,
-                        false,
+                        around.is_some(),
                     );
                     fit
                 }
@@ -1600,7 +1651,7 @@ fn fit_grid(
                 None
             }
         }));
-        let surface = match surface {
+        let mut surface = match surface {
             Ok(Some(s)) => s,
             Ok(None) => {
                 last_err = "GeomAPI_PointsToBSplineSurface did not converge".to_string();
@@ -1611,8 +1662,28 @@ fn fit_grid(
                 continue;
             }
         };
+        if around.is_some() {
+            // Rescale the periodic (around) axis's knots to exactly [0, 2π]
+            // — an exact affine reparameterization (probed: geometry drift
+            // ~1e-15). Stage 3.4's wrapped-face machinery (branch unwrap,
+            // winding, pcurve shifts, seam placement) hard-codes that
+            // period.
+            let bs = surface.get_mut();
+            if !bs.is_u_periodic() {
+                last_err = "periodic interpolation returned a non-periodic surface".to_string();
+                continue;
+            }
+            let nk = bs.nb_u_knots();
+            let (k0, k1) = (bs.u_knot(1), bs.u_knot(nk));
+            let mut knots = t_col_std::Array1OfReal::new_int2(1, nk);
+            for k in 1..=nk {
+                let scaled = (bs.u_knot(k) - k0) / (k1 - k0) * std::f64::consts::TAU;
+                knots.set_value(k, &scaled);
+            }
+            bs.set_u_knots(&knots);
+        }
         match validate_fit(
-            mesh, region, sampler.uv, maps, flip, surface, n_u, n_v, &grid, config,
+            mesh, region, sampler.uv, maps, around, flip_b, surface, n_u, n_v, &grid, config,
         ) {
             Ok(hyp) => return Ok(hyp),
             Err(e) => last_err = e,
@@ -1631,7 +1702,8 @@ fn validate_fit(
     region: &Region,
     uv: &[(f64, f64)],
     maps: &AxisMaps,
-    flip: bool,
+    around: Option<bool>,
+    flip_b: bool,
     surface: OwnedPtr<geom::HandleGeomBSplineSurface>,
     n_u: usize,
     n_v: usize,
@@ -1644,15 +1716,19 @@ fn validate_fit(
     hyp_verts.sort_unstable();
     hyp_verts.dedup();
     let mut hyp = BSplineHypothesis::new(surface, region.faces.clone(), hyp_verts);
+    hyp.u_periodic = around.is_some();
     let tol = config.surface_tolerance_mm;
     // The fit's parameter is ~linear in arc fraction (the grid stations
-    // equalize arc), and its v axis is reversed when the grid was flipped
-    // for outward orientation.
+    // equalize arc). Map the Floater axes onto the fitted surface's axes:
+    // transposed when the band's around axis is v (the surface's U is
+    // always the array's first index), with the second axis reversed when
+    // the grid was flipped for outward orientation.
     let seed_of = |li: usize| -> (f64, f64) {
         let (u, v) = uv[li];
         let gu = AxisMaps::arc_fraction(&maps.u_profile, u);
         let gv = AxisMaps::arc_fraction(&maps.v_profile, v);
-        (gu, if flip { 1.0 - gv } else { gv })
+        let (ga, gb) = if around == Some(false) { (gv, gu) } else { (gu, gv) };
+        (ga, if flip_b { 1.0 - gb } else { gb })
     };
     if config.verbosity >= 3 {
         // Probe: the fit's residual against its own input grid. Large gaps
@@ -2029,16 +2105,7 @@ pub(super) fn deduce_bspline_surfaces(
             (0..num_faces).map(|fi| comp_set.contains(&fi)).collect()
         };
         match fit_component(mesh, comp.clone(), &face_to_selected, &in_region, config) {
-            Ok(mut hyps) => {
-                // Two hypotheses = a seam-split closed band sharing one
-                // surface; tag them so downstream code can recognize the
-                // edges between them as reconstruction artifacts.
-                if hyps.len() == 2 {
-                    let group = bspline_hypotheses.len();
-                    for h in &mut hyps {
-                        h.shared_surface_group = Some(group);
-                    }
-                }
+            Ok(hyps) => {
                 let split = hyps.len() == 2;
                 if config.verbosity >= 1 {
                     let hyp = &hyps[0];
@@ -2047,7 +2114,13 @@ pub(super) fn deduce_bspline_surfaces(
                          vtx_err_max={:.2e}, cen_err_max={:.2e}{}",
                         hyp.u_degree, hyp.v_degree, hyp.nb_u_poles, hyp.nb_v_poles,
                         comp_len, hyp.error_max, hyp.centroid_error_max,
-                        if split { " (closed band: seam-split into two faces)" } else { "" },
+                        if split {
+                            " (closed band: seam-split fallback, two faces)"
+                        } else if hyp.u_periodic {
+                            " (closed band: one periodic face)"
+                        } else {
+                            ""
+                        },
                     );
                 }
                 if let Some(viz_sender) = viz {

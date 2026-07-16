@@ -2441,9 +2441,9 @@ fn nurbs_leaves_chamfered_cube_planar() {
 }
 
 /// elliptical_cylinder: a closed freeform wall (annulus topology) is
-/// seam-cut, fitted once, and split into two B-spline faces sharing the
-/// fitted surface — tagged as one shared-surface group so stage 3 treats
-/// the edges between them as reconstruction artifacts.
+/// seam-cut for flattening, then fitted as ONE U-periodic B-spline surface
+/// (knots rescaled to [0, 2π]) that stage 3 reconstructs as a single
+/// wrapped face with a real seam edge — the same form CAD kernels write.
 #[test]
 fn nurbs_elliptical_cylinder_stage27_selection() {
     let stl = format!("{}/tests/nurbs/elliptical_cylinder.stl", manifest_dir());
@@ -2451,13 +2451,8 @@ fn nurbs_elliptical_cylinder_stage27_selection() {
     let config = config_for_compare_stage27(&stl, &step);
     let output = run_stage2(&config);
     let (planar, bspline) = planar_bspline_selection_counts(&output);
-    assert_eq!(bspline, 2, "closed wall should split into two B-spline faces");
+    assert_eq!(bspline, 1, "closed wall is ONE periodic B-spline face");
     assert_eq!(planar, 2, "top and bottom caps");
-    let groups: Vec<Option<usize>> = output
-        .bspline_hypotheses
-        .iter()
-        .map(|h| h.shared_surface_group)
-        .collect();
-    assert_eq!(groups[0], groups[1], "both halves carry one group tag");
-    assert!(groups[0].is_some(), "the halves must be tagged as seam-split");
+    let hyp = &output.bspline_hypotheses[0];
+    assert!(hyp.u_periodic, "closed-band fit must be U-periodic");
 }

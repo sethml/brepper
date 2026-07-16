@@ -5,19 +5,6 @@ recorded in DONE.md.)
 
 # Deferred
 
-## NURBS follow-ups
-- Non-compromised closed-band reconstruction: `elliptical_cylinder` passes via the
-  seam-split (two B-spline faces on one fitted surface, two tagged artificial edges
-  exempted from the stage 3.1 compare). CAD kernels and the reference write ONE
-  periodic face with a seam edge instead. DEVELOPMENT_PLAN §2.7 "Path to the
-  non-compromised design" lists the steps (periodic Interpolate, U-knot rescale to
-  2π so the existing wrapped-face machinery applies, periodic chart flag, seam
-  anchors, periodic chain repair); the acceptance test is removing the compare
-  exemption.
-- Periodic chain repair: `repair_edge_curve_from_boundary`'s B-spline arm covers open
-  chains only; a closed freeform junction that IntSS misses would need a periodic
-  interpolation (`GeomAPI_Interpolate` with the periodic flag).
-
 ## Other
 - Verify whether the multiface_planar / large_sphere seeding masks are now redundant
   with the pass-1 junction mask (from curvature-guided seeding, see DONE.md) and

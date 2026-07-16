@@ -14,9 +14,9 @@ use crate::stage1;
 use opencascade_sys::{
     b_rep, b_rep_adaptor, b_rep_bnd_lib, b_rep_builder_api, b_rep_check, b_rep_extrema,
     b_rep_g_prop, b_rep_lib,
-    bnd, extrema,
-    geom, geom2d, geom2d_api, geom_abs, geom_api, g_prop, gp, message, shape_analysis,
-    shape_fix,
+    bnd, convert, extrema,
+    geom, geom2d, geom2d_api, geom_abs, geom_api, geom_convert, g_prop, gp, message,
+    shape_analysis, shape_fix,
     t_col_std, t_colgp, top_abs, top_exp, top_loc, topo_ds, OwnedPtr,
 };
 use std::cell::RefCell;
@@ -240,41 +240,14 @@ fn min_distance_to_shape(pt: &gp::Pnt, shape: &topo_ds::Shape) -> f64 {
     stage1::min_distance_to_shape(pt, shape)
 }
 
-/// True when the two faces are B-spline halves of one fitted surface (the
-/// deliberate seam-split of a closed freeform band): edges between them —
-/// and the corner vertices those edges end at — are reconstruction
-/// artifacts with no counterpart in a reference model, which represents
-/// the band as a single periodic face with a seam.
-fn is_seam_cut_pair(
-    fi0: usize,
-    fi1: usize,
-    face_descriptors: &[FaceDescriptor],
-    stage2: &Stage2Output,
-) -> bool {
-    let s0 = &stage2.selected_surfaces[face_descriptors[fi0].selected_surface_idx];
-    let s1 = &stage2.selected_surfaces[face_descriptors[fi1].selected_surface_idx];
-    match (s0, s1) {
-        (SelectedSurface::BSpline(a), SelectedSurface::BSpline(b)) => {
-            a != b
-                && stage2.bspline_hypotheses[*a].shared_surface_group.is_some()
-                && stage2.bspline_hypotheses[*a].shared_surface_group
-                    == stage2.bspline_hypotheses[*b].shared_surface_group
-        }
-        _ => false,
-    }
-}
-
 /// Compare stage 3.1 adjacency graph against reference STEP shape.
 ///
 /// For each ReconEdge, samples mesh boundary vertices along the edge and checks
 /// that each is within vertex_tolerance of a STEP edge.
 /// For each BRepVertex, checks that it is within vertex_tolerance of a STEP vertex.
-/// Seam-cut edges (and the vertices they end at) are exempt: they are
-/// deliberate reconstruction artifacts flagged at fit time, not features.
 fn compare_adjacency_to_step(
     edges: &[ReconEdge],
     vertices: &[BRepVertex],
-    face_descriptors: &[FaceDescriptor],
     stage2: &Stage2Output,
     config: &Config,
 ) -> Result<(), Stage3CompareError> {
@@ -285,19 +258,9 @@ fn compare_adjacency_to_step(
     let edge_compound = build_edge_compound(compare_shape);
     let vertex_compound = build_vertex_compound(compare_shape);
 
-    let seam_cut_edge = |edge: &ReconEdge| {
-        is_seam_cut_pair(edge.face_indices[0], edge.face_indices[1], face_descriptors, stage2)
-    };
-
     // Check ReconEdge boundary vertices against STEP edges
     let mut edge_overall_max = 0.0_f64;
-    let mut skipped_edges = 0usize;
-    let mut skipped_verts = 0usize;
     for (ei, edge) in edges.iter().enumerate() {
-        if seam_cut_edge(edge) {
-            skipped_edges += 1;
-            continue;
-        }
         let mut max_dist = 0.0_f64;
         let boundary = &edge.mesh_boundary_vertices;
 
@@ -359,17 +322,6 @@ fn compare_adjacency_to_step(
     // refined against the reconstructed surfaces downstream.
     let mut vert_overall_max = 0.0_f64;
     for (vi, vert) in vertices.iter().enumerate() {
-        // Corners created by a seam split (any two adjacent faces are halves
-        // of one fitted surface) have no reference counterpart.
-        let artificial = vert.adjacent_faces.iter().enumerate().any(|(k, &fa)| {
-            vert.adjacent_faces[k + 1..]
-                .iter()
-                .any(|&fb| is_seam_cut_pair(fa, fb, face_descriptors, stage2))
-        });
-        if artificial {
-            skipped_verts += 1;
-            continue;
-        }
         let pt = gp::Pnt::new_real3(vert.point[0], vert.point[1], vert.point[2]);
         let d = min_distance_to_shape(&pt, vertex_compound.as_shape());
 
@@ -399,12 +351,6 @@ fn compare_adjacency_to_step(
             "  Compare 3.1: edge boundary max dist {:.6e} mm, vertex max dist {:.6e} mm",
             edge_overall_max, vert_overall_max
         );
-        if skipped_edges + skipped_verts > 0 {
-            eprintln!(
-                "  Compare 3.1: skipped {skipped_edges} seam-cut edge(s) and {skipped_verts} \
-seam-cut vertex(es) (single-surface reconstruction artifacts)"
-            );
-        }
     }
 
     Ok(())
@@ -1498,11 +1444,21 @@ fn compute_edge_curve(
     // intersection plane contains the sphere axis). In UV space, such a circle
     // splits into two disconnected arcs, which IntSS returns separately.
     // Detect this and reconstruct the full circle from sampled curve points.
+    // Partiality is decided by the endpoint gap, NOT the parameter span: a
+    // closed junction with a B-spline surface comes back as a closed curve
+    // over an arbitrary range (observed [0,1]), and treating it as a
+    // partial arc would replace the true junction with a bogus circle.
     let full_circle_curve: Option<OwnedPtr<geom::HandleGeomCurve>> =
         if edge.vertex_indices[0] == usize::MAX && edge.vertex_indices[1] == usize::MAX {
             let c = initial_curve_handle.get();
             let span = c.last_parameter() - c.first_parameter();
-            if (span - 2.0 * std::f64::consts::PI).abs() > 0.1 {
+            let p_first = c.value(c.first_parameter());
+            let p_last = c.value(c.last_parameter());
+            let endpoint_gap = ((p_first.x() - p_last.x()).powi(2)
+                + (p_first.y() - p_last.y()).powi(2)
+                + (p_first.z() - p_last.z()).powi(2))
+            .sqrt();
+            if endpoint_gap > 10.0 * config.vertex_tolerance_mm {
                 // Partial arc — reconstruct full circle from 3 sampled points
                 let fp = c.first_parameter();
                 let p0 = c.value(fp);
@@ -1841,8 +1797,75 @@ fn compute_edge_curve(
         final_curve, edge, vertices, mesh, config, fi0, fi1,
     );
 
+    // Closed-loop edges must carry a PERIODIC curve: stage 3.4's seam
+    // planning re-anchors them with MakeEdge over [t, t + period] at an
+    // arbitrary seam azimuth. Analytic closed junctions (circles) already
+    // are; IntSS junctions against a fitted B-spline surface arrive as
+    // closed-but-non-periodic trimmed curves and are converted (exact —
+    // probed at ~1e-14).
+    let final_curve = if edge.vertex_indices[0] == usize::MAX
+        && edge.vertex_indices[1] == usize::MAX
+    {
+        periodicize_closed_curve(final_curve, config, fi0, fi1)
+    } else {
+        final_curve
+    };
+
     edge.curve_3d = Some(final_curve);
     Ok(())
+}
+
+/// Convert a closed-loop edge's closed-but-non-periodic curve into a
+/// periodic Geom_BSplineCurve (same geometry, same parameter range). Keeps
+/// the input curve when it is already periodic, is not actually closed, or
+/// the conversion fails.
+fn periodicize_closed_curve(
+    curve: OwnedPtr<geom::HandleGeomCurve>,
+    config: &Config,
+    fi0: usize,
+    fi1: usize,
+) -> OwnedPtr<geom::HandleGeomCurve> {
+    {
+        let c = curve.get();
+        if c.is_periodic() {
+            return curve;
+        }
+        let p = c.value(c.first_parameter());
+        let q = c.value(c.last_parameter());
+        let gap = ((p.x() - q.x()).powi(2) + (p.y() - q.y()).powi(2) + (p.z() - q.z()).powi(2))
+            .sqrt();
+        if gap > config.vertex_tolerance_mm {
+            return curve; // not closed; nothing to periodicize
+        }
+    }
+    let converted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut bsc = geom_convert::curve_to_b_spline_curve_handlegeomcurve_parameterisationtype(
+            &curve,
+            convert::ParameterisationType::Tgtthetaover2,
+        );
+        bsc.get_mut().set_periodic();
+        bsc.to_handle_curve()
+    }));
+    match converted {
+        Ok(periodic) => {
+            if config.verbose {
+                eprintln!(
+                    "    Edge (f{fi0},f{fi1}): closed junction curve made periodic \
+                     for seam re-anchoring"
+                );
+            }
+            periodic
+        }
+        Err(_) => {
+            if !config.quiet {
+                eprintln!(
+                    "  Warning: edge (f{fi0},f{fi1}): could not make the closed junction \
+                     curve periodic; seam re-anchoring may keep its original start"
+                );
+            }
+            curve
+        }
+    }
 }
 
 /// Maximum distance from a spread of the edge's mesh boundary vertices to
@@ -1946,10 +1969,12 @@ fn repair_edge_curve_from_boundary(
         }
     }
 
-    // Candidate 2: a B-spline curve through the chain vertices (open chains
-    // only — the approximator is not periodic). The chain is ground truth
-    // for any junction, so an ordered fit through it handles freeform
-    // junction curves no analytic construction covers.
+    // Candidate 2: a B-spline curve through the chain vertices — a
+    // least-squares fit trimmed to the endpoints for open chains, a
+    // periodic C2 interpolation for closed chains (a closed freeform
+    // junction, e.g. a cap meeting a fitted band, that IntSS missed). The
+    // chain is ground truth for any junction, so an ordered fit through it
+    // handles freeform junction curves no analytic construction covers.
     if has_endpoints && chain.len() >= 4 {
         let mut pts = t_colgp::Array1OfPnt::new_int2(1, chain.len() as i32);
         for (k, &vi) in chain.iter().enumerate() {
@@ -1977,6 +2002,40 @@ fn repair_edge_curve_from_boundary(
                         best = Some((c, "B-spline"));
                     }
                 }
+            }
+        }
+    } else if !has_endpoints && chain.len() >= 4 {
+        // Closed chain: GeomAPI_Interpolate with the periodic flag (the
+        // closing point is NOT repeated — the wrap chord is implied).
+        let mut loop_chain: &[usize] = chain;
+        if loop_chain.first() == loop_chain.last() {
+            loop_chain = &loop_chain[..loop_chain.len() - 1];
+        }
+        let mut pts_h = t_colgp::HArray1OfPnt::new_int2(1, loop_chain.len() as i32);
+        for (k, &vi) in loop_chain.iter().enumerate() {
+            let v = &mesh.vertices[vi];
+            let p = gp::Pnt::new_real3(v.x, v.y, v.z);
+            pts_h.change_array1().set_value(k as i32 + 1, &p);
+        }
+        let pts_handle = t_colgp::HArray1OfPnt::to_handle(pts_h);
+        let fit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut interp = geom_api::Interpolate::new_handletcolgpharray1ofpnt_bool_real(
+                &pts_handle,
+                true,
+                (config.vertex_tolerance_mm * 0.01).max(1e-9),
+            );
+            interp.perform();
+            if interp.is_done() {
+                Some(interp.curve().to_handle_curve())
+            } else {
+                None
+            }
+        }));
+        if let Ok(Some(c)) = fit {
+            let d = boundary_chain_deviation(&c, chain, mesh);
+            if d < best_dev {
+                best_dev = d;
+                best = Some((c, "periodic B-spline"));
             }
         }
     }
@@ -4041,8 +4100,11 @@ enum ChartKind {
     Sphere { radius: f64 },
     /// U around the main axis, V around the tube; doubly periodic.
     Torus { major_radius: f64, minor_radius: f64 },
-    /// Fitted freeform patch: non-periodic in both directions, no poles.
-    /// Every seam/winding/degenerate-edge mechanism self-disables.
+    /// Fitted freeform patch: no poles, and non-periodic in both directions
+    /// EXCEPT the periodic fit of a closed band (chart data `u_periodic`),
+    /// which is U-periodic with period 2π like the analytic charts. For
+    /// non-periodic patches every seam/winding/degenerate-edge mechanism
+    /// self-disables.
     BSpline,
 }
 
@@ -4057,11 +4119,15 @@ struct BSplineChartData {
     seed: std::cell::Cell<Option<(f64, f64)>>,
     /// Parameter bounds of the surface.
     bounds: (f64, f64, f64, f64),
+    /// True for the periodic fit of a closed freeform band: U-periodic with
+    /// knots rescaled to [0, 2π], so the chart behaves like the analytic
+    /// periodic charts (principal U values, wrapped-face machinery).
+    u_periodic: bool,
     /// Parameter-space anchor inside this face's own region. The two halves
-    /// of a seam-split closed band share a surface whose parameter-extreme
-    /// boundary curves are the SAME 3D curve, so a projection landing on it
-    /// is ambiguous between the two extremes; the branch nearer the face's
-    /// own interior wins.
+    /// of a seam-split closed band (the fallback reconstruction) share a
+    /// surface whose parameter-extreme boundary curves are the SAME 3D
+    /// curve, so a projection landing on it is ambiguous between the two
+    /// extremes; the branch nearer the face's own interior wins.
     home: std::cell::Cell<(f64, f64)>,
 }
 
@@ -4092,15 +4158,25 @@ impl BSplineChartData {
             }
         }
         drop(sas);
-        let (u, v) = self.resolve_boundary_branch(best.0, best.1);
+        let (u, v) = if self.u_periodic {
+            // Match the analytic periodic charts' contract: principal U in
+            // [0, 2π). ShapeAnalysis returns principal values on a periodic
+            // surface already; the reduction just guards the seam itself.
+            // Branch continuity along edges is the caller's unwrap, exactly
+            // as for cylinders/cones.
+            (best.0.rem_euclid(2.0 * std::f64::consts::PI), best.1)
+        } else {
+            self.resolve_boundary_branch(best.0, best.1)
+        };
         self.seed.set(Some((u, v)));
         (u, v)
     }
 
     /// A result on a parameter boundary whose opposite boundary carries the
-    /// same 3D curve (a seam-split closed band) is ambiguous: keep the
-    /// branch nearer this face's `home` anchor. Coincidence is verified in
-    /// 3D, so ordinary (non-closed) patch boundaries are never touched.
+    /// same 3D curve (a seam-split closed band, the fallback) is ambiguous:
+    /// keep the branch nearer this face's `home` anchor. Coincidence is
+    /// verified in 3D, so ordinary (non-closed) patch boundaries are never
+    /// touched.
     fn resolve_boundary_branch(&self, u: f64, v: f64) -> (f64, f64) {
         let (u0, u1, v0, v1) = self.bounds;
         let home = self.home.get();
@@ -4145,7 +4221,11 @@ fn dot3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
 
 impl SurfaceChart {
     fn u_periodic(&self) -> bool {
-        !matches!(self.kind, ChartKind::Plane | ChartKind::BSpline)
+        match self.kind {
+            ChartKind::Plane => false,
+            ChartKind::BSpline => self.bspline.as_ref().is_some_and(|d| d.u_periodic),
+            _ => true,
+        }
     }
 
     fn v_periodic(&self) -> bool {
@@ -4359,9 +4439,12 @@ fn build_face_chart(
         SelectedSurface::BSpline(idx) => {
             // The chart must wrap the exact fitted Geom_BSplineSurface
             // stored in the hypothesis (and shared by fd.surface) — never a
-            // reconstruction. Both periodic flags are false and the pole
-            // radius is ∞, so the seam/winding/degenerate-pole machinery
-            // self-disables and these faces take the plain-loop path.
+            // reconstruction. The pole radius is ∞. For open patches both
+            // periodic flags are false, so the seam/winding/degenerate-pole
+            // machinery self-disables and they take the plain-loop path;
+            // the periodic fit of a closed band reports U-periodic (period
+            // 2π after the fit-time knot rescale) and takes the same
+            // wrapped-face path as cylinders.
             let hyp = &stage2.bspline_hypotheses[*idx];
             let surf = hyp.surface.to_handle_surface();
             let sas = shape_analysis::Surface::new_handlegeomsurface(&surf);
@@ -4372,6 +4455,7 @@ fn build_face_chart(
                 sas: RefCell::new(sas),
                 seed: std::cell::Cell::new(None),
                 bounds: (u0, u1, v0, v1),
+                u_periodic: hyp.u_periodic,
                 home: std::cell::Cell::new((0.5 * (u0 + u1), 0.5 * (v0 + v1))),
             };
             // Anchor the chart inside this face's own region: project the
@@ -7124,13 +7208,7 @@ pub fn stage3(config: &Config, input: Stage2Output, viz: Option<&crate::viz::Viz
     }
 
     if config.compare_shape.is_some() {
-        compare_adjacency_to_step(
-            &output.edges,
-            &output.vertices,
-            &output.face_descriptors,
-            &output.stage2,
-            config,
-        )?;
+        compare_adjacency_to_step(&output.edges, &output.vertices, &output.stage2, config)?;
     }
 
     if !config.stage.at_least(3, 2) {
