@@ -214,7 +214,6 @@ Added torus overlay rendering to the interactive viz. Toroidal hypotheses now di
 ## Rework cone/cylinder fitting parameters and LM refinement
 Overhauled cone and cylinder fitting for robustness: set `REFIT_SKIP_MULTIPLIER` to 10.0 for aggressive refitting, set `seed_vtol_multiplier` to 1.0 (vertices lie precisely on the surface), removed normal-axis consistency check for cones (surface selection resolves overlaps), added vertex recentering around centroid before LM for numerical stability, and increased LM patience to 500 for both cone and cylinder fits. Updated SURFACE_FITTING.md and DEVELOPMENT_PLAN.md to reflect changes.
 
-
 ## Overhaul stage 2 debug output and add --viz-stages-level
 
 Changed default `--vertex-tolerance` from 1e-5 to 5e-5 to better match typical Onshape STL export precision. 
@@ -256,6 +255,12 @@ cone_tangent_planes: 3 of 3 cones detected (normal-line axis rescue with profile
 
 ## Full-torus seam coverage
 full_torus test model (complete donut R=10, r=3) passes the full pipeline: complete tori use natural-bounds face construction (both seams created by OCCT automatically).
+
+## Curvature-guided seeding (stages 1+2)
+Per-face curvature field drives ascending seed ordering (flattest regions seed first), and pass-1 junction faces are excluded from gathering. Together these enabled the toroidal-before-conical stage reorder. See DEVELOPMENT_PLAN "Curvature-guided seed ordering". Candidate follow-up (in TODO.md): the multiface_planar / large_sphere masks may now be redundant with the junction mask.
+
+## Detect medium-resolution fillets (stepped_block_toroidal MEDIUM)
+All 18 tori + 37 cylinders now selected; the model passes stage 4.1 (dedicated onshape_stepped_block_toroidal_medium_stage41_compare test). Three fixes: (a) the BFS final re-fit keeps the incrementally-maintained fit when a fresh from-scratch LM converges worse — recovered the full-ring R=3.5 pocket-rim fillet torus that refit to 0.87 mm; (b) the cylinder angular-coverage test admits coarse tessellation gaps up to the dihedral limit (medium fillets step ~24° per row, four rows across a 90° tube arc, which the span/3 rule rejected); (c) the default --angular-tolerance was raised from 17.5° to 25° so seed-pair qualification accepts those 24° fillet rows. The coverage allowance is gated twice so it can't admit bogus bands: to cylinders (half_angle≈0), so narrow corner sphere-blend patches can't win selection as 6-face cones (else rounded_cube regresses); and to hypotheses already spanning ≥45°, so thin cylinder bands of a smooth cone stay rejected (else nosecone_truncated over-segments). See LEARNINGS "Medium-resolution tessellation".
 
 ## Stage-3 shared-edge topological assembly (DEVELOPMENT_PLAN §3.x rework)
 Stage 3.4/3.5 rebuilt around shared edges: every ReconEdge is one TopoDS_Edge used by
