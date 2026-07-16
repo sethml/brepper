@@ -70,9 +70,6 @@ pub struct ReconEdge {
     pub vertex_indices: [usize; 2],
     /// 3D intersection curve, trimmed to vertex endpoints. Populated in stage 3.3.
     pub curve_3d: Option<OwnedPtr<geom::HandleGeomCurve>>,
-    /// Pcurve of this edge on each adjacent face's surface, parallel to
-    /// `face_indices`. Populated in stage 3.4 by the shared-edge assembler.
-    pub pcurves: [Option<OwnedPtr<geom2d::HandleGeom2dCurve>>; 2],
     /// Whether the adjacent surfaces are tangent along this edge.
     pub tangent: bool,
     /// Mesh vertex indices along this boundary, ordered along the boundary.
@@ -85,7 +82,6 @@ impl std::fmt::Debug for ReconEdge {
             .field("face_indices", &self.face_indices)
             .field("vertex_indices", &self.vertex_indices)
             .field("curve_3d", &self.curve_3d.as_ref().map(|_| "<HandleGeomCurve>"))
-            .field("pcurves", &self.pcurves.iter().map(|p| p.is_some()).collect::<Vec<_>>())
             .field("tangent", &self.tangent)
             .field("mesh_boundary_vertices", &self.mesh_boundary_vertices)
             .finish()
@@ -101,9 +97,6 @@ pub struct BRepVertex {
     pub adjacent_edges: Vec<usize>,
     /// 3D point location of this vertex.
     pub point: [f64; 3],
-    /// UV coordinates of this vertex on each adjacent face's surface,
-    /// parallel to `adjacent_faces`. Populated in stage 3.4.
-    pub uv_coords: Vec<(f64, f64)>,
 }
 
 /// The output of Stage 3: the fully reconstructed B-Rep topology.
@@ -146,18 +139,14 @@ impl std::fmt::Debug for Stage3Output {
 
 #[derive(Debug)]
 pub enum Stage3Error {
-    NotImplemented(String),
     AdjacencyError(String),
-    EdgeCurveError(String),
     Compare(Stage3CompareError),
 }
 
 impl Display for Stage3Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Stage3Error::NotImplemented(stage) => write!(f, "stage {stage} not yet implemented"),
             Stage3Error::AdjacencyError(msg) => write!(f, "stage 3.1 adjacency error: {msg}"),
-            Stage3Error::EdgeCurveError(msg) => write!(f, "stage 3.3 edge curve error: {msg}"),
             Stage3Error::Compare(e) => write!(f, "stage 3.{} compare: {e}", e.substage),
         }
     }
@@ -833,7 +822,6 @@ fn build_surfaces_and_adjacency(
             adjacent_faces: surfaces.iter().copied().collect(),
             adjacent_edges: Vec::new(), // filled below
             point: vertex_position(*vi, &input.mesh.vertices),
-            uv_coords: Vec::new(), // populated in stage 3.4
         });
     }
 
@@ -878,7 +866,6 @@ fn build_surfaces_and_adjacency(
                 face_indices: [pair.0, pair.1],
                 vertex_indices: [start_brep, end_brep],
                 curve_3d: None, // populated in stage 3.3
-                pcurves: [None, None], // populated in stage 3.4
                 tangent: false, // determined in stage 3.2
                 mesh_boundary_vertices: chain,
             });
@@ -5534,10 +5521,6 @@ impl PlacedLoop {
 struct AssembledFace {
     face: OwnedPtr<topo_ds::Face>,
     concave: bool,
-    /// Pcurves attached to shared edges: (edge id, side in face_indices).
-    edge_pcurves: Vec<(usize, usize, OwnedPtr<geom2d::HandleGeom2dCurve>)>,
-    /// UV of each BRepVertex of this face on its surface.
-    vertex_uvs: Vec<(usize, (f64, f64))>,
 }
 
 /// The seam edge of a wrapped face, plus everything needed to emit it.
@@ -6059,7 +6042,6 @@ fn assemble_face(
     // Pcurves: interpolate and attach one per (edge, this surface), plus
     // the two seam pcurves and each degenerate edge's line (already set).
     // ------------------------------------------------------------------
-    let mut edge_pcurves = Vec::new();
     let all_loops = winding.iter().chain(plain.iter());
     for pl in all_loops {
         for (idx, it) in pl.lp.items.iter().enumerate() {
@@ -6088,8 +6070,6 @@ fn assemble_face(
                 &identity_loc,
                 tol,
             );
-            let side = if output.edges[it.ei].face_indices[0] == fi { 0 } else { 1 };
-            edge_pcurves.push((it.ei, side, pcurve));
             if config.verbose {
                 let s = &samples[&it.ei];
                 eprintln!(
@@ -6224,15 +6204,6 @@ fn assemble_face(
         SelectedSurface::BSpline(_) => false,
     };
 
-    let mut vertex_uvs = Vec::new();
-    for &vid in &fd.vertex_indices {
-        if vid == usize::MAX {
-            continue;
-        }
-        let (u, v, _) = chart.point_uv(&output.vertices[vid].point);
-        vertex_uvs.push((vid, (u, v)));
-    }
-
     if config.verbose {
         let area = compute_face_area_from_face(&face);
         let n_deg = degenerates.len();
@@ -6245,7 +6216,7 @@ fn assemble_face(
         );
     }
 
-    Ok(AssembledFace { face, concave, edge_pcurves, vertex_uvs })
+    Ok(AssembledFace { face, concave })
 }
 
 fn polygon_signed_area(poly: &[(f64, f64)]) -> f64 {
@@ -6463,10 +6434,7 @@ fn create_occt_faces_all(
 
     // 4. Assemble each face from the shared edges.
     let mut faces: Vec<OwnedPtr<topo_ds::Face>> = Vec::with_capacity(num_faces);
-    let mut concave_faces: Vec<bool> = vec![false; num_faces];
-    let mut all_edge_pcurves: Vec<(usize, usize, OwnedPtr<geom2d::HandleGeom2dCurve>)> =
-        Vec::new();
-    let mut all_vertex_uvs: Vec<Vec<(usize, (f64, f64))>> = vec![Vec::new(); num_faces];
+    let mut concave_faces: Vec<bool> = Vec::with_capacity(num_faces);
 
     for fi in 0..num_faces {
         let fd = &output.face_descriptors[fi];
@@ -6511,11 +6479,9 @@ fn create_occt_faces_all(
             (make_face.face().to_owned(), concave)
         } else {
             let assembled = assemble_face(fi, &output, &ctx, &plans, config)?;
-            all_edge_pcurves.extend(assembled.edge_pcurves);
-            all_vertex_uvs[fi] = assembled.vertex_uvs;
             (assembled.face, assembled.concave)
         };
-        concave_faces[fi] = is_concave;
+        concave_faces.push(is_concave);
 
         if config.verbose {
             eprintln!(
@@ -6553,24 +6519,6 @@ fn create_occt_faces_all(
         }
 
         faces.push(face);
-    }
-
-    // Record the computed pcurves and vertex UVs in the stage-3 topology.
-    for (ei, side, pcurve) in all_edge_pcurves {
-        output.edges[ei].pcurves[side] = Some(pcurve);
-    }
-    for (vi, vertex) in output.vertices.iter_mut().enumerate() {
-        vertex.uv_coords = vertex
-            .adjacent_faces
-            .iter()
-            .map(|&fi| {
-                all_vertex_uvs[fi]
-                    .iter()
-                    .find(|(vid, _)| *vid == vi)
-                    .map(|(_, uv)| *uv)
-                    .unwrap_or((f64::NAN, f64::NAN))
-            })
-            .collect();
     }
 
     if !config.quiet {

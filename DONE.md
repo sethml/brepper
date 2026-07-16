@@ -351,3 +351,27 @@ die in selection — KEPT, with the measurement recorded in its doc comments.
 Bycatch: strip_merge_seed is unreachable since the toroidal-before-conical
 reorder (its trigger needs conical hypotheses, which don't exist yet when
 toroidal runs); recorded in TODO.md for a probe-then-delete pass.
+
+## Dead-code audit
+A whole-codebase pass (six parallel audits, one per module group, cross-
+referencing every pub/private item against grep across all of src/ and
+tests/) found and deleted: `strip_merge_seed` (src/stage2/toroidal.rs) — the
+probe-then-delete item above; confirmed unreachable now that toroidal
+detection runs strictly before conical, so its `conical_hypothesis >= 0`
+trigger never holds. `Stage3Error::NotImplemented` and `::EdgeCurveError`,
+and `Stage2Error::NotImplemented` — enum variants with a `Display` arm but no
+construction site. A commented-out debug block in
+`conical.rs::fit_cone_primary`. The non-asserting `debug_axis_estimation`
+test in conical.rs, plus its two sole callees `estimate_apex`/`solve_3x3`
+(already `#[cfg(test)]`-gated, used nowhere else). Two write-only fields on
+stage 3's B-Rep structs — `BRepVertex.uv_coords` and `ReconEdge.pcurves` —
+along with the `AssembledFace.vertex_uvs`/`edge_pcurves` computation that
+existed solely to populate them (the real pcurve geometry that matters for
+STEP export is attached directly to the OCCT `TopoDS_Edge` via
+`update_edge_edge_...` and was untouched). 477 tests still green, clippy
+clean. Six further findings that looked more like unfinished features than
+pure dead code — the never-populated `EdgeHighlight` viz overlay, write-only
+`error_abs_sum` on the four mod.rs hypothesis structs and on
+`BSplineHypothesis`, the inert `--debug`/`--step-units` CLI flags, and the
+unused `Display for Units` impl — were left in place and recorded in
+TODO.md for a future call on whether to wire them up or remove them.

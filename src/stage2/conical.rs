@@ -62,112 +62,6 @@ pub(super) fn vertex_to_cone_distance(
 // Step 1: Apex estimation via least-squares line intersection
 // ---------------------------------------------------------------------------
 
-/// Estimate the cone apex as the point minimizing sum of squared distances
-/// to lines L_i(t) = p_i + t * n_i (one line per face centroid + normal).
-///
-/// The optimal point minimizes  Σ ||(I - n_i n_i^T)(a - p_i)||^2
-/// Leading to normal equations: (Σ (I - n_i n_i^T)) a = Σ (I - n_i n_i^T) p_i
-#[cfg(test)]
-fn estimate_apex(
-    face_indices: &[usize],
-    faces: &[MeshFace],
-    vertices: &[MeshVertex],
-) -> Option<[f64; 3]> {
-    // Check if there is a vertex shared by ALL faces — it's the apex.
-    // This gives an exact result for pointed cones and avoids an ill-conditioned system.
-    let n_faces = face_indices.len();
-    let mut vertex_face_count = std::collections::HashMap::<usize, usize>::new();
-    for &fi in face_indices {
-        let vc = faces[fi].vertex_count as usize;
-        for &vi in &faces[fi].vertex_indices[..vc] {
-            *vertex_face_count.entry(vi).or_insert(0) += 1;
-        }
-    }
-    if n_faces >= 3 {
-        for (&vi, &count) in &vertex_face_count {
-            if count == n_faces {
-                return Some([vertices[vi].x, vertices[vi].y, vertices[vi].z]);
-            }
-        }
-    }
-
-    // General case: least-squares intersection of normal lines.
-    // Build 3x3 system: A a = b  where A = Σ (I - n n^T), b = Σ (I - n n^T) p
-    let mut a_mat = [0.0_f64; 9]; // row-major 3x3
-    let mut b_vec = [0.0_f64; 3];
-
-    for &fi in face_indices {
-        let n = match faces[fi].normal {
-            Some(n) => n,
-            None => continue,
-        };
-        let c = face_centroid(&faces[fi], vertices);
-
-        // (I - n n^T) is the projection matrix perpendicular to n
-        for row in 0..3 {
-            for col in 0..3 {
-                let ident = if row == col { 1.0 } else { 0.0 };
-                let proj = ident - n[row] * n[col];
-                a_mat[row * 3 + col] += proj;
-                b_vec[row] += proj * c[col];
-            }
-        }
-    }
-
-    // Solve 3x3 system via Gaussian elimination with partial pivoting
-    solve_3x3(&a_mat, &b_vec)
-}
-
-/// Solve a 3x3 linear system Ax = b. Returns None if singular.
-#[cfg(test)]
-fn solve_3x3(a: &[f64; 9], b: &[f64; 3]) -> Option<[f64; 3]> {
-    let mut aug = [[0.0_f64; 4]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            aug[i][j] = a[i * 3 + j];
-        }
-        aug[i][3] = b[i];
-    }
-
-    for col in 0..3 {
-        // Partial pivoting
-        let mut max_row = col;
-        let mut max_val = aug[col][col].abs();
-        for row in (col + 1)..3 {
-            if aug[row][col].abs() > max_val {
-                max_val = aug[row][col].abs();
-                max_row = row;
-            }
-        }
-        if max_val < 1e-30 {
-            return None;
-        }
-        aug.swap(col, max_row);
-
-        let pivot = aug[col][col];
-        for row in (col + 1)..3 {
-            let factor = aug[row][col] / pivot;
-            for j in col..4 {
-                aug[row][j] -= factor * aug[col][j];
-            }
-        }
-    }
-
-    // Back-substitution
-    let mut x = [0.0_f64; 3];
-    for i in (0..3).rev() {
-        x[i] = aug[i][3];
-        for j in (i + 1)..3 {
-            x[i] -= aug[i][j] * x[j];
-        }
-        if aug[i][i].abs() < 1e-30 {
-            return None;
-        }
-        x[i] /= aug[i][i];
-    }
-    Some(x)
-}
-
 // ---------------------------------------------------------------------------
 // Step 2: Axis estimation from normal covariance
 // ---------------------------------------------------------------------------
@@ -1069,19 +963,6 @@ fn fit_cone_primary(
             } else {
                 (apex, axis, half_angle)
             };
-
-        /* // DEBUG: normal consistency variance
-        let dots: Vec<f64> = face_indices.iter()
-            .filter_map(|&fi| faces[fi].normal.map(|n| {
-                n[0] * final_dir[0] + n[1] * final_dir[1] + n[2] * final_dir[2]
-            }))
-            .collect();
-        if dots.len() >= 2 {
-            let mean = dots.iter().sum::<f64>() / dots.len() as f64;
-            let var = dots.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / dots.len() as f64;
-            eprintln!("[DEBUG fit_cone truncated] n_faces={} half_angle={:.2}° n·axis var={:.6} std={:.4}",
-                face_indices.len(), final_ha.to_degrees(), var, var.sqrt());
-        } */
 
         Some((final_apex, final_dir, final_ha))
     }
@@ -2143,43 +2024,6 @@ mod tests {
             "apex should be near origin, got ({:.3},{:.3},{:.3}), dist={:.3}",
             fit_apex[0], fit_apex[1], fit_apex[2], apex_dist
         );
-    }
-
-    #[test]
-    fn debug_axis_estimation() {
-        let n_slices = 10;
-        let base_radius: f64 = 5.0;
-        let height: f64 = 15.0;
-        let (faces, vertices) = build_pointed_cone_mesh(n_slices, base_radius, height);
-
-        // Print normals for first few faces
-        for i in 0..3 {
-            let n = faces[i].normal.unwrap();
-            eprintln!("face {i} normal: ({:.4}, {:.4}, {:.4})", n[0], n[1], n[2]);
-        }
-
-        // Test normal-diff axis for faces 0,1,2
-        let fi = vec![0, 1, 2];
-        let axis = estimate_axis_from_normal_diffs(&fi, &faces);
-        eprintln!("axis from normal diffs (0,1,2): {:?}", axis);
-
-        // Also test apex estimation
-        let apex = estimate_apex(&fi, &faces, &vertices);
-        eprintln!("apex (0,1,2): {:?}", apex);
-
-        // Also test half-angle
-        if let (Some(a), Some(mut ax)) = (apex, axis) {
-            let mut vset: Vec<usize> = Vec::new();
-            for &f in &fi {
-                let vc = faces[f].vertex_count as usize;
-                vset.extend_from_slice(&faces[f].vertex_indices[..vc]);
-            }
-            vset.sort_unstable();
-            vset.dedup();
-            let ha = estimate_half_angle(&a, &mut ax, &vset, &vertices);
-            eprintln!("half_angle (0,1,2): {:?} (expected {:.4})", ha, (base_radius/height).atan());
-            eprintln!("axis after orient: ({:.4}, {:.4}, {:.4})", ax[0], ax[1], ax[2]);
-        }
     }
 
     #[test]

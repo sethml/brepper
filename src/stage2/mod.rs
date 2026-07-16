@@ -266,14 +266,12 @@ pub struct Stage2Output {
 
 #[derive(Debug)]
 pub enum Stage2Error {
-    NotImplemented(String),
     Compare(Stage2CompareError),
 }
 
 impl Display for Stage2Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Stage2Error::NotImplemented(stage) => write!(f, "stage {stage} not yet implemented"),
             Stage2Error::Compare(e) => write!(f, "stage 2 compare: {e}"),
         }
     }
