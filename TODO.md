@@ -9,18 +9,35 @@
   `./target/release/brepper tests/downloaded/3DBenchy.stl -o /tmp/benchy.step`
   (~25 min; stages 1-3.3 now complete cleanly — 68924/68924 edge curves, 0
   failed — after the 2026-07-16 crash-fix session recorded in DONE.md).
-  Evidence from that session's -v run: face 5841's ordinary boundary edges
-  all cluster near [10.7, 15.1, 19.7], but its two closed-loop edges — edge
-  25777 (f5841,f9597) at [20.6, 12.9, 26.3] and edge 25778 (f5841,f9598) at
-  [-15.5, 20.5, 3.9] — lie in two other, mutually distant regions of the
-  model. So the selected surface hypothesis behind face 5841 claimed mesh
-  faces in (at least) three disconnected regions, and three winding loops
-  cannot bound a connected region on a periodic surface (each winding loop
-  separates it). Likely fix: split face hypotheses into mesh-connected
-  components before B-Rep face construction (stage 2.6 selection or stage
-  3.1 face-descriptor build), rather than extending the seam planner to
-  N loops (topologically wrong for a connected face). Note stage 3.4+ is
-  uncharted for this model — expect further issues behind this one. Also
+  Diagnosis so far (2026-07-16 exploration, no fix yet): face 5841 is a
+  fitted cylinder r=0.2048mm, axis [0.8356,-0.1769,0.5200] through
+  [-3.0714,17.9168,11.3308]. Its ordinary boundary edges cluster near
+  [10.7,15.1,19.7] (axial station +16.4), but its two closed-loop edges —
+  25777 (f5841,f9597) and 25778 (f5841,f9598) — sit at stations +28.5 and
+  -14.7, all three ON the cylinder (radial 0.19-0.205mm), 43mm apart along
+  one line. Faces 9597/9598 are single-FACET islands (1 edge, 1 neighbor,
+  0 vertices — selection step-4 single-face-planar fallbacks) surrounded
+  by region 5841. Their edge curves are full 2π IntSS circles (param spans
+  6.2832) that passed chain validation vacuously: the feature's whole
+  diameter (0.41mm) is about equal to surface_tolerance (0.4mm), so ANY
+  small chain near a station is "within tolerance" of the full ring. Two
+  candidate root causes, possibly combined: (a) genuine disconnection —
+  BFS regions are connected at deduction, but stage 2.6 greedy selection
+  keeps only a winner's still-unassigned faces (select_surfaces,
+  src/stage2/mod.rs ~line 700) and overwrites hyp.faces with that remnant,
+  with NO connectivity recheck (refine_boundary_assignments can likewise
+  sever 1-face-wide strips; absorb preserves adjacency per merge but
+  propagates existing disconnection); (b) sub-tolerance feature scale —
+  fit-based growth and chain validation are both untethered when the
+  feature is smaller than surface_tolerance, so contractible island
+  junctions got full-circle curves that classify as winding in UV. Next
+  step: add a debug dump that BFSes each selected hypothesis's final face
+  list to report disconnected components (distinguishes (a) from (b)),
+  then either split hypotheses into mesh-connected components before face
+  construction and/or gate fits below a minimum feature size. Extending
+  the seam planner to N winding loops is the wrong fix (≥3 winding loops
+  cannot bound a connected region). Note stage 3.4+ is uncharted for this
+  model — expect further issues behind this one. Also
   from that session, quality follow-ups worth revisiting: 48 micro-edges
   whose trimmed curves collapse to a point fall back to straight vertex-to-
   vertex edges (MakeEdge `DifferentPointsOnClosedCurve`), and 684 of 68924
