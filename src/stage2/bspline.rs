@@ -1490,6 +1490,23 @@ fn split_cut_hypothesis(
 /// (flat margins tessellate coarsely: hill_with_hole has 8-vertex sides on
 /// a 946-vertex region, and an 8×8 grid cannot carry the bump). Sides with
 /// mismatched vertex counts fall back to arc-length-uniform stations.
+///
+/// Station spacing is CONDITIONED in 3D-arc measure (the axis profile):
+/// chord-length-parametrized C2 interpolation amplifies data noise by
+/// roughly the square of the adjacent knot-spacing ratio, so a boundary
+/// mixing fine facets with one long straight chord (the xyz-cube letter
+/// walls: a 21× jump) turned a 0.02 mm-flat ribbon into control points
+/// 150 mm off the part — while passing through every grid node exactly.
+/// Near-coincident stations (the other conditioning failure: a
+/// near-singular system) are merged; every segment is then subdivided to
+/// a fixpoint where no piece exceeds GRADE_RATIO× the pieces of either
+/// neighbor segment. Subdivision is uniform in arc, not UV (the Floater
+/// map compresses high-curvature areas, so UV-uniform substations cluster
+/// in 3D). Surviving boundary-vertex stations keep their exact pinned
+/// positions; new substations land only inside long segments, where a
+/// long boundary chord means the mesh itself is flat there and
+/// mid-segment samples lie on the true surface (the arch's chordal-prism
+/// deficit came from stations between vertices on CURVED stretches).
 fn axis_stations(
     side_a: &[f64],
     side_b: &[f64],
@@ -1499,20 +1516,106 @@ fn axis_stations(
     if side_a.len() != side_b.len() || side_a.len() < 2 {
         return AxisMaps::stations(profile, target);
     }
-    let base: Vec<f64> = side_a
+    /// Merge stations closer (in arc) than this fraction of the median gap.
+    const MERGE_FRAC: f64 = 0.25;
+    /// Max allowed piece size relative to either neighbor segment's pieces.
+    const GRADE_RATIO: f64 = 2.0;
+    /// Hard cap on stations per axis (cost guard; the control-point bound
+    /// check in `fit_grid` still protects if grading is cut short).
+    const MAX_STATIONS: usize = 257;
+
+    // (uv, arc-fraction) base stations.
+    let base: Vec<(f64, f64)> = side_a
         .iter()
         .zip(side_b)
-        .map(|(a, b)| ((a + b) / 2.0).clamp(0.0, 1.0))
+        .map(|(a, b)| {
+            let uv = ((a + b) / 2.0).clamp(0.0, 1.0);
+            (uv, AxisMaps::arc_fraction(profile, uv))
+        })
         .collect();
-    let k = (target.saturating_sub(1)).div_ceil(base.len() - 1).max(1);
-    let mut out = Vec::with_capacity((base.len() - 1) * k + 1);
-    for w in base.windows(2) {
-        for step in 0..k {
-            out.push(w[0] + (w[1] - w[0]) * step as f64 / k as f64);
+
+    // Merge pass: drop interior stations far closer than the median gap to
+    // their kept predecessor (corner stations always survive).
+    let mut gaps: Vec<f64> = base.windows(2).map(|w| w[1].1 - w[0].1).collect();
+    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median_gap = gaps[gaps.len() / 2].max(f64::EPSILON);
+    let merge_tol = MERGE_FRAC * median_gap;
+    let mut kept: Vec<(f64, f64)> = vec![base[0]];
+    for &s in &base[1..base.len() - 1] {
+        if s.1 - kept.last().unwrap().1 >= merge_tol {
+            kept.push(s);
         }
     }
-    out.push(*base.last().unwrap());
+    let last = *base.last().unwrap();
+    if kept.len() > 1 && last.1 - kept.last().unwrap().1 < merge_tol {
+        kept.pop();
+    }
+    kept.push(last);
+
+    // Per-segment piece counts: the uniform density target, then graded
+    // subdivision to a fixpoint so no piece exceeds GRADE_RATIO× the
+    // (current) pieces of either neighbor segment.
+    let seg_arc: Vec<f64> = kept
+        .windows(2)
+        .map(|w| (w[1].1 - w[0].1).max(f64::EPSILON))
+        .collect();
+    let k = (target.saturating_sub(1)).div_ceil(seg_arc.len()).max(1);
+    let mut pieces: Vec<usize> = vec![k; seg_arc.len()];
+    for _ in 0..32 {
+        let mut changed = false;
+        for i in 0..seg_arc.len() {
+            let eff = |j: usize| seg_arc[j] / pieces[j] as f64;
+            let mut cap = f64::INFINITY;
+            if i > 0 {
+                cap = cap.min(GRADE_RATIO * eff(i - 1));
+            }
+            if i + 1 < seg_arc.len() {
+                cap = cap.min(GRADE_RATIO * eff(i + 1));
+            }
+            if !cap.is_finite() {
+                continue;
+            }
+            let total: usize = pieces.iter().sum();
+            let headroom = MAX_STATIONS.saturating_sub(total + 1);
+            let want = ((seg_arc[i] / cap).ceil() as usize).min(pieces[i] + headroom);
+            if want > pieces[i] {
+                pieces[i] = want;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Emit: kept stations at their exact pinned uv; substations uniform in
+    // arc within each segment, mapped back through the profile.
+    let mut out = Vec::with_capacity(pieces.iter().sum::<usize>() + 1);
+    for (w, &np) in kept.windows(2).zip(&pieces) {
+        out.push(w[0].0);
+        for step in 1..np {
+            let t = w[0].1 + (w[1].1 - w[0].1) * step as f64 / np as f64;
+            out.push(uv_at_arc(profile, t).clamp(w[0].0, w[1].0));
+        }
+    }
+    out.push(kept.last().unwrap().0);
     out
+}
+
+/// Invert an axis profile: the uv whose arc fraction is `t` (piecewise-
+/// linear interpolation of the profile's (uv, arc) samples).
+fn uv_at_arc(profile: &[(f64, f64)], t: f64) -> f64 {
+    let k = profile
+        .partition_point(|&(_, g)| g < t)
+        .clamp(1, profile.len() - 1);
+    let (u0, g0) = profile[k - 1];
+    let (u1, g1) = profile[k];
+    let s = if g1 > g0 {
+        ((t - g0) / (g1 - g0)).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    u0 + s * (u1 - u0)
 }
 
 /// One fit attempt at fixed grid stations: resample, orient, fit,
@@ -1681,6 +1784,48 @@ fn fit_grid(
                 knots.set_value(k, &scaled);
             }
             bs.set_u_knots(&knots);
+        }
+        // Control-point bound check: an ill-conditioned fit can pass
+        // through every grid node exactly yet swing wildly between them —
+        // the vertex/centroid validation below samples at data points and
+        // is structurally blind to that. The surface lies in the convex
+        // hull of its control points, so poles near the data bound the
+        // whole surface near the data; reject any fit whose poles stray
+        // beyond the grid's bounding box inflated by half its diagonal
+        // (legit fits keep poles close to the data; the xyz-cube blow-up
+        // put them 22 diagonals out).
+        {
+            let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            for p in &grid {
+                for a in 0..3 {
+                    lo[a] = lo[a].min(p[a]);
+                    hi[a] = hi[a].max(p[a]);
+                }
+            }
+            let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2)
+                + (hi[2] - lo[2]).powi(2))
+            .sqrt();
+            let margin = 0.5 * diag + config.surface_tolerance_mm;
+            let bs = surface.get();
+            let mut worst = 0.0_f64;
+            for i in 1..=bs.nb_u_poles() {
+                for j in 1..=bs.nb_v_poles() {
+                    let p = bs.pole(i, j);
+                    let xyz = [p.x(), p.y(), p.z()];
+                    for a in 0..3 {
+                        worst = worst
+                            .max(lo[a] - margin - xyz[a])
+                            .max(xyz[a] - (hi[a] + margin));
+                    }
+                }
+            }
+            if worst > 0.0 {
+                last_err = format!(
+                    "fitted surface has control points {worst:.1} mm outside the data \
+                     bounding box — ill-conditioned fit"
+                );
+                continue;
+            }
         }
         match validate_fit(
             mesh, region, sampler.uv, maps, around, flip_b, surface, n_u, n_v, &grid, config,
