@@ -1341,10 +1341,22 @@ fn compute_edge_curve(
     let surf0 = &face_descriptors[fi0].surface;
     let surf1 = &face_descriptors[fi1].surface;
 
-    // Compute surface-surface intersection
-    let int_ss = geom_api::IntSS::new_handlegeomsurface2_real(
-        surf0, surf1, config.vertex_tolerance_mm,
-    );
+    // Compute surface-surface intersection. IntSS can throw rather than
+    // report failure (observed: "BSpline curve: Knots interval values too
+    // close" approximating a bspline-bspline junction on 3DBenchy) — treat
+    // a throw like any other IntSS failure so the caller's mesh-boundary-
+    // chain fallback supplies the edge curve.
+    let int_ss = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        geom_api::IntSS::new_handlegeomsurface2_real(surf0, surf1, config.vertex_tolerance_mm)
+    }))
+    .map_err(|e| {
+        let msg = e
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| e.downcast_ref::<&str>().copied())
+            .unwrap_or("unknown panic");
+        format!("IntSS threw for edge between faces {fi0} and {fi1}: {msg}")
+    })?;
 
     if !int_ss.is_done() || int_ss.nb_lines() == 0 {
         return Err(format!(
@@ -1924,7 +1936,7 @@ fn repair_edge_curve_from_boundary(
             project_point_on_curve(&v1.point, full),
         ) {
             (Ok(t0), Ok(t1)) => {
-                let (t_lo, t_hi) = select_arc_parameters(t0, t1, chain, full, mesh);
+                let (t_lo, t_hi) = candidate_trim_parameters(t0, t1, chain, full, mesh)?;
                 let arc = geom::TrimmedCurve::new_handlegeomcurve_real2(full, t_lo, t_hi);
                 Some(geom::TrimmedCurve::to_handle(arc).to_handle_curve())
             }
@@ -1991,34 +2003,8 @@ fn repair_edge_curve_from_boundary(
                 }
             }
         }
-    } else if !has_endpoints && chain.len() >= 4 {
-        // Closed chain: GeomAPI_Interpolate with the periodic flag (the
-        // closing point is NOT repeated — the wrap chord is implied).
-        let mut loop_chain: &[usize] = chain;
-        if loop_chain.first() == loop_chain.last() {
-            loop_chain = &loop_chain[..loop_chain.len() - 1];
-        }
-        let mut pts_h = t_colgp::HArray1OfPnt::new_int2(1, loop_chain.len() as i32);
-        for (k, &vi) in loop_chain.iter().enumerate() {
-            let v = &mesh.vertices[vi];
-            let p = gp::Pnt::new_real3(v.x, v.y, v.z);
-            pts_h.change_array1().set_value(k as i32 + 1, &p);
-        }
-        let pts_handle = t_colgp::HArray1OfPnt::to_handle(pts_h);
-        let fit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut interp = geom_api::Interpolate::new_handletcolgpharray1ofpnt_bool_real(
-                &pts_handle,
-                true,
-                (config.vertex_tolerance_mm * 0.01).max(1e-9),
-            );
-            interp.perform();
-            if interp.is_done() {
-                Some(interp.curve().to_handle_curve())
-            } else {
-                None
-            }
-        }));
-        if let Ok(Some(c)) = fit {
+    } else if !has_endpoints {
+        if let Some(c) = closed_chain_periodic_bspline(chain, mesh, config) {
             let d = boundary_chain_deviation(&c, chain, mesh);
             if d < best_dev {
                 best_dev = d;
@@ -2055,6 +2041,47 @@ fn repair_edge_curve_from_boundary(
     }
 }
 
+/// Periodic C2 B-spline through a closed mesh boundary chain, via
+/// GeomAPI_Interpolate with the periodic flag (the closing point is NOT
+/// repeated — the wrap chord is implied). The chain is ground truth for any
+/// junction, so this handles closed freeform junctions (e.g. a cap meeting
+/// a fitted band) that no analytic construction covers.
+fn closed_chain_periodic_bspline(
+    chain: &[usize],
+    mesh: &ConnectedMesh,
+    config: &Config,
+) -> Option<OwnedPtr<geom::HandleGeomCurve>> {
+    if chain.len() < 4 {
+        return None;
+    }
+    let mut loop_chain: &[usize] = chain;
+    if loop_chain.first() == loop_chain.last() {
+        loop_chain = &loop_chain[..loop_chain.len() - 1];
+    }
+    let mut pts_h = t_colgp::HArray1OfPnt::new_int2(1, loop_chain.len() as i32);
+    for (k, &vi) in loop_chain.iter().enumerate() {
+        let v = &mesh.vertices[vi];
+        let p = gp::Pnt::new_real3(v.x, v.y, v.z);
+        pts_h.change_array1().set_value(k as i32 + 1, &p);
+    }
+    let pts_handle = t_colgp::HArray1OfPnt::to_handle(pts_h);
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut interp = geom_api::Interpolate::new_handletcolgpharray1ofpnt_bool_real(
+            &pts_handle,
+            true,
+            (config.vertex_tolerance_mm * 0.01).max(1e-9),
+        );
+        interp.perform();
+        if interp.is_done() {
+            Some(interp.curve().to_handle_curve())
+        } else {
+            None
+        }
+    }))
+    .ok()
+    .flatten()
+}
+
 /// Last-resort edge curve when both the IntSS and tangent constructions
 /// fail: build it from the mesh boundary chain — the ground truth for any
 /// junction. Starts from the vertex-to-vertex line and lets the chain
@@ -2067,7 +2094,33 @@ fn edge_curve_from_boundary_chain(
     config: &Config,
 ) -> Result<f64, String> {
     if edge.vertex_indices[0] == usize::MAX || edge.vertex_indices[1] == usize::MAX {
-        return Err("edge has no vertex endpoints for a chain-based curve".to_string());
+        // Closed-loop edge — no vertices to anchor a line; interpolate the
+        // closed chain directly. Already periodic, as stage 3.4's seam
+        // re-anchoring requires. A 3-vertex loop is below the periodic
+        // interpolation's minimum, but the circle through its three points
+        // is exact (and periodic).
+        let curve = closed_chain_periodic_bspline(&edge.mesh_boundary_vertices, mesh, config)
+            .or_else(|| {
+                let mut chain: &[usize] = &edge.mesh_boundary_vertices;
+                if chain.first() == chain.last() && chain.len() > 1 {
+                    chain = &chain[..chain.len() - 1];
+                }
+                if chain.len() != 3 {
+                    return None;
+                }
+                let pnt_at = |i: usize| {
+                    let v = &mesh.vertices[chain[i]];
+                    gp::Pnt::new_real3(v.x, v.y, v.z)
+                };
+                reconstruct_full_circle(&pnt_at(0), &pnt_at(1), &pnt_at(2))
+            })
+            .ok_or_else(|| {
+                "closed-loop edge has no vertex endpoints and chain interpolation failed"
+                    .to_string()
+            })?;
+        let dev = boundary_chain_deviation(&curve, &edge.mesh_boundary_vertices, mesh);
+        edge.curve_3d = Some(curve);
+        return Ok(dev);
     }
     let v0 = &vertices[edge.vertex_indices[0]];
     let v1 = &vertices[edge.vertex_indices[1]];
@@ -2200,8 +2253,12 @@ fn reconstruct_full_circle(
         a[0] * b[1] - a[1] * b[0],
     ];
     let n2 = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
-    if n2 < 1e-30 {
-        return None; // points are collinear
+    if !n2.is_finite() || n2 < 1e-30 {
+        // Collinear points, or coordinates so extreme the cross product
+        // overflowed (e.g. sampling a degenerate IntSS line at its infinite
+        // parameter bounds, ~1e100) — n/|n| would then be 0/inf = 0 and
+        // gp_Dir panics on the zero-norm vector.
+        return None;
     }
 
     // Circumcenter = p0 + (|b|²*(n×a) + |a|²*(b×n)) / (2*|n|²)
@@ -2222,6 +2279,9 @@ fn reconstruct_full_circle(
     let cy = p0.y() + (b2 * nxa[1] + a2 * bxn[1]) / denom;
     let cz = p0.z() + (b2 * nxa[2] + a2 * bxn[2]) / denom;
     let radius = ((cx - p0.x()).powi(2) + (cy - p0.y()).powi(2) + (cz - p0.z()).powi(2)).sqrt();
+    if !(cx.is_finite() && cy.is_finite() && cz.is_finite() && radius.is_finite()) {
+        return None;
+    }
 
     let n_len = n2.sqrt();
     let center = gp::Pnt::new_real3(cx, cy, cz);
@@ -2868,6 +2928,35 @@ fn compute_tangent_edge_curve_sphere_cylinder(
     Ok(())
 }
 
+/// Trim parameters for a chain-repair candidate curve. Periodic candidates
+/// (the circle) get the chain-supported arc, which may wrap past one period —
+/// Geom_TrimmedCurve normalizes that against a periodic basis. Bounded
+/// candidates (the B-spline fit) have exactly one arc between the projected
+/// parameters, and Geom_TrimmedCurve panics with "parameters out of range"
+/// on anything outside their domain, so the modulo-2π arc selection must not
+/// run on them: order the parameters and clamp to the domain instead.
+/// Returns None for a degenerate (zero-length) span, which Geom_TrimmedCurve
+/// also refuses.
+fn candidate_trim_parameters(
+    t0: f64,
+    t1: f64,
+    mesh_boundary_vertices: &[usize],
+    curve_handle: &geom::HandleGeomCurve,
+    mesh: &crate::stage1::ConnectedMesh,
+) -> Option<(f64, f64)> {
+    let (t_lo, t_hi) = if curve_handle.get().is_periodic() {
+        select_arc_parameters(t0, t1, mesh_boundary_vertices, curve_handle, mesh)
+    } else {
+        let c = curve_handle.get();
+        let (lo, hi) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+        (lo.max(c.first_parameter()), hi.min(c.last_parameter()))
+    };
+    if t_hi - t_lo < 1e-9 {
+        return None;
+    }
+    Some((t_lo, t_hi))
+}
+
 /// Select the correct arc on a periodic curve by sampling mesh boundary vertices.
 /// Returns (t_lo, t_hi) such that the arc from t_lo to t_hi contains the boundary vertices.
 fn select_arc_parameters(
@@ -3176,10 +3265,42 @@ fn compute_edge_curves_all(
                     }
                 }
                 Err(msg) => {
-                    if config.verbose {
-                        eprintln!("  Edge {ei}: FAILED tangent edge - {msg}");
+                    // Last resort, as for non-tangent edges: build the curve
+                    // from the mesh boundary chain.
+                    match edge_curve_from_boundary_chain(
+                        edge,
+                        &output.vertices,
+                        &output.stage2.mesh,
+                        config,
+                    ) {
+                        Ok(dev) if dev <= config.surface_tolerance_mm => {
+                            success_count += 1;
+                            chain_count += 1;
+                            if !config.quiet {
+                                eprintln!(
+                                    "  Edge {ei}: tangent construction failed ({msg}); \
+                                     using mesh-boundary-chain curve (chain dev {dev:.2e} mm)"
+                                );
+                            }
+                        }
+                        Ok(dev) => {
+                            fail_count += 1;
+                            if !config.quiet {
+                                eprintln!(
+                                    "  Edge {ei}: FAILED tangent edge - {msg}; best \
+                                     chain-based curve still {dev:.3} mm from the mesh boundary"
+                                );
+                            }
+                        }
+                        Err(chain_msg) => {
+                            fail_count += 1;
+                            if config.verbose {
+                                eprintln!(
+                                    "  Edge {ei}: FAILED tangent edge - {msg} ({chain_msg})"
+                                );
+                            }
+                        }
                     }
-                    fail_count += 1;
                 }
             }
             continue;
@@ -6402,9 +6523,31 @@ fn create_occt_faces_all(
             )
         };
         if !make_edge.is_done() {
+            // Degenerate curve geometry (e.g. a micro-edge whose trimmed
+            // curve endpoints coincide within Precision::Confusion — MakeEdge
+            // then treats the curve as closed and refuses two distinct
+            // vertices). Fall back to the straight vertex-to-vertex edge,
+            // as for edges with no intersection curve.
+            let err = make_edge.error();
+            if verts[0] != usize::MAX && verts[1] != usize::MAX {
+                let mut line_edge = b_rep_builder_api::MakeEdge::new_vertex2(
+                    &topo_vertices[verts[0]],
+                    &topo_vertices[verts[1]],
+                );
+                if line_edge.is_done() {
+                    if !config.quiet {
+                        eprintln!(
+                            "  Edge {ei}: curve-based MakeEdge failed ({err:?}); \
+                             using straight-line fallback"
+                        );
+                    }
+                    topo_edges.push(line_edge.edge().to_owned());
+                    edge_vertices.push(verts);
+                    continue;
+                }
+            }
             return Err(Stage3Error::AdjacencyError(format!(
-                "MakeEdge failed for edge {ei}: {:?}",
-                make_edge.error(),
+                "MakeEdge failed for edge {ei}: {err:?}",
             )));
         }
         topo_edges.push(make_edge.edge().to_owned());
@@ -7197,4 +7340,144 @@ pub fn stage3(config: &Config, input: Stage2Output, viz: Option<&crate::viz::Viz
     let output = construct_solids(output, config, viz_36)?;
 
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression for the 3DBenchy stage-3 crash: the chain repair's B-spline
+    /// candidate is bounded and non-periodic, but its trim parameters went
+    /// through the modulo-2π arc selection, which can return parameters past
+    /// the curve's domain — Geom_TrimmedCurve then panics with "parameters
+    /// out of range". With the vertex projections in reverse parameter order
+    /// and no chain samples to overrule the forward default, the old code
+    /// returned t_hi ≈ t1 + 2π on a domain spanning ~1.
+    #[test]
+    fn bounded_bspline_trim_parameters_stay_in_domain() {
+        let points = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.4, 0.0],
+            [2.0, 0.5, 0.0],
+            [3.0, 0.4, 0.0],
+            [4.0, 0.0, 0.0],
+        ];
+        let mut pts = t_colgp::Array1OfPnt::new_int2(1, points.len() as i32);
+        for (i, p) in points.iter().enumerate() {
+            let pnt = gp::Pnt::new_real3(p[0], p[1], p[2]);
+            pts.set_value(i as i32 + 1, &pnt);
+        }
+        let fit = geom_api::PointsToBSpline::new_array1ofpnt_int2_shape_real(
+            &pts,
+            3,
+            8,
+            geom_abs::Shape::C2,
+            1e-6,
+        );
+        assert!(fit.is_done());
+        let curve = fit.curve().to_handle_curve();
+        let (fp, lp) = {
+            let c = curve.get();
+            assert!(!c.is_periodic());
+            (c.first_parameter(), c.last_parameter())
+        };
+
+        let mesh = ConnectedMesh::default();
+        let t0 = fp + 0.9 * (lp - fp);
+        let t1 = fp + 0.1 * (lp - fp);
+        let (t_lo, t_hi) = candidate_trim_parameters(t0, t1, &[], &curve, &mesh)
+            .expect("distinct projections give a non-degenerate span");
+        assert!(
+            t_lo >= fp - 1e-12 && t_hi <= lp + 1e-12 && t_lo < t_hi,
+            "trim [{t_lo}, {t_hi}] escapes domain [{fp}, {lp}]"
+        );
+
+        // The construction that panicked before the fix.
+        let arc = geom::TrimmedCurve::new_handlegeomcurve_real2(&curve, t_lo, t_hi);
+        let tc = geom::TrimmedCurve::to_handle(arc).to_handle_curve();
+        let c = tc.get();
+        assert!((c.first_parameter() - t_lo).abs() < 1e-9);
+        assert!((c.last_parameter() - t_hi).abs() < 1e-9);
+    }
+
+    /// The periodic branch keeps the chain-supported arc selection: a circle
+    /// arc crossing the parameter seam comes back with t_hi past 2π, which
+    /// Geom_TrimmedCurve normalizes against the periodic basis.
+    #[test]
+    fn periodic_circle_seam_crossing_arc_kept() {
+        let center = gp::Pnt::new_real3(0.0, 0.0, 0.0);
+        let normal = gp::Dir::new_real3(0.0, 0.0, 1.0);
+        let ax2 = gp::Ax2::new_pnt_dir(&center, &normal);
+        let circle = geom::Circle::new_ax2_real(&ax2, 10.0);
+        let curve = geom::Circle::to_handle(circle).to_handle_curve();
+
+        // Chain vertices on the short arc crossing the seam, generated from
+        // the curve itself so their projected parameters are frame-independent.
+        let mut mesh = ConnectedMesh::default();
+        for t in [5.5, 5.9, 0.1, 0.5] {
+            let p = curve.get().value(t);
+            mesh.vertices.push(MeshVertex::from_xyz(p.x(), p.y(), p.z()));
+        }
+        let chain: Vec<usize> = (0..mesh.vertices.len()).collect();
+
+        let (t_lo, t_hi) = candidate_trim_parameters(5.3, 0.7, &chain, &curve, &mesh)
+            .expect("distinct projections give a non-degenerate span");
+        let tau = std::f64::consts::TAU;
+        assert!(
+            (t_lo - 5.3).abs() < 1e-9 && (t_hi - (0.7 + tau)).abs() < 1e-9,
+            "expected the seam-crossing arc [5.3, 0.7+2π], got [{t_lo}, {t_hi}]"
+        );
+
+        let arc = geom::TrimmedCurve::new_handlegeomcurve_real2(&curve, t_lo, t_hi);
+        let tc = geom::TrimmedCurve::to_handle(arc).to_handle_curve();
+        let c = tc.get();
+        let mid = c.value((c.first_parameter() + c.last_parameter()) / 2.0);
+        let expected = curve.get().value((5.3 + 0.7 + tau) / 2.0);
+        let dist = ((mid.x() - expected.x()).powi(2)
+            + (mid.y() - expected.y()).powi(2)
+            + (mid.z() - expected.z()).powi(2))
+        .sqrt();
+        assert!(dist < 1e-9, "arc midpoint off by {dist}");
+    }
+
+    /// Regression for the second 3DBenchy stage-3 crash: sampling a
+    /// degenerate IntSS line at its infinite parameter bounds hands
+    /// reconstruct_full_circle points with ~1e100 coordinates. The cross
+    /// product's squared norm overflows to infinity, slipping past the
+    /// collinearity guard, and n/|n| = finite/inf = 0 made gp_Dir panic
+    /// with "input vector has zero norm". Such points must yield None.
+    #[test]
+    fn full_circle_from_overflowing_coordinates_rejected() {
+        let p0 = gp::Pnt::new_real3(1e100, 0.0, 0.0);
+        let p1 = gp::Pnt::new_real3(0.0, 1e100, 0.0);
+        let p2 = gp::Pnt::new_real3(0.0, 0.0, 1e100);
+        assert!(reconstruct_full_circle(&p0, &p1, &p2).is_none());
+
+        // Nearly-collinear samples from a line at the same scale (the actual
+        // 3DBenchy shape of the failure).
+        let q0 = gp::Pnt::new_real3(-1e100, -1e100, 0.0);
+        let q1 = gp::Pnt::new_real3(-5e99, -5e99, 1.0);
+        let q2 = gp::Pnt::new_real3(5e99, 5e99, -1.0);
+        assert!(reconstruct_full_circle(&q0, &q1, &q2).is_none());
+
+        // Sane coordinates still reconstruct a circle.
+        let c0 = gp::Pnt::new_real3(10.0, 0.0, 5.0);
+        let c1 = gp::Pnt::new_real3(0.0, 10.0, 5.0);
+        let c2 = gp::Pnt::new_real3(-10.0, 0.0, 5.0);
+        let circle = reconstruct_full_circle(&c0, &c1, &c2).expect("valid circle");
+        let c = circle.get();
+        assert!(c.is_periodic());
+    }
+
+    /// Coincident projections on a bounded candidate are rejected rather than
+    /// passed to Geom_TrimmedCurve (which refuses U1 == U2).
+    #[test]
+    fn bounded_degenerate_span_rejected() {
+        let p0 = gp::Pnt::new_real3(0.0, 0.0, 0.0);
+        let dir = gp::Dir::new_real3(1.0, 0.0, 0.0);
+        let line = geom::Line::new_pnt_dir(&p0, &dir);
+        let curve = geom::Line::to_handle(line).to_handle_curve();
+        let mesh = ConnectedMesh::default();
+        assert!(candidate_trim_parameters(2.0, 2.0, &[], &curve, &mesh).is_none());
+    }
 }

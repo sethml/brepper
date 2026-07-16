@@ -375,3 +375,40 @@ pure dead code — the never-populated `EdgeHighlight` viz overlay, write-only
 `BSplineHypothesis`, the inert `--debug`/`--step-units` CLI flags, and the
 unused `Display for Units` impl — were left in place and recorded in
 TODO.md for a future call on whether to wire them up or remove them.
+
+# Session: 3DBenchy stage-3 crash fixes (2026-07-16)
+
+## Six stage-3 robustness fixes; stage 3.3 now completes on 3DBenchy (68924/68924 edge curves)
+Fixed the TODO crash (`Geom_TrimmedCurve::parameters out of range` at edge
+2024) plus five more failures the 3DBenchy runs surfaced behind it, each
+verified by rerunning the full conversion: (1) the chain repair's
+`trim_to_endpoints` ran modulo-2π arc selection on the bounded, non-periodic
+B-spline candidate, producing trim parameters ~2π outside its domain — new
+`candidate_trim_parameters` keeps arc selection for periodic candidates and
+orders/clamps parameters for bounded ones (key OCCT facts: the
+`Geom_TrimmedCurve` ctor unwraps a trimmed basis and range-checks against
+the *basis* curve, so wrapping past 2π is fine on trimmed circles; and
+`Geom_TrimmedCurve::IsPeriodic()` always returns false — the basis
+forwarding is commented out in OCCT). (2) `reconstruct_full_circle` sampled
+a degenerate IntSS line at its infinite parameter bounds (~1e100): the cross
+product's squared norm overflowed to inf, slipped past the `n2 < 1e-30`
+collinearity guard, and `gp_Dir` panicked on `n/inf = 0` — added finiteness
+guards returning None. (3) `GeomAPI_IntSS` construction can throw ("BSpline
+curve: Knots interval values too close" on a bspline-bspline junction) —
+wrapped in catch_unwind and routed into the existing chain-fallback Err
+path. (4) Micro-edges whose trimmed curve endpoints coincide within
+Precision::Confusion made MakeEdge report `DifferentPointsOnClosedCurve`
+(closed curve, two distinct vertices) — fall back to the straight
+vertex-to-vertex edge, as for curve-less edges. (5) Closed-loop edges whose
+construction failed had no fallback at all (the chain fallback required
+vertex endpoints, and tangent-edge failures never tried it): extracted
+`closed_chain_periodic_bspline` from the repair path, used it for closed-
+loop edges in `edge_curve_from_boundary_chain`, and wired the chain
+fallback into the tangent-edge failure path — failed edge curves went from
+132 to 1. (6) The last holdout was a 3-vertex closed loop (below periodic
+interpolation's minimum): the circle through its three chain points is
+exact. Three unit tests in stage3.rs pin the trim-parameter and overflow
+regressions (each was demonstrated to panic against the pre-fix code) plus
+the periodic seam-crossing arc behavior. 3DBenchy now runs to stage 3.4,
+where it aborts on a face whose hypothesis spans three disconnected mesh
+regions (see TODO.md). 492 tests green, clippy clean.

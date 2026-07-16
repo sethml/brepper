@@ -4,26 +4,28 @@
 
 # Active
 
-- Fix the stage 3 crash on 3DBenchy: OCCT panic
-  `Standard_ConstructionError: Geom_TrimmedCurve::parameters out of range`
-  after ~2027 edges are built. Repro:
+- 3DBenchy stage 3.4 abort: `face 5841: 3 winding boundary loops (at most 2
+  supported)` (scan_face, src/stage3.rs). Repro:
   `./target/release/brepper tests/downloaded/3DBenchy.stl -o /tmp/benchy.step`
-  (a few minutes; stage 1 mesh repair and all of stage 2 complete fine; run
-  with -v to watch edge progress). Hints from the 2026-07-16 run: the panic
-  is raised in opencascade-sys's generated geom.rs from a Geom_TrimmedCurve
-  constructor, i.e. stage 3 trims an edge curve to endpoint parameters
-  outside the curve's admissible domain. Immediately before the crash the -v
-  log shows (a) edges with large negative parameter ranges (e.g.
-  `t=[-21.8688, -21.4696]`), which are fine for infinite analytic curves but
-  out of range for a bounded B-spline, and (b) a boundary-edge repair that
-  swaps in a different curve: `Edge (f289,f4913): curve was 0.402 mm from
-  its mesh boundary chain; repaired with the chain's B-spline (4.37e-2 mm)`.
-  Prime suspects: trimming a repaired/replacement curve with parameters that
-  were computed by projecting onto the *original* curve, or failing to
-  normalize t0/t1 into a periodic curve's period. Find the stage3 call sites
-  constructing trimmed curves, re-project endpoint parameters onto the curve
-  actually being trimmed (clamping/normalizing to its domain), and extract a
-  small regression repro if possible.
+  (~25 min; stages 1-3.3 now complete cleanly — 68924/68924 edge curves, 0
+  failed — after the 2026-07-16 crash-fix session recorded in DONE.md).
+  Evidence from that session's -v run: face 5841's ordinary boundary edges
+  all cluster near [10.7, 15.1, 19.7], but its two closed-loop edges — edge
+  25777 (f5841,f9597) at [20.6, 12.9, 26.3] and edge 25778 (f5841,f9598) at
+  [-15.5, 20.5, 3.9] — lie in two other, mutually distant regions of the
+  model. So the selected surface hypothesis behind face 5841 claimed mesh
+  faces in (at least) three disconnected regions, and three winding loops
+  cannot bound a connected region on a periodic surface (each winding loop
+  separates it). Likely fix: split face hypotheses into mesh-connected
+  components before B-Rep face construction (stage 2.6 selection or stage
+  3.1 face-descriptor build), rather than extending the seam planner to
+  N loops (topologically wrong for a connected face). Note stage 3.4+ is
+  uncharted for this model — expect further issues behind this one. Also
+  from that session, quality follow-ups worth revisiting: 48 micro-edges
+  whose trimmed curves collapse to a point fall back to straight vertex-to-
+  vertex edges (MakeEdge `DifferentPointsOnClosedCurve`), and 684 of 68924
+  edge curves come from mesh-boundary-chain fits because surface-surface
+  intersection failed.
 
 # Deferred (until a model needs it)
 
