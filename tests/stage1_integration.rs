@@ -411,9 +411,19 @@ fn bad_non_manifold_edge() {
 }
 
 #[test]
-fn bad_inconsistent_winding() {
+fn bad_inconsistent_winding_repaired_by_default() {
     let stl = format!("{}/tests/bad/inconsistent_winding.stl", manifest_dir());
     let config = config_for_stl(&stl);
+    let mesh = stage1::stage1(&config).expect("flipped face should be repaired by default");
+    assert_eq!(mesh.stats.mesh_edges_inconsistent_orientation, 0);
+    assert_eq!(mesh.stats.solids, 1);
+}
+
+#[test]
+fn bad_inconsistent_winding_strict() {
+    let stl = format!("{}/tests/bad/inconsistent_winding.stl", manifest_dir());
+    let config =
+        config::parse_config_from(["brepper", &stl, "--stage=1", "-q", "--strict-mesh"]).unwrap();
     let err = stage1::stage1(&config).expect_err("should fail with inconsistent orientation");
     let msg = err.to_string();
     assert!(

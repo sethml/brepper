@@ -1,7 +1,40 @@
 # Prioritized by value toward the project goal (README: "analytic and freeform surfaces")
 
-(No active items — everything below is deferred or dropped. Completed work is
-recorded in DONE.md.)
+(Completed work is recorded in DONE.md.)
+
+# Active
+
+- Fix the stage 3 crash on 3DBenchy: OCCT panic
+  `Standard_ConstructionError: Geom_TrimmedCurve::parameters out of range`
+  after ~2027 edges are built. Repro:
+  `./target/release/brepper tests/downloaded/3DBenchy.stl -o /tmp/benchy.step`
+  (a few minutes; stage 1 mesh repair and all of stage 2 complete fine; run
+  with -v to watch edge progress). Hints from the 2026-07-16 run: the panic
+  is raised in opencascade-sys's generated geom.rs from a Geom_TrimmedCurve
+  constructor, i.e. stage 3 trims an edge curve to endpoint parameters
+  outside the curve's admissible domain. Immediately before the crash the -v
+  log shows (a) edges with large negative parameter ranges (e.g.
+  `t=[-21.8688, -21.4696]`), which are fine for infinite analytic curves but
+  out of range for a bounded B-spline, and (b) a boundary-edge repair that
+  swaps in a different curve: `Edge (f289,f4913): curve was 0.402 mm from
+  its mesh boundary chain; repaired with the chain's B-spline (4.37e-2 mm)`.
+  Prime suspects: trimming a repaired/replacement curve with parameters that
+  were computed by projecting onto the *original* curve, or failing to
+  normalize t0/t1 into a periodic curve's period. Find the stage3 call sites
+  constructing trimmed curves, re-project endpoint parameters onto the curve
+  actually being trimmed (clamping/normalizing to its domain), and extract a
+  small regression repro if possible.
+
+# Deferred (until a model needs it)
+
+- Boundary crack stitching (mesh repair): close hairline cracks by pairing
+  nearly-coincident open boundary edges and re-welding their endpoints at a
+  progressively larger tolerance (bounded by --vertex-tolerance) — what
+  netfabb "stitch triangles" and CGAL `stitch_borders` do. Common in CAD
+  exports where facets along a shared edge disagree at ~1e-6. No current
+  test model exhibits this; add when one does. Implementation slot:
+  `ConnectedMesh::repair()` in src/stage1.rs, between the T-junction pass
+  (`repair_degenerate_faces`) and `repair_coincident_faces`.
 
 # Deferred
 

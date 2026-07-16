@@ -492,27 +492,7 @@ impl ConnectedMesh {
                     shell_bb_max[comp_id][k] = shell_bb_max[comp_id][k].max(p[k]);
                 }
             }
-            // Signed volume contribution: sum of signed tetrahedra with origin.
-            // For triangles: V += (v0 · (v1 × v2)) / 6
-            // For quads: split into two triangles (v0,v1,v2) and (v0,v2,v3)
-            let v0 = &self.vertices[face.vertex_indices[0]];
-            let v1 = &self.vertices[face.vertex_indices[1]];
-            let v2 = &self.vertices[face.vertex_indices[2]];
-            // v1 × v2
-            let cross_x = v1.y * v2.z - v1.z * v2.y;
-            let cross_y = v1.z * v2.x - v1.x * v2.z;
-            let cross_z = v1.x * v2.y - v1.y * v2.x;
-            shell_volumes[comp_id] += v0.x * cross_x + v0.y * cross_y + v0.z * cross_z;
-            if vc == 4 {
-                let v3 = &self.vertices[face.vertex_indices[3]];
-                let cross_x = v2.y * v3.z - v2.z * v3.y;
-                let cross_y = v2.z * v3.x - v2.x * v3.z;
-                let cross_z = v2.x * v3.y - v2.y * v3.x;
-                shell_volumes[comp_id] += v0.x * cross_x + v0.y * cross_y + v0.z * cross_z;
-            }
-        }
-        for v in &mut shell_volumes {
-            *v /= 6.0;
+            shell_volumes[comp_id] += face_signed_volume_contribution(face, &self.vertices);
         }
         for (comp, is_closed) in component_closed.iter().enumerate() {
             if !is_closed {
@@ -581,15 +561,48 @@ pub struct MeshRepairStats {
     /// Removed slivers whose long edge had no remaining face to split;
     /// the crack is left open for validation to report.
     pub splits_unresolved: usize,
+    /// Coincident faces removed: opposite-winding pairs (internal walls)
+    /// cancel entirely; same-winding duplicates are reduced to one face.
+    pub faces_dropped_coincident: usize,
+    /// Faces flipped to make winding consistent within their shell.
+    pub faces_flipped: usize,
+    /// Closed shells flipped whole because their signed volume was negative
+    /// and they are not voids inside another shell.
+    pub shells_reoriented: usize,
 }
 
 impl MeshRepairStats {
     pub fn repaired_anything(&self) -> bool {
-        self.faces_dropped_duplicate_vertex > 0 || self.faces_dropped_sliver > 0
+        self.faces_dropped_duplicate_vertex > 0
+            || self.faces_dropped_sliver > 0
+            || self.faces_dropped_coincident > 0
+            || self.faces_flipped > 0
+            || self.shells_reoriented > 0
+    }
+}
+
+/// Reverse a face's traversal order in place, keeping vertex 0 first:
+/// [a,b,c] -> [a,c,b], [a,b,c,d] -> [a,d,c,b].
+fn flip_face_winding(face: &mut MeshFace) {
+    match face.vertex_count {
+        3 => face.vertex_indices.swap(1, 2),
+        4 => face.vertex_indices.swap(1, 3),
+        _ => {}
     }
 }
 
 impl ConnectedMesh {
+    /// Repair mesh defects that real-world STL exports commonly contain,
+    /// without moving any vertex: degenerate faces (with T-junction
+    /// stitching), coincident faces, and winding defects.
+    pub fn repair(&mut self) -> MeshRepairStats {
+        let mut stats = MeshRepairStats::default();
+        self.repair_degenerate_faces(&mut stats);
+        self.repair_coincident_faces(&mut stats);
+        self.repair_winding(&mut stats);
+        stats
+    }
+
     /// Repair degenerate triangles so validation can pass on real-world STL
     /// exports. Two defect classes are handled (both present in 3DBenchy.stl):
     ///
@@ -605,8 +618,7 @@ impl ConnectedMesh {
     ///    produced by earlier ones.
     ///
     /// Must run before quad fusion (stage 1.3): only triangles are repaired.
-    pub fn repair_degenerate_faces(&mut self) -> MeshRepairStats {
-        let mut stats = MeshRepairStats::default();
+    fn repair_degenerate_faces(&mut self, stats: &mut MeshRepairStats) {
         let mut alive = vec![true; self.faces.len()];
         // Each removed sliver requests a split of its long edge at the
         // vertex opposite it (for exactly-collinear points, that vertex lies
@@ -640,8 +652,8 @@ impl ConnectedMesh {
             pending_splits.push((EdgeKey::new(p, q), interior));
         }
 
-        if !stats.repaired_anything() {
-            return stats;
+        if stats.faces_dropped_duplicate_vertex == 0 && stats.faces_dropped_sliver == 0 {
+            return;
         }
 
         // Edge → face lookup over surviving faces, extended as splits create
@@ -729,8 +741,201 @@ impl ConnectedMesh {
 
         let mut keep = alive.into_iter();
         self.faces.retain(|_| keep.next().unwrap());
-        stats
     }
+
+    /// Remove coincident triangles (same three vertex indices). Opposite-
+    /// winding pairs are internal walls left by booleans or assembled
+    /// solids: they cancel and both faces are removed. Same-winding
+    /// duplicates are doubled surface: all but one face is removed. Either
+    /// form makes every incident edge non-manifold, so removal is required
+    /// for validation to pass.
+    fn repair_coincident_faces(&mut self, stats: &mut MeshRepairStats) {
+        // Group triangles over the same vertex set, split by winding: two
+        // triangles on vertices {a<b<c} have equal winding iff the vertex
+        // following a in cyclic order is the same.
+        let mut groups: HashMap<[usize; 3], (Vec<usize>, Vec<usize>)> = HashMap::new();
+        for (face_idx, face) in self.faces.iter().enumerate() {
+            if face.vertex_count != 3 {
+                continue;
+            }
+            let tri = [face.vertex_indices[0], face.vertex_indices[1], face.vertex_indices[2]];
+            let mut key = tri;
+            key.sort_unstable();
+            let pos_min = tri.iter().position(|&v| v == key[0]).unwrap();
+            let group = groups.entry(key).or_default();
+            if tri[(pos_min + 1) % 3] == key[1] {
+                group.0.push(face_idx);
+            } else {
+                group.1.push(face_idx);
+            }
+        }
+
+        let mut alive = vec![true; self.faces.len()];
+        let mut dropped = 0_usize;
+        for (fwd, rev) in groups.into_values() {
+            if fwd.len() + rev.len() < 2 {
+                continue;
+            }
+            let pairs = fwd.len().min(rev.len());
+            for &f in fwd.iter().take(pairs).chain(rev.iter().take(pairs)) {
+                alive[f] = false;
+                dropped += 1;
+            }
+            let survivors = if fwd.len() > pairs { &fwd[pairs..] } else { &rev[pairs..] };
+            for &f in survivors.iter().skip(1) {
+                alive[f] = false;
+                dropped += 1;
+            }
+        }
+
+        if dropped > 0 {
+            stats.faces_dropped_coincident += dropped;
+            let mut keep = alive.into_iter();
+            self.faces.retain(|_| keep.next().unwrap());
+        }
+    }
+
+    /// Make winding consistent. First, within each connected shell,
+    /// propagate orientation across manifold edges (two faces agree when
+    /// they traverse a shared edge in opposite directions) and flip the
+    /// minority class. Then flip whole closed shells whose signed volume is
+    /// negative, unless they are voids contained (by bounding box) in a
+    /// positive closed shell. Components with contradictory orientation
+    /// (non-orientable) are left untouched for validation to report.
+    fn repair_winding(&mut self, stats: &mut MeshRepairStats) {
+        let face_count = self.faces.len();
+        let mut edge_uses: HashMap<EdgeKey, Vec<(usize, bool)>> = HashMap::new();
+        for (face_idx, face) in self.faces.iter().enumerate() {
+            let vc = face.vertex_count as usize;
+            for i in 0..vc {
+                let u = face.vertex_indices[i];
+                let v = face.vertex_indices[(i + 1) % vc];
+                edge_uses.entry(EdgeKey::new(u, v)).or_default().push((face_idx, u < v));
+            }
+        }
+
+        // BFS parity per component: disagrees[f] = face f's winding is
+        // opposite to its component's seed.
+        let mut component = vec![usize::MAX; face_count];
+        let mut disagrees = vec![false; face_count];
+        let mut components: Vec<Vec<usize>> = Vec::new();
+        let mut orientable: Vec<bool> = Vec::new();
+        for seed in 0..face_count {
+            if component[seed] != usize::MAX {
+                continue;
+            }
+            let comp_id = components.len();
+            component[seed] = comp_id;
+            let mut comp_faces = vec![seed];
+            let mut is_orientable = true;
+            let mut queue = VecDeque::from([seed]);
+            while let Some(cur) = queue.pop_front() {
+                let vc = self.faces[cur].vertex_count as usize;
+                for i in 0..vc {
+                    let u = self.faces[cur].vertex_indices[i];
+                    let v = self.faces[cur].vertex_indices[(i + 1) % vc];
+                    let uses = &edge_uses[&EdgeKey::new(u, v)];
+                    if uses.len() != 2 {
+                        continue; // only propagate across manifold edges
+                    }
+                    let Some(&(other, other_dir)) = uses.iter().find(|(f, _)| *f != cur) else {
+                        continue;
+                    };
+                    let want = disagrees[cur] ^ ((u < v) == other_dir);
+                    if component[other] == usize::MAX {
+                        component[other] = comp_id;
+                        disagrees[other] = want;
+                        comp_faces.push(other);
+                        queue.push_back(other);
+                    } else if disagrees[other] != want {
+                        is_orientable = false;
+                    }
+                }
+            }
+            components.push(comp_faces);
+            orientable.push(is_orientable);
+        }
+
+        // Flip the minority parity class of each orientable component.
+        for (comp_faces, &ok) in components.iter().zip(&orientable) {
+            if !ok {
+                continue;
+            }
+            let disagree_count = comp_faces.iter().filter(|&&f| disagrees[f]).count();
+            if disagree_count == 0 {
+                continue;
+            }
+            let flip_disagreeing = disagree_count * 2 <= comp_faces.len();
+            for &f in comp_faces {
+                if disagrees[f] == flip_disagreeing {
+                    flip_face_winding(&mut self.faces[f]);
+                    stats.faces_flipped += 1;
+                }
+            }
+        }
+
+        // Reorient closed shells that ended up inside-out. Mirrors the
+        // validation rule: a negative signed volume is legitimate only for
+        // a void shell contained in a positive closed shell.
+        let comp_count = components.len();
+        let mut closed: Vec<bool> = orientable.clone();
+        for uses in edge_uses.values() {
+            if uses.len() != 2 {
+                for &(f, _) in uses {
+                    closed[component[f]] = false;
+                }
+            }
+        }
+        let mut volume = vec![0.0_f64; comp_count];
+        let mut bb_min = vec![[f64::INFINITY; 3]; comp_count];
+        let mut bb_max = vec![[f64::NEG_INFINITY; 3]; comp_count];
+        for (face_idx, face) in self.faces.iter().enumerate() {
+            let comp_id = component[face_idx];
+            volume[comp_id] += face_signed_volume_contribution(face, &self.vertices);
+            for &vi in &face.vertex_indices[..face.vertex_count as usize] {
+                let p = [self.vertices[vi].x, self.vertices[vi].y, self.vertices[vi].z];
+                for k in 0..3 {
+                    bb_min[comp_id][k] = bb_min[comp_id][k].min(p[k]);
+                    bb_max[comp_id][k] = bb_max[comp_id][k].max(p[k]);
+                }
+            }
+        }
+        for comp in 0..comp_count {
+            if !closed[comp] || volume[comp] >= 0.0 {
+                continue;
+            }
+            let is_void = (0..comp_count).any(|other| {
+                other != comp
+                    && closed[other]
+                    && volume[other] > 0.0
+                    && (0..3).all(|k| {
+                        bb_min[other][k] <= bb_min[comp][k] && bb_max[comp][k] <= bb_max[other][k]
+                    })
+            });
+            if !is_void {
+                for &f in &components[comp] {
+                    flip_face_winding(&mut self.faces[f]);
+                }
+                stats.shells_reoriented += 1;
+            }
+        }
+    }
+}
+
+/// Signed-volume contribution of one face: the sum of signed tetrahedra
+/// formed with the origin (fanned from vertex 0 for quads).
+fn face_signed_volume_contribution(face: &MeshFace, vertices: &[MeshVertex]) -> f64 {
+    let v0 = &vertices[face.vertex_indices[0]];
+    let mut total = 0.0_f64;
+    for i in 1..(face.vertex_count as usize - 1) {
+        let v1 = &vertices[face.vertex_indices[i]];
+        let v2 = &vertices[face.vertex_indices[i + 1]];
+        let cross_x = v1.y * v2.z - v1.z * v2.y;
+        let cross_y = v1.z * v2.x - v1.x * v2.z;
+        let cross_z = v1.x * v2.y - v1.y * v2.x;
+        total += v0.x * cross_x + v0.y * cross_y + v0.z * cross_z;
+    }
+    total / 6.0
 }
 
 fn compute_face_normal(face: &MeshFace, vertices: &[MeshVertex]) -> Option<[f64; 3]> {
@@ -1158,14 +1363,37 @@ pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
     // validate and populate topology.
     if !config.strict_mesh {
         let t = Instant::now();
-        let repair = mesh.repair_degenerate_faces();
+        let repair = mesh.repair();
         if repair.repaired_anything() && !config.quiet {
+            let mut parts = Vec::new();
+            if repair.faces_dropped_duplicate_vertex > 0 {
+                parts.push(format!(
+                    "dropped {} duplicate-vertex face(s)",
+                    repair.faces_dropped_duplicate_vertex
+                ));
+            }
+            if repair.faces_dropped_sliver > 0 {
+                parts.push(format!(
+                    "removed {} sliver face(s), split {} face(s) at T-junctions",
+                    repair.faces_dropped_sliver, repair.faces_split
+                ));
+            }
+            if repair.faces_dropped_coincident > 0 {
+                parts.push(format!("removed {} coincident face(s)", repair.faces_dropped_coincident));
+            }
+            if repair.faces_flipped > 0 {
+                parts.push(format!(
+                    "flipped {} face(s) with inconsistent winding",
+                    repair.faces_flipped
+                ));
+            }
+            if repair.shells_reoriented > 0 {
+                parts.push(format!("reoriented {} inverted shell(s)", repair.shells_reoriented));
+            }
             eprintln!(
-                "Stage 1.2 ({:.3}s): Repaired mesh: dropped {} duplicate-vertex face(s), removed {} sliver face(s), split {} face(s) at T-junctions",
+                "Stage 1.2 ({:.3}s): Repaired mesh: {}",
                 t.elapsed().as_secs_f64(),
-                repair.faces_dropped_duplicate_vertex,
-                repair.faces_dropped_sliver,
-                repair.faces_split,
+                parts.join(", ")
             );
             if repair.splits_unresolved > 0 {
                 eprintln!("  {} T-junction(s) could not be re-stitched", repair.splits_unresolved);
@@ -1353,7 +1581,7 @@ mod tests {
             ..ConnectedMesh::default()
         };
 
-        let stats = mesh.repair_degenerate_faces();
+        let stats = mesh.repair();
 
         assert_eq!(stats.faces_dropped_duplicate_vertex, 1);
         assert_eq!(stats.faces_dropped_sliver, 0);
@@ -1385,7 +1613,7 @@ mod tests {
             ..ConnectedMesh::default()
         };
 
-        let stats = mesh.repair_degenerate_faces();
+        let stats = mesh.repair();
 
         assert_eq!(stats.faces_dropped_sliver, 1);
         assert_eq!(stats.faces_split, 1);
@@ -1426,7 +1654,7 @@ mod tests {
             ..ConnectedMesh::default()
         };
 
-        let stats = mesh.repair_degenerate_faces();
+        let stats = mesh.repair();
 
         assert_eq!(stats.faces_dropped_sliver, 2);
         assert_eq!(stats.faces_split, 2);
@@ -1458,11 +1686,145 @@ mod tests {
             ..ConnectedMesh::default()
         };
 
-        let stats = mesh.repair_degenerate_faces();
+        let stats = mesh.repair();
 
         assert_eq!(stats.faces_dropped_sliver, 1);
         assert_eq!(stats.faces_split, 0);
         assert_eq!(stats.splits_unresolved, 1);
         assert_eq!(mesh.faces.len(), 2);
+    }
+
+    /// Tetrahedron vertices/faces with correct outward winding, from
+    /// `detects_inverted_normals`: 0=(0,0,0), 1=(1,0,0), 2=(0,1,0), 3=(0,0,1).
+    fn make_tetrahedron() -> ConnectedMesh {
+        ConnectedMesh {
+            vertices: vec![
+                MeshVertex::from_xyz(0.0, 0.0, 0.0),
+                MeshVertex::from_xyz(1.0, 0.0, 0.0),
+                MeshVertex::from_xyz(0.0, 1.0, 0.0),
+                MeshVertex::from_xyz(0.0, 0.0, 1.0),
+            ],
+            faces: vec![
+                make_triangle_face(0, 2, 1),
+                make_triangle_face(0, 1, 3),
+                make_triangle_face(0, 3, 2),
+                make_triangle_face(1, 2, 3),
+            ],
+            ..ConnectedMesh::default()
+        }
+    }
+
+    #[test]
+    fn repair_removes_opposite_winding_wall_pair() {
+        // Two tetrahedra glued base-to-base, each contributing its own copy
+        // of the shared triangle {0,1,2} (opposite windings): an internal
+        // wall making every base edge non-manifold. Both copies must go,
+        // leaving a closed 6-face bipyramid.
+        let mut mesh = make_tetrahedron();
+        mesh.vertices.push(MeshVertex::from_xyz(0.0, 0.0, -1.0)); // 4: lower apex
+        // make_tetrahedron's face (0, 2, 1) doubles as the upper tet's base wall.
+        mesh.faces.extend([
+            make_triangle_face(0, 1, 2), // lower tet's base wall
+            make_triangle_face(0, 4, 1),
+            make_triangle_face(1, 4, 2),
+            make_triangle_face(0, 2, 4),
+        ]);
+
+        let stats = mesh.repair();
+
+        assert_eq!(stats.faces_dropped_coincident, 2);
+        assert_eq!(stats.faces_flipped, 0);
+        assert_eq!(mesh.faces.len(), 6);
+        mesh.validate_and_populate_topology()
+            .expect("repaired bipyramid should validate");
+        assert_eq!(mesh.stats.solids, 1);
+        assert_eq!(mesh.stats.mesh_edges_open, 0);
+        assert_eq!(mesh.stats.mesh_edges_non_manifold, 0);
+    }
+
+    #[test]
+    fn repair_dedupes_same_winding_coincident_face() {
+        let mut mesh = make_tetrahedron();
+        mesh.faces.push(make_triangle_face(2, 3, 1)); // rotation of (1, 2, 3)
+
+        let stats = mesh.repair();
+
+        assert_eq!(stats.faces_dropped_coincident, 1);
+        assert_eq!(mesh.faces.len(), 4);
+        mesh.validate_and_populate_topology()
+            .expect("deduped tetrahedron should validate");
+        assert_eq!(mesh.stats.solids, 1);
+    }
+
+    #[test]
+    fn repair_flips_minority_inconsistent_winding() {
+        let mut mesh = make_tetrahedron();
+        mesh.faces[3] = make_triangle_face(1, 3, 2); // reversed
+
+        let stats = mesh.repair();
+
+        assert_eq!(stats.faces_flipped, 1);
+        assert_eq!(stats.shells_reoriented, 0);
+        mesh.validate_and_populate_topology()
+            .expect("rewound tetrahedron should validate");
+        assert_eq!(mesh.stats.solids, 1);
+        assert_eq!(mesh.stats.mesh_edges_inconsistent_orientation, 0);
+    }
+
+    #[test]
+    fn repair_reorients_inverted_shell() {
+        // Consistent winding but all faces point inward (negative volume,
+        // no enclosing shell): the whole shell is flipped.
+        let mut mesh = make_tetrahedron();
+        for face in &mut mesh.faces {
+            face.vertex_indices.swap(1, 2);
+        }
+
+        let stats = mesh.repair();
+
+        assert_eq!(stats.faces_flipped, 0);
+        assert_eq!(stats.shells_reoriented, 1);
+        mesh.validate_and_populate_topology()
+            .expect("reoriented tetrahedron should validate");
+        assert_eq!(mesh.stats.solids, 1);
+    }
+
+    #[test]
+    fn repair_keeps_void_shell_negative() {
+        // A small inverted (void) tetrahedron strictly inside a large
+        // correctly-oriented one is legitimate and must not be flipped.
+        let mut mesh = ConnectedMesh {
+            vertices: vec![
+                MeshVertex::from_xyz(-10.0, -10.0, -10.0),
+                MeshVertex::from_xyz(10.0, -10.0, -10.0),
+                MeshVertex::from_xyz(-10.0, 10.0, -10.0),
+                MeshVertex::from_xyz(-10.0, -10.0, 10.0),
+                MeshVertex::from_xyz(0.0, 0.0, 0.0),
+                MeshVertex::from_xyz(1.0, 0.0, 0.0),
+                MeshVertex::from_xyz(0.0, 1.0, 0.0),
+                MeshVertex::from_xyz(0.0, 0.0, 1.0),
+            ],
+            faces: vec![
+                // Outer shell, outward winding.
+                make_triangle_face(0, 2, 1),
+                make_triangle_face(0, 1, 3),
+                make_triangle_face(0, 3, 2),
+                make_triangle_face(1, 2, 3),
+                // Inner void shell: normals point into the cavity.
+                make_triangle_face(4, 5, 6),
+                make_triangle_face(4, 7, 5),
+                make_triangle_face(4, 6, 7),
+                make_triangle_face(5, 7, 6),
+            ],
+            ..ConnectedMesh::default()
+        };
+
+        let stats = mesh.repair();
+
+        assert_eq!(stats.shells_reoriented, 0);
+        assert!(!stats.repaired_anything());
+        mesh.validate_and_populate_topology()
+            .expect("solid with void should validate");
+        assert_eq!(mesh.stats.voids_within_solids, 1);
     }
 }
