@@ -16,7 +16,7 @@ impl Stage {
     fn last_minor(major: u8) -> u8 {
         match major {
             1 => 3,
-            2 => 7,
+            2 => 9,
             3 => 6,
             4 => 1,
             _ => 0,
@@ -189,10 +189,10 @@ struct CliArgs {
     /// "2.2,2.3,2.5,2.7" disables conical, spherical, toroidal, and NURBS
     /// recognition, leaving every mesh face to fall back to a planar
     /// hypothesis). Unlike --stage, which stops the pipeline early, skipped
-    /// stages simply produce zero hypotheses of that type and the rest of
-    /// the pipeline (selection, stage 3, stage 4) still runs through to
-    /// output. Only the stage-2 recognition sub-stages (2.2, 2.3, 2.5, 2.7)
-    /// are honored.
+    /// stages simply do nothing and the rest of the pipeline (selection,
+    /// stage 3, stage 4) still runs through to output. Honored sub-stages:
+    /// 2.2 (conical), 2.3 (spherical), 2.5 (toroidal), 2.7 (NURBS),
+    /// 2.8 (redundant-surface absorption), 2.9 (boundary refinement).
     #[arg(long = "skip-stage", value_parser = parse_stage, value_delimiter = ',')]
     pub skip_stages: Option<Vec<Stage>>,
 
@@ -427,19 +427,27 @@ mod tests {
         assert!(!s.at_least(2, 4));
         assert!(!s.at_least(3, 1));
 
-        // Stage(2, 0) means all of stage 2 = (2, 6)
+        // Stage(2, 0) means all of stage 2 = (2, 9)
         let s2 = Stage(2, 0);
         assert!(s2.at_least(2, 6));
+        assert!(s2.at_least(2, 9));
         assert!(!s2.at_least(3, 1));
+
+        // --stage=2.7 stops before the absorb (2.8) and boundary-refinement
+        // (2.9) passes.
+        let s27 = Stage(2, 7);
+        assert!(!s27.at_least(2, 8));
     }
 
     #[test]
     fn skip_stage_parses_and_matches() {
-        let config = parse(&["input.stl", "--skip-stage=2.2,2.3,2.5,2.7"]);
+        let config = parse(&["input.stl", "--skip-stage=2.2,2.3,2.5,2.7,2.8,2.9"]);
         assert!(config.skip_stage(2, 2));
         assert!(config.skip_stage(2, 3));
         assert!(config.skip_stage(2, 5));
         assert!(config.skip_stage(2, 7));
+        assert!(config.skip_stage(2, 8));
+        assert!(config.skip_stage(2, 9));
         assert!(!config.skip_stage(2, 1));
         assert!(!config.skip_stage(2, 6));
         assert!(!config.skip_stage(3, 1));

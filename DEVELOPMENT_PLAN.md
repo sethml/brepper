@@ -377,7 +377,7 @@ The algorithm selects hypotheses greedily by total mesh face area, largest first
    - `hypothesis_index: usize` — index into the appropriate hypothesis vector in Stage2Output.
    - `faces: Vec<usize>` — mesh face indices assigned to this surface.
    - `vertices: Vec<usize>` — mesh vertex indices on this surface (union of face vertices).
-6. **Absorb redundant surfaces** (`absorb_redundant_surfaces`): merge a selected surface S into an adjacent, larger-area surface T when all of S's vertices lie within tolerance of T's fitted geometry AND all of S's face centroids lie within `--surface-tolerance` of T. Two situations require this:
+6. **Absorb redundant surfaces** (`absorb_redundant_surfaces`; CLI sub-stage **2.8**, skippable via `--skip-stage=2.8`, e.g. for exact planar-only conversion where the chordal slop of the loose rule would put absorbed facets up to `--surface-tolerance` off their assigned surface): merge a selected surface S into an adjacent, larger-area surface T when all of S's vertices lie within tolerance of T's fitted geometry AND all of S's face centroids lie within `--surface-tolerance` of T. Two situations require this:
    - *Spurious sub-fits*: a narrow band of faces on a cone/sphere can fit an "exact" cylinder (e.g. 3 azimuthal strips of a shallow cone have nearly coplanar normals) and get committed before the real surface's BFS reaches those faces. Tolerance: 10× vertex tolerance (exact overlap).
    - *Tangent-junction bridge facets*: a mesh facet spanning a tangent junction (e.g. cone–sphere on the nosecone) has vertices on both sides and can't be absorbed by either surface at vertex tolerance; it becomes an orphan single-face planar surface creating fake edges. Tolerance: `--surface-tolerance` (chordal sag), only for surfaces with ≤ 2 faces.
    The centroid check prevents absorbing flat end caps triangulated as a fan from a boundary vertex (all cap *vertices* lie on the adjacent cone/cylinder's boundary circle, but face interiors do not).
@@ -396,7 +396,7 @@ The algorithm selects hypotheses greedily by total mesh face area, largest first
     - Measure distance from each projected centroid to the nearest surface in the reference STEP file.
     - For all hypotheses, report an error if distance exceeds `--surface-tolerance`.
 
-#### 2.6 Surface refitting (boundary refinement — implemented)
+#### 2.6 Surface refitting (boundary refinement — implemented; CLI sub-stage **2.9**, skippable via `--skip-stage=2.9`)
 
 After selection and absorption, some border faces may have been absorbed by a hypothesis that fits within tolerance but isn't the best fit; the misassignment shifts the mesh region boundary by a row, which shifts reconstructed edge boundary vertices and corner vertices off the true feature curves.
 

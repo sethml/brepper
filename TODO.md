@@ -70,16 +70,35 @@
   UV samples coincided and `Geom2dAPI_Interpolate`'s ctor threw
   `Standard_ConstructionError` (it rejects consecutive points closer than
   its 1e-10 tolerance); the edge's 3D extent goes into the returned
-  deviation → edge tolerance. Repro/regression check:
-  `./target/release/brepper tests/downloaded/3DBenchy.stl -o
-  /tmp/benchy_planar.step --skip-stage=2.2,2.3,2.5,2.7 -v`. Known residual
-  quality item (warning, not failure): the planar-only solid fails BRepCheck
-  validation (`Warning: solid 0 failed BRepCheck validation`, stage 3.6) —
-  unsurprising for 41k tolerance-stretched faces; worth a look if planar-only
-  output is ever used for more than robustness probing. NOTE these three
-  fixes harden shared stage-3 paths, so they may also help the normal
-  curved-fit pipeline's stage 3.4+ (untested here; its known blocker — face
-  5841, 3 winding loops — is the separate item above).
+  deviation → edge tolerance. NOTE these three fixes harden shared stage-3
+  paths, so they may also help the normal curved-fit pipeline's stage 3.4+
+  (untested here; its known blocker — face 5841, 3 winding loops — is the
+  separate item above).
+
+- **Planar-only geometry errors ROOT-CAUSED to the absorb pass (2026-07-16
+  follow-up session; absorb/refine now numbered + skippable).** With absorb
+  on, 794/41324 faces + the solid failed BRepCheck; the absorb pass's loose
+  ≤2-face-orphan rule merges facets into neighbors within
+  `--surface-tolerance` (0.4mm) chordal slop, and on benchy it merged ~128k
+  of 169,890 facet surfaces — each absorbed facet then claims to lie on a
+  plane up to 0.4mm away (corner refinement compounds this, moving vertices
+  up to 2× surface tolerance onto sloppy-plane intersections). Change:
+  absorb and boundary refinement are now CLI sub-stages **2.8** and **2.9**
+  (`Stage::last_minor(2)` = 9; `--stage=2.7` now stops before them; the
+  `--stage=2.6`/`2.7` integration-test helpers migrated to `--stage=2`,
+  preserving their post-absorb assertions; suite 494 green, clippy clean).
+  Exact planar-only mode is `--skip-stage=2.2,2.3,2.5,2.7,2.8`: BRepCheck
+  face failures 794 → **4** (0.002%), the SOLID passes BRepCheck, and
+  volume = 15550.53 mm³ = the official 3DBenchy 15.55 cm³ (absorb-on had
+  lost 1% to slop: 15393.7). Cost: 169,890 faces, 2.3GB STEP, ~10 min.
+  Stage 2.9 is harmless in this mode (196 tolerance-level moves;
+  corner-refinement guard fired 0 times). Residual: the 4 remaining
+  BRepCheck failures are NOT absorb-related — face 40 (planar, 13 edges,
+  TWO wires, 1.32mm²) fails "invalid imbrication of wires / unorientable"
+  (the multi-loop / disconnected-region family, cf. face 5841), and faces
+  19767/160616/163493 are micro-slivers (0.0004–0.0017 mm², 4 edges) with
+  "wire 0 invalid" — likely micro-edge / tolerance-stretched wire
+  construction.
 
 # Deferred (until a model needs it)
 

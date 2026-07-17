@@ -1,11 +1,16 @@
 //! Stage 2: Surface Fitting
 //!
+//! CLI/log sub-stage numbering (execution order is 2.1, 2.3, 2.5, 2.2,
+//! 2.6, 2.7, 2.8, 2.9 — most-constrained surface types first):
+//!
 //! 2.1: Deduce planar hypotheses
 //! 2.2: Deduce conical/cylindrical hypotheses
 //! 2.3: Deduce spherical hypotheses
-//! 2.4: Deduce toroidal hypotheses
-//! 2.5: Select surfaces for reconstruction
+//! 2.5: Deduce toroidal hypotheses
+//! 2.6: Select surfaces for reconstruction
 //! 2.7: NURBS fallback — fit B-spline surfaces to leftover freeform regions
+//! 2.8: Absorb redundant surfaces (spurious sub-fits, tangent-junction orphans)
+//! 2.9: Boundary refinement — reassign border faces to better-fitting neighbors
 
 mod bfs;
 pub(crate) mod bspline;
@@ -994,7 +999,7 @@ fn refine_boundary_assignments(
     toroidal_hypotheses: &mut [ToroidalHypothesis],
     bspline_hypotheses: &mut [BSplineHypothesis],
     config: &Config,
-) {
+) -> usize {
     let num_faces = mesh.faces.len();
 
     let face_max_dist = |fi: usize,
@@ -1186,13 +1191,8 @@ fn refine_boundary_assignments(
             };
             !faces.is_empty()
         });
-        if config.verbosity >= 1 {
-            eprintln!(
-                "  Boundary refinement: {} face(s) reassigned to better-fitting adjacent surfaces",
-                total_moved,
-            );
-        }
     }
+    total_moved
 }
 
 /// Merge redundant/orphan selected surfaces into larger adjacent ones.
@@ -1230,7 +1230,7 @@ fn absorb_redundant_surfaces(
     toroidal_hypotheses: &mut [ToroidalHypothesis],
     bspline_hypotheses: &mut [BSplineHypothesis],
     config: &Config,
-) {
+) -> usize {
     let surface_faces = |s: &SelectedSurface,
                          planar: &[PlanarHypothesis],
                          conical: &[ConicalHypothesis],
@@ -1247,6 +1247,7 @@ fn absorb_redundant_surfaces(
         }
     };
 
+    let mut total_merged = 0_usize;
     for _iteration in 0..5 {
         // Face → selected surface index map and per-surface areas.
         let mut face_to_surface = vec![usize::MAX; mesh.faces.len()];
@@ -1450,6 +1451,7 @@ fn absorb_redundant_surfaces(
                 }
             }
             merged_any = true;
+            total_merged += 1;
         }
 
         // Drop selected surfaces whose hypotheses are now empty.
@@ -1465,6 +1467,7 @@ fn absorb_redundant_surfaces(
             break;
         }
     }
+    total_merged
 }
 
 /// Remove unselected hypotheses from the hypothesis vectors and remap
@@ -2301,23 +2304,52 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
         eprintln!("Stage 2.7: skipped (--skip-stage)");
     }
 
-    // Merge spurious sub-fit surfaces and tangent-junction orphan facets
-    // into larger adjacent surfaces (including freshly fitted B-splines)
-    // before reconstruction.
-    absorb_redundant_surfaces(
-        &mesh, &mut selected_surfaces, &mut planar_hypotheses,
-        &mut conical_hypotheses, &mut spherical_hypotheses,
-        &mut toroidal_hypotheses, &mut bspline_hypotheses, config,
-    );
+    // Stage 2.8: Merge spurious sub-fit surfaces and tangent-junction orphan
+    // facets into larger adjacent surfaces (including freshly fitted
+    // B-splines) before reconstruction. The loose (≤2-face orphan) rule
+    // accepts up to the chordal surface tolerance of slop, so absorbed
+    // facets no longer lie exactly on their assigned surface —
+    // --skip-stage=2.8 disables this when exact per-facet geometry matters
+    // (e.g. planar-only mode).
+    if config.stage.at_least(2, 8) && !config.skip_stage(2, 8) {
+        let t = Instant::now();
+        let merged = absorb_redundant_surfaces(
+            &mesh, &mut selected_surfaces, &mut planar_hypotheses,
+            &mut conical_hypotheses, &mut spherical_hypotheses,
+            &mut toroidal_hypotheses, &mut bspline_hypotheses, config,
+        );
+        if config.verbosity >= 1 {
+            eprintln!(
+                "Stage 2.8 ({:.3}s): Absorbed {} redundant surface(s) ({} remaining)",
+                t.elapsed().as_secs_f64(),
+                merged,
+                selected_surfaces.len(),
+            );
+        }
+    } else if config.skip_stage(2, 8) && config.verbosity >= 1 {
+        eprintln!("Stage 2.8: skipped (--skip-stage)");
+    }
 
-    // Move border faces to the adjacent surface that fits them better —
-    // misassigned rows shift reconstructed edge/corner positions off the
-    // true feature curves (DEVELOPMENT_PLAN §2.6 surface refitting).
-    refine_boundary_assignments(
-        &mesh, &mut selected_surfaces, &mut planar_hypotheses,
-        &mut conical_hypotheses, &mut spherical_hypotheses,
-        &mut toroidal_hypotheses, &mut bspline_hypotheses, config,
-    );
+    // Stage 2.9: Move border faces to the adjacent surface that fits them
+    // better — misassigned rows shift reconstructed edge/corner positions
+    // off the true feature curves (DEVELOPMENT_PLAN §2.6 surface refitting).
+    if config.stage.at_least(2, 9) && !config.skip_stage(2, 9) {
+        let t = Instant::now();
+        let moved = refine_boundary_assignments(
+            &mesh, &mut selected_surfaces, &mut planar_hypotheses,
+            &mut conical_hypotheses, &mut spherical_hypotheses,
+            &mut toroidal_hypotheses, &mut bspline_hypotheses, config,
+        );
+        if config.verbosity >= 1 {
+            eprintln!(
+                "Stage 2.9 ({:.3}s): Boundary refinement reassigned {} face(s)",
+                t.elapsed().as_secs_f64(),
+                moved,
+            );
+        }
+    } else if config.skip_stage(2, 9) && config.verbosity >= 1 {
+        eprintln!("Stage 2.9: skipped (--skip-stage)");
+    }
 
     // Prune hypotheses that were not selected, keeping only the winning ones.
     prune_unselected_hypotheses(

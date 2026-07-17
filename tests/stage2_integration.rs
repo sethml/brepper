@@ -1327,12 +1327,12 @@ fn onshape_cone_15x20_params_match() {
 // ===========================================================================
 
 fn config_for_stl_stage26(stl_path: &str) -> config::Config {
-    config::parse_config_from(["brepper", stl_path, "--stage=2.6", "-q"]).unwrap()
+    config::parse_config_from(["brepper", stl_path, "--stage=2", "-q"]).unwrap()
 }
 
 fn config_for_compare_stage26(stl_path: &str, step_path: &str) -> config::Config {
     let mut config =
-        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=2.6", "-q"])
+        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=2", "-q"])
             .unwrap();
     config.load_compare_step().unwrap();
     config
@@ -2373,7 +2373,7 @@ test_stl_step_stage25_compare!(
 
 fn config_for_compare_stage27(stl_path: &str, step_path: &str) -> config::Config {
     let mut config =
-        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=2.7", "-q"])
+        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=2", "-q"])
             .unwrap();
     config.load_compare_step().unwrap();
     config
@@ -2433,7 +2433,7 @@ fn nurbs_bspline_wave_stage27_selection() {
 #[test]
 fn nurbs_leaves_chamfered_cube_planar() {
     let stl = format!("{}/tests/onshape/chamfered_cube_10_c1_medium.stl", manifest_dir());
-    let config = config::parse_config_from(["brepper", &stl, "--stage=2.7", "-q"]).unwrap();
+    let config = config::parse_config_from(["brepper", &stl, "--stage=2", "-q"]).unwrap();
     let output = run_stage2(&config);
     let (planar, bspline) = planar_bspline_selection_counts(&output);
     assert_eq!(bspline, 0, "no freeform surfaces on a chamfered cube");
