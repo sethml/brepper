@@ -4,6 +4,45 @@
 
 # Active
 
+- Add full-pipeline tests for nosecone_truncated and hill_with_hole — both
+  fail full-pipeline `--compare` volume gates with default flags but have no
+  (or only stage-1) test coverage, so the suite cannot catch regressions on
+  them (found 2026-07-16 while measuring the absorb pass; both failures are
+  absorb-independent):
+  - `tests/onshape/nosecone_truncated_medium.stl` vs
+    `tests/onshape/nosecone_truncated.step`: stage 4.1 volume differs by
+    1.38e-2 relative (gate 1e-2). No test file references this model at all.
+  - `tests/nurbs/hill_with_hole.stl` vs `tests/nurbs/hill_with_hole.step`:
+    stage 3.6 volume differs by 1.11e-2 relative (gate 1e-2). Only tested at
+    stage 1 (tests/stage1_integration.rs). A 2026-07-15 measurement recorded
+    ~4e-3 (inside the gate), so this may be a regression from the
+    intervening stage-3 changes (commits 5f8d03a, eb7dd65: corner-refinement
+    separation guard, pcurve dedupe/pointlike handling, 2.8/2.9 gating) —
+    worth a bisect before adding the test.
+  Diagnose each miss, fix if tractable, then add stage-4.1 compare tests for
+  both (or document in the test files why a model is excluded).
+
+- Absorb (2.8) loose rule is a deletion/tightening candidate. Its motivating
+  "tangent-junction bridge facet" story was tested 2026-07-17 and is FALSE
+  for the current corpus — CAD tessellators emit seam edges along B-rep face
+  boundaries even where surfaces are tangent (nosecone cone–sphere tangency:
+  0 straddling STL triangles, 104 vertices exactly on the tangency ring;
+  probe method: classify STL vertices against the tangency plane computed
+  from the fitted cone/sphere). Every beneficial merge in the corpus is the
+  TIGHT rule (nosecone_medium: bogus 6-face cylinder band on the sphere;
+  nosecone_truncated: 2 bogus sub-fits + a 31-face split fragment of the
+  real cone). The loose rule's only current firings (stepped_block_toroidal,
+  2 merges) absorb REAL narrow planar faces — walls tessellated as a single
+  rectangle → one fused quad, below the ≥2-face planar hypothesis minimum —
+  replacing them with neighbor geometry 0.12–0.27mm off; it also caused the
+  planar-only 3DBenchy geometry errors (794 BRepCheck failures). Before
+  deleting, fix the underlying gap: let a single fused-quad face form a
+  legitimate planar hypothesis (pre-fusion it was two coplanar triangles,
+  which met the minimum) so real single-rectangle faces stop arriving as
+  orphans. Acceptance: suite green, stepped_block keeps passing --compare
+  with the strips as real planar faces (it already passes with
+  --skip-stage=2.8: 71 surfaces vs 69).
+
 - 3DBenchy stage 3.4 abort: `face 5841: 3 winding boundary loops (at most 2
   supported)` (scan_face, src/stage3.rs). Repro:
   `./target/release/brepper tests/downloaded/3DBenchy.stl -o /tmp/benchy.step`

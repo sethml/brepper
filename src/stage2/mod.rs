@@ -9,7 +9,8 @@
 //! 2.5: Deduce toroidal hypotheses
 //! 2.6: Select surfaces for reconstruction
 //! 2.7: NURBS fallback — fit B-spline surfaces to leftover freeform regions
-//! 2.8: Absorb redundant surfaces (spurious sub-fits, tangent-junction orphans)
+//! 2.8: Absorb redundant surfaces (spurious sub-fits, split fragments of one
+//!      real surface, single-quad orphan faces)
 //! 2.9: Boundary refinement — reassign border faces to better-fitting neighbors
 
 mod bfs;
@@ -1197,25 +1198,39 @@ fn refine_boundary_assignments(
 
 /// Merge redundant/orphan selected surfaces into larger adjacent ones.
 ///
-/// Two situations produce selected surfaces that duplicate a neighbor's
-/// geometry rather than describing a real model feature:
+/// This pass merges a surface S into an adjacent, larger-area surface T
+/// when all of S's vertices lie within tolerance of T's geometry, under
+/// two rules:
 ///
-/// 1. **Spurious sub-fits**: a narrow band of faces on a cone/sphere can fit
-///    an "exact" cylinder (e.g. 3 azimuthal strips of a shallow cone have
-///    nearly coplanar normals) and get committed before the real surface's
-///    BFS reaches those faces. All of the band's vertices lie exactly on the
-///    real surface.
-/// 2. **Tangent-junction bridge facets**: a mesh facet spanning a tangent
-///    junction (e.g. cone–sphere) has vertices on both sides and can't be
-///    absorbed by either surface at vertex tolerance; it becomes an orphan
-///    single-face planar surface. Its chordal deviation from either surface
-///    is bounded by the tessellation's surface tolerance.
+/// 1. **Tight rule** (10× vertex tolerance — exact overlap; all of S's
+///    vertices lie ON T's fitted geometry). This is the load-bearing rule
+///    (verified per-merge across the test corpus, 2026-07-17). It merges:
+///    *spurious sub-fits* — a narrow band of faces on a cone/sphere fits an
+///    "exact" cylinder (e.g. a 6-face r=12.4992 cylinder band on the
+///    nosecone's r=12.5 sphere) and gets committed before the real
+///    surface's BFS reaches those faces — and *split fragments of one real
+///    surface* (nosecone_truncated: a 31-face piece of the real cone, same
+///    apex and half-angle as the 117-face main hypothesis, rejoined here).
+///    Left unmerged, these punch fake edges/vertices into the region and
+///    break stage 3 reconstruction (nosecone_truncated: a fake corner
+///    vertex 80.6 mm off the model).
+/// 2. **Loose rule** (surface tolerance, only for S with ≤ 2 faces into T
+///    with > 2 faces). CAUTION: its motivating story — a facet *straddling*
+///    a tangent junction with vertices on both surfaces — was tested and is
+///    FALSE for the current corpus: CAD tessellators emit seam edges along
+///    B-rep face boundaries even where the surfaces are tangent (verified
+///    on nosecone_medium's cone–sphere tangency: 0 straddling STL
+///    triangles, 104 vertices exactly on the tangency ring). What this rule
+///    actually fires on today (stepped_block_toroidal: 2 merges) is REAL
+///    narrow planar faces that Onshape tessellated as a single rectangle
+///    (one fused quad — below the ≥2-face planar hypothesis minimum, so
+///    they arrive as single-face orphans), replacing them with a neighbor's
+///    geometry 0.12–0.27 mm off; and in planar-only mode
+///    (--skip-stage=2.2,2.3,2.5,2.7) it merged ~128k exact facet planes on
+///    3DBenchy with up to 0.4 mm slop (794 BRepCheck face failures).
+///    Deletion/tightening candidate — see TODO.md; the underlying gap is
+///    that a single-fused-quad real face cannot form a planar hypothesis.
 ///
-/// Both create fake edges/vertices that break stage 3 reconstruction. This
-/// pass merges a surface S into an adjacent, larger-area surface T when all
-/// of S's vertices lie within tolerance of T's geometry: a tight tolerance
-/// (10× vertex tolerance) for multi-face S (case 1: exact overlap), and the
-/// looser surface tolerance for S with ≤ 2 faces (case 2: chordal sag).
 /// The loose rule additionally requires T to have > 2 faces (a real
 /// surface): on a smooth freeform region every single-face strip lies
 /// within chordal tolerance of its neighbor, and orphan-to-orphan chaining
@@ -2304,9 +2319,10 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
         eprintln!("Stage 2.7: skipped (--skip-stage)");
     }
 
-    // Stage 2.8: Merge spurious sub-fit surfaces and tangent-junction orphan
-    // facets into larger adjacent surfaces (including freshly fitted
-    // B-splines) before reconstruction. The loose (≤2-face orphan) rule
+    // Stage 2.8: Merge redundant surfaces (spurious sub-fits, split
+    // fragments of one real surface, single-quad orphan faces) into larger
+    // adjacent surfaces before reconstruction; see the function doc for
+    // which merge rules are load-bearing. The loose (≤2-face orphan) rule
     // accepts up to the chordal surface tolerance of slop, so absorbed
     // facets no longer lie exactly on their assigned surface —
     // --skip-stage=2.8 disables this when exact per-facet geometry matters
