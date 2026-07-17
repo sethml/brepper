@@ -1965,10 +1965,18 @@ pub fn stage2(config: &Config, mut mesh: ConnectedMesh, viz: Option<&crate::viz:
     // numbering (2.2 conical, 2.3 spherical) is retained for CLI/viz
     // compatibility.
     let t = Instant::now();
-    let viz_23 = if config.viz_active(2, 3) { viz } else { None };
-    let (mut spherical_hypotheses, spherical_quit) = bfs::generate_hypotheses::<SphericalSurface>(&mut mesh, &bfs_config, viz_23);
+    let (mut spherical_hypotheses, spherical_quit) = if config.skip_stage(2, 3) {
+        (Vec::new(), false)
+    } else {
+        let viz_23 = if config.viz_active(2, 3) { viz } else { None };
+        bfs::generate_hypotheses::<SphericalSurface>(&mut mesh, &bfs_config, viz_23)
+    };
 
-    if config.verbosity >= 1 {
+    if config.skip_stage(2, 3) && config.verbosity >= 1 {
+        eprintln!("Stage 2.3: skipped (--skip-stage)");
+    }
+
+    if config.verbosity >= 1 && !config.skip_stage(2, 3) {
         let covered_faces: usize = spherical_hypotheses.iter().map(|h| h.faces.len()).sum();
         let convex_count = spherical_hypotheses.iter().filter(|h| h.convex).count();
         let concave_count = spherical_hypotheses.len() - convex_count;
@@ -2024,7 +2032,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
     }
 
     // Compare against STEP file if --compare was specified
-    if config.compare_shape.is_some() {
+    if config.compare_shape.is_some() && !config.skip_stage(2, 3) {
         match compare_spherical_hypotheses(&spherical_hypotheses, &mesh, config) {
             Ok(()) => {
                 if config.verbosity >= 1 {
@@ -2085,10 +2093,18 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
     // expansion may still absorb them at junctions. Stage numbering is
     // retained for CLI/viz compatibility.
     let t = Instant::now();
-    let viz_25 = if config.viz_active(2, 5) { viz } else { None };
-    let (mut toroidal_hypotheses, toroidal_quit) = bfs::generate_hypotheses::<ToroidalSurface>(&mut mesh, &bfs_config, viz_25);
+    let (mut toroidal_hypotheses, toroidal_quit) = if config.skip_stage(2, 5) {
+        (Vec::new(), false)
+    } else {
+        let viz_25 = if config.viz_active(2, 5) { viz } else { None };
+        bfs::generate_hypotheses::<ToroidalSurface>(&mut mesh, &bfs_config, viz_25)
+    };
 
-    if config.verbosity >= 1 {
+    if config.skip_stage(2, 5) && config.verbosity >= 1 {
+        eprintln!("Stage 2.5: skipped (--skip-stage)");
+    }
+
+    if config.verbosity >= 1 && !config.skip_stage(2, 5) {
         let covered_faces: usize = toroidal_hypotheses.iter().map(|h| h.faces.len()).sum();
         let convex_count = toroidal_hypotheses.iter().filter(|h| h.convex).count();
         let concave_count = toroidal_hypotheses.len() - convex_count;
@@ -2117,7 +2133,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
         }
     }
 
-    if config.compare_shape.is_some() {
+    if config.compare_shape.is_some() && !config.skip_stage(2, 5) {
         match compare_toroidal_hypotheses(&toroidal_hypotheses, &mesh, config) {
             Ok(()) => {
                 if config.verbosity >= 1 {
@@ -2147,10 +2163,18 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
 
     // Stage 2.2: Deduce conical/cylindrical hypotheses (unified)
     let t = Instant::now();
-    let viz_22 = if config.viz_active(2, 2) { viz } else { None };
-    let (mut conical_hypotheses, conical_quit) = bfs::generate_hypotheses::<ConicalSurface>(&mut mesh, &bfs_config, viz_22);
+    let (mut conical_hypotheses, conical_quit) = if config.skip_stage(2, 2) {
+        (Vec::new(), false)
+    } else {
+        let viz_22 = if config.viz_active(2, 2) { viz } else { None };
+        bfs::generate_hypotheses::<ConicalSurface>(&mut mesh, &bfs_config, viz_22)
+    };
 
-    if config.verbosity >= 1 {
+    if config.skip_stage(2, 2) && config.verbosity >= 1 {
+        eprintln!("Stage 2.2: skipped (--skip-stage)");
+    }
+
+    if config.verbosity >= 1 && !config.skip_stage(2, 2) {
         let covered_faces: usize = conical_hypotheses.iter().map(|h| h.faces.len()).sum();
         let cylinder_count = conical_hypotheses.iter().filter(|h| h.is_cylinder()).count();
         let cone_count = conical_hypotheses.len() - cylinder_count;
@@ -2195,7 +2219,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
     }
 
     // Compare against STEP file if --compare was specified
-    if config.compare_shape.is_some() {
+    if config.compare_shape.is_some() && !config.skip_stage(2, 2) {
         match compare_conical_hypotheses(&conical_hypotheses, &mesh, config) {
             Ok(()) => {
                 if config.verbosity >= 1 {
@@ -2266,13 +2290,15 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
     // grows small accidental analytic fits (e.g. cylinder ribbons on a
     // freeform surface) with the exactly-on-surface facets around them,
     // which would hide them from the freeform region gathering.
-    if config.stage.at_least(2, 7) {
+    if config.stage.at_least(2, 7) && !config.skip_stage(2, 7) {
         let viz_27 = if config.viz_active(2, 7) { viz } else { None };
         bspline::deduce_bspline_surfaces(
             &mesh, &mut selected_surfaces, &mut planar_hypotheses,
             &conical_hypotheses, &spherical_hypotheses, &toroidal_hypotheses,
             &mut bspline_hypotheses, viz_27, config,
         );
+    } else if config.skip_stage(2, 7) && config.verbosity >= 1 {
+        eprintln!("Stage 2.7: skipped (--skip-stage)");
     }
 
     // Merge spurious sub-fit surfaces and tangent-junction orphan facets

@@ -716,7 +716,20 @@ fn refine_corner_vertices(
     stage2: &Stage2Output,
     config: &Config,
 ) {
-    for vert in vertices.iter_mut() {
+    // Two adjacent corners must never refine onto the same point: the edge
+    // between them collapses to zero length and MakeEdge rejects it
+    // (DifferentPointsOnClosedCurve; even its straight-line fallback needs
+    // distinct points). Adjacent surface sets that pin the same intersection
+    // point arise when fits are coarser than the mesh — observed on 3DBenchy
+    // with --skip-stage forcing planar-only fits, where near-coplanar facet
+    // planes gave both endpoints of edge 5715 the same projection fixpoint
+    // (4e-14 mm apart). Below this separation from any edge-adjacent corner,
+    // the candidate is discarded and the corner keeps the raw mesh position
+    // (mesh vertices themselves are always ≥ the weld tolerance apart).
+    let min_sep = config.vertex_tolerance_mm.max(1e-6);
+
+    for vi in 0..vertices.len() {
+        let vert = &vertices[vi];
         if vert.adjacent_faces.len() < 2 {
             continue;
         }
@@ -764,9 +777,28 @@ fn refine_corner_vertices(
             + (p[1] - original[1]).powi(2)
             + (p[2] - original[2]).powi(2))
         .sqrt();
-        if moved <= config.surface_tolerance_mm * 2.0 {
-            vert.point = p;
+        if moved > config.surface_tolerance_mm * 2.0 {
+            continue;
         }
+        let collapses_adjacent_edge = vertices[vi].adjacent_edges.iter().any(|&ei| {
+            edges.get(ei).is_some_and(|e| e.vertex_indices.iter().any(|&ui| {
+                ui != usize::MAX && ui != vi && {
+                    let q = vertices[ui].point;
+                    (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)
+                        < min_sep * min_sep
+                }
+            }))
+        });
+        if collapses_adjacent_edge {
+            if config.verbosity >= 1 {
+                eprintln!(
+                    "  Corner refinement: vertex {vi} kept at mesh position — refined \
+                     point within {min_sep:.1e} mm of an adjacent corner"
+                );
+            }
+            continue;
+        }
+        vertices[vi].point = p;
     }
 }
 
@@ -1573,7 +1605,18 @@ fn compute_edge_curve(
             (t_end, t_start)
         }
     };
-    // Create trimmed curve
+    // Create trimmed curve. Geom_TrimmedCurve refuses a degenerate (zero-length)
+    // span (Standard_ConstructionError: U1 == U2) — observed when both edge
+    // endpoints project to the same curve parameter, e.g. two vertices closer
+    // together than the curve's parametrization resolves (a near-duplicate
+    // vertex pair from a tiny fallback planar facet). Same guard as the
+    // chain-repair path's `candidate_trim_parameters`.
+    if (t_end - t_start).abs() < 1e-9 {
+        return Err(format!(
+            "degenerate trim span for edge between faces {fi0} and {fi1}: \
+             t_start={t_start:.6e}, t_end={t_end:.6e}"
+        ));
+    }
     let trimmed = geom::TrimmedCurve::new_handlegeomcurve_real2(
         curve_handle, t_start, t_end,
     );
@@ -5408,26 +5451,76 @@ fn build_pcurve(
             }
         }
 
-        let np = uv.ts.len() as i32;
-        let mut pts_h = t_colgp::HArray1OfPnt2d::new_int2(1, np);
-        let mut params_h = t_col_std::HArray1OfReal::new_int2(1, np);
-        for i in 0..uv.ts.len() {
-            let pnt2d = gp::Pnt2d::new_real2(uv.us[i], uv.vs[i]);
-            pts_h.change_array1().set_value((i + 1) as i32, &pnt2d);
-            params_h.change_array1().set_value((i + 1) as i32, &uv.ts[i]);
+        // Geom2dAPI_Interpolate throws Standard_ConstructionError on
+        // consecutive points closer than its tolerance, and UV samples are
+        // not guaranteed distinct: an edge (nearly) perpendicular to this
+        // face's fitted surface projects to (nearly) one UV point — observed
+        // on 3DBenchy planar-only fits, where corner refinement legitimately
+        // offsets both endpoints of a tangent plane-plane edge along the
+        // face normal within the fit slop. Interpolate through the samples
+        // that are pairwise-distinct in UV; if the whole projection is
+        // pointlike, use a degree-1 pcurve (possibly constant) between the
+        // endpoint samples instead — the edge's 3D extent then shows up in
+        // the returned deviation, which the caller folds into the edge
+        // tolerance like any other pcurve deviation.
+        const UV_DISTINCT_EPS: f64 = 1e-8; // 100× the interpolation tolerance
+        let eps2 = UV_DISTINCT_EPS * UV_DISTINCT_EPS;
+        let d2 = |i: usize, j: usize| -> f64 {
+            (uv.us[i] - uv.us[j]).powi(2) + (uv.vs[i] - uv.vs[j]).powi(2)
+        };
+        let last = uv.ts.len() - 1;
+        let mut kept: Vec<usize> = vec![0];
+        for i in 1..last {
+            if d2(i, *kept.last().unwrap()) >= eps2 {
+                kept.push(i);
+            }
         }
-        let pts_handle = t_colgp::HArray1OfPnt2d::to_handle(pts_h);
-        let params_handle = t_col_std::HArray1OfReal::to_handle(params_h);
-        let mut interp = geom2d_api::Interpolate::new_handletcolgpharray1ofpnt2d_handletcolstdharray1ofreal_bool_real(
-            &pts_handle, &params_handle, false, 1e-10,
-        );
-        interp.perform();
-        if !interp.is_done() {
-            return Err(Stage3Error::AdjacencyError(
-                "pcurve interpolation failed".into(),
-            ));
+        // The final (possibly vertex-snapped) sample must be kept exactly:
+        // drop earlier samples that crowd it.
+        while kept.len() > 1 && d2(last, *kept.last().unwrap()) < eps2 {
+            kept.pop();
         }
-        let pcurve = interp.curve().to_handle_curve();
+        let pointlike = kept.len() == 1 && d2(last, 0) < eps2;
+        if !pointlike {
+            kept.push(last);
+        }
+
+        let pcurve = if pointlike {
+            let mut poles = t_colgp::Array1OfPnt2d::new_int2(1, 2);
+            poles.set_value(1, &gp::Pnt2d::new_real2(uv.us[0], uv.vs[0]));
+            poles.set_value(2, &gp::Pnt2d::new_real2(uv.us[last], uv.vs[last]));
+            let mut knots = t_col_std::Array1OfReal::new_int2(1, 2);
+            knots.set_value(1, &uv.ts[0]);
+            knots.set_value(2, &uv.ts[last]);
+            let mut mults = t_col_std::Array1OfInteger::new_int2(1, 2);
+            mults.set_value(1, &2);
+            mults.set_value(2, &2);
+            let bs = geom2d::BSplineCurve::new_array1ofpnt2d_array1ofreal_array1ofinteger_int_bool(
+                &poles, &knots, &mults, 1, false,
+            );
+            geom2d::BSplineCurve::to_handle(bs).to_handle_curve()
+        } else {
+            let np = kept.len() as i32;
+            let mut pts_h = t_colgp::HArray1OfPnt2d::new_int2(1, np);
+            let mut params_h = t_col_std::HArray1OfReal::new_int2(1, np);
+            for (slot, &i) in kept.iter().enumerate() {
+                let pnt2d = gp::Pnt2d::new_real2(uv.us[i], uv.vs[i]);
+                pts_h.change_array1().set_value((slot + 1) as i32, &pnt2d);
+                params_h.change_array1().set_value((slot + 1) as i32, &uv.ts[i]);
+            }
+            let pts_handle = t_colgp::HArray1OfPnt2d::to_handle(pts_h);
+            let params_handle = t_col_std::HArray1OfReal::to_handle(params_h);
+            let mut interp = geom2d_api::Interpolate::new_handletcolgpharray1ofpnt2d_handletcolstdharray1ofreal_bool_real(
+                &pts_handle, &params_handle, false, 1e-10,
+            );
+            interp.perform();
+            if !interp.is_done() {
+                return Err(Stage3Error::AdjacencyError(
+                    "pcurve interpolation failed".into(),
+                ));
+            }
+            interp.curve().to_handle_curve()
+        };
 
         // Deviation of the pcurve (mapped through the chart) from the 3D
         // curve, at the interpolation samples and their midpoints. Endpoints
@@ -5454,6 +5547,11 @@ fn build_pcurve(
                     check(0.5 * (uv.ts[i] + uv.ts[i + 1]));
                 }
             }
+        }
+        // A pointlike projection stays pointlike at any sample density —
+        // densification cannot separate it.
+        if pointlike {
+            return Ok((pcurve, dev));
         }
         // Densify until the target is met, but stop when the deviation has
         // plateaued (e.g. the 3D curve is off this fitted surface by its
@@ -6546,8 +6644,25 @@ fn create_occt_faces_all(
                     continue;
                 }
             }
+            let vtx_detail = if verts[0] != usize::MAX && verts[1] != usize::MAX {
+                let p0 = &output.vertices[verts[0]].point;
+                let p1 = &output.vertices[verts[1]].point;
+                let dist = ((p0[0] - p1[0]).powi(2)
+                    + (p0[1] - p1[1]).powi(2)
+                    + (p0[2] - p1[2]).powi(2))
+                .sqrt();
+                format!(
+                    "; straight-line fallback also failed, vertices {} \
+                     [{:.6},{:.6},{:.6}] and {} [{:.6},{:.6},{:.6}] are {:.3e} mm apart",
+                    verts[0], p0[0], p0[1], p0[2],
+                    verts[1], p1[0], p1[1], p1[2],
+                    dist,
+                )
+            } else {
+                String::new()
+            };
             return Err(Stage3Error::AdjacencyError(format!(
-                "MakeEdge failed for edge {ei}: {err:?}",
+                "MakeEdge failed for edge {ei}: {err:?}{vtx_detail}",
             )));
         }
         topo_edges.push(make_edge.edge().to_owned());

@@ -44,6 +44,43 @@
   edge curves come from mesh-boundary-chain fits because surface-surface
   intersection failed.
 
+- 3DBenchy planar-only mode (`--skip-stage=2.2,2.3,2.5,2.7`) now runs
+  END-TO-END (~5 min, 704MB STEP, 1 solid, volume 15393.7mm³ ≈ mesh volume;
+  all 196393 mesh faces covered by 41324 planar faces, 41324/41324 OCCT faces
+  created), after three fixes landed 2026-07-16 (uncommitted; suite 494 green
+  + clippy clean after each): (1) `compute_edge_curve` (src/stage3.rs ~1577)
+  guarded against a degenerate trim span — `Geom_TrimmedCurve` threw
+  `U1 == U2` when both edge endpoints projected to the same curve parameter;
+  now Errs into the mesh-boundary-chain fallback, matching
+  `candidate_trim_parameters`. (2) `refine_corner_vertices` (src/stage3.rs
+  ~712) rejects a refined corner position landing within
+  max(vertex_tolerance, 1e-6mm) of an edge-adjacent corner's current
+  position (vertex keeps the raw mesh position) — cyclic projection had
+  pulled BOTH endpoints of edge 5715 onto the same near-parallel-plane
+  intersection fixpoint (4.25e-14mm apart), collapsing the edge so MakeEdge
+  failed `DifferentPointsOnClosedCurve` and even its straight-line fallback
+  failed. NOT a mesh-weld gap: weld is grid+27-neighbor tolerance-based and
+  repair creates no vertices, so distinct mesh vertices are always ≥ weld
+  tolerance apart; only refinement can create sub-tolerance pairs. (3)
+  `build_pcurve` (src/stage3.rs ~5454) dedupes UV interpolation samples and
+  emits a degree-1 (possibly constant) 2-pole B-spline pcurve when an edge's
+  projection onto a face's chart is pointlike — edge 25813 runs purely along
+  face 7145's plane normal (corner refinement legitimately offset both
+  endpoints ~0.02mm along x within the 2×surface_tolerance contract), so all
+  UV samples coincided and `Geom2dAPI_Interpolate`'s ctor threw
+  `Standard_ConstructionError` (it rejects consecutive points closer than
+  its 1e-10 tolerance); the edge's 3D extent goes into the returned
+  deviation → edge tolerance. Repro/regression check:
+  `./target/release/brepper tests/downloaded/3DBenchy.stl -o
+  /tmp/benchy_planar.step --skip-stage=2.2,2.3,2.5,2.7 -v`. Known residual
+  quality item (warning, not failure): the planar-only solid fails BRepCheck
+  validation (`Warning: solid 0 failed BRepCheck validation`, stage 3.6) —
+  unsurprising for 41k tolerance-stretched faces; worth a look if planar-only
+  output is ever used for more than robustness probing. NOTE these three
+  fixes harden shared stage-3 paths, so they may also help the normal
+  curved-fit pipeline's stage 3.4+ (untested here; its known blocker — face
+  5841, 3 winding loops — is the separate item above).
+
 # Deferred (until a model needs it)
 
 - Boundary crack stitching (mesh repair): close hairline cracks by pairing

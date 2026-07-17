@@ -29,6 +29,9 @@ GENERAL OPTIONS:
                              slivers, unifying winding, reorienting inverted shells)
     --debug                  Enable debug output and intermediate files
     --stage=<stage>          Stop after stage, e.g. 2.2 (default: 4.1). --stage=2 stops after all of stage2
+    --skip-stage=<stages>    Skip recognition sub-stages entirely while still running the rest of the
+                             pipeline to output (comma-separated; 2.2 conical, 2.3 spherical,
+                             2.5 toroidal, 2.7 NURBS). --skip-stage=2.2,2.3,2.5,2.7 is planar-only mode
     --viz-stages=<stages>    Open interactive 3D visualization at specified stages (e.g. 2.1,2.2,2.3)
     --viz-stages-level=<N>   Viz detail level: 1 = committed hypotheses (default), 2 = seeds, 3 = BFS faces
 ```
