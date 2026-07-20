@@ -54,7 +54,7 @@ pub fn extract_regions(
     let mut face_region = vec![usize::MAX; n];
     let mut region_of_root = vec![usize::MAX; n];
     let mut regions: Vec<Region> = Vec::new();
-    for fi in 0..n {
+    for (fi, slot) in face_region.iter_mut().enumerate() {
         let root = find(&mut parent, fi);
         let id = if region_of_root[root] == usize::MAX {
             regions.push(Region::default());
@@ -63,7 +63,7 @@ pub fn extract_regions(
         } else {
             region_of_root[root]
         };
-        face_region[fi] = id;
+        *slot = id;
         regions[id].faces.push(fi);
     }
 

@@ -1855,11 +1855,7 @@ pub fn stage2(
 ) -> Result<Stage2Output, Stage2Error> {
     // --- Stage 2.1: edge classification (fit-free) ---
     let t = Instant::now();
-    let edge_classes = edges::classify_edges(
-        &mesh,
-        config.vertex_tolerance_mm,
-        config.angular_tolerance_rad,
-    );
+    let edge_classes = edges::classify_edges(&mesh, config.angular_tolerance_rad);
     if config.verbosity >= 1 {
         let total =
             edge_classes.sharp_count + edge_classes.jump_count + edge_classes.interior_count;
@@ -2244,6 +2240,7 @@ fn stage2_bfs_pipeline(config: &Config, mut mesh: ConnectedMesh, viz: Option<&cr
             toroidal_hypotheses: Vec::new(),
             bspline_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
+            segmentation: Segmentation::default(),
         });
     }
 
@@ -2258,6 +2255,7 @@ fn stage2_bfs_pipeline(config: &Config, mut mesh: ConnectedMesh, viz: Option<&cr
             toroidal_hypotheses: Vec::new(),
             bspline_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
+            segmentation: Segmentation::default(),
         });
     }
 
@@ -2365,6 +2363,7 @@ normal=[{:.3},{:.3},{:.3}] vtx_err=[{:.2e},{:.2e}] cen_err={:.2e}",
             toroidal_hypotheses: Vec::new(),
             bspline_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
+            segmentation: Segmentation::default(),
         });
     }
 
@@ -2466,6 +2465,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
             toroidal_hypotheses,
             bspline_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
+            segmentation: Segmentation::default(),
         });
     }
 
@@ -2552,6 +2552,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
             toroidal_hypotheses,
             bspline_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
+            segmentation: Segmentation::default(),
         });
     }
 
@@ -2567,6 +2568,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
             toroidal_hypotheses,
             bspline_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
+            segmentation: Segmentation::default(),
         });
     }
 
@@ -2579,6 +2581,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
             toroidal_hypotheses,
             bspline_hypotheses: Vec::new(),
             selected_surfaces: Vec::new(),
+            segmentation: Segmentation::default(),
         });
     }
 
@@ -2721,6 +2724,7 @@ vtx_err_max={:.2e}, cen_err_max={:.2e}",
         toroidal_hypotheses,
         bspline_hypotheses,
         selected_surfaces,
+        segmentation: Segmentation::default(),
     })
 }
 

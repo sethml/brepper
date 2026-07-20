@@ -4,6 +4,15 @@
 
 # Active
 
+- **CURRENT WORK: stage-2 rewrite (partition-then-classify).** Stages 2.1
+  (edge classification) + 2.2 (region extraction) are done and tested;
+  next is 2.3 (classification ladder) then 2.4 (repair loop) — the
+  make-or-break test of the architecture. Full honest status, verdict vs
+  the seed-first Contingency, and ordered next steps are in
+  DEVELOPMENT_PLAN.md's **Stage-2 Retrospective** section — read that
+  first. The items below mostly describe the nerfed BFS pipeline and are
+  kept for reference until the rewrite's deletion pass.
+
 - Add full-pipeline tests for nosecone_truncated and hill_with_hole — both
   fail full-pipeline `--compare` volume gates with default flags but have no
   (or only stage-1) test coverage, so the suite cannot catch regressions on

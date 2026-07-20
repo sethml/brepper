@@ -19,7 +19,9 @@ fn run(config: &Config, viz: Option<&VizSender>) -> Result<(), Box<dyn std::erro
     // Stage 2: Surface Fitting
     let surfaces = stage2::stage2(config, mesh, viz)?;
 
-    if !config.stage.at_least(3, 1) {
+    if !config.stage.at_least(3, 1) || surfaces.selected_surfaces.is_empty() {
+        // Empty selections: the stage-2 rewrite frontier is before 2.3
+        // (stages 3/4 unreachable until the classification ladder lands).
         return Ok(());
     }
 
@@ -102,7 +104,9 @@ fn main() {
                 }
             };
 
-            if !config.stage.at_least(3, 1) {
+            if !config.stage.at_least(3, 1) || surfaces.selected_surfaces.is_empty() {
+                // Empty selections: the stage-2 rewrite frontier is before
+                // 2.3 (stages 3/4 unreachable until classification lands).
                 return;
             }
 
