@@ -1013,7 +1013,23 @@ criteria under "Acceptance narratives".
    correctly fall back to that polyhedron until step 5.
 5. **Stage 2.3(c) promotion** (bent-tube `k = 1/R` + jet triggers +
    medial-point spine seeding). Acceptance: pipe_elbow → torus + 2
-   cylinders with no strip machinery.
+   cylinders with no strip machinery. **[IMPLEMENTED — awaiting the debug
+   session.]** As built, the cheap path sufficed (no `k = 1/R` degenerate
+   model, no medial-spine fit yet — both remain contingency if strip/coarse
+   meshes defeat this): the torus competes as a first-class candidate in
+   `compete.rs` — (a) grown directly from any curved non-sphere-like seed
+   (|κ2| < 0.8·|κ1|; recognizes fillet tori and bend tubes generally, not
+   just cylinder-adjacent bends), and (b) *promoted* from a cylinder whose
+   flood stalled against tube-continuation jet (κ1 ≈ 1/r, |κ2| ≤ 0.8·κ1),
+   fitting the existing 7-DOF torus fitter to the pure-bend patch just past
+   the stall line — the cylinder fit itself locates the tangency, so the
+   patch cannot straddle it (jet-class patches cannot tell bend from
+   straight tube: same κ1). Giant-major-radius degenerate fits (a straight
+   segment on an absurdly distant torus) are rejected at `R > bbox
+   diagonal`, mirroring the ladder acceptance test. Smoke:
+   pipe_elbow_10_medium → 2 planes + 2 cylinders + 1 torus, 1 valid solid,
+   0 per-facet leftovers; rounded_cube/nosecone competition tests still
+   green.
 6. **Freeform rewiring** (`bspline.rs`: leftover components +
    island-dissolution guard). Acceptance: tests/nurbs suite green.
 7. **Deletion pass + corpus re-enable**: `bfs.rs`, `stage2_bfs_pipeline`,

@@ -25,10 +25,10 @@
 //! torus `0 < r ≤ R`, sphere radius cap) and return `None` outside them.
 //!
 //! A region the ladder cannot explain with one surface is a tangent chain
-//! (pill capsule, rounded-cube shell, pipe-elbow tube). Decomposing those is
-//! stage 2.3(b) scoped competition (not yet implemented). Until then such a
-//! region **terminally degrades to per-facet planes** — total coverage can
-//! never fail, and a single triangle is exactly a plane.
+//! (pill capsule, rounded-cube shell, pipe-elbow tube); it goes to stage
+//! 2.3(b)/(c) scoped competition (`compete.rs`). Whatever competition leaves
+//! unclaimed **terminally degrades to per-facet planes** — total coverage
+//! can never fail, and a single triangle is exactly a plane.
 
 use crate::config::Config;
 use crate::stage1::ConnectedMesh;
@@ -119,6 +119,7 @@ impl Classification {
             CompeteHyp::Planar(h) => self.push_planar(h),
             CompeteHyp::Conical(h) => self.push_conical(h),
             CompeteHyp::Spherical(h) => self.push_spherical(h),
+            CompeteHyp::Toroidal(h) => self.push_toroidal(h),
         }
     }
 }

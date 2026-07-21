@@ -21,6 +21,14 @@
 //!   so a face can be claimed by several hypotheses. `resolve_claims`
 //!   assigns each contested face to the claimant that fits its vertices best
 //!   (2× margin to leave the larger claimant).
+//! - **Toroidal candidates (stage 2.3(c))**: a torus competes like any other
+//!   type — grown directly from curved seeds (fillet tori, bend tubes), and
+//!   additionally *promoted* from a cylinder whose flood stalled against
+//!   faces whose jet continues the tube (κ1 ≈ the tube's 1/r, |κ2| well
+//!   below κ1 — a bent tube's signature). The promotion seeds its fit from
+//!   the pure-bend patch just past the stall line: the cylinder fit itself
+//!   locates the tangency, so the patch cannot straddle it the way a
+//!   jet-class patch can (bend and straight tube share κ1).
 //!
 //! **Soundness** (the sub-region lemma, under exactness): an accidental fit
 //! is supported on a *sub-region*; the true surface fitted from an interior
@@ -40,10 +48,11 @@ use super::conical::ConicalSurface;
 use super::edges::JetField;
 use super::planar::PlanarSurface;
 use super::regions::Region;
-use super::spherical::SphericalSurface;
+use super::spherical::{bounding_box_diagonal, SphericalSurface};
+use super::toroidal::ToroidalSurface;
 use super::{
-    face_area, ConicalHypothesis, PlanarHypothesis, SphericalHypothesis, MIN_CYLINDER_FACES,
-    MIN_SPHERE_FACES,
+    face_area, ConicalHypothesis, PlanarHypothesis, SphericalHypothesis, ToroidalHypothesis,
+    MIN_CYLINDER_FACES, MIN_SPHERE_FACES, MIN_TORUS_FACES,
 };
 
 /// Max faces in the jet-similar seed patch used to condition the initial fit.
@@ -70,11 +79,25 @@ const MAX_GROW_ROUNDS: usize = 8;
 /// committed hypothesis is refit on its full support (accurate to ~1e-6 mm).
 const GROW_VTOL_FACTOR: f64 = 30.0;
 
+/// Max BFS depth of the pure-bend fit patch grown past a stalled cylinder's
+/// frontier (bent-tube promotion). A few rows of bend arc condition the
+/// 7-DOF torus fit; the flood then claims the rest.
+const BEND_PATCH_DEPTH: usize = 4;
+
+/// Face cap of the pure-bend fit patch.
+const BEND_PATCH_CAP: usize = 64;
+
+/// How many flood-start faces a toroidal candidate tries before giving up
+/// (each attempt refits from the same initial patch, so extras only matter
+/// when the best start happens not to validate its own fit).
+const MAX_TORUS_STARTS: usize = 4;
+
 /// A committed analytic hypothesis from competition, tagged by type.
 pub(super) enum CompeteHyp {
     Planar(PlanarHypothesis),
     Conical(ConicalHypothesis),
     Spherical(SphericalHypothesis),
+    Toroidal(ToroidalHypothesis),
 }
 
 impl CompeteHyp {
@@ -83,6 +106,7 @@ impl CompeteHyp {
             CompeteHyp::Planar(h) => &h.faces,
             CompeteHyp::Conical(h) => &h.faces,
             CompeteHyp::Spherical(h) => &h.faces,
+            CompeteHyp::Toroidal(h) => &h.faces,
         }
     }
     fn set_faces(&mut self, faces: Vec<usize>, verts: Vec<usize>) {
@@ -96,6 +120,10 @@ impl CompeteHyp {
                 h.vertices = verts;
             }
             CompeteHyp::Spherical(h) => {
+                h.faces = faces;
+                h.vertices = verts;
+            }
+            CompeteHyp::Toroidal(h) => {
                 h.faces = faces;
                 h.vertices = verts;
             }
@@ -174,10 +202,42 @@ pub(super) fn compete_region(
         let plane = grow::<PlanarSurface>(mesh, &in_region, seed, jet, centroids, config, 1);
         let mut cone_area = None;
         let mut sphere_area = None;
+        let mut torus_area = None;
         if a1 >= flat_eps {
             // Curved: a developable (cylinder/cone) is always plausible.
             let cone = grow::<ConicalSurface>(mesh, &in_region, seed, jet, centroids, config, MIN_CYLINDER_FACES);
             cone_area = cone.as_ref().map(|(_, a, f)| (*a, f.len()));
+
+            // Toroidal candidate: a direct grow from this seed (fillet tori,
+            // bend tubes), skipped when the seed reads sphere-like — every
+            // adjacent quad-row band of a sphere lies near some torus, so a
+            // (κ,κ) seed's torus is at best a bogus band that loses to the
+            // sphere anyway. A torus seed reads |κ2| < |κ1| (κ2 varies
+            // azimuthally around the tube; it only approaches κ1 near the
+            // degenerate R≈r hole of a donut — a whole-region ladder case,
+            // not a competition case).
+            let mut torus = if a2 < 0.8 * a1 {
+                let patch = seed_patch(mesh, &in_region, seed, jet);
+                torus_candidate(mesh, &in_region, &patch, &[seed], centroids, config)
+            } else {
+                None
+            };
+            // Bent-tube promotion: a cylinder that stalled against
+            // tube-continuation faces is the developable prefix of a bent
+            // tube; grow a torus from the pure-bend patch past the stall.
+            if let Some((cyl, _, cyl_faces)) = cone.as_ref() {
+                if cyl.is_cylinder() {
+                    let promoted =
+                        promote_bend(mesh, &in_region, cyl, cyl_faces, jet, centroids, config);
+                    if let Some(p) = promoted {
+                        if torus.as_ref().is_none_or(|(_, a, _)| p.1 > *a) {
+                            torus = Some(p);
+                        }
+                    }
+                }
+            }
+            torus_area = torus.as_ref().map(|(_, a, f)| (*a, f.len()));
+
             consider(cone.map(|(h, a, _)| (CompeteHyp::Conical(h), a)), 2, &mut best);
             // Curved in both directions → also try a sphere.
             if a2 >= 0.3 * a1 {
@@ -185,13 +245,14 @@ pub(super) fn compete_region(
                 sphere_area = sphere.as_ref().map(|(_, a, f)| (*a, f.len()));
                 consider(sphere.map(|(h, a, _)| (CompeteHyp::Spherical(h), a)), 1, &mut best);
             }
+            consider(torus.map(|(h, a, _)| (CompeteHyp::Toroidal(h), a)), 3, &mut best);
         }
         let plane_area = plane.as_ref().map(|(_, a, f)| (*a, f.len()));
         consider(plane.map(|(h, a, _)| (CompeteHyp::Planar(h), a)), 0, &mut best);
 
         if debug && best.is_none() {
             eprintln!(
-                "    compete: seed {seed} jet=({:.3},{:.3}) class {:?} → NO GROWTH (plane {plane_area:?} cone {cone_area:?} sphere {sphere_area:?})",
+                "    compete: seed {seed} jet=({:.3},{:.3}) class {:?} → NO GROWTH (plane {plane_area:?} cone {cone_area:?} sphere {sphere_area:?} torus {torus_area:?})",
                 jf.k1, jf.k2, curvature_class(jf),
             );
         }
@@ -203,6 +264,7 @@ pub(super) fn compete_region(
                         CompeteHyp::Planar(_) => "plane",
                         CompeteHyp::Conical(ref h) => if h.is_cylinder() { "cyl" } else { "cone" },
                         CompeteHyp::Spherical(_) => "sphere",
+                        CompeteHyp::Toroidal(_) => "torus",
                     };
                     eprintln!(
                         "    compete: seed {seed} → {kind} ({} faces, area {area:.2}, dof {dof})",
@@ -304,18 +366,35 @@ fn grow<S: SurfaceType>(
     config: &Config,
     min_faces: usize,
 ) -> Option<(S::Hypothesis, f64, Vec<usize>)> {
+    let patch = seed_patch(mesh, in_region, seed, jet);
+    grow_from::<S>(mesh, in_region, seed, patch, centroids, config, min_faces)
+}
+
+/// The grow loop proper, from an explicit initial fit patch and flood start:
+/// fit the patch, flood-accept every region face the fit validates, refit on
+/// the grown support, to a fixpoint. Returns the hypothesis, its validated
+/// area, and its face list.
+fn grow_from<S: SurfaceType>(
+    mesh: &ConnectedMesh,
+    in_region: &[bool],
+    start: usize,
+    initial: Vec<usize>,
+    centroids: &[[f64; 3]],
+    config: &Config,
+    min_faces: usize,
+) -> Option<(S::Hypothesis, f64, Vec<usize>)> {
     let vtol = config.vertex_tolerance_mm * GROW_VTOL_FACTOR;
     let stol = config.surface_tolerance_mm;
 
-    let mut accepted = seed_patch(mesh, in_region, seed, jet);
+    let mut accepted = initial;
     let mut prev = 0usize;
     for round in 0..MAX_GROW_ROUNDS {
         let verts = vertices_of(mesh, &accepted);
         let mut fit = S::fit_surface(mesh, &accepted, &verts, config.verbosity)?;
         S::determine_convexity(mesh, &accepted, &mut fit);
-        let comp = flood::<S>(mesh, in_region, seed, &fit, centroids, vtol, stol);
+        let comp = flood::<S>(mesh, in_region, start, &fit, centroids, vtol, stol);
         if comp.is_empty() {
-            return None; // the seed does not lie on its own fit — reject
+            return None; // the start face does not lie on its own fit — reject
         }
         if comp.len() == accepted.len() && round > 0 {
             accepted = comp;
@@ -336,7 +415,7 @@ fn grow<S: SurfaceType>(
     let verts = vertices_of(mesh, &accepted);
     let mut fit = S::fit_surface(mesh, &accepted, &verts, config.verbosity)?;
     S::determine_convexity(mesh, &accepted, &mut fit);
-    let faces = flood::<S>(mesh, in_region, seed, &fit, centroids, vtol, stol);
+    let faces = flood::<S>(mesh, in_region, start, &fit, centroids, vtol, stol);
     if faces.len() < min_faces {
         return None;
     }
@@ -344,6 +423,170 @@ fn grow<S: SurfaceType>(
     let verts = vertices_of(mesh, &faces);
     let hyp = S::make_hypothesis(mesh, faces.clone(), verts, &fit);
     Some((hyp, area, faces))
+}
+
+/// Grow a toroidal candidate from an initial fit patch, trying flood starts
+/// in order until one grows. Rejects degenerate giant-major-radius fits: a
+/// short segment of straight cylinder fits a torus with an absurdly distant
+/// axis (observed R ≈ 1500–3600 mm on ~100 mm models under the old BFS), and
+/// a legitimate torus's major radius cannot exceed the mesh extent — the
+/// same guard as the ladder's acceptance test.
+fn torus_candidate(
+    mesh: &ConnectedMesh,
+    in_region: &[bool],
+    initial: &[usize],
+    starts: &[usize],
+    centroids: &[[f64; 3]],
+    config: &Config,
+) -> Option<(ToroidalHypothesis, f64, Vec<usize>)> {
+    let bb_diag = bounding_box_diagonal(&mesh.vertices);
+    for &start in starts.iter().take(MAX_TORUS_STARTS) {
+        if let Some((hyp, area, faces)) = grow_from::<ToroidalSurface>(
+            mesh,
+            in_region,
+            start,
+            initial.to_vec(),
+            centroids,
+            config,
+            MIN_TORUS_FACES,
+        ) {
+            if hyp.major_radius <= bb_diag {
+                return Some((hyp, area, faces));
+            }
+        }
+    }
+    None
+}
+
+/// Stage 2.3(c) bent-tube promotion. A cylinder flood that stalled against
+/// region faces whose jet continues the tube — κ1 ≈ the tube's 1/r, |κ2|
+/// well below κ1 (the same tube swinging around a bend, not a cap plane's
+/// (0,0) or an end sphere's (κ,κ)) — is the developable prefix of a bent
+/// tube. Fit a torus to the pure-bend patch just past the stall line
+/// (frontier faces plus their off-cylinder tube-jet neighbours) and grow it;
+/// the result competes on validated area like any other candidate.
+///
+/// The cylinder fit itself locates the tangency — frontier faces failed
+/// cylinder validation — so unlike a jet-class seed patch (which cannot tell
+/// bend from straight tube: both read the same κ1) this patch cannot
+/// straddle the junction.
+fn promote_bend(
+    mesh: &ConnectedMesh,
+    in_region: &[bool],
+    cyl: &ConicalHypothesis,
+    cyl_faces: &[usize],
+    jet: &[JetField],
+    centroids: &[[f64; 3]],
+    config: &Config,
+) -> Option<(ToroidalHypothesis, f64, Vec<usize>)> {
+    if cyl.radius_at_apex <= 0.0 {
+        return None;
+    }
+    let k_tube = 1.0 / cyl.radius_at_apex;
+    let grow_vtol = config.vertex_tolerance_mm * GROW_VTOL_FACTOR;
+
+    // Max vertex distance to the stalled cylinder — the "past the tangency"
+    // test (frontier faces failed the flood at exactly this tolerance).
+    let off_cyl_dist = |fi: usize| -> f64 {
+        let face = &mesh.faces[fi];
+        let vc = face.vertex_count as usize;
+        face.vertex_indices[..vc]
+            .iter()
+            .map(|&vi| {
+                super::cylindrical::vertex_to_cylinder_distance(
+                    &mesh.vertices[vi],
+                    &cyl.apex,
+                    &cyl.axis_direction,
+                    cyl.radius_at_apex,
+                )
+                .abs()
+            })
+            .fold(0.0_f64, f64::max)
+    };
+    // Tube-continuation jet signature. The κ2 bound is generous: a bend's
+    // inner (saddle) side reads |κ2| = 1/(R−r), which approaches κ1 = 1/r
+    // only for very tight bends; junction rows have contaminated jets and
+    // are excluded from the fit patch either way (the flood claims them).
+    let tube_jet = |fi: usize| -> bool {
+        let a1 = jet[fi].k1.abs();
+        a1 >= 0.5 * k_tube && a1 <= 2.0 * k_tube && jet[fi].k2.abs() <= 0.8 * a1
+    };
+
+    // Frontier: in-region neighbours of the cylinder support that are past
+    // the tangency and continue the tube.
+    let mut seen: HashSet<usize> = cyl_faces.iter().copied().collect();
+    let mut frontier: Vec<usize> = Vec::new();
+    for &fi in cyl_faces {
+        let vc = mesh.faces[fi].vertex_count as usize;
+        for &ni in &mesh.faces[fi].neighbors[..vc] {
+            if ni < 0 {
+                continue;
+            }
+            let ni = ni as usize;
+            if !in_region[ni] || !seen.insert(ni) {
+                continue;
+            }
+            if off_cyl_dist(ni) > grow_vtol && tube_jet(ni) {
+                frontier.push(ni);
+            }
+        }
+    }
+    if frontier.is_empty() {
+        return None; // finished a straight pipe (or stalled at a cap/sphere)
+    }
+    frontier.sort_unstable();
+
+    // Pure-bend fit patch: depth-limited multi-source BFS from the frontier
+    // through off-cylinder tube-jet faces. (Neighbours examined and rejected
+    // above stay excluded — junction rows with contaminated jets would only
+    // pollute the fit.)
+    let mut patch: Vec<usize> = frontier.clone();
+    let mut ring = frontier.clone();
+    for _depth in 0..BEND_PATCH_DEPTH {
+        if patch.len() >= BEND_PATCH_CAP {
+            break;
+        }
+        let mut next: Vec<usize> = Vec::new();
+        for &fi in &ring {
+            let vc = mesh.faces[fi].vertex_count as usize;
+            for &ni in &mesh.faces[fi].neighbors[..vc] {
+                if ni < 0 {
+                    continue;
+                }
+                let ni = ni as usize;
+                if !in_region[ni] || seen.contains(&ni) {
+                    continue;
+                }
+                if off_cyl_dist(ni) <= grow_vtol || !tube_jet(ni) {
+                    continue;
+                }
+                seen.insert(ni);
+                patch.push(ni);
+                next.push(ni);
+                if patch.len() >= BEND_PATCH_CAP {
+                    break;
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        ring = next;
+    }
+    patch.sort_unstable();
+
+    // Flood starts: deepest-off-cylinder first — the faces most surely
+    // interior to the bend (frontier faces sit on the junction row and may
+    // not validate the torus fit themselves).
+    let mut starts = patch.clone();
+    starts.sort_by(|&a, &b| {
+        off_cyl_dist(b)
+            .partial_cmp(&off_cyl_dist(a))
+            .unwrap()
+            .then_with(|| a.cmp(&b))
+    });
+
+    torus_candidate(mesh, in_region, &patch, &starts, centroids, config)
 }
 
 /// Connected region-faces reachable from `seed` that all validate `fit`
@@ -522,6 +765,14 @@ fn max_vertex_dist(mesh: &ConnectedMesh, hyp: &CompeteHyp, fi: usize) -> f64 {
                 CompeteHyp::Spherical(h) => {
                     super::spherical::vertex_to_sphere_distance(v, &h.center, h.radius).abs()
                 }
+                CompeteHyp::Toroidal(h) => super::toroidal::vertex_to_torus_distance(
+                    v,
+                    &h.center,
+                    &h.axis_direction,
+                    h.major_radius,
+                    h.minor_radius,
+                )
+                .abs(),
             }
         })
         .fold(0.0_f64, f64::max)
