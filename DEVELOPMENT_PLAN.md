@@ -6,37 +6,46 @@
 
 ## Design Principles
 
-The stage 2 architecture was rewritten (2026-07-17) from a fit-driven BFS
-hypothesis pipeline to **partition-then-classify** segmentation. These
-principles drive the design; the old pipeline and the reasons it was retired
-are recorded in [Abandoned Approaches](#abandoned-approaches).
+The stage 2 architecture was rewritten twice: from the fit-driven BFS
+hypothesis pipeline to partition-then-classify (2026-07-17), and then —
+after the fit-free curvature-jump classifier was measured to be
+unsalvageable (2026-07-20, see the Stage-2 Retrospective's Resolution) —
+to the current **sharp-partition + scoped fit competition** design. These
+principles drive it; retired mechanisms and the reasons they died are in
+[Abandoned Approaches](#abandoned-approaches).
 
 1. **Exactness is the superpower.** Mesh vertices lie on the true CAD
-   surfaces within numerical epsilon. A surface fitted to *all* faces of a
-   region either validates every vertex within `--vertex-tolerance` or the
-   region is not that surface — validation is decisive, not statistical. We
-   are not solving the fit-primitives-in-noisy-scans problem the literature
-   (RANSAC lineage) addresses.
+   surfaces within numerical epsilon. A candidate surface either validates
+   every claimed vertex within `--vertex-tolerance` or the claim is wrong —
+   validation is decisive, not statistical. We are not solving the
+   fit-primitives-in-noisy-scans problem the literature (RANSAC lineage)
+   addresses.
 2. **The answer's boundaries are already in the mesh.** CAD tessellators emit
    seam edges along B-rep face boundaries — *including tangent junctions*
    (verified 2026-07-17 on the nosecone cone–sphere tangency: 0 of 1572 STL
    triangles straddle the tangency ring; 104 vertices lie exactly on it). So
    the true segmentation is a partition of the mesh face graph whose region
    boundaries are a subset of mesh edges, and every region is connected.
-3. **Partition first, fit later.** Segmentation uses fit-free signals
-   (dihedral angles, discrete-curvature jumps). Fitting happens once per
-   *maximal* region. This makes accidental exact fits — a band of sphere
-   faces lying exactly on some cone or torus — structurally irrelevant: a
-   sub-region surface can never explain the full region, so it is never even
-   hypothesized. The abandoned pipeline spent most of its heuristics (stage
-   ordering, seeding masks, coverage acceptance tests) and much of its
-   runtime fighting exactly these fits.
-4. **Repair by validation, locally.** Segmentation mistakes surface as
-   classification failures and are repaired by local operations — split a
-   region that fits nothing, merge adjacent regions that fit one surface,
-   relabel boundary faces to the better-fitting side. No global fix-up
-   passes with chordal slop.
-5. **Invariants are enforced, not assumed.** Before stage 3: every mesh face
+3. **Partition by what is certain; decompose the rest by fit competition.**
+   Sharp dihedral edges are exact and cheap — they partition the mesh into
+   smooth regions with no calibration (measured: every sharp-edged corpus
+   model segments perfectly by them alone). Tangent junctions inside a
+   smooth region are NOT reliably detectable fit-free (measured: no
+   threshold on local curvature differences separates real junctions from
+   real curvature gradients — the classes overlap in that statistic), so
+   they are found by fit competition: surfaces fitted from seeds compete on
+   validated area, and the exact vertex test places the boundary.
+4. **Curvature allocates effort; fitting decides geometry.** The per-face
+   jet curvature field orders seeds, prunes and orders fit attempts, seeds
+   initial parameters, and gates expensive refits — and never decides
+   membership or boundaries. Every curvature error converts to wasted or
+   saved time, never to wrong output.
+5. **Repair by validation, locally.** Remaining mistakes surface as
+   validation failures and are repaired by local fit-validated operations —
+   resolve multi-claimed junction rows to the better-fitting side, merge
+   fragments a neighbor's surface explains, relabel ±1-row boundary error.
+   No global fix-up passes with chordal slop.
+6. **Invariants are enforced, not assumed.** Before stage 3: every mesh face
    belongs to exactly one region; every region is mesh-connected; every
    region's surface validates its own faces; results are deterministic.
    (The abandoned pipeline's greedy selection violated connectivity —
@@ -203,50 +212,62 @@ The algorithm operates in three phases: identify merge pairs, apply merges, then
 
 ### Stage 2: Segmentation & Classification
 
-**Status: this stage is a from-scratch redesign (2026-07-17). Stages 2.1
-(edge classification) and 2.2 (region extraction) are implemented
-(`src/stage2/edges.rs`, `src/stage2/regions.rs`), with `--viz-stages=2.1,2.2`
-overlays; the old BFS pipeline is nerfed in place (`stage2_bfs_pipeline`,
-uncalled) and 2.3–2.5 are not yet implemented, so `stage2()` stops at the
-2.2 frontier with no selected surfaces.** There is no migration flag: the
-new structure replaces the old outright, and the test corpus is re-enabled
-model by model as classification matures. Calibration read (2026-07-19,
-after the osculating-jet estimator landed): all sharp-edged analytic models
-exact (cube 6, block_with_hole 7, pipe 4, two_holes 8, spherical_pocket 7,
-chamfered_cube 26, …), capsule fine (3 regions), capsule coarse (3 true +
-junction-circle singletons), pipe-elbow torus bend one region (+ merged
-cylinder walls — similar-radii outer junction is split-repair territory),
-cone_tangent_planes ~11 (was ~160 with earlier estimators), filleted_*
-~20–95, rounded_cube_fine 26 true regions + small junction confetti,
-nosecone ~130, stepped_block ~260. Remaining known gaps, all in the repair
-loop's designed territory: junction-circle/junction-zone confetti at
-tangent junctions and triple points (faces on or next to a seam whose
-neighborhood genuinely spans two surfaces — small singletons to be
-absorbed by 2.4 merge), coarse tessellations with descriptor noise near
-the fire threshold, and cone-row σ_max gradients near apexes (expected
-over-fire for merge repair).
+**Status (2026-07-20): fit-driven pivot — the SECOND revision of the
+stage-2 rewrite.** The fit-free curvature-jump edge classifier was retired
+after the 2026-07-19 calibration campaign produced decisive evidence
+against it (measurements in the Stage-2 Retrospective's *Resolution*;
+mechanism autopsy in Abandoned Approaches). The partition now keeps only
+the signal that proved exact — sharp dihedral edges — and tangent-junction
+discovery moves to fit competition, with the osculating-jet curvature
+field demoted from decision-maker to effort-allocation prior. The
+transition from the current code state (commit ce85dd0: jet-based 2.1/2.2
+with the jump classifier and its hysteresis fixpoint) is **one-shot** — no
+compatibility path, no threshold gating: the jump machinery is deleted,
+not disabled. Stages 2.3–2.5 are unimplemented; `stage2()` stops at the
+2.2 frontier with no selected surfaces, and the old BFS pipeline remains
+nerfed in place (`stage2_bfs_pipeline`, uncalled) until the deletion pass.
 
-**Pipeline:** classify mesh edges (2.1) → extract connected regions (2.2) →
-classify each region against a ladder of surface types (2.3) → repair by
-split/merge/relabel (2.4) → emit selected surfaces (2.5).
+**Pipeline:** sharp-edge classification + jet prior (2.1) → smooth-region
+extraction (2.2) → per-region surface discovery: whole-region ladder, then
+scoped fit competition with model promotion (2.3) → resolution & repair
+(2.4) → emit selected surfaces (2.5).
+
+**The division of labor** (the load-bearing rule, Design Principle #4):
+the jet prior allocates effort — seed order, rung order, initial
+parameters, refit triggers — and **never decides membership or
+boundaries**; vertex-tolerance fit validation decides all geometry. Every
+jet error therefore converts to wasted or saved time, never to wrong
+output.
 
 **Precision note**: Mesh vertex positions, normals, and all fitted-surface
 parameters use double-precision (`f64`) throughout.
 
-#### 2.1 Edge classification
+#### 2.1 Sharp edges + jet curvature prior
 
-Label every manifold mesh edge INTERIOR or BOUNDARY using fit-free local
-signals. Region boundaries are a subset of mesh edges (Design Principles #2),
-so this labeling *is* the segmentation; everything downstream refines it.
+Two products, both deterministic, both cheap (O(N·ring), single pass —
+the classification fixpoint is gone; nothing iterates on classification
+anymore).
 
-**Curvature estimator (implemented 2026-07-19, replacing two earlier
-variants — per-edge κ = θ/d, and a neighbor-normal tensor):** each face's
-descriptor is the pair of principal curvatures `(σ_max, σ_min)` of a
-quadratic height field `z = Q(u,w)` (an **osculating jet**, Cazals &
-Pouget SGP 2005 — the standard robust curvature estimator for irregular
-meshes) fitted over a PCA tangent frame of the face's vertex neighborhood.
+**(a) Sharp-edge classification — the only *decision* this stage makes.**
+A manifold edge is BOUNDARY when its dihedral angle exceeds
+`--angular-tolerance`; everything else is INTERIOR. The default 25° stays
+above the tessellator's maximum dihedral step on smooth surfaces (coarse
+fillets step ~24°/row). This rule is measured-exact on the corpus: every
+sharp-edged analytic model segments perfectly by it alone (cube 6,
+block_with_hole 7, pipe 4, two_holes 8, spherical_pocket 7,
+chamfered_cube 26, cone_15x20 2, simple_cone 3 — one pass, no knobs
+beyond the user-facing tolerance). The fit-free *curvature-jump* rule
+that used to accompany it is retired (evidence in the Retrospective's
+Resolution; autopsy in Abandoned Approaches): tangent junctions are found
+by stage 2.3's fit competition instead.
 
-Three properties make it robust to how CAD models are actually triangulated:
+**(b) The jet curvature prior — data for 2.3, never a decision.** Each
+face carries the differential summary of an **anchored osculating jet**
+(Cazals & Pouget SGP 2005 — the standard robust curvature estimator for
+irregular meshes): a quadratic height field `z = Q(u,w)` fitted to vertex
+*positions* over a PCA tangent frame of the face's own + 1-ring vertex
+neighborhood. Three properties make it robust to how CAD models are
+actually triangulated (each was forced by a measured corpus failure):
 
 - **It uses vertex positions** — exact f32 mesh data — not normals. A long
   skinny strip/sliver triangle's plane is a chord whose normal can sit
@@ -259,100 +280,92 @@ Three properties make it robust to how CAD models are actually triangulated:
   frame (weight `OWN_WEIGHT`).
 - **The face's own vertices anchor the fit** (weight `OWN_WEIGHT = 50`).
   Tessellators never straddle a B-rep boundary with a triangle, so a face's
-  own corners always lie on its own surface — this biases each face's fit
-  toward its own side at a junction, which is what makes junction rows read
-  *different* intermediate values and the boundary fire. There is **no
-  outlier rejection**: rejection forces arbitrary one-side reads that vary
-  face to face and fragment tangent junctions (measured); sharp-crease
-  neighbors (dihedral > `--angular-tolerance`) are excluded from the point
-  set instead, and tangent-junction mixing is allowed (intermediate reads).
+  own corners always lie on its own surface. There is **no outlier
+  rejection** (rejection forces arbitrary one-side reads that vary face to
+  face — measured); sharp-crease neighbors are excluded from the point set,
+  and tangent-junction mixing is allowed — junction rows read intermediate
+  values, which is fine because no decision ever keys on them.
 
-The estimator runs inside a fixpoint iteration with the classification
-(below): round 1 admits all non-sharp neighbors; once junctions fire,
-cross-boundary faces leave the neighborhood and the descriptors purify.
+*Estimator history, for context:* per-edge κ = θ/d failed on irregular
+tessellation (the centroid distance doesn't measure arc length in the
+rotation direction — the 65:1 sliver fillet of rounded_cube_10_r2_fine
+read ~100× low and fragmented ~50×). The neighbor-normal tensor fixed
+strips and slivers but deadlocked on balanced-mix junction rings
+(stepped_block's blend zones). The jet subsumes both — as a *measurement*;
+as a junction *detector* the whole family is dead (see Resolution).
 
-*History of the estimator, for context:* per-edge κ = θ/d failed on
-irregular tessellation (the centroid distance doesn't measure arc length in
-the rotation direction — the 65:1 sliver fillet of rounded_cube_10_r2_fine
-fragmented ~50×). The neighbor-normal tensor fixed strips and slivers but
-deadlocked on balanced-mix junction rings (compromise neighbors agreeing
-with each other, e.g. stepped_block's blend zones). The jet subsumes both.
+**Per-face prior contents** (`JetField`, on `Segmentation`):
+- `(κ1, κ2)` — signed principal curvatures (jet Hessian eigenvalues;
+  positive convex). Few-% accurate on region interiors; contaminated on
+  junction rows (by design — the anchor mixes).
+- Principal directions — the Hessian's eigenvectors lifted to 3D in the
+  PCA frame. The κ≈0 direction is a cylinder/cone ruling; the κ1
+  direction wraps a tube.
+- The PCA normal, and the **medial point** `centroid + n̂/κ1` (defined when
+  `|κ1|` clears the noise floor) — a curvature-center / tube-center
+  estimate feeding torus initialization and bent-tube promotion.
 
-**Classification rules (per edge):**
-1. **Sharp**: `|θ_e| > --angular-tolerance` → BOUNDARY (θ_e = dihedral).
-   Catches every non-tangent junction. The default 25° stays above the
-   tessellator's maximum dihedral step on smooth surfaces (coarse fillets
-   step ~24°/row).
-2. **Curvature jump** (tangent junctions, G1-smooth but G2-discontinuous):
-   with `jump(e) = max(|σ_max(f1) − σ_max(f2)|, |σ_min(f1) − σ_min(f2)|)`
-   and `scale(e) = max(|σ_max|, |σ_min| over both faces)` — the
-   local-relative criterion, since mesh-global thresholds are dominated by
-   sharp creases. The rule iterates to a fixpoint with **hysteresis**:
-   FIRE when `jump > 0.35 · scale` and `jump > κ_floor`; UN-FIRE when
-   `jump < 0.15 · scale` or `jump < κ_floor`; otherwise keep the previous
-   state (cap 10 rounds; convergence typically 2–4).
-3. Everything else → INTERIOR.
+**Type signatures the prior predicts** (used ONLY to order and prune work
+in 2.3): plane (0,0); cylinder (κ,0), κ locally constant; cone (κ,0), κ
+drifting along the ruling; sphere (κ,κ); torus (κ1 constant around the
+tube, κ2 varying, sign change past the inner equator); anything else →
+freeform-ish.
 
-`κ_floor = C · ε / d_e²` with ε = f32 position quantization (bbox diagonal ×
-1e-7 — STL vertices are f32-exact; NOT `--vertex-tolerance`, whose 5e-5
-over-floors sliver-dense areas and vetoed real junctions at triple points),
-`C` calibrated on the corpus.
+Output: `EdgeClassification` (sharp classes + counts) and `JetField`,
+both on `Segmentation`, consumed by 2.3 and by diagnostics/viz.
 
-**Why the two-sided descriptor matters:** `σ_max` alone misses tangent
-junctions between surfaces sharing their largest curvature — the capsule
-(pill) model's hemisphere↔cylinder junction has `σ_max = 1/r` on both sides,
-but `σ_min` jumps from `1/r` (sphere) to `0` (cylinder), which rule 2
-catches at full strength (verified: pill_fine produces exactly 3 regions;
-pill_coarse 3 true regions + junction-circle singletons). Fillet↔plane
-(`σ_max`: `1/r` vs 0) and fillet↔cylinder with sufficiently different radii
-fire on `σ_max`. A fillet↔cylinder pair with similar radii (e.g.
-`1 − r/R < J`) can slip
-through — that miss is recovered by stage 2.4's split repair, which re-runs
-this classifier at progressively lower `J` inside regions that fail to
-classify.
+#### 2.2 Smooth-region extraction
 
-**Expected over-fire:** on coarse cones near the apex, `σ_max` varies
-row-to-row (circumferential curvature grows toward the apex), so rule 2 may
-split one cone into bands. Harmless: each band classifies as the same cone
-and stage 2.4's merge rejoins them on parameter agreement. Junction-zone
-slivers at tangent junctions and triple points (faces whose neighbor rings
-conflict) likewise produce small confetti regions — the merge repair's
-designed input.
+Connected components of the face graph over INTERIOR (non-sharp) edges
+(union-find; deterministic numbering by smallest member face index). A
+**smooth region** is a maximal set of faces reachable without crossing a
+sharp edge. On sharp-edged models it IS the final segmentation; on models
+with tangency it is a *chain of tangentially-joined surfaces* that 2.3
+decomposes — e.g. the capsule is ONE smooth region (both caps tangent to
+the wall), a rounded cube's entire outer shell is ONE smooth region, the
+nosecone is TWO (the cone+sphere tangent chain; the base disk), and the
+pipe elbow's tube surface is ONE (torus bend tangent to both straight
+pipes).
 
-Output: `EdgeClassification` keyed by undirected mesh edge, retaining the
-class and the curvature evidence (`κ_e`, per-face descriptors) for reuse by
-the 2.4 split repair, `--compare` diagnostics, and viz. Deterministic, O(E).
-
-#### 2.2 Region extraction
-
-Connected components of the face graph over INTERIOR edges (union-find).
-
-Output (in `Stage2Output`):
-- `face_region: Vec<usize>` — exactly one region per face (total coverage by
-  construction).
-- `regions: Vec<Region>` — member faces, member vertices, and ordered
-  boundary loops (mesh-vertex loops per region, shared with the freeform
-  parameterizer and structurally the same boundaries stage 3.1 will chain).
+Output (in `Stage2Output.segmentation`):
+- `face_region: Vec<usize>` — exactly one region per face (total coverage
+  by construction).
+- `regions: Vec<Region>` — member faces + member vertices.
 
 Regions are connected by construction. There is no minimum size: a single
-facet is a valid region (and classifies as its own plane — this is the
-terminal fallback that guarantees every model converts).
+facet is a valid region.
 
-**Diagnostics** (report-only at this stage; repair may still move
-boundaries): with `--compare`, sample midpoints of BOUNDARY edges and check
-distance to the nearest reference STEP *edge* (within `--surface-tolerance` —
-tangent-junction boundaries can legitimately sit one facet row off). Report
-counts of suspicious boundary edges and of regions whose faces project onto
-reference faces with disagreeing surface geometry (a missed-seam signal).
+**Diagnostics** (report-only at this stage): with `--compare`, sample
+midpoints of sharp BOUNDARY edges and check distance to the nearest
+reference STEP *edge* (within `--surface-tolerance`); report region counts
+vs reference face counts. Smooth-region counts are NOT expected to match
+reference face counts on tangent models — that match is 2.3/2.4's job.
 
-#### 2.3 Region classification
+#### 2.3 Per-region surface discovery
 
-For each region, fit surface types in **ascending degrees of freedom** and
-accept the first fit that validates. Simplest-first resolves degeneracy (any
-plane also lies on an infinite-radius cylinder; a single facet is exactly a
-plane) without coverage heuristics.
+Decompose each smooth region into its true surfaces. Two mechanisms, in
+order; both decide membership exclusively by fit validation.
 
-**The ladder:**
+**Validation (used everywhere, decisive by Design Principle #1):**
+- Every claimed vertex within `--vertex-tolerance` of the surface.
+- Every claimed face centroid within `--surface-tolerance` (chordal
+  sagitta ≈ h²/8R stays well inside for real tessellations).
+- Orientation coherence: every face normal agrees in sign with the surface
+  normal at its centroid — this determines the hypothesis `convex` flag and
+  replaces the old per-face BFS convexity checks.
+- Numeric-validity guards retained from the fitters (fit-domain
+  constraints, not selection heuristics): cone half-angle in [2°, 85°],
+  torus `0 < r ≤ R`, sphere radius ≤ 1000× bounding-box diagonal.
+- **Sub-tolerance features**: when the fitted curvature radius is below
+  `--surface-tolerance` (3DBenchy has r=0.2mm cylinders against the 0.4mm
+  default), centroid checks are vacuous at that scale; validate by vertex
+  tolerance alone and mark the region (stage 3's chain validation shares
+  the blind spot — see TODO, face-5841 family).
+
+**(a) Whole-region ladder.** Try to explain the ENTIRE region with one
+surface, ascending DOF; the first fit that validates wins. Simplest-first
+resolves degeneracy (any plane also lies on an infinite-radius cylinder; a
+single facet is exactly a plane) without coverage heuristics.
 
 | Rung | Surface | DOF | Fit (see SURFACE_FITTING.md) |
 |------|---------|-----|------------------------------|
@@ -360,62 +373,144 @@ plane) without coverage heuristics.
 | 2 | Sphere | 4 | Algebraic LSQ + Gauss-Newton |
 | 3 | Cylinder | 5 | Normal-covariance axis + 2D circle fit + LM |
 | 4 | Cone | 6 | Two-path (pointed/truncated) + LM; the existing code fits cylinder and cone together and this rung keeps that dual-fit internally, preferring the cylinder when both validate |
-| 5 | Torus | 7 | Medial-axis tube-center + SOR axis + multi-axis LM rescue |
-| 6 | Freeform B-spline | — | See "Freeform (B-spline) fitting" below; entered only via the 2.4 split-probe protocol |
+| 5 | Torus | 7 | Medial-axis tube-center + SOR axis + LM |
 
-**Validation (per fit, decisive by Design Principle #1):**
-- Every region vertex within `--vertex-tolerance` of the surface.
-- Every face centroid within `--surface-tolerance` (chordal sagitta ≈ h²/8R
-  stays well inside for real tessellations).
-- Orientation coherence: every face normal agrees in sign with the surface
-  normal at its centroid — this determines the hypothesis `convex` flag and
-  replaces the old per-face BFS convexity checks (it is what keeps the inner
-  and outer walls of a thin pipe from ever sharing a surface; they are
-  separate regions anyway, since the wall rim makes sharp edges).
-- Numeric-validity guards retained from the fitters (these are fit-domain
-  constraints, not selection heuristics): cone half-angle in [2°, 85°],
-  torus `0 < r ≤ R`, sphere radius ≤ 1000× bounding-box diagonal.
+The **jet signature orders and prunes the rungs** (a (κ,κ) region tries
+sphere first; (0,0) tries plane; a failed prediction falls through to the
+remaining rungs — a misprediction costs one cheap failed fit, never a
+wrong region). Fits see the whole region — maximal support, which keeps
+the strip problem dead for any region that IS one surface. For large
+regions, fit on a deterministic vertex subsample, validate against all
+vertices, refit augmented with the worst offenders on a near-miss
+(bounded retries). Most regions of most models end here.
 
-**Fits see the whole region.** Initial parameter estimates use all faces
-(area-weighted normal covariance, etc.), which conditions far better than
-the abandoned pipeline's 3-face seeds — e.g. the pipe-elbow torus, which
-previously needed special strip-merge seeding because narrow cylinder strips
-had already tiled it, is now fitted once from the full tube and the (h,r)
-profile is unambiguous. For large regions, fit on a deterministic vertex
-subsample, validate against all vertices, and refit augmented with the worst
-offenders on a near-miss (bounded retries).
+**(b) Scoped fit competition** — for regions the ladder cannot explain
+(tangent chains). Seed-first multi-type competition, run INSIDE the smooth
+region; the sharp boundary cordons the arena, so competition cost is
+bounded and cross-region accidents are impossible.
 
-**Sub-tolerance features**: when the fitted curvature radius is below
-`--surface-tolerance` (3DBenchy has fitted cylinders of r=0.2mm against the
-0.4mm default), centroid checks are vacuous at that scale; classify by
-vertex tolerance alone and mark the region, since stage 3's chain validation
-has the same blind spot there (see TODO, face-5841 family).
+- **Seeds**: faces not yet claimed by any committed hypothesis, in
+  jet-interior-first order (faces whose (κ1,κ2) best match their
+  neighbors' — the descendant of curvature-guided seed ordering;
+  misordering costs only time). Claimed faces never seed.
+- **Per seed**: run the surface types' fit-and-expand from that same seed
+  (jet-pruned rung set, as in (a)) and commit the hypothesis with the
+  **largest validated area** (simplest-DOF tiebreak — a plane ties an
+  infinite-radius cylinder). Initial parameters come from the jet:
+  r ≈ 1/κ1, sphere center ≈ centroid − n̂/κ1, ruling/axis from the κ≈0
+  principal direction, torus tube centers directly from medial points —
+  which also repairs a known weakness of the medial-axis torus fitter on
+  strip meshes (its pairwise normal-line intersections must reject
+  near-parallel normal pairs, |n₁·n₂| > 0.95 — exactly what strips are
+  made of; jet κ1 needs no pairing). Expect the multi-axis LM rescue
+  ladders to become mostly dead — delete them only once the corpus proves
+  it.
+- **Expansion**: BFS from the seed; accept a face when the current fit
+  validates it (vertex tolerance + orientation coherence). Jet-informed
+  candidate ordering grows the clean core first, so refits always run
+  from well-conditioned support and junction rows arrive last, when the
+  model is already determined.
+- **Claims**: expansion may grow through faces claimed by earlier
+  hypotheses — junction-row faces whose vertices genuinely lie on two
+  surfaces end up claimed by both, which is the true ambiguity; 2.4
+  resolves multi-claims by best fit.
+- **Soundness** (the sub-region lemma, under exactness): an accidental fit
+  is by definition supported on a *sub-region*; the true surface fitted
+  from an interior seed expands — with vertex tolerance as the arbiter —
+  to its entire true extent. When all types compete from the SAME seed,
+  largest-validated-area selects the true surface. Cross-surface leakage
+  is bounded to genuine junction rows: two distinct analytic surfaces
+  agreeing to vertex tolerance over an extended patch would be
+  near-identical. (The abandoned BFS pipeline compared hypotheses born
+  from *different* seeds at *different* times — that is why commit order
+  mattered there and does not matter here.)
 
-**Output**: exactly one hypothesis per region, appended to the typed vectors
-in `Stage2Output` (`planar_hypotheses`, `conical_hypotheses` — cylinders are
-cones with `half_angle == 0` — `spherical_hypotheses`,
-`toroidal_hypotheses`, `bspline_hypotheses`). Hypothesis structs keep their
-existing fields: type-specific parameters, `faces`, `vertices`, `convex`,
-and error statistics (`error_max`, `centroid_error_max`).
+**(c) Growth & model promotion — the degenerate-limit growth model.**
+Strip-tessellated curved sweeps (the pipe-elbow bend; extrusions) defeat
+seed-local fits: a cylinder fit claims one strip and stalls, because the
+neighboring strip sits ~R·Δφ²/2 off the fit — hundreds to thousands of
+times vertex tolerance. The cure is growing with a model family whose
+degenerate cases are *regular interior points* of the parameter space:
+
+- Parameterize the bent tube by a point on the spine, spine direction,
+  tube radius `r`, spine **curvature** `k = 1/R`, and a bending-plane
+  azimuth — `k = 0` IS the cylinder, no infinity anywhere (the
+  Pratt/Taubin move that makes lines a regular case of circles).
+- **Promotion trigger — jet-informed, not blanket**: when growth stalls,
+  read the stalled frontier's jet. Tube-continuation signature (κ1 ≈ the
+  claimed tube's 1/r, small nonzero κ2) → attempt the promotion refit,
+  seeding `k` from a circle/line fit through the **medial points** of the
+  claimed support. Incompatible signature ((0,0) plane, (κ,κ) sphere) →
+  stop; don't spend the refit. This replaces both the old 10×
+  `REFIT_SKIP_MULTIPLIER` window (far too tight for strips) and blanket
+  chordal-proximity refitting (too expensive).
+- **Regularization**: while support spans one strip, `k` is
+  unidentifiable — ridge toward `k = 0`, relaxing as support grows.
+  Exactness bounds the over-flexibility risk: flexibility cannot absorb
+  faces of a genuinely different surface, because vertex tolerance
+  remains the acceptance bar.
+- Once enough arc is claimed, hand off to the full torus fitter and
+  validate normally. **Model reduction at commit**: collapse `k ≈ 0`
+  (spine deviation from straight < vertex tolerance over the claimed
+  extent) back to a cylinder.
+- Scope guard: a bent-tube-only generalization could lock onto a sphere's
+  latitude band and stall (the dual pathology). The sphere rung competing
+  from the same seed covers spheres; if band-locking is ever observed
+  *winning* a commit, the answer is widening the promotion family (the
+  SOR-profile / Dupin-cyclide direction in SURFACE_FITTING.md), never a
+  mask.
+
+**(d) Model-conditioned jet bands** (effort gates only). With a hypothesis
+in hand, the model PREDICTS each candidate face's (κ1,κ2) — *including
+gradients*: a fitted cone predicts (cos α/ρ(h), 0) with ρ varying along
+the axis, so the gradient class that broke the fit-free classifier is a
+non-issue against a model. Generous bands (≈[⅓×, 3×] of predicted — jet
+interiors are few-% accurate, junction rows off by up to ~half) may skip
+hopeless refit attempts and order candidates. NEVER to reject a face that
+vertex-validates. (This is the old pipeline's one genuinely effective
+consistency heuristic — the |n·axis| = sin α normal-axis check — reborn
+in curvature space with a model to condition on.)
+
+**(e) Freeform leftovers.** Connected components of a smooth region left
+unclaimed after competition (nothing analytic explains them) go to the
+freeform rung below. Before fitting, **dissolve accidental analytic
+islands**: a committed analytic hypothesis that is small (≲16 faces) and
+enclosed by the leftover component is provisionally dissolved into it; if
+the B-spline fit then validates the whole component *including* the
+island's vertices, the island stays freeform, else it is restored. This is
+the old NURBS gathering's confetti-absorption guard reborn with a
+fit-validated backstop instead of a chordal one. Components below 4 faces,
+and anything freeform fitting rejects at every grid density, terminally
+degrade to per-facet planes — total coverage can never fail.
+
+**Output**: one hypothesis per committed structure, appended to the typed
+vectors in `Stage2Output` (`planar_hypotheses`, `conical_hypotheses` —
+cylinders are cones with `half_angle == 0` — `spherical_hypotheses`,
+`toroidal_hypotheses`, `bspline_hypotheses`). Hypothesis structs keep
+their existing fields: type-specific parameters, `faces`, `vertices`,
+`convex`, and error statistics (`error_max`, `centroid_error_max`).
 
 ##### Freeform (B-spline) fitting
 
-The final rung, reached only after the 2.4 split-probe protocol has ruled
-out "this region is really several analytic surfaces with a missed seam".
-The fitting machinery carries over intact from the previous architecture
+Entered for the unclaimed leftover components of 2.3(e) — parts of a
+smooth region that neither the whole-region ladder nor competition
+explains analytically, after the accidental-island dissolution guard. The
+fitting machinery carries over intact from the previous architecture
 (implemented 2026-07-10 through 2026-07-15, `src/stage2/bspline.rs`); what
 is deleted is its old region-*gathering* front end (see Abandoned
-Approaches) — the partition now supplies the region. A planar margin of a
-freeform surface is curvature-continuous with it and lands in the same
-region automatically, which is what the old "tangent-plane merge" step
-existed to fix.
+Approaches) — the smooth-region partition and competition leftovers now
+supply the input. A planar margin of a freeform surface is smoothly
+connected to it and lands in the same smooth region automatically, which
+is what the old "tangent-plane merge" step existed to fix (competition's
+plane rung may claim such a margin; the island-dissolution guard decides,
+fit-validated, whether it rejoins the freeform patch).
 
-**Algorithm (`deduce_bspline_surfaces`, per region):**
-1. Regions planar to fitting exactness (10× vertex tolerance, NaN-guarded:
-   the area-weighted normal of a closed region cancels to zero) become a
-   multi-face planar hypothesis instead — a plane is preferable to a
-   B-spline that overfits noise. Regions below 4 faces are not fitted (the
-   2.4 fallback ladder handles them).
+**Algorithm (`deduce_bspline_surfaces`, per component):**
+1. Components planar to fitting exactness (10× vertex tolerance,
+   NaN-guarded: the area-weighted normal of a closed region cancels to
+   zero) become a multi-face planar hypothesis instead — a plane is
+   preferable to a B-spline that overfits noise. Components below 4 faces
+   are not fitted (they degrade to per-facet planes).
 2. **Parameterize** the region onto the unit square: outer boundary loop pinned by cumulative chord length, 4 corners chosen where the adjacent *outside* region changes (arc-length-quartile fallback when the boundary offers ≠ 4 transitions), interior and hole-loop vertices solved with Floater mean-value weights by Gauss–Seidel (convergence enforced — an unconverged map voids Floater's bijectivity guarantee). Quads are split along the v0–v2 diagonal for weighting and sampling. **Closed bands** (a second boundary loop of extent ≥ half the largest — a small hole floats freely, a comparable second loop means the region wraps, e.g. the wall of a closed prism) are first **seam-cut** into a disk along a shortest vertex path between the two loops (`cut_region_seam`): the path follows FACE perimeter edges only (a path along a quad's split diagonal would tear that quad across the cut), its vertices are duplicated, right-side triangle fans switch to the clones, and the boundary re-chains into one loop whose two cut copies carry a `CUT_OUTSIDE` id — corner detection then lands the 4 corners exactly at the cut endpoints. The clones keep their originals' positions, so the two parameter-extreme grid columns of the around-the-band axis carry identical data (the periodic fit drops the closing one; the clamped fallback fit keeps both and closes exactly through the shared column).
 3. **Resample a grid** through the flattened triangulation (uniform-bin point location; numeric misses near corner slivers are clamped to the nearest triangle within one bin — feeding them to the hole membrane extrapolates garbage). Grid stations per axis are the boundary vertices' own pinned positions (stations *between* the vertices of a coarse profile sample chord interiors and pin the fit to the chordal prism — a 1.7% volume deficit on the arch, the mesh's own chordal error), subdivided up to an interior-density target of ~1.5·√(region vertices) (a flat margin tessellates coarsely: hill_with_hole has 8-vertex sides on a 946-vertex region). Station spacing is **conditioned in 3D-arc measure** (`axis_stations`): chord-length-parametrized C2 interpolation amplifies data noise by roughly the square of the adjacent knot-spacing ratio, so a boundary mixing fine facets with one long straight chord (the xyz-cube letter walls: a 21× jump) turned a 0.02 mm-flat ribbon into control points 150 mm off the part while passing through every grid node exactly. Near-coincident stations (< 0.25× the median arc gap — the near-singular end of the same conditioning problem) are merged, and segments are subdivided to a fixpoint where no piece exceeds 2× either neighbor segment's pieces, uniformly in arc rather than UV (the Floater map compresses high-curvature areas). Surviving boundary-vertex stations keep their exact pinned positions; new substations land only inside long segments, where a long boundary chord means the mesh itself is flat and mid-segment samples lie on the true surface. Genuine hole interiors are filled with a Laplacian membrane so the fitter sees smooth data. The grid is flipped if needed so d1u×d1v matches the mesh's outward normals: B-spline faces are always `concave = false`.
 4. **Fit**: `GeomAPI_PointsToBSplineSurface::Interpolate` (chord-length, C2 cubic) first — the grid is sampled from an exact-on-surface mesh, and OCCT's least-squares approximator reports `IsDone` while overshooting its `Tol3D` by millimeters near strongly curved patch boundaries. The approximator (tol = surface/8, then surface/2) remains as fallback, and grid density retries at caps 121/181/241. **Closed bands fit periodically**: `Interpolate(…, thePeriodic=true)` with the around-the-band axis as the array's FIRST index (transposed when that axis is v; the outward-orientation flip then reverses the second index and accounts for the transpose's normal negation) and the closing station omitted — OCCT appends the wrap-around copy of the first row itself and calls `SetUPeriodic()`. The periodic path is interpolation-only (the approximator binding carries no periodic flag). The resulting closure is C1, not C2 (position and D1 match across the wrap to ~1e-14; D2 jumps — measured), which nothing downstream requires. The fitted around-axis knots are then rescaled to exactly [0, 2π] via `SetUKnots` — an exact affine reparameterization (~1e-15 drift, measured) — because stage 3.4's wrapped-face machinery hard-codes that period. The U=0 iso is then exactly the cut path (chord-length parameters start at the first supplied row), a free seam gauge.
@@ -437,67 +532,56 @@ The `BSplineHypothesis` owns the fitted `Geom_BSplineSurface` (stage 3 reuses th
 - *What NURBS will not stress — don't build for it:* seams, winding loops, degenerate pole edges, and edge splitting apply only to periodic/wrapped faces; non-periodic B-spline patches never take those paths.
 - *Test models*: `tests/nurbs/` — 8 exact-reference STL/STEP pairs from `gen-test-models` (see tests/nurbs/README.md for the difficulty ladder and the strip-mesh rationale: ruled/extruded models ship full-length strips with NO interior vertices along the ruling, exactly what real CAD exporters emit).
 
-#### 2.4 Repair loop
+#### 2.4 Resolution & repair
 
-Runs after initial classification; fixes the two 2.1 failure modes
-(over-segmentation and missed seams) plus row-level boundary error, by
-validation-driven local operations. Iterate the three operations in a
-deterministic order (by region index; smallest region first for merges) to a
-fixpoint, bounded rounds.
+Turns 2.3's claims into a strict, connected, validated partition. All
+operations are fit-validated and deterministic (fixed iteration order —
+by region/hypothesis index, smallest region first for merges — bounded
+rounds).
 
-**Merge** — repairs over-segmentation (coarse-cone banding; any residual
-same-surface fragmentation): merge region S into an adjacent larger region T
-when every vertex of S lies within `--vertex-tolerance` of T's fitted
-surface and every centroid of S within `--surface-tolerance`; refit the
-union, revalidate, keep only if valid. This is the abandoned absorb pass's
-*tight* rule reborn with a principled criterion (vertex tolerance, at which
-"on the same surface" is decisive — never the chordal slop of the abandoned
-loose rule, which put absorbed facets up to 0.4mm off their claimed plane
-and caused 794 BRepCheck failures on planar-only 3DBenchy). It also folds in
-chord-degenerate narrow strips (a single-facet-wide band of a coarse
-cylinder validates rung-1 as its own facet plane, but its vertices lie
-exactly on the neighbor cylinder, so merge claims it).
+**Claim resolution** — the boundary placement at tangent junctions: faces
+claimed by multiple hypotheses (junction rows) go to the claimant whose
+surface fits their vertices best, requiring a **2× margin** to prefer a
+different side than the larger claimant (a true junction face fits both
+sides equally — the margin prevents arbitrary flapping; residual ties
+break to the larger claimant, then lower hypothesis index). Exact vertex
+distances, no curvature involved.
 
-**Split** — repairs missed seams (a region that fails every rung is
-presumed to be several surfaces): re-run the 2.1 curvature-jump classifier
-on the region's internal edges at progressively lower thresholds (J/2, J/4,
-…) until the region separates; classify the components. Acceptance
-preference, in order:
-1. A split whose components ALL classify analytically → accept (this is how
-   a fillet↔cylinder junction with similar radii — below the global J — is
-   recovered).
-2. Otherwise, try the freeform rung on the *whole* region (a genuine
-   freeform surface has no internal jump structure worth splitting on; this
-   ordering also prevents a smooth-but-merged analytic pair from
-   reconstructing as one plausible-but-wrong freeform patch that would erase
-   a reference edge).
-3. Otherwise accept the best split and recurse on its components. Terminal
-   case: a single facet always classifies as a plane, so this ladder cannot
-   fail to terminate — the worst case degrades to per-facet planes (exactly
-   the planar-only mode that runs 3DBenchy end-to-end), never to a
-   conversion failure.
+**Boundary relabel** (±1-row polish; port of the old
+`refine_boundary_assignments`): after resolution, walk region-boundary
+faces; move a face when an adjacent region's surface fits its vertices at
+least 2× better; iterate to a fixpoint (≤ 10 rounds; boundaries only move
+locally), then rebuild affected regions' vertex lists. Region *geometry*
+is not refitted — only the membership map changes.
 
-**Boundary relabel** — repairs ±1-row boundary error (the 2.1 classifier and
-tessellation can place a tangent boundary one facet row off the true
-junction, which would shift stage 3's reconstructed boundary vertices off
-the feature curves): walk faces with a neighbor in a different region;
-compute the face's max vertex distance to its own surface and to each
-adjacent region's surface; move the face when an adjacent surface fits at
-least **2× better** (margin prevents oscillation for true junction faces,
-whose vertices lie on both surfaces equally). Iterate to a fixpoint (≤ 10
-rounds; boundaries only move locally), then rebuild affected regions'
-vertex lists. Region *geometry* is not refitted — the fits were validated
-against the region interior; only the membership map changes. This is the
-previous architecture's `refine_boundary_assignments` promoted from a
-fix-up pass to a core mechanism. After relabeling, re-split any region that
-became disconnected (each fragment keeps the shared fitted geometry as its
-own region — connectivity is the invariant; identical geometry on two
-non-adjacent regions is legal).
+**Merge**: absorb region S into an adjacent larger region T when every
+vertex of S lies within `--vertex-tolerance` of T's fitted surface and
+every centroid of S within `--surface-tolerance`; refit the union,
+revalidate, keep only if valid. Eats junction-circle singletons (faces
+whose vertices sit ON a tangent seam — genuinely ambiguous, claimable by
+either side), chord-degenerate slivers (a single-facet-wide band of a
+coarse cylinder validates as its own facet plane, but its vertices lie
+exactly on the neighbor cylinder), and residual same-surface fragments.
+This is the abandoned absorb pass's *tight* rule reborn with a principled
+criterion — vertex tolerance, at which "on the same surface" is decisive;
+never the chordal slop of the abandoned loose rule (0.4mm slop, 794
+BRepCheck failures on planar-only 3DBenchy). B-spline surfaces are never
+merge TARGETS for faces outside their fitted region: a fit vouches only
+for its data (the island-dissolution guard in 2.3(e) is the fit-validated
+way into a freeform patch).
 
-**Post-2.4 invariants (hard assertions before stage 3):**
-- Every mesh face belongs to exactly one region (total coverage).
-- Every region is mesh-connected.
-- Every region's surface validates the region's own vertices/centroids.
+**Connectivity re-split + invariants** (hard assertions before stage 3):
+resolution and relabeling can disconnect a region — re-split into
+mesh-connected components (identical fitted geometry on two non-adjacent
+regions is legal). Then assert: every mesh face belongs to exactly one
+region (total coverage); every region is mesh-connected; every region's
+surface validates the region's own vertices/centroids.
+
+(The old standalone "split repair" is gone: under-segmentation cannot
+survive 2.3 — competition decomposes within smooth regions — and a region
+nothing explains degrades to per-facet planes via 2.3(e). There is no
+mechanism left that re-runs a curvature classifier at lowered thresholds;
+that mechanism died with the classifier.)
 
 #### 2.5 Selected surfaces & validation
 
@@ -521,17 +605,122 @@ non-adjacent regions is legal).
 
 - `--stage` sub-stages: **2.1** edge classification, **2.2** region
   extraction, **2.3** classification, **2.4** repair, **2.5** selection.
-- `--surface-types=<list>` (new) restricts the classification ladder
-  (default: all). `--surface-types=planar` is **exact planar-only mode**:
-  curved regions fail the one-rung ladder and cascade through split repair
-  to per-facet planes — the mode that converts 3DBenchy with volume matching
-  the official 15.55 cm³ — now without any chordal-slop absorb by
-  construction.
+- `--surface-types=<list>` (new) restricts the ladder and competition rung
+  set (default: all). `--surface-types=planar` is **exact planar-only
+  mode**: curved smooth regions fail the one-rung ladder, competition's
+  plane rung claims only coplanar sets, and the rest degrades to per-facet
+  planes via the 2.3(e) terminal fallback — the mode that converts
+  3DBenchy with volume matching the official 15.55 cm³ — without any
+  chordal-slop absorb by construction.
 - `--skip-stage` is retired with the old stage numbering; its
   type-skipping role is `--surface-types`, and its absorb/refinement gates
   have no equivalent (absorb is gone; repair is core, and debugging-level
   disabling of repair operations can be a `-Z`-style debug option if ever
   needed).
+
+#### Implementation hints (read before writing code)
+
+Function-level guidance for whoever implements the pivot, written against
+the code state at commit ce85dd0 + this doc change. The transition is
+one-shot: delete, don't gate.
+
+**Starting inventory:**
+- `src/stage2/edges.rs`: sharp rule + the retired jump classifier
+  (hysteresis fixpoint, `FIRE_RATIO`/`UNFIRE_RATIO`) + the jet estimator
+  `jet_curvature(origin, z_hint, points) -> Option<(f64, f64)>` with three
+  unit tests worth keeping (`jet_recovers_quadratic`,
+  `jet_skinny_cylinder_strip`, `jet_anchors_own_surface_at_junction`).
+- `src/stage2/regions.rs`: union-find extraction — keep as-is;
+  `is_boundary` becomes sharp-only automatically once `EdgeClass::Jump` is
+  deleted.
+- `src/stage2/mod.rs`: new `stage2()` at the 2.2 frontier + the nerfed
+  `stage2_bfs_pipeline` (uncalled) + `Segmentation` on `Stage2Output`.
+- `src/bin/dump_regions.rs`: the main diagnostic (modes: summary,
+  singletons, adj, probe, geom, leaks, rdesc, jet) — keep it building at
+  every step; extend it to dump the `JetField` and per-hypothesis claims.
+- `tests/stage2_segmentation.rs`: 14 tests whose region-count expectations
+  are pinned to the JUMP classifier's output — **re-pin to smooth-region
+  counts by measuring with dump_regions, do not guess** (tangent chains
+  merge: capsule 1 smooth region, nosecone 2, pipe-elbow tube 1,
+  rounded_cube shell 1; sharp-edged models unchanged: cube 6,
+  block_with_hole 7, …).
+
+**edges.rs surgery (roadmap step 1):** delete `EdgeClass::Jump`, the
+fixpoint/hysteresis loop, and its constants; keep the sharp rule and the
+single-pass jet with sharp-crease exclusion. EXTEND `jet_curvature` to
+also return the Hessian's eigenvectors lifted to 3D (they are computed
+internally and currently discarded) plus the PCA normal; derive the medial
+point `centroid + n̂/κ1` when `|κ1|` clears the noise floor. New output
+struct `JetField { k1, k2, dir1, normal, medial: Option<[f64;3]> }` per
+face, stored on `Segmentation`.
+
+**Fitters to reuse** (widen visibility as needed — most are `pub(super)`
+or private): `fit_plane` (planar.rs), `fit_sphere` (spherical.rs),
+`fit_cylinder` (cylindrical.rs), `fit_cone`/`fit_cone_primary`/
+`fit_cone_normal_line_rescue` (conical.rs), `fit_torus`/`fit_torus_inner`/
+`fit_torus_sor`/`fit_torus_axes_rescue` (toroidal.rs), and the
+`vertex_to_{cylinder,sphere,cone,torus}_distance` functions for
+validation. With jet initializers the rescue/multi-axis paths should
+become dead — delete them only after the corpus proves it. The LM
+recentering inside the fitters (vertices recentered about their centroid)
+is load-bearing for conditioning; keep it.
+
+**Determinism rules (hard-won — violating them makes fits vary run to
+run):** never iterate a `HashSet`/`HashMap` directly — sort first
+(floating-point non-associativity changes fits); break all ties by
+face/hypothesis index; subsample deterministically (stride, not random).
+
+**Competition mechanics (2.3(b))**: per-face claims as a small vec of
+hypothesis ids (multi-claim only occurs on junction rows — keep the
+common single-claim case allocation-free); a committed hypothesis records
+{type, params, sorted face list, error stats}. Seed loop skips any face
+with a claim. Expansion is plain BFS with the vertex-tolerance test;
+candidate ordering and refit gating may consult the jet (model-conditioned
+bands, §2.3(d)) but the accept/reject decision is the vertex test alone.
+
+**Stage-3 contract**: `SelectedSurface` + the typed hypothesis vectors are
+unchanged — stage 3 needs no edits. Before deleting the `MeshFace`
+hypothesis index fields in the deletion pass, grep `src/stage3.rs` for
+reads of `planar_hypothesis`/`conical_hypothesis`/`spherical_hypothesis`
+(`build_face_to_surface_map` should key off `SelectedSurface.faces`;
+verify before deleting).
+
+**Deletion pass checklist** (roadmap step 7): `bfs.rs`;
+`stage2_bfs_pipeline` + `compute_seed_scores` + `BfsConfig` masks; the
+seeding/BFS entry points in the five fitter files; `select_surfaces`,
+`absorb_redundant_surfaces`, `prune_unselected_hypotheses` (port
+`refine_boundary_assignments` into repair.rs FIRST); `--skip-stage`; the
+`MeshFace` hypothesis fields; SURFACE_FITTING.md's seeding/BFS/acceptance
+sections get pointers to Abandoned Approaches.
+
+**Cost guardrails**: watch pill_fine and rounded_cube_fine stage-2 wall
+time (the old pipeline's pathologies were 429s/479s there when masks were
+off; whole-region ladder + one competition per region should land well
+under the old masked baseline of 1.2s/4.0s) and count promotion-refit
+attempts at `-vvv`.
+
+**Acceptance narratives (what "working" looks like, per model):**
+- *nosecone* (smooth regions: cone+sphere chain, base): ladder fails on
+  the chain; a sphere-interior seed claims the 644-face sphere, a
+  cone-interior seed claims the cone (fitted from large support — its
+  curvature gradient is irrelevant to fitting); the junction row is
+  multi-claimed and resolved; base is ladder-planar. 4 surfaces.
+- *pipe_elbow* (tube surface one smooth region): ladder fails; cylinder
+  seeds claim the straight pipes and stall at the bend; jet-triggered
+  promotion discovers k=1/R and the bend commits as a torus;
+  tube-cross-section junction rows resolve. Torus + 2 cylinders + caps —
+  no strip machinery anywhere.
+- *rounded_cube* (outer shell one smooth region): competition decomposes
+  it into 6 planes + 12 fillet cylinders + 8 corner spheres.
+- *tests/nurbs*: leftovers → freeform; exercise the island-dissolution
+  guard (accidental cylinder ribbons on the saddle).
+
+**Viz**: 2.1 = sharp `LineOverlay` (red) only — the jump/orange overlay
+dies with the classifier; 2.2 = per-region `FaceHighlight` palette; add
+2.3 pauses per committed hypothesis reusing the `FaceHighlight` +
+type-overlay patterns from `bfs.rs`'s viz block (preserve the per-type
+`viz_overlays`/`viz_fit_description` functions as free functions before
+deleting `bfs.rs`).
 
 ---
 
@@ -761,83 +950,60 @@ Write constructed solid(s) to a STEP file.
 
 ## Rewrite Roadmap
 
-The jump from the BFS pipeline to partition-then-classify is immediate — no
-compatibility flag, no parallel pipelines, and **no reconciliation of old
-and new stage numbers**. The moment 2.1/2.2 land, the new numbering owns
-`--stage` and `--viz-stages`, and the old BFS pipeline is disconnected from
-`stage2()` — nerfed in place (its code stays in-tree as reference until the
-deletion pass, but nothing calls it). `stage2()` runs exactly the new
-sub-stages implemented so far and stops at that frontier with no selected
-surfaces, so stages 3/4 and most integration tests stay red until 2.3–2.5
-land. Models are re-enabled as they pass, easiest first. Suggested order:
+**One-shot from the current code state** (commit ce85dd0: jet-based
+2.1/2.2 with the retired jump classifier still in the tree). No
+compatibility path, no threshold gating — the jump machinery is deleted in
+step 1, and the old-BFS-era integration tests stay red until step 7
+re-pins them. Function-level guidance lives in the stage-2 section's
+"Implementation hints" (after the CLI notes), including per-model success
+criteria under "Acceptance narratives".
 
-1. **Stage 2.1 + 2.2** (edge classifier, region extraction) — **IMPLEMENTED
-   2026-07-18** (`src/stage2/edges.rs` + `src/stage2/regions.rs`, wired into
-   `stage2()` with the nerfed `stage2_bfs_pipeline` disconnected;
-   `--stage=2.1/2.2` stop points, `--viz-stages=2.1,2.2` overlays as
-   specified below, `tests/stage2_segmentation.rs` green on 7 models):
-   **Viz** (primitives verified against viz.rs):
-   boundary edges render as `LineOverlay` segments — arbitrary colored 3D
-   lines with a `no_depth_test` option for X-ray inspection — color-coded
-   by class (sharp vs curvature-jump); regions render as one
-   `FaceHighlight` per region with a deterministic palette (golden-ratio
-   hue stepping on region index). `EdgeHighlight` is NOT the right
-   primitive — it outlines all edges of listed *faces*, not individual mesh
-   edges — so it stays unpopulated and remains TODO.md's delete candidate.
-   `--viz-stages=2.1,2.2` needs no parser changes (`parse_stage` accepts
-   any major.minor): 2.1 pauses once showing classified edges over the
-   mesh, 2.2 pauses once showing colored regions with the boundary overlay
-   (`--viz-stages-level` has no finer granularity to offer here; a
-   later refinement could pause per classification round at level 2).
-   **Report-only partition diagnostics: NOT yet done** (region counts and
-   edge-class counts print at `-v`, but the `--compare` boundary-precision /
-   missed-seam checks of §2.2 are unimplemented).
-   Calibrate `J` and `κ_floor` across the corpus by inspecting partitions
-   (viz + diagnostics) against reference STEP face structure *before* any
-   fitting exists. This step is also the decision gate for the fallback
-   design: if no calibration produces reliable partitions on the corpus,
-   switch to
-   [seed-first multi-type competition](#contingency-seed-first-multi-type-competition)
-   rather than building 2.3/2.4 on bad partitions.
-2. **Stage 2.3 analytic ladder**: new `src/stage2/classify.rs` calling the
-   existing fitters (`planar.rs`, `cylindrical.rs`, `conical.rs`,
-   `spherical.rs`, `toroidal.rs` keep their fitting/validation functions;
-   their seeding/BFS entry points go). Terminal per-facet-plane fallback
-   from day one, so every model produces output immediately.
-3. **Stage 2.4 repair**: `src/stage2/repair.rs` — merge, split (reusing the
-   2.1 classifier with a threshold parameter), and boundary relabel (port of
-   `refine_boundary_assignments`). Connectivity re-split + the three hard
-   invariants.
-4. **Freeform rung rewiring**: `bspline.rs` keeps parameterization → grid →
-   fit → validate; its gathering front end is deleted; hook it behind the
-   2.4 split-probe protocol.
-5. **Deletion pass**: `bfs.rs` (generation loop, seed machinery, masks,
-   acceptance tests), greedy selection, `absorb_redundant_surfaces`, the
-   `MeshFace` hypothesis fields, `--skip-stage`. Update SURFACE_FITTING.md's
-   seeding/BFS/acceptance sections with pointers to Abandoned Approaches.
-6. **Test migration**: stage-2 integration tests re-target region counts and
-   classification results (end-state expectations — cube = 6 planar,
-   block_with_hole = 6 planar + 1 cylindrical, etc. — are unchanged);
-   re-enable corpus models in roughly this order: pure-planar ccad models →
-   analytic primitives → fillet/tangent models (pill, rounded cubes,
-   stepped_block_toroidal) → nurbs suite → nosecone/nosecone_truncated →
-   pipe_elbow → 3DBenchy.
+1. **Demote the jet, delete the jump** (`edges.rs`): sharp-only
+   classification; one-pass `JetField` (κ1, κ2, principal directions,
+   medial points) on `Segmentation`; keep the three jet unit tests; re-pin
+   `tests/stage2_segmentation.rs` to smooth-region counts (measure with
+   `dump_regions`, don't guess); update `dump_regions` and viz (the jump
+   orange overlay dies).
+2. **Stage 2.3(a) whole-region ladder** (`classify.rs`): existing fitters,
+   jet-pruned rung order, terminal per-facet-plane fallback from day one —
+   this un-blocks stages 3/4 end-to-end and re-arms full-pipeline
+   `--compare` on every sharp-edged model immediately.
+3. **Stage 2.4 resolution/merge/relabel + invariants** (`repair.rs`) —
+   built BEFORE competition so single-surface models flow end-to-end with
+   junction singletons absorbed; port `refine_boundary_assignments`.
+4. **Stage 2.3(b) scoped competition** (`compete.rs`): seeds, per-seed
+   rung competition, claims, resolution wiring. Acceptance: nosecone → 4
+   surfaces; rounded_cube shell decomposes into 6+12+8; stepped_block.
+5. **Stage 2.3(c) promotion** (bent-tube `k = 1/R` + jet triggers +
+   medial-point spine seeding). Acceptance: pipe_elbow → torus + 2
+   cylinders with no strip machinery.
+6. **Freeform rewiring** (`bspline.rs`: leftover components +
+   island-dissolution guard). Acceptance: tests/nurbs suite green.
+7. **Deletion pass + corpus re-enable**: `bfs.rs`, `stage2_bfs_pipeline`,
+   old selection/absorb/prune, `--skip-stage`, `MeshFace` hypothesis
+   fields; SURFACE_FITTING.md pointers; re-pin stage-2/3/4 integration
+   tests (final selection counts are unchanged from the old expectations —
+   cube = 6 planar, block_with_hole = 6 planar + 1 cylindrical, …).
+   Re-enable order: sharp-edged ccad models → analytic primitives →
+   fillet/tangent models (pill, rounded cubes, stepped_block_toroidal) →
+   nurbs suite → nosecone/nosecone_truncated → pipe_elbow → 3DBenchy.
 
-Expected wins to verify along the way: pipe_elbow's torus recovered without
-strip-merge seeding; nosecone with no absorb pass; stepped_block's
-single-rectangle walls as real planar regions; stage-2 runtime on large
-models collapsing (each region fit O(1) times — no more tiling large spheres
-with thousands of band trials; full stage 2 on 3DBenchy was ~15 min under
-BFS vs ~3 s planar-only).
+Expected wins to verify along the way: pipe_elbow's torus without
+strip-merge seeding; nosecone with no absorb pass; stage-2 runtime on
+large models collapsing (whole-region fits + one competition per smooth
+region; full stage 2 on 3DBenchy was ~15 min under BFS vs ~3 s
+planar-only).
 
 ---
 
-## Stage-2 Retrospective (2026-07-19, state at this commit)
+## Stage-2 Retrospective (2026-07-19, plus the 2026-07-20 Resolution)
 
 Written for whoever picks this up next. Honest account of what the
-partition-then-classify rewrite has achieved so far, what it cost, and
-whether it looks like the right bet — including vs. the
-[Contingency](#contingency-seed-first-multi-type-competition).
+partition-then-classify rewrite achieved, what it cost, and whether it
+looked like the right bet — including vs. the then-Contingency
+(seed-first competition, since promoted into §2.3 by the Resolution at
+the end of this section). The body below is the 2026-07-19 state, kept
+as history; **the Resolution supersedes its recommendations.**
 
 ### What exists and works
 
@@ -929,7 +1095,7 @@ loop, invariants, and 2.5 output contract carry over unchanged, and the
 degenerate-limit growth model fixes its strip problem); do NOT spend
 more effort tuning the edge classifier first.
 
-### What to build next (in order)
+### What to build next (in order) — SUPERSEDED by the Resolution below
 
 1. **Stage 2.3 classification ladder** (`src/stage2/classify.rs`), plane
    rung first — it enables the coplanar merge and immediately validates
@@ -955,117 +1121,81 @@ more effort tuning the edge classifier first.
    `--viz-stages=2.1,2.2` shows sharp (red) / jump (orange) edges and
    region colors.
 
----
+### Resolution (2026-07-20): pivot decided
 
-## Contingency: Seed-First Multi-Type Competition
+The "build 2.3/2.4 next as the make-or-break test" recommendation above
+was overtaken by evidence. Direct measurement with `dump_regions` on the
+corpus:
 
-Not abandoned — considered (2026-07-17) and not chosen. This is the fallback
-design if stage 2.1's curvature-jump calibration proves unreliable in
-practice (coarse fillets, f32 quantization noise defeating `J`/`κ_floor`
-tuning). Recorded so the option and its rationale don't get lost.
+- **nosecone_medium**: the sphere is ONE clean 644-face region reading
+  σ = (0.080, 0.080) = 1/12.5 — and the cone is **129 fragments whose
+  descriptors show a clean gradient**: (0.00, 0.00) at the wide base →
+  (0.02, 0) mid-cone → (0.08, 0) near the tip. The estimator measures
+  correctly — κ_max = 1/ρ(h) genuinely varies along a cone — and a
+  threshold on first differences of curvature fires on real gradients. A
+  false-positive *class*, not a bug.
+- The same statistic must stay blind at 0.35 to those gradient steps
+  while firing at 0.33 for pipe_elbow's genuine torus↔cylinder junction:
+  **the two classes overlap in the decision statistic. No threshold
+  exists**; calibration cannot fix a statistic that does not separate the
+  classes.
+- The hysteresis fixpoint hits its 10-round cap (oscillates) on every
+  fragmenting model (nosecone 130 regions, cone_truncated 14,
+  filleted_pipe 94 regions / 670 jump edges); it converges only where
+  jump = 0.
+- Five estimator variants, each fixing one corpus class and breaking
+  another, is the signature of a signal that is not in the local data at
+  junction-row scale. Meanwhile everything decided by SHARP edges alone
+  was exact — one round, zero new knobs.
 
-**The design**: keep fit-driven BFS growth, but invert the old pipeline's
-loops. Iterate over seed faces in curvature-score order (interior faces
-first — the existing seed-ordering heuristics); skip faces already claimed
-by a committed hypothesis. For each seed, run *every* surface type's
-fit-and-expand from that same seed, and commit the hypothesis with the
-largest supported area (with a simplest-DOF tiebreak). Expansion may grow
-through already-claimed faces — junction faces whose vertices genuinely lie
-on two surfaces end up claimed by both — but claimed faces never seed. After
-all faces are claimed, resolve overlaps into a strict partition (per-face
-best-fit among claimants, the boundary-relabel rule) and re-split any
-disconnected remnant.
-
-**Why it is sound, not heuristic** (under the exactness assumption): an
-accidental fit is by definition supported on a *sub-region* — the true
-surface fitted from an interior seed expands, with vertex tolerance as the
-arbiter, to the entire region, so when all types compete on the *same* seed,
-largest-area-wins selects the true surface. The old pipeline compared
-hypotheses born from different seeds at different times, which is why commit
-order mattered. Cross-region leakage is bounded: two distinct analytic
-surfaces agreeing to vertex tolerance over an extended patch would be
-near-identical, so overlap is confined to genuine junction rows.
-
-**What it fixes without any masks or ordering**: fragmentation (an
-interior-seeded surface covers its whole region regardless of prior
-commits), stage ordering (per-seed competition replaces it), and the
-accidental-fit tiling cost (each region pays ~5 bounded expansions once,
-not per-face — the large_sphere pathology disappears without masking). Its
-distinctive strength over partition-then-classify: **boundary placement
-never depends on discrete curvature estimates** — the fit itself finds the
-boundary from exact vertex distances (the capsule's equal-radius
-sphere↔cylinder junction needs no two-sided descriptor here), and curvature
-ordering errors cost only efficiency, never correctness.
-
-**Why it was not chosen**:
-1. Small-seed fit conditioning is unsolved — fits still start from 1-rings/
-   fans, so the pipe-elbow torus (strip tessellation; a 1-ring spans no
-   major arc) again decomposes into cylinder strips. The degenerate-limit
-   growth model below repairs this, at the cost of the machinery it
-   describes. Partition-first instead fits the whole region at once and
-   needs none of it.
-2. Freeform stays second-class: a B-spline patch cannot compete from a seed
-   (parameterization needs a bounded region), so freeform surfaces get
-   tiled by their largest accidental analytic patches and the old
-   leftover-gathering + confetti-absorption heuristics return. (The
-   degenerate-limit model does not help here — no analytic family contains
-   B-splines.)
-3. The residual heuristic surface is larger: overlap resolution + remnant
-   re-split, degeneracy guards and the DOF tiebreak (on a plane region a
-   near-infinite-radius cylinder *ties* the plane on area), a "good enough
-   to suppress seeding" definition, and load-bearing seed ordering.
-
-**Required upgrade if adopted — degenerate-limit growth model** (identified
-2026-07-17): grow with a model family whose degenerate cases are *regular
-interior points* of the parameter space, so the fit explores as the simpler
-surface until the data pulls it off the limit. Concretely for the strip
-problem: parameterize the torus by a point on the tube spine, spine
-direction, tube radius `r`, spine **curvature** `k = 1/R`, and a
-bending-plane azimuth — `k = 0` *is* the cylinder, with no infinity
-anywhere (the Pratt/Taubin curvature parameterization that circle fitters
-use to make lines a regular case). Growth starts at `k ≈ 0` on one strip;
-the refit that admits the neighboring strip makes `k` identifiable and LM
-discovers the bend — no seed-size machinery, no discrete promotion event.
-Three consequences to design for:
-- *The refit trigger, not the fitter, is the actual blocker.* A neighboring
-  strip sits ~`R·Δφ²/2` off the current fit — hundreds to thousands of
-  times vertex tolerance, far outside the `REFIT_SKIP_MULTIPLIER` (10×)
-  window that gates refit attempts today. The general model needs refits
-  triggered by *chordal* (surface-tolerance) proximity, or batched per
-  stalled frontier; this is where the performance cost concentrates, since
-  refits run LM over the whole grown region.
-- *The underdetermined phase needs regularization.* While support spans one
-  strip, `k` is unidentifiable; ridge the fit toward `k = 0` and relax the
-  bias as support grows. The exactness assumption bounds the
-  over-flexibility risk: added flexibility cannot absorb faces of a
-  genuinely different surface, because within-vertex-tolerance remains the
-  acceptance bar and two distinct surfaces agreeing to that tolerance over
-  an extended patch would be near-identical.
-- *A torus-only generalization re-creates the dual pathology*: a bent-tube
-  model that cannot degenerate further locks onto a sphere's latitude band,
-  closes the ring, and stalls — spheres get tiled by torus bands again. The
-  logical endpoint is growing with a family containing **all** the analytic
-  primitives as degenerate cases — the Unified SOR framework of
-  SURFACE_FITTING.md (Dupin cyclides are the mathematically complete
-  version) — after which classification becomes model *reduction* (collapse
-  `k ≈ 0` to cylinder, a degenerate spine to sphere) instead of a ladder of
-  fitters. Freeform stays outside any such family.
-
-If adopted, the 2.4 repair loop, the post-stage-2 invariants, and the 2.5
-output contract apply to its results unchanged — only 2.1–2.3 would be
-replaced by the seed-competition driver (plus the degenerate-limit growth
-model above).
+**Decision: scoped pivot** — the architecture in §2 above (second
+revision). What carries forward: the sharp-edge partition, region
+extraction, the jet estimator (demoted to the §2.1 effort-allocation
+prior), viz, `dump_regions`, the segmentation tests, and the invariants.
+What changed: tangent-junction discovery moved to fit competition — the
+former "Contingency: Seed-First Multi-Type Competition" section was
+**promoted into §2.3(b)–(c)** (its standalone section is dissolved; its
+sub-region-lemma soundness argument, claim semantics, and the
+degenerate-limit growth model all live there now), scoped inside smooth
+regions, which fixes its two stated cost concerns (bounded arena, no
+cross-sharp-edge accidents). The curvature-jump classifier moved to
+Abandoned Approaches. Deciding rationale: in every observed failure mode,
+the recovery that works is fit validation at vertex tolerance — curvature
+is reliable only where dihedral angles already decide (sharp edges) or in
+roles where errors cost time instead of correctness (the prior).
 
 ---
 
 ## Abandoned Approaches
 
-Retired with the 2026-07-17 stage-2 redesign. Recorded here because each
-worked well enough to ship models, and some may be worth resurrecting as
-*diagnostics* — but all of them existed to compensate for fit-driven greedy
-segmentation, and the compensations kept multiplying (that treadmill is why
-the architecture changed). Do not re-add one without identifying which
-design principle it would compensate for.
+Retired with the 2026-07-17 stage-2 redesign and the 2026-07-20 fit-driven
+pivot. Recorded here because each worked well enough to ship models — but
+each existed to compensate for a structural defect elsewhere, and the
+compensations kept multiplying (that treadmill is why the architecture
+changed, twice). Do not re-add one without identifying which design
+principle it would compensate for.
+
+**Fit-free curvature-jump edge classification** (built 2026-07-18/19,
+retired 2026-07-20): the attempt to detect tangent (G1-smooth,
+G2-discontinuous) junctions from local curvature-descriptor differences,
+without fitting. Five estimator variants (per-edge κ = θ/d →
+neighbor-normal tensor → jet with outlier rejection → re-weighted jet →
+anchored jet without rejection) each fixed one corpus class and broke
+another. Terminal evidence (measurements in the Stage-2 Retrospective's
+Resolution): the decision statistic — a threshold on local differences of
+principal curvatures — cannot separate real curvature *gradients* on one
+surface (a cone's κ_max = 1/ρ(h); gradient steps read > 0.35 and
+shattered nosecone's cone into 129 fragments while its sphere stayed one
+clean 644-face region) from real *junctions* between surfaces with
+similar curvatures (pipe_elbow's torus↔cylinder junction reads 0.33,
+missed). The classes overlap, so no threshold exists, and the hysteresis
+fixpoint oscillated to its round cap on every fragmenting model. What
+survives: the sharp-dihedral rule (exact, load-bearing in §2.1(a)) and
+the anchored osculating-jet estimator itself — an accurate
+interior-curvature field, demoted to the §2.1(b) prior whose errors can
+only cost time (Design Principle #4). Do not resurrect a fit-free
+junction detector without a statistic that provably separates gradients
+from jumps on staggered tessellations.
 
 **Per-type BFS hypothesis generation** (the `SurfaceType` trait framework in
 `bfs.rs`: per-face seeding, trial BFS growth with refit-on-near-miss
@@ -1168,19 +1298,25 @@ stage 3.
 The `--viz-stages` flag enables interactive 3D visualization for debugging pipeline stages. The companion `--viz-stages-level` flag (default 1) controls pause granularity.
 
 Supported stages after the rewrite:
-- **2.1**: edge classification — BOUNDARY edges drawn as `LineOverlay`
-  segments color-coded by class (sharp vs curvature-jump), with
-  `no_depth_test` available for X-ray inspection. (`EdgeHighlight` outlines
-  whole faces rather than individual mesh edges, so it stays unpopulated —
-  still TODO.md's delete candidate.)
-- **2.2**: regions — one `FaceHighlight` per region with a deterministic
-  color palette, boundary `LineOverlay` retained for context.
-- **2.3**: per-region classification — level 1 pauses at each classified
-  region (fit overlay + parameters via the existing `viz_overlays` /
-  `viz_fit_description` per-surface-type functions); level 2 pauses at each
-  attempted rung.
-- **2.4**: repair — level 1 pauses after the loop converges; level 2 pauses
-  at each merge/split/relabel operation.
+- **2.1**: sharp edges — drawn as red `LineOverlay` segments (offset along
+  the adjacent faces' average normal so they sit on top of the mesh), with
+  `no_depth_test` available for X-ray inspection. The jump/orange overlay
+  dies with the retired classifier. A face-shading mode for the jet prior
+  (color by κ1/κ2) is a useful optional addition for calibrating the
+  effort gates. (`EdgeHighlight` outlines whole faces rather than
+  individual mesh edges, so it stays unpopulated — still TODO.md's delete
+  candidate.)
+- **2.2**: smooth regions — one `FaceHighlight` per region with a
+  deterministic color palette, sharp-boundary `LineOverlay` retained for
+  context.
+- **2.3**: surface discovery — level 1 pauses at each committed hypothesis
+  (claimed faces highlighted + fit overlay/parameters via the per-type
+  `viz_overlays` / `viz_fit_description` functions, preserved from
+  `bfs.rs` before its deletion); level 2 pauses at each competing rung's
+  expansion result; level 3 at promotion attempts.
+- **2.4**: resolution & repair — level 1 pauses after convergence; level 2
+  at each resolution/merge/relabel operation (multi-claimed junction rows
+  are worth a distinct highlight color).
 - **3.3** (edge curves), **3.4** (faces), **3.5** (shells), **3.6** (solids)
   — unchanged.
 
@@ -1226,18 +1362,20 @@ previous stage's output structure:
 
 Stage 2 module layout (target):
 
-- `src/stage2/mod.rs` — orchestration, `Stage2Output` (`face_region`,
-  `regions`, `EdgeClassification`, typed hypothesis vectors,
-  `SelectedSurface`), shared helpers.
-- `src/stage2/edges.rs` — 2.1 curvature field + edge classifier
-  (threshold-parameterized so 2.4's split repair can reuse it).
-- `src/stage2/regions.rs` — 2.2 union-find extraction, boundary loops.
-- `src/stage2/classify.rs` — 2.3 ladder, subsample/validate/refit driver.
-- `src/stage2/repair.rs` — 2.4 merge/split/relabel, invariants.
+- `src/stage2/mod.rs` — orchestration, `Stage2Output` (`Segmentation`,
+  typed hypothesis vectors, `SelectedSurface`), shared helpers.
+- `src/stage2/edges.rs` — 2.1 sharp-edge classification + the jet prior
+  (`JetField`: κ1/κ2, principal directions, medial points).
+- `src/stage2/regions.rs` — 2.2 union-find smooth-region extraction.
+- `src/stage2/classify.rs` — 2.3(a) whole-region ladder,
+  subsample/validate/refit driver, jet rung ordering.
+- `src/stage2/compete.rs` — 2.3(b)–(c) scoped competition: seeds, claims,
+  expansion, bent-tube promotion.
+- `src/stage2/repair.rs` — 2.4 resolution/merge/relabel, invariants.
 - `src/stage2/{planar,cylindrical,conical,spherical,toroidal}.rs` — fitting
   + validation for each surface type (seeding/BFS entry points deleted).
 - `src/stage2/bspline.rs` — freeform rung (parameterize/resample/fit/
-  validate; gathering deleted).
+  validate; gathering deleted; island-dissolution guard).
 - `src/stage2/bfs.rs` — deleted with the BFS pipeline.
 
 Data-structure linking uses indices into vectors throughout (stable, easily
@@ -1255,21 +1393,24 @@ The main testing strategy is to process a set of example stl/step pairs, and use
 4. **Validation**: Round-trip test (STEP → mesh → STEP)
 
 Stage-2 integration tests assert:
-- Edge classification / partition sanity per model (with `--compare`: region
-  boundary edges near reference edges; region interiors mapping to
-  consistent reference surfaces).
-- Region classification end states — the same expectations the old suite
-  pinned (cube = 6 planar; block_with_hole = 6 planar + 1 cylindrical;
-  pipe = 2 planar + 2 cylindrical; ball_on_cylinder = 1 planar +
-  1 cylindrical + 1 spherical; hemisphere = 1 planar + 1 spherical;
-  cone_15x20 = 1 planar + 1 conical; etc.), plus fitted-parameter agreement
-  with the reference STEP (axis, radius, center) for analytic models.
-- Repair-loop behavior on the models that motivated it (coarse cones
-  re-merged; capsule junction found; stepped_block narrow walls kept as
-  real planar regions).
+- Partition sanity per model at 2.2: **smooth-region** counts (sharp-edged
+  models = final counts; tangent models = tangent-chain counts, e.g.
+  capsule 1, nosecone 2 — measure with `dump_regions` when re-pinning,
+  don't guess) plus the coverage/connectivity/determinism invariants
+  (already in `tests/stage2_segmentation.rs`).
+- Surface-discovery end states after 2.3/2.4 — the same expectations the
+  old suite pinned (cube = 6 planar; block_with_hole = 6 planar +
+  1 cylindrical; pipe = 2 planar + 2 cylindrical; ball_on_cylinder =
+  1 planar + 1 cylindrical + 1 spherical; hemisphere = 1 planar +
+  1 spherical; cone_15x20 = 1 planar + 1 conical; etc.), plus
+  fitted-parameter agreement with the reference STEP (axis, radius,
+  center) for analytic models.
+- Competition/repair behavior on the models that motivated the design
+  (nosecone decomposes to 4 surfaces; pipe_elbow's bend promotes to a
+  torus; capsule junction rows resolve; junction singletons absorbed).
 
 **Migration reality**: the suite is red during the rewrite (see Rewrite
-Roadmap step 6). Re-enable per model; a model stays disabled with a comment
+Roadmap step 7). Re-enable per model; a model stays disabled with a comment
 naming its blocker rather than being nerfed with loosened gates.
 
 ### Test Cases
