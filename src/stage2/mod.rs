@@ -3079,7 +3079,7 @@ mod tests {
         let _ = bfs::generate_hypotheses::<PlanarSurface>(&mut mesh, &config, None);
         let (conicals, _) = bfs::generate_hypotheses::<ConicalSurface>(&mut mesh, &config, None);
         let cones: Vec<_> = conicals.iter().filter(|h| !h.is_cylinder()).collect();
-        assert!(cones.len() >= 1, "block_with_conical_hole should produce at least 1 cone hypothesis, got {}", cones.len());
+        assert!(!cones.is_empty(), "block_with_conical_hole should produce at least 1 cone hypothesis, got {}", cones.len());
         let concave_cones: Vec<_> = cones.iter().filter(|c| !c.convex).collect();
         assert!(!concave_cones.is_empty(), "block_with_conical_hole should have at least one concave cone");
     }

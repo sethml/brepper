@@ -1558,6 +1558,7 @@ mod tests {
     use std::f64::consts::PI;
 
     /// Generate points on a torus surface.
+    #[allow(clippy::too_many_arguments)] // a torus patch is genuinely 10 geometric parameters
     fn torus_points(
         center: [f64; 3],
         axis_dir: [f64; 3],
@@ -1634,6 +1635,7 @@ mod tests {
     }
 
     /// Build a synthetic torus mesh.
+    #[allow(clippy::too_many_arguments)] // a torus patch is genuinely 10 geometric parameters
     fn build_torus_mesh(
         center: [f64; 3],
         axis_dir: [f64; 3],

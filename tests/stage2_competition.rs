@@ -3,9 +3,8 @@
 //! true analytic surfaces (vertex-tolerance validated, not just counted).
 //!
 //! These run the full stage-2 pipeline (default stage) and assert the typed
-//! hypothesis counts on the two headline acceptance models. Torus-requiring
-//! chains (pipe elbow, toroidal fillets) are covered once stage 2.3(c)
-//! promotion lands.
+//! hypothesis counts on the headline acceptance models, including the
+//! stage-2.3(c) bent-tube promotion win (pipe elbow → torus + 2 cylinders).
 
 use brepper::config;
 use brepper::{stage1, stage2};
@@ -53,6 +52,25 @@ fn competition_rounded_cube_shell_decomposes_6_12_8() {
     assert_eq!(cones, 0, "no cones");
     assert_eq!(out.planar_hypotheses.len(), 6, "6 face planes");
     assert_eq!(out.selected_surfaces.len(), 26, "26 analytic surfaces total");
+    assert_total_coverage(&out);
+}
+
+#[test]
+fn competition_pipe_elbow_torus_two_cylinders() {
+    // The pipe elbow is one smooth tangent chain: two straight tube segments
+    // joined by a 90° bend, capped by two end disks. Stage 2.3(c) bent-tube
+    // promotion must recognize the bend as a torus, so competition + the
+    // ladder yield 1 torus + 2 cylinders + 2 base planes = 5 surfaces (the
+    // reference's 5 analytic faces), with no strip machinery and no
+    // per-facet leftovers.
+    let out = run("tests/onshape/pipe_elbow_10_medium.stl");
+    assert_eq!(out.toroidal_hypotheses.len(), 1, "1 bend torus");
+    let cylinders = out.conical_hypotheses.iter().filter(|h| h.is_cylinder()).count();
+    let cones = out.conical_hypotheses.iter().filter(|h| !h.is_cylinder()).count();
+    assert_eq!(cylinders, 2, "2 straight tube cylinders");
+    assert_eq!(cones, 0, "no cones");
+    assert_eq!(out.planar_hypotheses.len(), 2, "2 end-cap planes");
+    assert_eq!(out.selected_surfaces.len(), 5, "torus + 2 cyl + 2 planes");
     assert_total_coverage(&out);
 }
 
