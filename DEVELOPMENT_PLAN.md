@@ -225,20 +225,24 @@ with the jump classifier and its hysteresis fixpoint) is **one-shot** — no
 compatibility path, no threshold gating: the jump machinery is deleted,
 not disabled.
 
-**Progress (Rewrite Roadmap steps 1–3 landed):** the jump classifier is
+**Progress (Rewrite Roadmap steps 1–4 landed):** the jump classifier is
 deleted and the jet demoted to the `JetField` prior (step 1, `edges.rs`);
 the whole-region DOF ladder is implemented (step 2, `classify.rs`, stage
 2.3(a)); resolution & repair — relabel, merge, connectivity re-split,
-invariants — is implemented (step 3, `repair.rs`, stage 2.4). Sharp-edged
-and single-surface-per-region models now flow end to end through stages
-3/4 with `--compare` (cube, block_with_hole, pipe, two_holes,
-spherical_pocket, simple_cone, hemisphere, ball_on_cylinder, …). Tangent
-chains (pill, rounded_cube, pipe_elbow, cone_cylinder, nosecone, fillet
-models) degrade to per-facet planes until scoped competition (step 4,
-2.3(b)) and bent-tube promotion (step 5, 2.3(c)) land; the old BFS pipeline
-remains nerfed in place (`stage2_bfs_pipeline`, uncalled) until the step-7
-deletion pass, and the old-BFS-era `--stage=2.1/2.2` integration tests stay
-red until that re-pin.
+invariants — is implemented (step 3, `repair.rs`, stage 2.4); and scoped fit
+competition decomposes the tangent chains the ladder cannot explain (step 4,
+`compete.rs`, stage 2.3(b)). Sharp-edged and single-surface-per-region
+models flow end to end through stages 3/4 with `--compare` (cube,
+block_with_hole, pipe, two_holes, spherical_pocket, simple_cone, hemisphere,
+ball_on_cylinder, …), as do the non-torus tangent chains: **rounded_cube →
+6 planes + 12 fillet cylinders + 8 corner spheres**, **nosecone →
+cone+sphere+base** (both build a valid solid at 0 mm distance to the
+reference). Torus-fillet chains (pipe_elbow, stepped_block_toroidal,
+cone_cylinder's concave fillet, filleted_*) fall back to a clean per-facet
+polyhedron until bent-tube promotion (step 5, 2.3(c)) adds the torus. The
+old BFS pipeline remains nerfed in place (`stage2_bfs_pipeline`, uncalled)
+until the step-7 deletion pass, and the old-BFS-era `--stage=2.1/2.2`
+integration tests stay red until that re-pin.
 
 **Pipeline:** sharp-edge classification + jet prior (2.1) → smooth-region
 extraction (2.2) → per-region surface discovery: whole-region ladder, then
@@ -991,8 +995,22 @@ criteria under "Acceptance narratives".
    invariants-clean on the current corpus, with unit tests exercising
    merge/no-merge/re-split. **[DONE]**
 4. **Stage 2.3(b) scoped competition** (`compete.rs`): seeds, per-seed
-   rung competition, claims, resolution wiring. Acceptance: nosecone → 4
-   surfaces; rounded_cube shell decomposes into 6+12+8; stepped_block.
+   rung competition, claims, resolution wiring. Acceptance: nosecone →
+   cone+sphere+base (3, matching the reference's 3 faces); rounded_cube
+   shell decomposes into 6+12+8; stepped_block. **[DONE for the analytic
+   surfaces — plane/sphere/cylinder/cone.]** Notes from implementation:
+   growth floods at ~30× vertex-tolerance (a fit from partial support has
+   ~1e-4 mm residual, well below the ~0.1 mm a neighbour diverges past a
+   tangent junction; every committed hypothesis is refit on full support to
+   ~1e-6 mm, and claim resolution corrects any one-row leak); the seed patch
+   is depth-limited so it does not straddle a tangent junction between two
+   same-class developables (a cone meeting a cylinder); and a region whose
+   competition leaves a large per-facet leftover blob (a whole sub-surface
+   it could not fit — e.g. a coarse fillet, or a concave torus fillet
+   awaiting step 5) is discarded to a clean per-facet polyhedron rather than
+   reconstruct invalid wires at the analytic/per-facet boundary. Torus
+   fillets (cone_cylinder, filleted_*, stepped_block_toroidal, pipe_elbow)
+   correctly fall back to that polyhedron until step 5.
 5. **Stage 2.3(c) promotion** (bent-tube `k = 1/R` + jet triggers +
    medial-point spine seeding). Acceptance: pipe_elbow → torus + 2
    cylinders with no strip machinery.

@@ -5,15 +5,17 @@
 //! 2.1: Sharp-edge classification (fit-free) + osculating-jet prior
 //! 2.2: Region extraction — connected components over interior edges
 //! 2.3: Per-region surface discovery — whole-region DOF ladder (2.3(a),
-//!      `classify.rs`). Scoped competition (2.3(b)), bent-tube promotion
-//!      (2.3(c)), and freeform leftovers (2.3(e)) are NOT YET IMPLEMENTED, so
-//!      tangent-chain regions currently degrade to per-facet planes.
+//!      `classify.rs`) then scoped fit competition for the tangent chains the
+//!      ladder cannot explain (2.3(b), `compete.rs`). Bent-tube promotion
+//!      (2.3(c)) and freeform leftovers (2.3(e)) are NOT YET IMPLEMENTED, so
+//!      torus-fillet chains still degrade to per-facet planes.
 //! 2.4: Resolution & repair — relabel / merge / re-split + invariants
-//!      (`repair.rs`). Claim resolution is a no-op until competition exists.
+//!      (`repair.rs`).
 //! 2.5: Selected-surface output
 //!
-//! Sharp-edged and single-surface-per-region models flow end to end; tangent
-//! chains await 2.3(b)/(c). The old BFS hypothesis pipeline is nerfed in
+//! Sharp-edged, single-surface-per-region, and non-torus tangent-chain models
+//! (rounded cube → 6+12+8, nosecone → cone+sphere+base) flow end to end;
+//! torus chains await 2.3(c). The old BFS hypothesis pipeline is nerfed in
 //! place (`stage2_bfs_pipeline`, below) as reference until the Rewrite
 //! Roadmap's deletion pass — nothing calls it.
 
@@ -23,6 +25,7 @@ pub mod regions;
 mod bfs;
 pub(crate) mod bspline;
 mod classify;
+mod compete;
 mod conical;
 mod cylindrical;
 mod planar;
@@ -1947,9 +1950,9 @@ pub fn stage2(
         return Ok(segmentation_only_output(mesh, segmentation));
     }
 
-    // --- Stage 2.3: per-region surface discovery (whole-region ladder) ---
+    // --- Stage 2.3: per-region surface discovery (ladder + competition) ---
     let t = Instant::now();
-    let mut cls = classify::classify_regions(&mesh, &segmentation.regions, config);
+    let mut cls = classify::classify_regions(&mesh, &segmentation.regions, &segmentation.jet, config);
     if config.verbosity >= 1 {
         eprintln!(
             "Stage 2.3 ({:.3}s): Region classification: {} surfaces ({} planar, {} cyl/cone, {} spherical, {} toroidal)",

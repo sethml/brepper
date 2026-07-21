@@ -34,7 +34,9 @@ use crate::config::Config;
 use crate::stage1::ConnectedMesh;
 
 use super::bfs::SurfaceType;
+use super::compete::{self, CompeteHyp};
 use super::conical::ConicalSurface;
+use super::edges::JetField;
 use super::planar::{fit_plane, PlanarSurface};
 use super::regions::Region;
 use super::spherical::SphericalSurface;
@@ -64,6 +66,12 @@ const REFIT_ADD: usize = 32;
 /// this multiple of `--surface-tolerance`, the region is decisively not this
 /// surface and no amount of augmenting will help.
 const REFIT_GIVE_UP: f64 = 8.0;
+
+/// Largest connected leftover blob competition may leave before its result is
+/// discarded in favour of a clean per-facet polyhedron (see the fallback in
+/// `classify_regions`). A junction sliver is 1–2 faces; a whole undecomposed
+/// sub-surface is many more.
+const LEFTOVER_BLOB_MAX: usize = 8;
 
 /// The output of stage 2.3(a): committed hypotheses in the typed vectors plus
 /// one `SelectedSurface` per committed surface. Regions partition the mesh,
@@ -106,12 +114,22 @@ impl Classification {
             .push(SelectedSurface::Toroidal(self.toroidal.len()));
         self.toroidal.push(hyp);
     }
+    fn push_compete(&mut self, hyp: CompeteHyp) {
+        match hyp {
+            CompeteHyp::Planar(h) => self.push_planar(h),
+            CompeteHyp::Conical(h) => self.push_conical(h),
+            CompeteHyp::Spherical(h) => self.push_spherical(h),
+        }
+    }
 }
 
-/// Run the whole-region ladder over every smooth region.
+/// Run the whole-region ladder over every smooth region; regions the ladder
+/// cannot explain go to scoped competition (2.3(b)), and whatever competition
+/// leaves unclaimed degrades to per-facet planes.
 pub(super) fn classify_regions(
     mesh: &ConnectedMesh,
     regions: &[Region],
+    jet: &[JetField],
     config: &Config,
 ) -> Classification {
     let centroids: Vec<[f64; 3]> = mesh
@@ -122,22 +140,50 @@ pub(super) fn classify_regions(
 
     let mut cls = Classification::new();
     let mut ladder_wins = [0usize; 4]; // plane, sphere, conical, torus
-    let mut fallback_regions = 0usize;
+    let mut competed_regions = 0usize;
+    let mut competed_surfaces = 0usize;
+    let mut facet_faces = 0usize;
     for region in regions {
         if classify_one_region(mesh, region, &centroids, config, &mut cls, &mut ladder_wins) {
             continue;
         }
-        // Terminal fallback: per-facet planes (total coverage can never fail).
-        fallback_regions += 1;
-        for &fi in &region.faces {
+        // The ladder cannot explain this region — scoped competition.
+        competed_regions += 1;
+        let (hyps, leftovers) = compete::compete_region(mesh, region, jet, &centroids, config);
+
+        // A whole undecomposed sub-surface left as per-facet planes (e.g. a
+        // coarse fillet competition cannot fit) reconstructs to invalid wires
+        // where it abuts a committed analytic surface — worse than a clean
+        // polyhedron. When the largest leftover blob is more than a junction
+        // sliver, discard competition and per-facet the whole region; a clean
+        // polyhedron is the safe fallback until freeform fitting (2.3(e))
+        // gives those blobs a principled home. (Healthy competition leaves
+        // only tiny scattered slivers at junctions.)
+        if largest_component(mesh, &leftovers) > LEFTOVER_BLOB_MAX {
+            for &fi in &region.faces {
+                cls.push_planar(facet_plane(mesh, fi));
+            }
+            facet_faces += region.faces.len();
+            continue;
+        }
+
+        competed_surfaces += hyps.len();
+        for hyp in hyps {
+            cls.push_compete(hyp);
+        }
+        // Whatever competition left unclaimed → per-facet planes (total
+        // coverage can never fail; a single triangle is exactly a plane).
+        facet_faces += leftovers.len();
+        for fi in leftovers {
             cls.push_planar(facet_plane(mesh, fi));
         }
     }
 
     if config.verbosity >= 1 {
         eprintln!(
-            "  ladder: {} plane, {} sphere, {} cyl/cone, {} torus; {} region(s) → per-facet fallback",
-            ladder_wins[0], ladder_wins[1], ladder_wins[2], ladder_wins[3], fallback_regions,
+            "  ladder: {} plane, {} sphere, {} cyl/cone, {} torus; competition: {} region(s) → {} surfaces + {} per-facet",
+            ladder_wins[0], ladder_wins[1], ladder_wins[2], ladder_wins[3],
+            competed_regions, competed_surfaces, facet_faces,
         );
     }
     cls
@@ -274,6 +320,35 @@ pub(super) fn fit_validate<S: SurfaceType>(
         }
     }
     None
+}
+
+/// Size of the largest mesh-connected component within a face set.
+fn largest_component(mesh: &ConnectedMesh, faces: &[usize]) -> usize {
+    let member: HashSet<usize> = faces.iter().copied().collect();
+    let mut seen: HashSet<usize> = HashSet::new();
+    let mut largest = 0usize;
+    for &start in faces {
+        if seen.contains(&start) {
+            continue;
+        }
+        let mut size = 0usize;
+        let mut stack = vec![start];
+        seen.insert(start);
+        while let Some(fi) = stack.pop() {
+            size += 1;
+            let vc = mesh.faces[fi].vertex_count as usize;
+            for &ni in &mesh.faces[fi].neighbors[..vc] {
+                if ni >= 0 {
+                    let ni = ni as usize;
+                    if member.contains(&ni) && seen.insert(ni) {
+                        stack.push(ni);
+                    }
+                }
+            }
+        }
+        largest = largest.max(size);
+    }
+    largest
 }
 
 /// Sorted, deduplicated vertex indices of a face set.
