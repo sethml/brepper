@@ -1,14 +1,18 @@
-//! Integration tests for the stage-2 rewrite frontier: edge classification
-//! (2.1) and region extraction (2.2) — the fit-free partition.
+//! Integration tests for the stage-2 rewrite frontier: sharp-edge
+//! classification (2.1(a)) and smooth-region extraction (2.2) — the
+//! sharp-only partition.
 //!
-//! Expectations are verified against the reference STEP structure of known
-//! models (cube = 6 faces, block_with_hole = 7, etc.). Models that need
-//! threshold calibration (dense tangent-fillet models, coarse fillets) are
-//! intentionally absent: they are the calibration corpus of Rewrite Roadmap
-//! step 1, tracked in DEVELOPMENT_PLAN.md.
+//! Region counts here are **smooth-region** counts, not final surface
+//! counts: a smooth region is a maximal set of faces reachable without
+//! crossing a sharp edge, so tangent chains merge into one region (the pill
+//! capsule is ONE region, the rounded-cube shell is ONE region, the pipe
+//! elbow's tube is ONE region). Decomposing those chains into their true
+//! surfaces is stage 2.3's fit competition, tested elsewhere. Sharp-edged
+//! analytic models already segment exactly here (cube = 6, block_with_hole
+//! = 7, …).
 
 use brepper::config;
-use brepper::stage2::{EdgeClass, Stage2Output};
+use brepper::stage2::Stage2Output;
 use brepper::{stage1, stage2};
 
 fn manifest_dir() -> String {
@@ -72,7 +76,6 @@ fn segmentation_cube() {
     let seg = &out.segmentation;
     assert_eq!(seg.regions.len(), 6, "cube = 6 planar regions");
     assert_eq!(seg.edge_classes.sharp_count, 12);
-    assert_eq!(seg.edge_classes.jump_count, 0);
     assert_eq!(seg.edge_classes.interior_count, 0);
     assert_partition_invariants(&out);
 }
@@ -83,7 +86,6 @@ fn segmentation_block_with_hole() {
     let seg = &out.segmentation;
     assert_eq!(seg.regions.len(), 7, "block_with_hole = 6 planar + 1 cylindrical");
     assert_eq!(seg.edge_classes.sharp_count, 70);
-    assert_eq!(seg.edge_classes.jump_count, 0);
     assert_partition_invariants(&out);
 }
 
@@ -92,7 +94,6 @@ fn segmentation_simple_cylinder() {
     let out = run_segmentation("tests/ccad/generated/simple_cylinder.stl");
     let seg = &out.segmentation;
     assert_eq!(seg.regions.len(), 3, "cylinder = wall + 2 caps");
-    assert_eq!(seg.edge_classes.jump_count, 0);
     assert_partition_invariants(&out);
 }
 
@@ -102,7 +103,6 @@ fn segmentation_simple_sphere() {
     let seg = &out.segmentation;
     assert_eq!(seg.regions.len(), 1, "sphere = 1 region, no boundaries");
     assert_eq!(seg.edge_classes.sharp_count, 0);
-    assert_eq!(seg.edge_classes.jump_count, 0);
     assert_partition_invariants(&out);
 }
 
@@ -125,76 +125,46 @@ fn segmentation_ball_on_cylinder() {
 }
 
 #[test]
-fn segmentation_pill_fine_tangent_junction() {
-    // The capsule's hemisphere↔cylinder junction is G1-smooth (no sharp
-    // edges) and the sphere and cylinder share σ_max = 1/r — it is caught
-    // purely by the two-sided curvature descriptor (σ_min: 1/r vs 0).
+fn segmentation_pill_fine_one_smooth_region() {
+    // The capsule's hemisphere↔cylinder junctions are G1-smooth (no sharp
+    // edges), so the entire outer surface is ONE smooth region. Splitting it
+    // into the 2 hemisphere caps + cylinder wall is stage 2.3's job.
     let out = run_segmentation("tests/onshape/pill_fine.stl");
     let seg = &out.segmentation;
-    assert_eq!(seg.regions.len(), 3, "pill = 2 hemisphere caps + cylinder wall");
-    assert_eq!(seg.edge_classes.sharp_count, 0);
-    assert!(
-        seg.edge_classes.jump_count > 0,
-        "tangent junction must produce curvature-jump edges"
-    );
-    // Every boundary edge is jump-classified (nothing sharp on a capsule).
-    for (fi, classes) in seg.edge_classes.class.iter().enumerate() {
-        let vc = out.mesh.faces[fi].vertex_count as usize;
-        for &c in &classes[..vc] {
-            assert_ne!(c, EdgeClass::Sharp);
-        }
-    }
+    assert_eq!(seg.regions.len(), 1, "capsule surface = one smooth region");
+    assert_eq!(seg.edge_classes.sharp_count, 0, "a capsule has no sharp edges");
+    assert!(seg.edge_classes.interior_count > 0);
     assert_partition_invariants(&out);
 }
 
 #[test]
-fn segmentation_pill_coarse_tangent_junction() {
-    // Same capsule at coarse tessellation: the 3 true surfaces (2
-    // hemisphere caps + cylinder wall) must be clean regions; any residual
-    // regions are tiny junction-circle singletons (faces on the tangent
-    // seam, whose seam-circle neighborhood is planar — repair-loop input).
+fn segmentation_pill_coarse_one_smooth_region() {
+    // Same capsule at coarse tessellation: still one tangent chain, one
+    // smooth region.
     let out = run_segmentation("tests/onshape/pill_coarse.stl");
     let seg = &out.segmentation;
-    let big = seg.regions.iter().filter(|r| r.faces.len() >= 100).count();
-    assert_eq!(big, 3, "pill = 3 substantial regions, got {big}");
-    let max_small = seg
-        .regions
-        .iter()
-        .filter(|r| r.faces.len() < 100)
-        .map(|r| r.faces.len())
-        .max()
-        .unwrap_or(0);
-    assert!(max_small <= 2, "junction confetti should be <=2 faces, got {max_small}");
+    assert_eq!(seg.regions.len(), 1, "capsule surface = one smooth region");
     assert_eq!(seg.edge_classes.sharp_count, 0);
     assert_partition_invariants(&out);
 }
 
 #[test]
-fn segmentation_pipe_elbow_torus_bend() {
-    // The pipe elbow's torus bend is ONE region: smooth interior edges and
-    // a continuous curvature descriptor along the tube, so no boundary
-    // fires inside the bend. (The abandoned BFS pipeline could only
-    // decompose it into ~290 cylindrical strips.) The cylinder walls
-    // currently merge with the bend through the similar-radii outer
-    // junction (2.4 split-repair territory); the 2 end caps are separate.
+fn segmentation_pipe_elbow_tube_one_region() {
+    // The pipe elbow's tube surface — the torus bend tangent to both
+    // straight cylinder walls — is ONE smooth region (no sharp edge along
+    // the whole sweep). The 2 flat end caps are sharp-bounded and separate.
+    // Decomposing the tube into torus + 2 cylinders is stage 2.3's job.
     let out = run_segmentation("tests/onshape/pipe_elbow_10_medium.stl");
     let seg = &out.segmentation;
+    assert_eq!(seg.regions.len(), 3, "tube + 2 end caps");
     let huge = seg.regions.iter().filter(|r| r.faces.len() >= 1000).count();
-    assert_eq!(huge, 1, "the bend (+ merged walls) is one region, got {huge}");
+    assert_eq!(huge, 1, "the whole tube (bend + walls) is one region, got {huge}");
     let caps = seg
         .regions
         .iter()
         .filter(|r| (20..1000).contains(&r.faces.len()))
         .count();
     assert_eq!(caps, 2, "two end-cap regions, got {caps}");
-    let max_small = seg
-        .regions
-        .iter()
-        .filter(|r| r.faces.len() < 20)
-        .map(|r| r.faces.len())
-        .max()
-        .unwrap_or(0);
-    assert!(max_small <= 2, "junction confetti should be <=2 faces, got {max_small}");
     assert_partition_invariants(&out);
 }
 
@@ -205,7 +175,6 @@ fn segmentation_chamfered_cube() {
     let out = run_segmentation("tests/onshape/chamfered_cube_10_c1_medium.stl");
     let seg = &out.segmentation;
     assert_eq!(seg.regions.len(), 26, "chamfered cube = 26 planar regions");
-    assert_eq!(seg.edge_classes.jump_count, 0);
     assert_partition_invariants(&out);
 }
 
@@ -236,31 +205,15 @@ fn segmentation_spherical_pocket() {
 }
 
 #[test]
-fn segmentation_rounded_cube_fine_true_regions_present() {
-    // The 20 curved true surfaces must appear as substantial regions: 8
-    // corner spheres (~1073 faces) + 12 edge fillets (~160). The 6 planes
-    // and junction-zone slivers at the triple points are small (plane
-    // consolidation and confetti cleanup are the 2.4 repair loop's job).
+fn segmentation_rounded_cube_fine_one_smooth_region() {
+    // The rounded cube's entire outer shell is one tangent chain: 6 planes,
+    // 12 edge-fillet cylinders, and 8 corner spheres, every junction
+    // G1-smooth. So it is ONE smooth region. Decomposing it into 6+12+8 is
+    // stage 2.3's fit competition.
     let out = run_segmentation("tests/onshape/rounded_cube_10_r2_fine.stl");
     let seg = &out.segmentation;
     assert_eq!(seg.edge_classes.sharp_count, 0, "rounded cube is fully tangent");
-    let big = seg.regions.iter().filter(|r| r.faces.len() >= 1000).count();
-    let medium = seg
-        .regions
-        .iter()
-        .filter(|r| (100..1000).contains(&r.faces.len()))
-        .count();
-    assert_eq!(big, 8, "expected 8 corner-sphere regions, got {big}");
-    assert_eq!(medium, 12, "expected 12 edge-fillet regions, got {medium}");
-    // Planes and confetti: every remaining region is tiny.
-    let max_small = seg
-        .regions
-        .iter()
-        .filter(|r| r.faces.len() < 100)
-        .map(|r| r.faces.len())
-        .max()
-        .unwrap_or(0);
-    assert!(max_small <= 15, "small regions should be <=15 faces, got {max_small}");
+    assert_eq!(seg.regions.len(), 1, "the whole outer shell is one smooth region");
     assert_partition_invariants(&out);
 }
 

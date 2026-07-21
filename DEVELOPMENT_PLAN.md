@@ -223,9 +223,22 @@ field demoted from decision-maker to effort-allocation prior. The
 transition from the current code state (commit ce85dd0: jet-based 2.1/2.2
 with the jump classifier and its hysteresis fixpoint) is **one-shot** — no
 compatibility path, no threshold gating: the jump machinery is deleted,
-not disabled. Stages 2.3–2.5 are unimplemented; `stage2()` stops at the
-2.2 frontier with no selected surfaces, and the old BFS pipeline remains
-nerfed in place (`stage2_bfs_pipeline`, uncalled) until the deletion pass.
+not disabled.
+
+**Progress (Rewrite Roadmap steps 1–3 landed):** the jump classifier is
+deleted and the jet demoted to the `JetField` prior (step 1, `edges.rs`);
+the whole-region DOF ladder is implemented (step 2, `classify.rs`, stage
+2.3(a)); resolution & repair — relabel, merge, connectivity re-split,
+invariants — is implemented (step 3, `repair.rs`, stage 2.4). Sharp-edged
+and single-surface-per-region models now flow end to end through stages
+3/4 with `--compare` (cube, block_with_hole, pipe, two_holes,
+spherical_pocket, simple_cone, hemisphere, ball_on_cylinder, …). Tangent
+chains (pill, rounded_cube, pipe_elbow, cone_cylinder, nosecone, fillet
+models) degrade to per-facet planes until scoped competition (step 4,
+2.3(b)) and bent-tube promotion (step 5, 2.3(c)) land; the old BFS pipeline
+remains nerfed in place (`stage2_bfs_pipeline`, uncalled) until the step-7
+deletion pass, and the old-BFS-era `--stage=2.1/2.2` integration tests stay
+red until that re-pin.
 
 **Pipeline:** sharp-edge classification + jet prior (2.1) → smooth-region
 extraction (2.2) → per-region surface discovery: whole-region ladder, then
@@ -963,14 +976,20 @@ criteria under "Acceptance narratives".
    medial points) on `Segmentation`; keep the three jet unit tests; re-pin
    `tests/stage2_segmentation.rs` to smooth-region counts (measure with
    `dump_regions`, don't guess); update `dump_regions` and viz (the jump
-   orange overlay dies).
+   orange overlay dies). **[DONE]**
 2. **Stage 2.3(a) whole-region ladder** (`classify.rs`): existing fitters,
-   jet-pruned rung order, terminal per-facet-plane fallback from day one —
-   this un-blocks stages 3/4 end-to-end and re-arms full-pipeline
-   `--compare` on every sharp-edged model immediately.
+   terminal per-facet-plane fallback from day one — this un-blocks stages
+   3/4 end-to-end and re-arms full-pipeline `--compare` on every
+   sharp-edged model immediately. (Jet-pruned rung order deferred as a perf
+   optimization; strict DOF order — plane→sphere→conical→torus,
+   first-validates-wins — is already efficient via plane-first.) **[DONE]**
 3. **Stage 2.4 resolution/merge/relabel + invariants** (`repair.rs`) —
    built BEFORE competition so single-surface models flow end-to-end with
-   junction singletons absorbed; port `refine_boundary_assignments`.
+   junction singletons absorbed; ported `refine_boundary_assignments` as
+   `relabel_boundaries`. Merge is gated (small S into a larger real T, >2
+   faces) so the per-facet fallback storm never chains; no-op and
+   invariants-clean on the current corpus, with unit tests exercising
+   merge/no-merge/re-split. **[DONE]**
 4. **Stage 2.3(b) scoped competition** (`compete.rs`): seeds, per-seed
    rung competition, claims, resolution wiring. Acceptance: nosecone → 4
    surfaces; rounded_cube shell decomposes into 6+12+8; stepped_block.

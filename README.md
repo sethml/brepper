@@ -29,11 +29,12 @@ GENERAL OPTIONS:
                              slivers, unifying winding, reorienting inverted shells)
     --debug                  Enable debug output and intermediate files
     --stage=<stage>          Stop after stage, e.g. 2.2 (default: 4.1). --stage=2 stops after all of stage2
-    --skip-stage=<stages>    Skip sub-stages entirely while still running the rest of the pipeline
-                             to output (comma-separated; 2.2 conical, 2.3 spherical, 2.5 toroidal,
-                             2.7 NURBS, 2.8 redundant-surface absorption, 2.9 boundary refinement).
-                             --skip-stage=2.2,2.3,2.5,2.7,2.8 is exact planar-only mode
-    --viz-stages=<stages>    Open interactive 3D visualization at specified stages (e.g. 2.1,2.2,2.3)
+                             Stage 2 sub-stages (partition-then-classify rewrite): 2.1 sharp-edge
+                             classification + jet prior, 2.2 smooth-region extraction, 2.3 per-region
+                             surface ladder, 2.4 resolution & repair, 2.5 selected surfaces
+    --skip-stage=<stages>    (legacy) Skip sub-stages of the old BFS pipeline; retired by the stage-2
+                             rewrite and removed once the rewrite's deletion pass lands
+    --viz-stages=<stages>    Open interactive 3D visualization at specified stages (e.g. 2.1,2.2)
     --viz-stages-level=<N>   Viz detail level: 1 = committed hypotheses (default), 2 = seeds, 3 = BFS faces
 ```
 
@@ -132,7 +133,7 @@ At each BFS step, the window shows the STL mesh with highlighted faces: seed fac
 | Skip to face seed | `Click` on a face |
 | Quit visualization | `Q` |
 
-Supported stages: `2.1` (planar), `2.2` (cylindrical), `2.3` (spherical), `2.4` (conical), `2.6` (surface selection), `2.7` (NURBS fallback), `3.3` (edge curves), `3.4` (faces), `3.5` (shells), `3.6` (solids).
+Supported stages: `2.1` (sharp edges + jet prior), `2.2` (smooth regions), `3.3` (edge curves), `3.4` (faces), `3.5` (shells), `3.6` (solids). (The old per-type BFS viz stages are retired with the stage-2 rewrite.)
 
 
 ## Viewer

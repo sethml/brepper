@@ -2,30 +2,36 @@
 //!
 //! Sub-stage numbering (DEVELOPMENT_PLAN):
 //!
-//! 2.1: Edge classification — label mesh edges INTERIOR/BOUNDARY (fit-free)
+//! 2.1: Sharp-edge classification (fit-free) + osculating-jet prior
 //! 2.2: Region extraction — connected components over interior edges
-//! 2.3: Region classification ladder (NOT YET IMPLEMENTED)
-//! 2.4: Repair loop — merge / split / boundary relabel (NOT YET IMPLEMENTED)
-//! 2.5: Selected-surface output (NOT YET IMPLEMENTED)
+//! 2.3: Per-region surface discovery — whole-region DOF ladder (2.3(a),
+//!      `classify.rs`). Scoped competition (2.3(b)), bent-tube promotion
+//!      (2.3(c)), and freeform leftovers (2.3(e)) are NOT YET IMPLEMENTED, so
+//!      tangent-chain regions currently degrade to per-facet planes.
+//! 2.4: Resolution & repair — relabel / merge / re-split + invariants
+//!      (`repair.rs`). Claim resolution is a no-op until competition exists.
+//! 2.5: Selected-surface output
 //!
-//! `stage2()` currently stops at the 2.2 frontier with no selected
-//! surfaces, so stages 3/4 are unreachable until 2.3–2.5 land. The old BFS
-//! hypothesis pipeline is nerfed in place (`stage2_bfs_pipeline`, below) as
-//! reference until the Rewrite Roadmap's deletion pass — nothing calls it.
+//! Sharp-edged and single-surface-per-region models flow end to end; tangent
+//! chains await 2.3(b)/(c). The old BFS hypothesis pipeline is nerfed in
+//! place (`stage2_bfs_pipeline`, below) as reference until the Rewrite
+//! Roadmap's deletion pass — nothing calls it.
 
 pub mod edges;
 pub mod regions;
 
 mod bfs;
 pub(crate) mod bspline;
+mod classify;
 mod conical;
 mod cylindrical;
 mod planar;
+mod repair;
 mod spherical;
 mod toroidal;
 
 pub use self::bspline::BSplineHypothesis;
-pub use self::edges::{EdgeClass, EdgeClassification};
+pub use self::edges::{EdgeClass, EdgeClassification, JetField};
 pub use self::regions::Region;
 
 use crate::config::Config;
@@ -253,8 +259,11 @@ impl bfs::HypothesisFaces for ToroidalHypothesis {
 /// (DEVELOPMENT_PLAN §2.1–2.2).
 #[derive(Debug, Default)]
 pub struct Segmentation {
-    /// Per-edge classes plus the curvature evidence (stage 2.1).
+    /// Per-edge sharp/interior classes (stage 2.1(a)).
     pub edge_classes: EdgeClassification,
+    /// Per-face osculating-jet prior (stage 2.1(b)), consumed by 2.3 for
+    /// effort allocation. Empty when stage 2.1(b) was not run.
+    pub jet: Vec<JetField>,
     /// Region id per mesh face (stage 2.2).
     pub face_region: Vec<usize>,
     /// Regions, ordered by smallest member face index (stage 2.2).
@@ -955,7 +964,7 @@ centroid=[{:.4},{:.4},{:.4}] normal=[{:.3},{:.3},{:.3}]",
 }
 
 /// Distance from a mesh vertex to a selected surface's fitted geometry.
-fn vertex_distance_to_selected(
+pub(super) fn vertex_distance_to_selected(
     v: &MeshVertex,
     surface: &SelectedSurface,
     planar_hypotheses: &[PlanarHypothesis],
@@ -1853,25 +1862,32 @@ pub fn stage2(
     mesh: ConnectedMesh,
     viz: Option<&crate::viz::VizSender>,
 ) -> Result<Stage2Output, Stage2Error> {
-    // --- Stage 2.1: edge classification (fit-free) ---
+    // --- Stage 2.1(a): sharp-edge classification (fit-free) ---
     let t = Instant::now();
     let edge_classes = edges::classify_edges(&mesh, config.angular_tolerance_rad);
     if config.verbosity >= 1 {
-        let total =
-            edge_classes.sharp_count + edge_classes.jump_count + edge_classes.interior_count;
+        let total = edge_classes.sharp_count + edge_classes.interior_count;
         eprintln!(
-            "Stage 2.1 ({:.3}s): Edge classification: {} manifold edges — {} sharp, {} curvature-jump, {} interior ({} round{})",
+            "Stage 2.1(a) ({:.3}s): Sharp-edge classification: {} manifold edges — {} sharp, {} interior",
             t.elapsed().as_secs_f64(),
             total,
             edge_classes.sharp_count,
-            edge_classes.jump_count,
             edge_classes.interior_count,
-            edge_classes.rounds,
-            if edge_classes.rounds == 1 { "" } else { "s" },
+        );
+    }
+    // --- Stage 2.1(b): osculating-jet curvature prior ---
+    let t = Instant::now();
+    let jet = edges::compute_jet_field(&mesh, &edge_classes);
+    if config.verbosity >= 1 {
+        eprintln!(
+            "Stage 2.1(b) ({:.3}s): Jet curvature prior: {} faces summarized",
+            t.elapsed().as_secs_f64(),
+            jet.len(),
         );
     }
     let mut segmentation = Segmentation {
         edge_classes,
+        jet,
         face_region: Vec::new(),
         regions: Vec::new(),
     };
@@ -1927,13 +1943,53 @@ pub fn stage2(
         }
     }
 
-    // --- Rewrite frontier: 2.3 classification / 2.4 repair / 2.5 selection ---
-    if config.stage.at_least(2, 3) && !config.quiet {
+    if !config.stage.at_least(2, 3) {
+        return Ok(segmentation_only_output(mesh, segmentation));
+    }
+
+    // --- Stage 2.3: per-region surface discovery (whole-region ladder) ---
+    let t = Instant::now();
+    let mut cls = classify::classify_regions(&mesh, &segmentation.regions, config);
+    if config.verbosity >= 1 {
         eprintln!(
-            "Stage 2.3+: not yet implemented (partition-then-classify rewrite in progress) — stopping after stage 2.2"
+            "Stage 2.3 ({:.3}s): Region classification: {} surfaces ({} planar, {} cyl/cone, {} spherical, {} toroidal)",
+            t.elapsed().as_secs_f64(),
+            cls.selected.len(),
+            cls.planar.len(),
+            cls.conical.len(),
+            cls.spherical.len(),
+            cls.toroidal.len(),
         );
     }
-    Ok(segmentation_only_output(mesh, segmentation))
+
+    // --- Stage 2.4: resolution & repair (relabel, merge, re-split) ---
+    if config.stage.at_least(2, 4) {
+        let t = Instant::now();
+        let stats = repair::repair(&mesh, &mut cls, config);
+        if config.verbosity >= 1 {
+            eprintln!(
+                "Stage 2.4 ({:.3}s): Repair: {} relabeled, {} merged, {} re-split → {} surfaces",
+                t.elapsed().as_secs_f64(),
+                stats.relabeled,
+                stats.merged,
+                stats.split,
+                cls.selected.len(),
+            );
+        }
+    }
+
+    // --- Stage 2.5: selected surfaces ---
+    let output = Stage2Output {
+        mesh,
+        planar_hypotheses: cls.planar,
+        conical_hypotheses: cls.conical,
+        spherical_hypotheses: cls.spherical,
+        toroidal_hypotheses: cls.toroidal,
+        bspline_hypotheses: Vec::new(),
+        selected_surfaces: cls.selected,
+        segmentation,
+    };
+    Ok(output)
 }
 
 /// Stage2Output for the current rewrite frontier: segmentation only, no
@@ -1957,16 +2013,15 @@ fn segmentation_only_output(mesh: ConnectedMesh, segmentation: Segmentation) -> 
 // ---------------------------------------------------------------------------
 
 const SHARP_EDGE_COLOR: [f32; 4] = [0.9, 0.1, 0.1, 1.0];
-const JUMP_EDGE_COLOR: [f32; 4] = [1.0, 0.6, 0.0, 1.0];
 
-/// Boundary-edge line segments for viz, one segment per undirected boundary
+/// Boundary-edge line segments for viz, one segment per undirected sharp
 /// edge, offset slightly along the adjacent faces' average normal so they
 /// sit visibly on top of the rendered mesh instead of z-fighting it.
-/// Returns (sharp_positions, jump_positions) as [p0, p1, p0, p1, ...] pairs.
+/// Returns positions as [p0, p1, p0, p1, ...] pairs.
 fn boundary_line_positions(
     mesh: &ConnectedMesh,
     ec: &EdgeClassification,
-) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
+) -> Vec<[f32; 3]> {
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
     for v in &mesh.vertices {
@@ -1982,7 +2037,6 @@ fn boundary_line_positions(
     let offset = if diag.is_finite() { diag * 5e-4 } else { 0.0 };
 
     let mut sharp = Vec::new();
-    let mut jump = Vec::new();
     for fi in 0..mesh.faces.len() {
         let vc = mesh.faces[fi].vertex_count as usize;
         for e in 0..vc {
@@ -1990,8 +2044,7 @@ fn boundary_line_positions(
             if ni < fi as i32 {
                 continue; // open edge, or emitted from the other side
             }
-            let class = ec.class[fi][e];
-            if class == EdgeClass::Interior {
+            if ec.class[fi][e] != EdgeClass::Sharp {
                 continue;
             }
             let n1 = mesh.faces[fi].normal.unwrap_or([0.0; 3]);
@@ -2017,31 +2070,19 @@ fn boundary_line_positions(
                 (vb.y + nn[1] * offset) as f32,
                 (vb.z + nn[2] * offset) as f32,
             ];
-            let out = if class == EdgeClass::Sharp {
-                &mut sharp
-            } else {
-                &mut jump
-            };
-            out.push(pa);
-            out.push(pb);
+            sharp.push(pa);
+            sharp.push(pb);
         }
     }
-    (sharp, jump)
+    sharp
 }
 
 fn push_boundary_lines(overlay: &mut viz::VizOverlay, mesh: &ConnectedMesh, ec: &EdgeClassification) {
-    let (sharp, jump) = boundary_line_positions(mesh, ec);
+    let sharp = boundary_line_positions(mesh, ec);
     if !sharp.is_empty() {
         overlay.lines.push(viz::LineOverlay {
             positions: sharp,
             color: SHARP_EDGE_COLOR,
-            no_depth_test: false,
-        });
-    }
-    if !jump.is_empty() {
-        overlay.lines.push(viz::LineOverlay {
-            positions: jump,
-            color: JUMP_EDGE_COLOR,
             no_depth_test: false,
         });
     }
@@ -2050,8 +2091,8 @@ fn push_boundary_lines(overlay: &mut viz::VizOverlay, mesh: &ConnectedMesh, ec: 
 fn segmentation_edges_overlay(mesh: &ConnectedMesh, ec: &EdgeClassification) -> viz::VizOverlay {
     let mut overlay = viz::VizOverlay::new();
     overlay.status_text = format!(
-        "Stage 2.1: edge classification — {} sharp (red), {} curvature-jump (orange), {} interior [space=continue, q=quit]",
-        ec.sharp_count, ec.jump_count, ec.interior_count,
+        "Stage 2.1: sharp-edge classification — {} sharp (red), {} interior [space=continue, q=quit]",
+        ec.sharp_count, ec.interior_count,
     );
     push_boundary_lines(&mut overlay, mesh, ec);
     overlay
@@ -2082,7 +2123,7 @@ fn segmentation_regions_overlay(mesh: &ConnectedMesh, seg: &Segmentation) -> viz
     let single = seg.regions.iter().filter(|r| r.faces.len() == 1).count();
     let largest = seg.regions.iter().map(|r| r.faces.len()).max().unwrap_or(0);
     overlay.status_text = format!(
-        "Stage 2.2: {} regions ({} single-face, largest {} faces) — boundaries: sharp red / jump orange [space=continue, q=quit]",
+        "Stage 2.2: {} regions ({} single-face, largest {} faces) — sharp boundaries in red [space=continue, q=quit]",
         seg.regions.len(),
         single,
         largest,

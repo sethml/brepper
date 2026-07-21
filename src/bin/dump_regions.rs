@@ -2,7 +2,7 @@
 
 use brepper::config;
 use brepper::stage1::ConnectedMesh;
-use brepper::stage2::edges::{classify_edges, EdgeClass};
+use brepper::stage2::edges::{classify_edges, compute_jet_field, EdgeClass};
 use brepper::stage2::regions::extract_regions;
 use brepper::stage1;
 
@@ -27,15 +27,14 @@ fn main() {
     let config = config::parse_config_from(["brepper", path, "-q"]).unwrap();
     let mesh = stage1::stage1(&config).unwrap();
     let ec = classify_edges(&mesh, config.angular_tolerance_rad);
+    let jet = compute_jet_field(&mesh, &ec);
     let (face_region, regions) = extract_regions(&mesh, &ec);
     eprintln!(
-        "{} faces, {} regions: sharp={} jump={} interior={} ({} rounds)",
+        "{} faces, {} regions: sharp={} interior={}",
         mesh.faces.len(),
         regions.len(),
         ec.sharp_count,
-        ec.jump_count,
         ec.interior_count,
-        ec.rounds
     );
 
     match mode {
@@ -80,7 +79,7 @@ fn main() {
         }
         // Region adjacency: edge counts by class between region pairs.
         "adj" => {
-            let mut pairs: std::collections::BTreeMap<(usize, usize), [usize; 3]> =
+            let mut pairs: std::collections::BTreeMap<(usize, usize), [usize; 2]> =
                 std::collections::BTreeMap::new();
             for fi in 0..mesh.faces.len() {
                 let f = &mesh.faces[fi];
@@ -99,14 +98,11 @@ fn main() {
                     match ec.class[fi][e] {
                         EdgeClass::Interior => entry[0] += 1,
                         EdgeClass::Sharp => entry[1] += 1,
-                        EdgeClass::Jump => entry[2] += 1,
                     }
                 }
             }
-            for ((ra, rb), [interior, sharp, jump]) in pairs {
-                println!(
-                    "regions {ra:4} <-> {rb:4}: interior={interior:4} sharp={sharp:4} jump={jump:4}"
-                );
+            for ((ra, rb), [interior, sharp]) in pairs {
+                println!("regions {ra:4} <-> {rb:4}: interior={interior:4} sharp={sharp:4}");
             }
         }
         // probe <x> <y> <z> [radius]: dump faces near a point with their
@@ -136,8 +132,8 @@ fn main() {
                     c[0],
                     c[1],
                     c[2],
-                    ec.sigma_max[fi],
-                    ec.sigma_min[fi]
+                    jet[fi].k1,
+                    jet[fi].k2
                 );
                 let vc = f.vertex_count as usize;
                 for e in 0..vc {
@@ -171,8 +167,8 @@ fn main() {
                     if ec.class[fi][e] != EdgeClass::Interior {
                         continue;
                     }
-                    let jmax = (ec.sigma_max[fi] - ec.sigma_max[ni]).abs();
-                    let jmin = (ec.sigma_min[fi] - ec.sigma_min[ni]).abs();
+                    let jmax = (jet[fi].k1 - jet[ni].k1).abs();
+                    let jmin = (jet[fi].k2 - jet[ni].k2).abs();
                     let jump = jmax.max(jmin);
                     if jump > 0.05 {
                         count += 1;
@@ -184,10 +180,10 @@ fn main() {
                             (ca[1] + cb[1]) / 2.0,
                             (ca[2] + cb[2]) / 2.0,
                             ec.kappa[fi][e],
-                            ec.sigma_max[fi],
-                            ec.sigma_min[fi],
-                            ec.sigma_max[ni],
-                            ec.sigma_min[ni]
+                            jet[fi].k1,
+                            jet[fi].k2,
+                            jet[ni].k1,
+                            jet[ni].k2
                         );
                     }
                 }
@@ -217,8 +213,8 @@ fn main() {
             let mut hist: std::collections::BTreeMap<(i64, i64), usize> =
                 std::collections::BTreeMap::new();
             for &fi in &regions[rid].faces {
-                let kmax = (ec.sigma_max[fi] * 50.0).round() as i64;
-                let kmin = (ec.sigma_min[fi] * 50.0).round() as i64;
+                let kmax = (jet[fi].k1 * 50.0).round() as i64;
+                let kmin = (jet[fi].k2 * 50.0).round() as i64;
                 *hist.entry((kmax, kmin)).or_default() += 1;
             }
             for ((kmax, kmin), count) in hist {
@@ -283,7 +279,7 @@ fn main() {
             let n = f.normal.unwrap();
             println!(
                 "descriptor: sigma=[{:+.4},{:+.4}] centroid=[{:.3},{:.3},{:.3}] normal=[{:.4},{:.4},{:.4}]",
-                ec.sigma_max[fi], ec.sigma_min[fi], c[0], c[1], c[2], n[0], n[1], n[2]
+                jet[fi].k1, jet[fi].k2, c[0], c[1], c[2], n[0], n[1], n[2]
             );
         }
         _ => eprintln!("unknown mode {mode}"),
