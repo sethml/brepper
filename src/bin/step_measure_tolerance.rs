@@ -72,7 +72,7 @@ fn main() {
     let step_shape = reader.one_shape();
 
     // Collect STEP faces and their surfaces
-    let mut step_surfaces: Vec<opencascade_sys::OwnedPtr<opencascade_sys::shape_extend::HandleGeomSurface>> = Vec::new();
+    let mut step_surfaces: Vec<opencascade_sys::OwnedPtr<opencascade_sys::geom::Handle_Geom_Surface>> = Vec::new();
     {
         let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
             &step_shape,

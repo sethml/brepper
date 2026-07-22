@@ -17,7 +17,7 @@ use opencascade_sys::{
     bnd, convert, extrema,
     geom, geom2d, geom2d_api, geom_abs, geom_api, geom_convert, g_prop, gp, message,
     shape_analysis, shape_fix,
-    t_col_std, t_colgp, top_abs, top_exp, top_loc, topo_ds, OwnedPtr,
+    n_collection, top_abs, top_exp, top_loc, topo_ds, OwnedPtr,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -35,7 +35,7 @@ pub struct FaceDescriptor {
     pub selected_surface_idx: usize,
     /// OCCT surface object (Geom_Plane, Geom_CylindricalSurface, or Geom_SphericalSurface),
     /// type-erased as HandleGeomSurface.
-    pub surface: OwnedPtr<geom::HandleGeomSurface>,
+    pub surface: OwnedPtr<geom::Handle_Geom_Surface>,
     // The TopoDS_Face objects built from these descriptors live in
     // Stage3Output.faces (parallel to face_descriptors), populated in 3.4.
     /// Indices of adjacent FaceDescriptors, ordered topologically around this face's boundary.
@@ -69,7 +69,7 @@ pub struct ReconEdge {
     /// For closed-loop edges (no vertices), both are `usize::MAX`.
     pub vertex_indices: [usize; 2],
     /// 3D intersection curve, trimmed to vertex endpoints. Populated in stage 3.3.
-    pub curve_3d: Option<OwnedPtr<geom::HandleGeomCurve>>,
+    pub curve_3d: Option<OwnedPtr<geom::Handle_Geom_Curve>>,
     /// Whether the adjacent surfaces are tangent along this edge.
     pub tangent: bool,
     /// Mesh vertex indices along this boundary, ordered along the boundary.
@@ -353,7 +353,7 @@ fn compare_adjacency_to_step(
 fn create_occt_surface(
     surface: &SelectedSurface,
     output: &Stage2Output,
-) -> OwnedPtr<geom::HandleGeomSurface> {
+) -> OwnedPtr<geom::Handle_Geom_Surface> {
     match surface {
         SelectedSurface::Planar(idx) => {
             let hyp = &output.planar_hypotheses[*idx];
@@ -1436,7 +1436,7 @@ fn compute_edge_curve(
     // If the IntSS curve is degenerate (doesn't pass near boundary vertices),
     // construct a line from vertex positions. IntSS can return degenerate curves
     // when a plane passes through a cylinder's axis.
-    let fallback_curve: Option<OwnedPtr<geom::HandleGeomCurve>> = if !curve_valid
+    let fallback_curve: Option<OwnedPtr<geom::Handle_Geom_Curve>> = if !curve_valid
         && edge.vertex_indices[0] != usize::MAX
         && edge.vertex_indices[1] != usize::MAX
     {
@@ -1479,7 +1479,7 @@ fn compute_edge_curve(
     // closed junction with a B-spline surface comes back as a closed curve
     // over an arbitrary range (observed [0,1]), and treating it as a
     // partial arc would replace the true junction with a bogus circle.
-    let full_circle_curve: Option<OwnedPtr<geom::HandleGeomCurve>> =
+    let full_circle_curve: Option<OwnedPtr<geom::Handle_Geom_Curve>> =
         if edge.vertex_indices[0] == usize::MAX && edge.vertex_indices[1] == usize::MAX {
             let c = initial_curve_handle.get();
             let span = c.last_parameter() - c.first_parameter();
@@ -1518,7 +1518,7 @@ fn compute_edge_curve(
             None
         };
 
-    let curve_handle: &geom::HandleGeomCurve = match full_circle_curve.as_ref() {
+    let curve_handle: &geom::Handle_Geom_Curve = match full_circle_curve.as_ref() {
         Some(h) => h,
         None => initial_curve_handle,
     };
@@ -1862,11 +1862,11 @@ fn compute_edge_curve(
 /// the input curve when it is already periodic, is not actually closed, or
 /// the conversion fails.
 fn periodicize_closed_curve(
-    curve: OwnedPtr<geom::HandleGeomCurve>,
+    curve: OwnedPtr<geom::Handle_Geom_Curve>,
     config: &Config,
     fi0: usize,
     fi1: usize,
-) -> OwnedPtr<geom::HandleGeomCurve> {
+) -> OwnedPtr<geom::Handle_Geom_Curve> {
     {
         let c = curve.get();
         if c.is_periodic() {
@@ -1913,7 +1913,7 @@ fn periodicize_closed_curve(
 /// Maximum distance from a spread of the edge's mesh boundary vertices to
 /// the (trimmed) curve.
 fn boundary_chain_deviation(
-    curve: &geom::HandleGeomCurve,
+    curve: &geom::Handle_Geom_Curve,
     mesh_boundary_vertices: &[usize],
     mesh: &ConnectedMesh,
 ) -> f64 {
@@ -1944,14 +1944,14 @@ fn boundary_chain_deviation(
 /// (genuinely freeform junctions — e.g. a fitted patch meeting a plane
 /// along an elliptical profile — are neither lines nor circles).
 fn repair_edge_curve_from_boundary(
-    curve: OwnedPtr<geom::HandleGeomCurve>,
+    curve: OwnedPtr<geom::Handle_Geom_Curve>,
     edge: &ReconEdge,
     vertices: &[BRepVertex],
     mesh: &ConnectedMesh,
     config: &Config,
     fi0: usize,
     fi1: usize,
-) -> OwnedPtr<geom::HandleGeomCurve> {
+) -> OwnedPtr<geom::Handle_Geom_Curve> {
     if edge.mesh_boundary_vertices.len() < 3 {
         return curve;
     }
@@ -1968,7 +1968,7 @@ fn repair_edge_curve_from_boundary(
     // Trim a full repair curve to the edge's endpoint vertices (chain-
     // supported side for periodic candidates), or keep it whole for
     // closed-loop edges.
-    let trim_to_endpoints = |full: &geom::HandleGeomCurve| -> Option<OwnedPtr<geom::HandleGeomCurve>> {
+    let trim_to_endpoints = |full: &geom::Handle_Geom_Curve| -> Option<OwnedPtr<geom::Handle_Geom_Curve>> {
         if !has_endpoints {
             return None;
         }
@@ -1988,7 +1988,7 @@ fn repair_edge_curve_from_boundary(
     };
 
     let mut best_dev = dev;
-    let mut best: Option<(OwnedPtr<geom::HandleGeomCurve>, &'static str)> = None;
+    let mut best: Option<(OwnedPtr<geom::Handle_Geom_Curve>, &'static str)> = None;
 
     // Candidate 1: the circle through three spread chain vertices.
     let pnt_at = |i: usize| {
@@ -2018,7 +2018,7 @@ fn repair_edge_curve_from_boundary(
     // chain is ground truth for any junction, so an ordered fit through it
     // handles freeform junction curves no analytic construction covers.
     if has_endpoints && chain.len() >= 4 {
-        let mut pts = t_colgp::Array1OfPnt::new_int2(1, chain.len() as i32);
+        let mut pts = n_collection::Array1_gp_Pnt::new_int2(1, chain.len() as i32);
         for (k, &vi) in chain.iter().enumerate() {
             let v = &mesh.vertices[vi];
             let p = gp::Pnt::new_real3(v.x, v.y, v.z);
@@ -2026,7 +2026,7 @@ fn repair_edge_curve_from_boundary(
         }
         let fit_tol = (config.surface_tolerance_mm / 10.0).max(config.vertex_tolerance_mm * 10.0);
         let fit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            geom_api::PointsToBSpline::new_array1ofpnt_int2_shape_real(
+            geom_api::PointsToBSpline::new_arr1_pnt_int2_shape_real(
                 &pts,
                 3,
                 8,
@@ -2093,7 +2093,7 @@ fn closed_chain_periodic_bspline(
     chain: &[usize],
     mesh: &ConnectedMesh,
     config: &Config,
-) -> Option<OwnedPtr<geom::HandleGeomCurve>> {
+) -> Option<OwnedPtr<geom::Handle_Geom_Curve>> {
     if chain.len() < 4 {
         return None;
     }
@@ -2101,15 +2101,15 @@ fn closed_chain_periodic_bspline(
     if loop_chain.first() == loop_chain.last() {
         loop_chain = &loop_chain[..loop_chain.len() - 1];
     }
-    let mut pts_h = t_colgp::HArray1OfPnt::new_int2(1, loop_chain.len() as i32);
+    let mut pts_h = n_collection::HArray1_gp_Pnt::new_int2(1, loop_chain.len() as i32);
     for (k, &vi) in loop_chain.iter().enumerate() {
         let v = &mesh.vertices[vi];
         let p = gp::Pnt::new_real3(v.x, v.y, v.z);
-        pts_h.change_array1().set_value(k as i32 + 1, &p);
+        pts_h.set_value(k as i32 + 1, &p);
     }
-    let pts_handle = t_colgp::HArray1OfPnt::to_handle(pts_h);
+    let pts_handle = n_collection::HArray1_gp_Pnt::to_handle(pts_h);
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut interp = geom_api::Interpolate::new_handletcolgpharray1ofpnt_bool_real(
+        let mut interp = geom_api::Interpolate::new_harr1_pnt_bool_real(
             &pts_handle,
             true,
             (config.vertex_tolerance_mm * 0.01).max(1e-9),
@@ -2284,7 +2284,7 @@ fn reconstruct_full_circle(
     p0: &gp::Pnt,
     p1: &gp::Pnt,
     p2: &gp::Pnt,
-) -> Option<OwnedPtr<geom::HandleGeomCurve>> {
+) -> Option<OwnedPtr<geom::Handle_Geom_Curve>> {
     // Vectors from p0 to p1 and p2
     let a = [p1.x() - p0.x(), p1.y() - p0.y(), p1.z() - p0.z()];
     let b = [p2.x() - p0.x(), p2.y() - p0.y(), p2.z() - p0.z()];
@@ -2336,7 +2336,7 @@ fn reconstruct_full_circle(
 
 fn project_point_on_curve(
     point: &[f64; 3],
-    curve: &geom::HandleGeomCurve,
+    curve: &geom::Handle_Geom_Curve,
 ) -> Result<f64, String> {
     let pt = gp::Pnt::new_real3(point[0], point[1], point[2]);
     let projector = geom_api::ProjectPointOnCurve::new_pnt_handlegeomcurve(&pt, curve);
@@ -2984,7 +2984,7 @@ fn candidate_trim_parameters(
     t0: f64,
     t1: f64,
     mesh_boundary_vertices: &[usize],
-    curve_handle: &geom::HandleGeomCurve,
+    curve_handle: &geom::Handle_Geom_Curve,
     mesh: &crate::stage1::ConnectedMesh,
 ) -> Option<(f64, f64)> {
     let (t_lo, t_hi) = if curve_handle.get().is_periodic() {
@@ -3006,7 +3006,7 @@ fn select_arc_parameters(
     t0: f64,
     t1: f64,
     mesh_boundary_vertices: &[usize],
-    curve_handle: &geom::HandleGeomCurve,
+    curve_handle: &geom::Handle_Geom_Curve,
     mesh: &crate::stage1::ConnectedMesh,
 ) -> (f64, f64) {
     let period = std::f64::consts::TAU; // 2π for circle
@@ -3069,7 +3069,7 @@ fn select_arc_parameters(
 /// Validate that mesh boundary vertices lie reasonably close to a tangent curve.
 fn validate_tangent_curve(
     edge: &ReconEdge,
-    curve_handle: &geom::HandleGeomCurve,
+    curve_handle: &geom::Handle_Geom_Curve,
     stage2: &Stage2Output,
     config: &Config,
 ) -> Result<(), String> {
@@ -4265,7 +4265,7 @@ enum ChartKind {
 /// query is seeded from the previous solution (`NextValueOfUV`) — the
 /// B-spline analog of the analytic charts' branch-continuity unwrap.
 struct BSplineChartData {
-    surf: OwnedPtr<geom::HandleGeomSurface>,
+    surf: OwnedPtr<geom::Handle_Geom_Surface>,
     sas: RefCell<OwnedPtr<shape_analysis::Surface>>,
     seed: std::cell::Cell<Option<(f64, f64)>>,
     /// Parameter bounds of the surface.
@@ -4494,7 +4494,7 @@ impl SurfaceChart {
 fn build_face_chart(
     fd: &FaceDescriptor,
     stage2: &Stage2Output,
-) -> (SurfaceChart, Option<OwnedPtr<geom::HandleGeomSurface>>) {
+) -> (SurfaceChart, Option<OwnedPtr<geom::Handle_Geom_Surface>>) {
     let surface = &stage2.selected_surfaces[fd.selected_surface_idx];
     let ax3_frame = |origin: [f64; 3], dir: [f64; 3]| -> ([f64; 3], [f64; 3], [f64; 3]) {
         let o = gp::Pnt::new_real3(origin[0], origin[1], origin[2]);
@@ -4939,7 +4939,7 @@ const PCURVE_BASE_SAMPLES: usize = 33;
 /// loops, and the wrap classification.
 struct FaceScan {
     chart: SurfaceChart,
-    surface_override: Option<OwnedPtr<geom::HandleGeomSurface>>,
+    surface_override: Option<OwnedPtr<geom::Handle_Geom_Surface>>,
     samples: HashMap<usize, EdgeUv>,
     loops: Vec<BoundaryLoop>,
     wrap: WrapKind,
@@ -5387,7 +5387,7 @@ fn build_pcurve(
     chart: &SurfaceChart,
     spec: &PcurveSpec,
     config: &Config,
-) -> Result<(OwnedPtr<geom2d::HandleGeom2dCurve>, f64), Stage3Error> {
+) -> Result<(OwnedPtr<geom2d::Handle_Geom2d_Curve>, f64), Stage3Error> {
     let pole_eps = pole_radius_eps(config);
     let dev_target = (config.vertex_tolerance_mm * 0.1).max(1e-7);
     let mut f = 0.0;
@@ -5395,7 +5395,7 @@ fn build_pcurve(
     let curve = b_rep::Tool::curve_edge_real2(edge, &mut f, &mut l);
     let c = curve.get();
 
-    let mut best: Option<(OwnedPtr<geom2d::HandleGeom2dCurve>, f64)> = None;
+    let mut best: Option<(OwnedPtr<geom2d::Handle_Geom2d_Curve>, f64)> = None;
     let mut n = PCURVE_BASE_SAMPLES;
     loop {
         let mut uv = sample_edge_uv(edge, chart, n, pole_eps).ok_or_else(|| {
@@ -5486,31 +5486,31 @@ fn build_pcurve(
         }
 
         let pcurve = if pointlike {
-            let mut poles = t_colgp::Array1OfPnt2d::new_int2(1, 2);
+            let mut poles = n_collection::Array1_gp_Pnt2d::new_int2(1, 2);
             poles.set_value(1, &gp::Pnt2d::new_real2(uv.us[0], uv.vs[0]));
             poles.set_value(2, &gp::Pnt2d::new_real2(uv.us[last], uv.vs[last]));
-            let mut knots = t_col_std::Array1OfReal::new_int2(1, 2);
+            let mut knots = n_collection::Array1_double::new_int2(1, 2);
             knots.set_value(1, &uv.ts[0]);
             knots.set_value(2, &uv.ts[last]);
-            let mut mults = t_col_std::Array1OfInteger::new_int2(1, 2);
+            let mut mults = n_collection::Array1_int::new_int2(1, 2);
             mults.set_value(1, &2);
             mults.set_value(2, &2);
-            let bs = geom2d::BSplineCurve::new_array1ofpnt2d_array1ofreal_array1ofinteger_int_bool(
+            let bs = geom2d::BSplineCurve::new_arr1_pnt2d_arr1_double_arr1_int_int_bool(
                 &poles, &knots, &mults, 1, false,
             );
             geom2d::BSplineCurve::to_handle(bs).to_handle_curve()
         } else {
             let np = kept.len() as i32;
-            let mut pts_h = t_colgp::HArray1OfPnt2d::new_int2(1, np);
-            let mut params_h = t_col_std::HArray1OfReal::new_int2(1, np);
+            let mut pts_h = n_collection::HArray1_gp_Pnt2d::new_int2(1, np);
+            let mut params_h = n_collection::HArray1_double::new_int2(1, np);
             for (slot, &i) in kept.iter().enumerate() {
                 let pnt2d = gp::Pnt2d::new_real2(uv.us[i], uv.vs[i]);
-                pts_h.change_array1().set_value((slot + 1) as i32, &pnt2d);
-                params_h.change_array1().set_value((slot + 1) as i32, &uv.ts[i]);
+                pts_h.set_value((slot + 1) as i32, &pnt2d);
+                params_h.set_value((slot + 1) as i32, &uv.ts[i]);
             }
-            let pts_handle = t_colgp::HArray1OfPnt2d::to_handle(pts_h);
-            let params_handle = t_col_std::HArray1OfReal::to_handle(params_h);
-            let mut interp = geom2d_api::Interpolate::new_handletcolgpharray1ofpnt2d_handletcolstdharray1ofreal_bool_real(
+            let pts_handle = n_collection::HArray1_gp_Pnt2d::to_handle(pts_h);
+            let params_handle = n_collection::HArray1_double::to_handle(params_h);
+            let mut interp = geom2d_api::Interpolate::new_harr1_pnt2d_harr1_double_bool_real(
                 &pts_handle, &params_handle, false, 1e-10,
             );
             interp.perform();
@@ -5579,7 +5579,7 @@ fn make_degenerate_edge(
     u_from: f64,
     u_to: f64,
     v_pole: f64,
-    surface: &geom::HandleGeomSurface,
+    surface: &geom::Handle_Geom_Surface,
     config: &Config,
 ) -> OwnedPtr<topo_ds::Edge> {
     let identity_loc = top_loc::Location::new();
@@ -5766,7 +5766,7 @@ fn assemble_face(
     let pole_eps = pole_radius_eps(config);
     let scan = scan_face(fi, output, ctx, config)?;
     let FaceScan { chart, surface_override, samples, loops, wrap } = scan;
-    let surf: &geom::HandleGeomSurface = surface_override.as_deref().unwrap_or(&fd.surface);
+    let surf: &geom::Handle_Geom_Surface = surface_override.as_deref().unwrap_or(&fd.surface);
     let interior = mesh_interior_uvs(fd, &output.stage2, &chart, pole_eps);
 
     let mut winding: Vec<PlacedLoop> = Vec::new();
@@ -6311,7 +6311,7 @@ fn assemble_face(
         };
         // The seam is exactly an isoline, so the pcurve's wrap coordinate is
         // pinned to each window border exactly.
-        let build_border = |border: f64| -> Result<(OwnedPtr<geom2d::HandleGeom2dCurve>, f64), Stage3Error> {
+        let build_border = |border: f64| -> Result<(OwnedPtr<geom2d::Handle_Geom2d_Curve>, f64), Stage3Error> {
             let spec = PcurveSpec {
                 basis_first_u: b0,
                 force_u: is_u_wrap.then_some(border),
@@ -6455,7 +6455,7 @@ fn polygon_signed_area(poly: &[(f64, f64)]) -> f64 {
 #[allow(clippy::too_many_arguments)]
 fn make_seam_edge(
     builder: &b_rep::Builder,
-    iso: &geom::HandleGeomCurve,
+    iso: &geom::Handle_Geom_Curve,
     v_lo: &topo_ds::Vertex,
     v_hi: &topo_ds::Vertex,
     p_lo: f64,
@@ -7477,12 +7477,12 @@ mod tests {
             [3.0, 0.4, 0.0],
             [4.0, 0.0, 0.0],
         ];
-        let mut pts = t_colgp::Array1OfPnt::new_int2(1, points.len() as i32);
+        let mut pts = n_collection::Array1_gp_Pnt::new_int2(1, points.len() as i32);
         for (i, p) in points.iter().enumerate() {
             let pnt = gp::Pnt::new_real3(p[0], p[1], p[2]);
             pts.set_value(i as i32 + 1, &pnt);
         }
-        let fit = geom_api::PointsToBSpline::new_array1ofpnt_int2_shape_real(
+        let fit = geom_api::PointsToBSpline::new_arr1_pnt_int2_shape_real(
             &pts,
             3,
             8,

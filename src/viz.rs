@@ -2562,7 +2562,7 @@ pub fn tessellate_shape(
 /// Sample points along an OCCT curve for line rendering.
 /// Returns pairs of points [p0, p1, p1, p2, ...] forming a polyline.
 pub fn sample_curve_for_viz(
-    curve: &opencascade_sys::geom::HandleGeomCurve,
+    curve: &opencascade_sys::geom::Handle_Geom_Curve,
     num_segments: usize,
 ) -> Vec<[f32; 3]> {
     let c = curve.get();

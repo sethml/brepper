@@ -65,7 +65,7 @@
 
 use opencascade_sys::{
     b_rep_algo_api, b_rep_check, b_rep_g_prop, b_rep_mesh, b_rep_prim_api, b_rep_builder_api,
-    g_prop, geom, gp, message, stl_api, t_col_std, t_colgp, topo_ds, OwnedPtr,
+    g_prop, geom, gp, message, stl_api, n_collection, topo_ds, OwnedPtr,
 };
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -90,7 +90,7 @@ fn write_tessellated_stl(shape: &topo_ds::Shape, dir: &str, name: &str, deflecti
     let mut writer = stl_api::Writer::new();
     *writer.ascii_mode() = false;
     let progress = message::ProgressRange::new();
-    if !writer.write(shape, &stl_path, &progress) {
+    if !writer.write_shape_charptr_progressrange(shape, &stl_path, &progress) {
         panic!("failed to write {stl_path}");
     }
     println!("wrote {stl_path}");
@@ -303,10 +303,10 @@ fn norm(a: [f64; 3]) -> f64 {
 
 /// Clamped-uniform cubic knot vector for `n` control points: distinct knots
 /// 0..n-3 with end multiplicity 4.
-fn clamped_cubic_knots(n: usize) -> (OwnedPtr<t_col_std::Array1OfReal>, OwnedPtr<t_col_std::Array1OfInteger>) {
+fn clamped_cubic_knots(n: usize) -> (OwnedPtr<n_collection::Array1_double>, OwnedPtr<n_collection::Array1_int>) {
     let nk = n - 2; // distinct knots for degree 3
-    let mut knots = t_col_std::Array1OfReal::new_int2(1, nk as i32);
-    let mut mults = t_col_std::Array1OfInteger::new_int2(1, nk as i32);
+    let mut knots = n_collection::Array1_double::new_int2(1, nk as i32);
+    let mut mults = n_collection::Array1_int::new_int2(1, nk as i32);
     for k in 0..nk {
         knots.set_value(k as i32 + 1, &(k as f64));
         let m = if k == 0 || k == nk - 1 { 4 } else { 1 };
@@ -324,8 +324,8 @@ fn lattice_bspline_surface(
     y0: f64,
     d: f64,
     zf: &dyn Fn(f64, f64) -> f64,
-) -> OwnedPtr<geom::HandleGeomBSplineSurface> {
-    let mut poles = t_colgp::Array2OfPnt::new_int4(1, n as i32, 1, n as i32);
+) -> OwnedPtr<geom::Handle_Geom_BSplineSurface> {
+    let mut poles = n_collection::Array2_gp_Pnt::new_int4(1, n as i32, 1, n as i32);
     for i in 0..n {
         for j in 0..n {
             let x = x0 + i as f64 * d;
@@ -336,7 +336,7 @@ fn lattice_bspline_surface(
     }
     let (uknots, umults) = clamped_cubic_knots(n);
     let (vknots, vmults) = clamped_cubic_knots(n);
-    let surf = geom::BSplineSurface::new_array2ofpnt_array1ofreal2_array1ofinteger2_int2(
+    let surf = geom::BSplineSurface::new_arr2_pnt_arr1_double2_arr1_int2_int2(
         &poles, &uknots, &vknots, &umults, &vmults, 3, 3,
     );
     geom::BSplineSurface::to_handle(surf)
@@ -344,15 +344,15 @@ fn lattice_bspline_surface(
 
 /// Exact cubic B-spline curve in the XZ plane (y=0) from poles at
 /// x = x0 + i*d, z from `zs`.
-fn profile_bspline_curve(x0: f64, d: f64, zs: &[f64]) -> OwnedPtr<geom::HandleGeomBSplineCurve> {
+fn profile_bspline_curve(x0: f64, d: f64, zs: &[f64]) -> OwnedPtr<geom::Handle_Geom_BSplineCurve> {
     let n = zs.len();
-    let mut poles = t_colgp::Array1OfPnt::new_int2(1, n as i32);
+    let mut poles = n_collection::Array1_gp_Pnt::new_int2(1, n as i32);
     for (i, z) in zs.iter().enumerate() {
         let p = gp::Pnt::new_real3(x0 + i as f64 * d, 0.0, *z);
         poles.set_value(i as i32 + 1, &p);
     }
     let (knots, mults) = clamped_cubic_knots(n);
-    let curve = geom::BSplineCurve::new_array1ofpnt_array1ofreal_array1ofinteger_int(
+    let curve = geom::BSplineCurve::new_arr1_pnt_arr1_double_arr1_int_int(
         &poles, &knots, &mults, 3,
     );
     geom::BSplineCurve::to_handle(curve)
@@ -537,7 +537,7 @@ fn lattice_slab_model(
     lattice_spacing: f64,
     zf: &dyn Fn(f64, f64) -> f64,
     boxdims: (f64, f64, f64),
-) -> OwnedPtr<geom::HandleGeomBSplineSurface> {
+) -> OwnedPtr<geom::Handle_Geom_BSplineSurface> {
     let (bx, by, bz) = boxdims;
     let handle = lattice_bspline_surface(n, lattice_origin, lattice_origin, lattice_spacing, zf);
 
@@ -668,7 +668,7 @@ fn elliptical_cylinder(dir: &str) {
     println!("  elliptical_cylinder: volume {vol:.2} mm³ (mesh {stl_vol:.2})");
 }
 
-fn bspline_hill(dir: &str) -> OwnedPtr<geom::HandleGeomBSplineSurface> {
+fn bspline_hill(dir: &str) -> OwnedPtr<geom::Handle_Geom_BSplineSurface> {
     let zf = |x: f64, y: f64| {
         let r2 = (x - 20.0).powi(2) + (y - 20.0).powi(2);
         5.0 + 9.0 * (-r2 / (2.0 * 64.0)).exp()
@@ -855,7 +855,7 @@ fn bspline_wave(dir: &str) {
 /// bspline_hill minus an off-center vertical cylinder: inner loop on the
 /// B-spline face, cylinder∩B-spline edge curves, and a realistically
 /// irregular tessellated mesh.
-fn hill_with_hole(dir: &str, hill: &geom::HandleGeomBSplineSurface) {
+fn hill_with_hole(dir: &str, hill: &geom::Handle_Geom_BSplineSurface) {
     let (bx, by, bz) = (40.0, 40.0, 16.0);
     let mut face =
         b_rep_builder_api::MakeFace::new_handlegeomsurface_real(&hill.to_handle_surface(), 1e-7);

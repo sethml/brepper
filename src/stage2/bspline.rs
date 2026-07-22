@@ -28,7 +28,7 @@ use crate::config::Config;
 use crate::stage1::ConnectedMesh;
 use crate::viz::{self, VizAction, VizSender};
 use opencascade_sys::{
-    approx, geom, geom_abs, geom_api, gp, shape_analysis, t_col_std, t_colgp, OwnedPtr,
+    approx, geom, geom_abs, geom_api, gp, shape_analysis, n_collection, OwnedPtr,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -99,7 +99,7 @@ struct Projector {
 pub struct BSplineHypothesis {
     /// The fitted surface. Stage 3 mints type-erased handles to this same
     /// object via `to_handle_surface()`.
-    pub surface: OwnedPtr<geom::HandleGeomBSplineSurface>,
+    pub surface: OwnedPtr<geom::Handle_Geom_BSplineSurface>,
     /// Cached projector for distance/normal queries (interior-mutable
     /// because ShapeAnalysis_Surface caches internally).
     projector: RefCell<Projector>,
@@ -142,7 +142,7 @@ impl std::fmt::Debug for BSplineHypothesis {
 
 impl BSplineHypothesis {
     fn new(
-        surface: OwnedPtr<geom::HandleGeomBSplineSurface>,
+        surface: OwnedPtr<geom::Handle_Geom_BSplineSurface>,
         faces: Vec<usize>,
         vertices: Vec<usize>,
     ) -> Self {
@@ -1697,7 +1697,7 @@ fn fit_grid(
         None => (n_u, n_v, false),
     };
     let flip_b = flip != transpose;
-    let mut pts = t_colgp::Array2OfPnt::new_int4(1, n_a as i32, 1, n_b as i32);
+    let mut pts = n_collection::Array2_gp_Pnt::new_int4(1, n_a as i32, 1, n_b as i32);
     for a in 0..n_a {
         for b in 0..n_b {
             let bb = if flip_b { n_b - 1 - b } else { b };
@@ -1730,7 +1730,7 @@ fn fit_grid(
             let fit = match method {
                 None => {
                     let mut fit = geom_api::PointsToBSplineSurface::new();
-                    fit.interpolate_array2ofpnt_parametrizationtype_bool(
+                    fit.interpolate_arr2_pnt_parametrizationtype_bool(
                         &pts,
                         approx::ParametrizationType::Chordlength,
                         around.is_some(),
@@ -1738,7 +1738,7 @@ fn fit_grid(
                     fit
                 }
                 Some(tol3d) => {
-                    geom_api::PointsToBSplineSurface::new_array2ofpnt_parametrizationtype_int2_shape_real(
+                    geom_api::PointsToBSplineSurface::new_arr2_pnt_parametrizationtype_int2_shape_real(
                         &pts,
                         approx::ParametrizationType::Chordlength,
                         3,
@@ -1778,7 +1778,7 @@ fn fit_grid(
             }
             let nk = bs.nb_u_knots();
             let (k0, k1) = (bs.u_knot(1), bs.u_knot(nk));
-            let mut knots = t_col_std::Array1OfReal::new_int2(1, nk);
+            let mut knots = n_collection::Array1_double::new_int2(1, nk);
             for k in 1..=nk {
                 let scaled = (bs.u_knot(k) - k0) / (k1 - k0) * std::f64::consts::TAU;
                 knots.set_value(k, &scaled);
@@ -1849,7 +1849,7 @@ fn validate_fit(
     maps: &AxisMaps,
     around: Option<bool>,
     flip_b: bool,
-    surface: OwnedPtr<geom::HandleGeomBSplineSurface>,
+    surface: OwnedPtr<geom::Handle_Geom_BSplineSurface>,
     n_u: usize,
     n_v: usize,
     grid: &[[f64; 3]],
