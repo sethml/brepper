@@ -412,6 +412,21 @@ fn onshape_pipe_elbow_medium_stage41_compare() {
 }
 
 #[test]
+fn onshape_pipe_elbow_fine_stage41_compare() {
+    // Fine tessellation of the same quarter-torus elbow. Under OCCT 7.9.3 the
+    // in-memory solid was correct but the WRITTEN STEP read back 14% low
+    // (partial-torus pcurve bug); OCCT 8.0.0_p1 fixes the round-trip, so the
+    // --compare STEP round-trip self-check (stage4.rs) now passes here.
+    let dir = manifest_dir();
+    let config = config_for_compare(
+        &format!("{dir}/tests/onshape/pipe_elbow_10_fine.stl"),
+        &format!("{dir}/tmp/test_pipe_elbow_fine_cmp.step"),
+        &format!("{dir}/tests/onshape/pipe_elbow_10.step"),
+    );
+    run_stage4(&config);
+}
+
+#[test]
 fn onshape_cone_truncated_stage41_compare() {
     let dir = manifest_dir();
     let config = config_for_compare(
