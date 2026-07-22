@@ -4,92 +4,26 @@
 
 # Active
 
-- **CURRENT WORK: stage-2 rewrite (partition-then-classify).** Stages 2.1
-  (edge classification) + 2.2 (region extraction) are done and tested;
-  next is 2.3 (classification ladder) then 2.4 (repair loop) — the
-  make-or-break test of the architecture. Full honest status, verdict vs
-  the seed-first Contingency, and ordered next steps are in
-  DEVELOPMENT_PLAN.md's **Stage-2 Retrospective** section — read that
-  first. The items below mostly describe the nerfed BFS pipeline and are
-  kept for reference until the rewrite's deletion pass.
+- **CURRENT WORK: stage-2 rewrite (partition-then-classify).** Roadmap
+  steps 1–5 are landed and verified (jet prior + region ladder + repair +
+  scoped competition + toroidal/bent-tube promotion); step 6 (freeform
+  rewiring, `bspline.rs`) and step 7 (deletion pass + corpus re-enable)
+  remain. See the **Rewrite Roadmap** in DEVELOPMENT_PLAN.md for the step
+  list and acceptance criteria, and the **Stage-2 Retrospective** for the
+  architecture rationale. The BFS-pipeline items below are kept for
+  reference until the step-7 deletion pass removes that code.
 
-- **End-cap pcurve degenerates on STEP export, ~14% volume loss
-  (`pipe_elbow_10_fine`; found + diagnosed 2026-07-21 during step-5 debug).
-  DETECTED (round-trip self-check, stage4.rs) but NOT yet fixed.** After
-  stage-2.3(c) torus promotion, `pipe_elbow_10_fine` recognizes the correct
-  5-surface topology (1 torus R=10 r=5 + 2 cylinders r=5 + 2 end planes) and
-  builds a fully valid in-memory solid; the *written* STEP re-reads 14% low
-  (3087 vs 3590 mm³) → fails `--compare` at stage 4.1. `pipe_elbow_10_medium`
-  is identical in every analytic parameter and STEP entity count yet
-  round-trips faithfully. Deep dive (probe: read the written STEP back and
-  report per-face type + `BRepTools::UVBounds` + `BRepCheck`; and an
-  in-memory `UVBounds`/`BRepCheck` dump of the compound before the write):
-  - **The deduced geometry is CORRECT and IDENTICAL-quality for both.**
-    In memory, every face of both meshes has clean, exact pcurve bounds —
-    the two end-cap planes are each `dU=dV=10.0000` (a radius-5 disk), the
-    torus is `U∈[0,π/2] V∈[0,2π]`, correct `BRepGProp` volume 3589.98 mm³,
-    and BOTH pass geometric AND topological `BRepCheck_Analyzer`. There is
-    no in-memory defect to find.
-  - **The corruption is entirely in OCCT's STEP export.** OCCT re-expresses
-    every pcurve as a B-spline on write (the file has 20 `B_SPLINE_CURVE`s,
-    only 3 exact `CIRCLE`s). For the fine mesh this conversion produces a
-    DEGENERATE pcurve for one end-cap plane: on re-import that face's UV
-    domain collapses to a single point (`U=[59.14681,59.14681] V≈[0,0]`)
-    while its 3D area stays ~78.5. The re-imported solid is STILL
-    topologically valid and closed (1 solid, 1 shell, 5 faces, 14 edges,
-    `BRepCheck` valid) — but `BRepGProp`'s volume integral, which uses the
-    collapsed pcurve domain, under-counts by one end-cap's worth (~500 mm³).
-  - **Likely trigger** (lead for the fix): the fine mesh's periodic faces
-    carry a sub-micron parametric seam offset — torus `V=[-3.5e-6, 2π-3.5e-6]`
-    and a cylinder `U=[-1e-5, 2π-1e-5]`, versus medium's exact `[0, 2π]`.
-    That offset (from fitting pcurves/edges to the 4×-denser, differently
-    positioned vertex chains) is invisible to `BRepCheck` but appears to be
-    what tips OCCT's pcurve→B-spline export into the degenerate case for the
-    adjacent end-cap. The fix probably lives in stage-3 pcurve/seam
-    construction (`build_pcurve`, seam re-anchoring): snap periodic-face
-    parameter domains to exactly `[0, 2π]` and/or attach exact-circle
-    pcurves (not B-splines) for circular edges so OCCT does not resample.
-  Reproduce: `brepper tests/onshape/pipe_elbow_10_fine.stl -o out.step
-  --compare tests/onshape/pipe_elbow_10.step` now prints a `Stage 4.1
-  WARNING` from the round-trip self-check (re-read the written STEP, compare
-  its volume to the in-memory solid). The self-check is gated behind
-  `--compare`, which already re-reads the output, so a normal run pays no
-  extra STEP read. Per-face inspection tool used for the diagnosis was a
-  throwaway bin reading the STEP back via `read_step_file` +
-  `top_exp::Explorer` + `BRepAdaptor_Surface` +
-  `BRepTools::uv_bounds_face_real4`. Environment: OCCT 7.9.3.
-  `occt_full_torus` (complete donut) round-trips fine and
-  `pipe_elbow_10_medium` passes, so this is specific to a *partial*
-  periodic-torus assembly at fine tessellation.
-  `pipe_elbow_10_fine` is NOT a tracked test (no suite regression), but it
-  blocks any future fine-torus `--compare` test.
-  - **Known OCCT bug; the real fix is an OCCT upgrade (2026-07-21 web
-    search + probe).** brepper bundles OCCT **7.9.3** (opencascade-rs
-    occt-sys, pinned to the `V7_9_3` tag); the current OCCT release is
-    **8.0.0** (May 2026) / 8.0.0_p1 (June 2026). The 8.0.0 release notes
-    list a fix that matches this reproduction closely — *"partial torus
-    creation handles inverted V range"* — plus *"periodic BSpline curve
-    bounding works with the corrected tolerance"* and *"unstable PCurve
-    processing … addressed during shape healing"*. Our case is exactly a
-    partial torus whose fine-mesh V-range starts slightly negative (an
-    inverted/offset V range). **Next step: bump the bundled OCCT to
-    8.0.0_p1** (in the sibling opencascade-rs repo — crosses a major
-    version, so expect FFI-binding churn) and re-check the round-trip; this
-    likely fixes it with no brepper geometry change. (Not confirmed against
-    this exact repro — verify.)
-  - **The `write.surfacecurve.mode` workaround was TRIED (2026-07-21) and
-    does NOT work — do not retry.** Set `write.surfacecurve.mode=0` (verified
-    the written STEP then had zero PCURVE/SEAM_CURVE/SURFACE_CURVE entities,
-    only 3D curves) and additionally `read.surfacecurve.mode=3`: the
-    re-imported volume was still 3087 mm³ (14% low). So the degeneracy is
-    NOT in the writer's pcurve→B-spline conversion — OCCT *rebuilds* the
-    pcurve from the exact 3D curve on read and that reconstruction ALSO
-    degenerates for this partial-torus periodic face. The bug is in OCCT's
-    pcurve computation for the partial torus, hit on both the write and read
-    paths, which is why only the OCCT upgrade (or generating the geometry so
-    the periodic domain lands exactly on `[0, 2π]`) can fix it.
-    `interface::Static::set_i_val(name, val)` is the available binding if a
-    future attempt needs it.
+- **FIXED (2026-07-22, OCCT 8.0.0_p1 upgrade): partial-torus STEP round-trip
+  volume loss (`pipe_elbow_10_fine`).** Under OCCT 7.9.3 the written STEP for
+  the fine pipe-elbow re-read 14% low (3087 vs 3590 mm³) because OCCT's
+  pcurve computation for the partial (bend-segment) torus degenerated on
+  both the write and read paths — a known OCCT bug (the 8.0.0 notes list
+  "partial torus creation handles inverted V range"). The OCCT 8.0 port
+  (commit 4b20904) fixes it with no brepper geometry change: round-trip rel
+  diff is now 7.6e-9, and `pipe_elbow_10_fine --compare` is a tracked
+  regression guard (commit 71a2735). The `write.surfacecurve.mode=0`
+  workaround did NOT help and was abandoned. Full diagnosis is in the
+  commit history / memory if the failure ever recurs.
 
 - Add full-pipeline tests for nosecone_truncated and hill_with_hole — both
   fail full-pipeline `--compare` volume gates with default flags but have no

@@ -34,6 +34,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
+use super::compete::CompeteHyp;
 use super::{
     face_centroid, planar, ConicalHypothesis, PlanarHypothesis, SelectedSurface,
     SphericalHypothesis, ToroidalHypothesis,
@@ -1970,6 +1971,240 @@ fn region_normal_near(mesh: &ConnectedMesh, region: &Region, p: [f64; 3]) -> [f6
 // ---------------------------------------------------------------------------
 // Stage 2.7 driver
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Stage 2.3(e): freeform leftovers (the rewrite's freeform rung)
+// ---------------------------------------------------------------------------
+
+/// One leftover component's freeform fit: a multi-face plane (when the
+/// component is planar to fitting exactness) or one-or-two B-spline surfaces
+/// (two only for a seam-split closed band).
+enum ComponentFit {
+    Plane(PlanarHypothesis),
+    Bsplines(Vec<BSplineHypothesis>),
+}
+
+/// Result of freeform-fitting the unclaimed leftover components of one
+/// competed region (stage 2.3(e)).
+pub(super) struct FreeformResult {
+    /// Freeform B-spline surfaces (one per fitted component; two for a
+    /// seam-split closed band).
+    pub bsplines: Vec<BSplineHypothesis>,
+    /// Multi-face planar hypotheses for components that turned out planar to
+    /// fitting exactness (a plane beats a B-spline that overfits noise).
+    pub planes: Vec<PlanarHypothesis>,
+    /// Indices into the competition `hyps` slice of small analytic islands
+    /// dissolved into a freeform patch (the caller drops them).
+    pub dissolved: HashSet<usize>,
+    /// Leftover faces that remain per-facet planes: components below the
+    /// minimum fit size, and fits that failed at every grid density.
+    pub residual: Vec<usize>,
+}
+
+/// Stage 2.3(e): fit the unclaimed leftover components of a competed region
+/// with B-spline surfaces (the reborn NURBS rung — the old region-*gathering*
+/// front end is gone; the smooth-region partition and competition leftovers
+/// supply the input directly).
+///
+/// Connected components of `leftovers` at or above `MIN_BSPLINE_FACES` are
+/// fitted; a component planar to fitting exactness becomes a multi-face plane
+/// instead. Before fitting, small committed analytic islands (`hyps`) fully
+/// enclosed by a component are provisionally dissolved into it and kept
+/// freeform only if the fit then validates their vertices too, else restored
+/// (the fit-validated reincarnation of the old gathering's confetti-absorption
+/// guard). Components below the minimum and fits that fail at every grid
+/// density degrade to per-facet planes (`residual`) — total coverage can
+/// never fail.
+///
+/// `face_region` (region id per mesh face) is the outside-surface key for
+/// boundary-corner detection: distinct neighbouring regions (the freeform
+/// patch's walls) carry distinct ids, so corners land where the adjacent
+/// surface changes.
+pub(super) fn fit_leftover_components(
+    mesh: &ConnectedMesh,
+    leftovers: &[usize],
+    hyps: &[CompeteHyp],
+    face_region: &[usize],
+    config: &Config,
+) -> FreeformResult {
+    let mut result = FreeformResult {
+        bsplines: Vec::new(),
+        planes: Vec::new(),
+        dissolved: HashSet::new(),
+        residual: Vec::new(),
+    };
+
+    // A freeform region baits the analytic detectors locally: an inflection
+    // grows a run of accidentally-coplanar facets as a tiny plane, and a
+    // singly-curved patch grows a short circular-cylinder band — each
+    // *fragmenting* the region into separate leftover pieces. So the freeform
+    // domain is the leftover faces PLUS the small analytic islands
+    // (≤ SMALL_SELECTION_ABSORB_FACES) that could be such accidents; growing
+    // components over that domain reunites the pieces the islands split. A
+    // committed island whose faces this rung absorbs into a validating patch
+    // is dissolved (the caller drops it). `face_hyp[fi]` = the small hyp
+    // owning face `fi` (or usize::MAX).
+    let mut face_hyp = vec![usize::MAX; mesh.faces.len()];
+    let mut domain: Vec<usize> = leftovers.to_vec();
+    for (hi, h) in hyps.iter().enumerate() {
+        if h.faces().len() <= SMALL_SELECTION_ABSORB_FACES {
+            for &fi in h.faces() {
+                face_hyp[fi] = hi;
+                domain.push(fi);
+            }
+        }
+    }
+    domain.sort_unstable();
+    domain.dedup();
+    let leftover_set: HashSet<usize> = leftovers.iter().copied().collect();
+
+    for comp in leftover_components(mesh, &domain) {
+        // Unexplained (leftover) freeform faces in this component.
+        let single: Vec<usize> = comp
+            .iter()
+            .copied()
+            .filter(|fi| leftover_set.contains(fi))
+            .collect();
+        // A component with too little unexplained freeform is not a freeform
+        // patch — a real small analytic feature competition fit, or a junction
+        // sliver. Leave the islands committed; the leftover faces go per-facet.
+        if single.len() < MIN_BSPLINE_FACES {
+            result.residual.extend(single);
+            continue;
+        }
+
+        // Absorb the small analytic islands into the freeform patch only when
+        // the unexplained area dominates (evidence the islands are accidents);
+        // otherwise trust the analytic fits and fit just the leftover freeform.
+        let absorbed = comp.len() - single.len();
+        let (fit_faces, dissolve) = if absorbed <= single.len() {
+            (comp.clone(), true)
+        } else {
+            (single.clone(), false)
+        };
+
+        match fit_or_planarize(mesh, &fit_faces, face_region, config) {
+            Some(fit) => {
+                commit_component_fit(fit, &mut result);
+                if dissolve {
+                    for &fi in &comp {
+                        if face_hyp[fi] != usize::MAX {
+                            result.dissolved.insert(face_hyp[fi]);
+                        }
+                    }
+                }
+            }
+            None => result.residual.extend(single),
+        }
+    }
+    result
+}
+
+fn commit_component_fit(fit: ComponentFit, result: &mut FreeformResult) {
+    match fit {
+        ComponentFit::Plane(p) => result.planes.push(p),
+        ComponentFit::Bsplines(bs) => result.bsplines.extend(bs),
+    }
+}
+
+/// Explain one leftover component: a plane when it is planar to fitting
+/// exactness (10× vertex tolerance — a shallow dome is NOT flattened),
+/// otherwise a B-spline fit. Returns `None` when the B-spline fit fails at
+/// every grid density (the component degrades to per-facet planes).
+fn fit_or_planarize(
+    mesh: &ConnectedMesh,
+    comp: &[usize],
+    face_region: &[usize],
+    config: &Config,
+) -> Option<ComponentFit> {
+    let vert_set: HashSet<usize> = comp
+        .iter()
+        .flat_map(|&fi| {
+            let f = &mesh.faces[fi];
+            f.vertex_indices[..f.vertex_count as usize].to_vec()
+        })
+        .collect();
+
+    // Planar to fitting exactness → a plane, not a B-spline that overfits
+    // noise. The area-weighted normal of a closed/symmetric region cancels to
+    // ~zero and normalizes to NaN; treat any non-finite plane as non-planar.
+    let (pn, pd) = planar::fit_plane(comp, &vert_set, &mesh.faces, &mesh.vertices);
+    let plane_tol = 10.0 * config.vertex_tolerance_mm;
+    let plane_err = if pn.iter().all(|c| c.is_finite()) && pd.is_finite() {
+        vert_set
+            .iter()
+            .map(|&vi| {
+                let v = &mesh.vertices[vi];
+                (pn[0] * v.x + pn[1] * v.y + pn[2] * v.z - pd).abs()
+            })
+            .fold(0.0_f64, f64::max)
+    } else {
+        f64::INFINITY
+    };
+    if plane_err <= plane_tol {
+        let mut verts: Vec<usize> = vert_set.into_iter().collect();
+        verts.sort_unstable();
+        return Some(ComponentFit::Plane(PlanarHypothesis {
+            normal: pn,
+            distance: pd,
+            faces: comp.to_vec(),
+            vertices: verts,
+            error_max: plane_err,
+            error_min: -plane_err,
+            error_abs_sum: 0.0,
+        }));
+    }
+
+    let n = mesh.faces.len();
+    let comp_set: HashSet<usize> = comp.iter().copied().collect();
+    let in_region: Vec<bool> = (0..n).map(|fi| comp_set.contains(&fi)).collect();
+    match fit_component(mesh, comp.to_vec(), face_region, &in_region, config) {
+        Ok(hyps) => Some(ComponentFit::Bsplines(hyps)),
+        Err(reason) => {
+            if config.verbosity >= 1 {
+                eprintln!(
+                    "  Stage 2.3(e): {}-face freeform component left as per-facet planes: {reason}",
+                    comp.len(),
+                );
+            }
+            None
+        }
+    }
+}
+
+/// Connected components (over shared mesh edges) of a leftover face set, each
+/// ascending, outer vec ordered by smallest member face.
+fn leftover_components(mesh: &ConnectedMesh, faces: &[usize]) -> Vec<Vec<usize>> {
+    let member: HashSet<usize> = faces.iter().copied().collect();
+    let mut seen: HashSet<usize> = HashSet::new();
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    let mut starts = faces.to_vec();
+    starts.sort_unstable();
+    for &start in &starts {
+        if seen.contains(&start) {
+            continue;
+        }
+        let mut comp = Vec::new();
+        let mut stack = vec![start];
+        seen.insert(start);
+        while let Some(fi) = stack.pop() {
+            comp.push(fi);
+            let f = &mesh.faces[fi];
+            for k in 0..f.vertex_count as usize {
+                let ni = f.neighbors[k];
+                if ni >= 0 {
+                    let ni = ni as usize;
+                    if member.contains(&ni) && seen.insert(ni) {
+                        stack.push(ni);
+                    }
+                }
+            }
+        }
+        comp.sort_unstable();
+        out.push(comp);
+    }
+    out
+}
 
 /// Stage 2.7 entry: gather connected components of single-face planar
 /// selections and fit each with a B-spline surface (or, for regions that are

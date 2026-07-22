@@ -101,7 +101,7 @@ pub(super) enum CompeteHyp {
 }
 
 impl CompeteHyp {
-    fn faces(&self) -> &[usize] {
+    pub(super) fn faces(&self) -> &[usize] {
         match self {
             CompeteHyp::Planar(h) => &h.faces,
             CompeteHyp::Conical(h) => &h.faces,

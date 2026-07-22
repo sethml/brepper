@@ -225,24 +225,29 @@ with the jump classifier and its hysteresis fixpoint) is **one-shot** — no
 compatibility path, no threshold gating: the jump machinery is deleted,
 not disabled.
 
-**Progress (Rewrite Roadmap steps 1–4 landed):** the jump classifier is
+**Progress (Rewrite Roadmap steps 1–6 landed):** the jump classifier is
 deleted and the jet demoted to the `JetField` prior (step 1, `edges.rs`);
 the whole-region DOF ladder is implemented (step 2, `classify.rs`, stage
 2.3(a)); resolution & repair — relabel, merge, connectivity re-split,
-invariants — is implemented (step 3, `repair.rs`, stage 2.4); and scoped fit
+invariants — is implemented (step 3, `repair.rs`, stage 2.4); scoped fit
 competition decomposes the tangent chains the ladder cannot explain (step 4,
-`compete.rs`, stage 2.3(b)). Sharp-edged and single-surface-per-region
+`compete.rs`, stage 2.3(b)); bent-tube/torus promotion competes tori as
+first-class candidates (step 5, 2.3(c)); and the freeform rung fits the
+leftover components competition cannot explain analytically (step 6,
+`bspline.rs`, stage 2.3(e)). Sharp-edged and single-surface-per-region
 models flow end to end through stages 3/4 with `--compare` (cube,
 block_with_hole, pipe, two_holes, spherical_pocket, simple_cone, hemisphere,
-ball_on_cylinder, …), as do the non-torus tangent chains: **rounded_cube →
+ball_on_cylinder, …), as do the tangent chains: **rounded_cube →
 6 planes + 12 fillet cylinders + 8 corner spheres**, **nosecone →
-cone+sphere+base** (both build a valid solid at 0 mm distance to the
-reference). Torus-fillet chains (pipe_elbow, stepped_block_toroidal,
-cone_cylinder's concave fillet, filleted_*) fall back to a clean per-facet
-polyhedron until bent-tube promotion (step 5, 2.3(c)) adds the torus. The
-old BFS pipeline remains nerfed in place (`stage2_bfs_pipeline`, uncalled)
-until the step-7 deletion pass, and the old-BFS-era `--stage=2.1/2.2`
-integration tests stay red until that re-pin.
+cone+sphere+base**, **pipe_elbow → 2 cylinders + 1 torus**; and the freeform
+models: **elliptical_arch → 1 B-spline + 3 walls**, **bspline_wave → 1
+B-spline + 5 walls**, **elliptical_cylinder → 1 periodic B-spline band + 2
+caps**. Coarse-mesh torus fillets (stepped_block_toroidal, part_rounded_cube)
+whose leftover blob neither competition nor freeform can fit still fall back
+to a clean per-facet polyhedron. The old BFS pipeline remains nerfed in
+place (`stage2_bfs_pipeline`, uncalled) until the step-7 deletion pass, and
+the old-BFS-era `--stage=2.1/2.2` integration tests stay red until that
+re-pin.
 
 **Pipeline:** sharp-edge classification + jet prior (2.1) → smooth-region
 extraction (2.2) → per-region surface discovery: whole-region ladder, then
@@ -1031,7 +1036,36 @@ criteria under "Acceptance narratives".
    0 per-facet leftovers; rounded_cube/nosecone competition tests still
    green.
 6. **Freeform rewiring** (`bspline.rs`: leftover components +
-   island-dissolution guard). Acceptance: tests/nurbs suite green.
+   island-dissolution guard). Acceptance: tests/nurbs suite green. **[DONE.]**
+   As built: `fit_leftover_components` (a NEW front end; the old region
+   *gathering* still lives beside it until the step-7 deletion) fits the
+   unclaimed leftover components of each competed region. The freeform
+   *domain* is the leftover faces PLUS the small (≤ 16-face) analytic islands
+   competition committed — a singly-curved patch grows a short accidental
+   cylinder band (the arch) and an inflection grows accidental coplanar
+   strips (the wave), each *fragmenting* the region into separate leftover
+   pieces; growing connected components over that domain reunites them.
+   Per component: if the unexplained (leftover) area dominates
+   (`absorbed ≤ single`), the islands are absorbed into the fit and, if it
+   validates, dissolved (dropped by the caller); otherwise the analytic fits
+   are trusted and only the leftover freeform is fitted. Components whose
+   leftover part is below `MIN_BSPLINE_FACES` (4), and fits that fail at
+   every grid density, degrade to per-facet planes. `face_region` (region id
+   per mesh face) is the outside-surface key for boundary-corner detection.
+   The old `LEFTOVER_BLOB_MAX` whole-region discard is now the *post-freeform*
+   safety net: it fires only when a committed analytic surface survives AND
+   freeform could not clear a big leftover blob — so a partially-decomposed
+   model (fillet tori + an undecomposed blob) keeps its analytic surfaces
+   once freeform gives the blob a home, instead of discarding them
+   (filleted_hole_block, ccad_cone_cylinder params, filleted_cylinder tori
+   all recovered). B-spline surfaces are inert in stage-2.4 repair (never a
+   relabel/merge/re-split target — a fit vouches only for its own data).
+   Net vs the pre-step-6 baseline, zero regressions: stage2_integration
+   132→139, stage3 99→101, stage4 28→31; lib 90, stage1 83, seg 14,
+   competition 3 all green. Remaining stage3/4 failures are the documented
+   pre-existing set (part_rounded_cube + rounded_cube coarse; ccad
+   cone_cylinder/filleted_cylinder/filleted_pipe reference mismatches;
+   stepped_block_toroidal coarse/medium LEFTOVER_BLOB).
 7. **Deletion pass + corpus re-enable**: `bfs.rs`, `stage2_bfs_pipeline`,
    old selection/absorb/prune, `--skip-stage`, `MeshFace` hypothesis
    fields; SURFACE_FITTING.md pointers; re-pin stage-2/3/4 integration

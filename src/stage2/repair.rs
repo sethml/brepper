@@ -80,7 +80,7 @@ fn surface_faces(cls: &Classification, si: usize) -> &[usize] {
         SelectedSurface::Conical(i) => &cls.conical[i].faces,
         SelectedSurface::Spherical(i) => &cls.spherical[i].faces,
         SelectedSurface::Toroidal(i) => &cls.toroidal[i].faces,
-        SelectedSurface::BSpline(_) => &[],
+        SelectedSurface::BSpline(i) => &cls.bspline[i].faces,
     }
 }
 
@@ -90,9 +90,16 @@ fn surface_faces_mut(cls: &mut Classification, si: usize) -> &mut Vec<usize> {
         SelectedSurface::Conical(i) => &mut cls.conical[i].faces,
         SelectedSurface::Spherical(i) => &mut cls.spherical[i].faces,
         SelectedSurface::Toroidal(i) => &mut cls.toroidal[i].faces,
-        // Step 2/3 produce no B-spline hypotheses; this arm is unreachable.
-        SelectedSurface::BSpline(_) => unreachable!("no bspline hypotheses in stage 2.3/2.4 yet"),
+        SelectedSurface::BSpline(i) => &mut cls.bspline[i].faces,
     }
+}
+
+/// A B-spline surface is inert in repair: its fit vouches only for its own
+/// data, so relabel/merge/re-split never move faces into or out of it (a
+/// moved face would invalidate the fit and its cached projector). All three
+/// operations skip B-spline surfaces via this predicate.
+fn is_bspline(cls: &Classification, si: usize) -> bool {
+    matches!(cls.selected[si], SelectedSurface::BSpline(_))
 }
 
 /// Distance from a point to a selected surface's fitted geometry.
@@ -105,7 +112,7 @@ fn point_dist(cls: &Classification, si: usize, p: &[f64; 3]) -> f64 {
         &cls.conical,
         &cls.spherical,
         &cls.toroidal,
-        &[],
+        &cls.bspline,
     )
 }
 
@@ -162,7 +169,9 @@ fn relabel_boundaries(mesh: &ConnectedMesh, cls: &mut Classification, _config: &
         let mut moves: Vec<(usize, usize, usize)> = Vec::new(); // (face, from, to)
         for fi in 0..num_faces {
             let si = f2s[fi];
-            if si == usize::MAX {
+            // Unassigned faces and B-spline faces never move (a B-spline's
+            // fit vouches only for its own data).
+            if si == usize::MAX || is_bspline(cls, si) {
                 continue;
             }
             let face = &mesh.faces[fi];
@@ -171,7 +180,7 @@ fn relabel_boundaries(mesh: &ConnectedMesh, cls: &mut Classification, _config: &
                 .iter()
                 .filter(|&&ni| ni >= 0)
                 .map(|&ni| f2s[ni as usize])
-                .filter(|&sj| sj != usize::MAX && sj != si)
+                .filter(|&sj| sj != usize::MAX && sj != si && !is_bspline(cls, sj))
                 .collect();
             if candidates.is_empty() {
                 continue;
@@ -274,6 +283,11 @@ fn merge_regions(
 
         let mut did = false;
         for &si in &order {
+            // A B-spline is never a merge source: its fit vouches only for
+            // its own data.
+            if is_bspline(cls, si) {
+                continue;
+            }
             let s_faces: Vec<usize> = surface_faces(cls, si).to_vec();
             if s_faces.is_empty() || s_faces.len() > MERGE_MAX_SMALL {
                 continue;
@@ -296,6 +310,12 @@ fn merge_regions(
 
             let s_verts = vertices_of(mesh, &s_faces);
             for &ti in &neighbors {
+                // A B-spline is never a merge TARGET: a fit vouches only for
+                // its data (the 2.3(e) island-dissolution guard is the
+                // fit-validated way faces join a freeform patch).
+                if is_bspline(cls, ti) {
+                    continue;
+                }
                 let t_len = surface_faces(cls, ti).len();
                 if t_len <= 2 || t_len <= s_faces.len() {
                     continue; // T must be a larger, real surface
@@ -359,6 +379,11 @@ fn resplit_disconnected(mesh: &ConnectedMesh, cls: &mut Classification) -> usize
     let mut extra = 0usize;
     let original = cls.selected.len();
     for si in 0..original {
+        // A B-spline's faces are the fitted component — mesh-connected by
+        // construction — and its geometry is not cloneable; skip it.
+        if is_bspline(cls, si) {
+            continue;
+        }
         let faces = surface_faces(cls, si).to_vec();
         if faces.len() < 2 {
             continue;
@@ -446,7 +471,9 @@ fn clone_surface_with_faces(
             cls.selected.push(SelectedSurface::Toroidal(cls.toroidal.len()));
             cls.toroidal.push(h);
         }
-        SelectedSurface::BSpline(_) => unreachable!("no bspline hypotheses in stage 2.3/2.4 yet"),
+        // resplit_disconnected skips B-splines (their geometry is not
+        // cloneable and a fitted component is already mesh-connected).
+        SelectedSurface::BSpline(_) => unreachable!("resplit skips B-spline surfaces"),
     }
 }
 
@@ -470,7 +497,13 @@ fn set_surface_faces(mesh: &ConnectedMesh, cls: &mut Classification, si: usize, 
             cls.toroidal[i].faces = faces;
             cls.toroidal[i].vertices = verts;
         }
-        SelectedSurface::BSpline(_) => unreachable!("no bspline hypotheses in stage 2.3/2.4 yet"),
+        // rebuild_all re-sorts every surface's own face list; for an inert
+        // B-spline this is a no-op re-sort of its fitted faces (repair never
+        // gives it a different face set).
+        SelectedSurface::BSpline(i) => {
+            cls.bspline[i].faces = faces;
+            cls.bspline[i].vertices = verts;
+        }
     }
 }
 
@@ -611,6 +644,7 @@ mod tests {
             conical: Vec::new(),
             spherical: Vec::new(),
             toroidal: Vec::new(),
+            bspline: Vec::new(),
             selected: vec![SelectedSurface::Planar(0), SelectedSurface::Planar(1)],
         };
         let stats = repair(&mesh, &mut cls, &test_config());
@@ -673,6 +707,7 @@ mod tests {
             conical: Vec::new(),
             spherical: Vec::new(),
             toroidal: Vec::new(),
+            bspline: Vec::new(),
             selected: vec![SelectedSurface::Planar(0), SelectedSurface::Planar(1)],
         };
         let stats = repair(&mesh, &mut cls, &test_config());
@@ -695,6 +730,7 @@ mod tests {
             conical: Vec::new(),
             spherical: Vec::new(),
             toroidal: Vec::new(),
+            bspline: Vec::new(),
             selected: vec![SelectedSurface::Planar(0), SelectedSurface::Planar(1)],
         };
         let extra = resplit_disconnected(&mesh, &mut cls);

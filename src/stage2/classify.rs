@@ -34,6 +34,7 @@ use crate::config::Config;
 use crate::stage1::ConnectedMesh;
 
 use super::bfs::SurfaceType;
+use super::bspline::{self, BSplineHypothesis};
 use super::compete::{self, CompeteHyp};
 use super::conical::ConicalSurface;
 use super::edges::JetField;
@@ -81,6 +82,7 @@ pub(super) struct Classification {
     pub conical: Vec<ConicalHypothesis>,
     pub spherical: Vec<SphericalHypothesis>,
     pub toroidal: Vec<ToroidalHypothesis>,
+    pub bspline: Vec<BSplineHypothesis>,
     pub selected: Vec<SelectedSurface>,
 }
 
@@ -91,6 +93,7 @@ impl Classification {
             conical: Vec::new(),
             spherical: Vec::new(),
             toroidal: Vec::new(),
+            bspline: Vec::new(),
             selected: Vec::new(),
         }
     }
@@ -114,6 +117,11 @@ impl Classification {
             .push(SelectedSurface::Toroidal(self.toroidal.len()));
         self.toroidal.push(hyp);
     }
+    fn push_bspline(&mut self, hyp: BSplineHypothesis) {
+        self.selected
+            .push(SelectedSurface::BSpline(self.bspline.len()));
+        self.bspline.push(hyp);
+    }
     fn push_compete(&mut self, hyp: CompeteHyp) {
         match hyp {
             CompeteHyp::Planar(h) => self.push_planar(h),
@@ -131,6 +139,7 @@ pub(super) fn classify_regions(
     mesh: &ConnectedMesh,
     regions: &[Region],
     jet: &[JetField],
+    face_region: &[usize],
     config: &Config,
 ) -> Classification {
     let centroids: Vec<[f64; 3]> = mesh
@@ -143,6 +152,7 @@ pub(super) fn classify_regions(
     let mut ladder_wins = [0usize; 4]; // plane, sphere, conical, torus
     let mut competed_regions = 0usize;
     let mut competed_surfaces = 0usize;
+    let mut freeform_surfaces = 0usize;
     let mut facet_faces = 0usize;
     for region in regions {
         if classify_one_region(mesh, region, &centroids, config, &mut cls, &mut ladder_wins) {
@@ -152,15 +162,21 @@ pub(super) fn classify_regions(
         competed_regions += 1;
         let (hyps, leftovers) = compete::compete_region(mesh, region, jet, &centroids, config);
 
-        // A whole undecomposed sub-surface left as per-facet planes (e.g. a
-        // coarse fillet competition cannot fit) reconstructs to invalid wires
-        // where it abuts a committed analytic surface — worse than a clean
-        // polyhedron. When the largest leftover blob is more than a junction
-        // sliver, discard competition and per-facet the whole region; a clean
-        // polyhedron is the safe fallback until freeform fitting (2.3(e))
-        // gives those blobs a principled home. (Healthy competition leaves
-        // only tiny scattered slivers at junctions.)
-        if largest_component(mesh, &leftovers) > LEFTOVER_BLOB_MAX {
+        // Stage 2.3(e): freeform-fit the leftover components competition
+        // could not explain analytically, dissolving any small analytic
+        // island enclosed by a validating B-spline patch.
+        let ff = bspline::fit_leftover_components(mesh, &leftovers, &hyps, face_region, config);
+
+        // A committed analytic surface islanded among a large jagged
+        // per-facet blob reconstructs to invalid wires where they abut —
+        // worse than a clean polyhedron. When an analytic hypothesis
+        // survives AND freeform could not clear a big leftover blob, discard
+        // competition and per-facet the whole region. (Healthy competition
+        // leaves only tiny scattered slivers, and freeform absorbs genuine
+        // freeform patches, so this fires only on undecomposable coarse
+        // fillets.)
+        let surviving_hyps = hyps.len() - ff.dissolved.len();
+        if surviving_hyps > 0 && largest_component(mesh, &ff.residual) > LEFTOVER_BLOB_MAX {
             for &fi in &region.faces {
                 cls.push_planar(facet_plane(mesh, fi));
             }
@@ -168,23 +184,34 @@ pub(super) fn classify_regions(
             continue;
         }
 
-        competed_surfaces += hyps.len();
-        for hyp in hyps {
-            cls.push_compete(hyp);
+        // Commit surviving analytic hypotheses (skipping dissolved islands),
+        // the freeform surfaces, and the residual leftovers as per-facet
+        // planes (total coverage can never fail; a triangle is exactly a
+        // plane).
+        for (i, hyp) in hyps.into_iter().enumerate() {
+            if !ff.dissolved.contains(&i) {
+                cls.push_compete(hyp);
+                competed_surfaces += 1;
+            }
         }
-        // Whatever competition left unclaimed → per-facet planes (total
-        // coverage can never fail; a single triangle is exactly a plane).
-        facet_faces += leftovers.len();
-        for fi in leftovers {
+        for plane in ff.planes {
+            cls.push_planar(plane);
+        }
+        for hyp in ff.bsplines {
+            cls.push_bspline(hyp);
+            freeform_surfaces += 1;
+        }
+        facet_faces += ff.residual.len();
+        for fi in ff.residual {
             cls.push_planar(facet_plane(mesh, fi));
         }
     }
 
     if config.verbosity >= 1 {
         eprintln!(
-            "  ladder: {} plane, {} sphere, {} cyl/cone, {} torus; competition: {} region(s) → {} surfaces + {} per-facet",
+            "  ladder: {} plane, {} sphere, {} cyl/cone, {} torus; competition: {} region(s) → {} analytic + {} freeform + {} per-facet",
             ladder_wins[0], ladder_wins[1], ladder_wins[2], ladder_wins[3],
-            competed_regions, competed_surfaces, facet_faces,
+            competed_regions, competed_surfaces, freeform_surfaces, facet_faces,
         );
     }
     cls

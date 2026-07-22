@@ -1952,7 +1952,13 @@ pub fn stage2(
 
     // --- Stage 2.3: per-region surface discovery (ladder + competition) ---
     let t = Instant::now();
-    let mut cls = classify::classify_regions(&mesh, &segmentation.regions, &segmentation.jet, config);
+    let mut cls = classify::classify_regions(
+        &mesh,
+        &segmentation.regions,
+        &segmentation.jet,
+        &segmentation.face_region,
+        config,
+    );
     if config.verbosity >= 1 {
         eprintln!(
             "Stage 2.3 ({:.3}s): Region classification: {} surfaces ({} planar, {} cyl/cone, {} spherical, {} toroidal)",
@@ -1988,7 +1994,7 @@ pub fn stage2(
         conical_hypotheses: cls.conical,
         spherical_hypotheses: cls.spherical,
         toroidal_hypotheses: cls.toroidal,
-        bspline_hypotheses: Vec::new(),
+        bspline_hypotheses: cls.bspline,
         selected_surfaces: cls.selected,
         segmentation,
     };
