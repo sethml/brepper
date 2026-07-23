@@ -5,13 +5,36 @@
 # Active
 
 - **CURRENT WORK: stage-2 rewrite (partition-then-classify).** Roadmap
-  steps 1–5 are landed and verified (jet prior + region ladder + repair +
-  scoped competition + toroidal/bent-tube promotion); step 6 (freeform
-  rewiring, `bspline.rs`) and step 7 (deletion pass + corpus re-enable)
-  remain. See the **Rewrite Roadmap** in DEVELOPMENT_PLAN.md for the step
-  list and acceptance criteria, and the **Stage-2 Retrospective** for the
-  architecture rationale. The BFS-pipeline items below are kept for
-  reference until the step-7 deletion pass removes that code.
+  steps 1–6 are landed; step 7 is split — 7a (corpus re-enable) is DONE
+  (suite green, blockers disabled), 7b (deletion refactor) remains. See the
+  **Rewrite Roadmap** in DEVELOPMENT_PLAN.md for the step list and the
+  **Stage-2 Retrospective** for the architecture rationale. The BFS-pipeline
+  items below are kept for reference until the step-7b deletion pass removes
+  that code.
+
+- **Re-enable the models disabled in step 7a** (each `#[ignore]`/`ignore =`
+  in tests/stage2_integration.rs, stage3_integration.rs, stage4_integration.rs
+  carries its blocker string). These are PRE-EXISTING new-pipeline
+  classification-quality gaps (steps 2–5), not step-6 regressions:
+  - **hole → sphere** (plate_with_hole, fusion plate, l_bracket): a
+    cylindrical hole/feature fits a sphere before the DOF ladder reaches the
+    cylinder rung. Fix likely in the ladder (sphere-vs-cylinder disambiguation
+    — a sphere fit on a cylinder band should fail orientation/vertex
+    validation but does not on short holes) — classify.rs.
+  - **fillet over-segmentation** (filleted_cylinder/hole_block/pipe): a
+    fillet chain decomposes into extra tori + a freeform patch and the
+    straight cylinder/cone body is absorbed rather than kept as one primitive
+    — compete.rs growth/promotion.
+  - **cone/cylinder + concave-fillet** (cone_cylinder, cone_tangent_planes):
+    decomposition differs from the old BFS.
+  - **coarse-mesh leftover blob** (part_rounded_cube, stepped_block_toroidal
+    coarse/medium): the undecomposed fillet blob exceeds `LEFTOVER_BLOB_MAX`
+    so the whole region degrades to per-facet planes (documented in
+    classify.rs). Freeform (step 6) does not rescue it — the blob is not a
+    clean freeform patch.
+  - **ccad reference mismatches** (ccad cone_cylinder/filleted_* stage-4
+    `--compare`): the generated reference STEP disagrees with the
+    reconstruction at ~mm scale; environmental / reference-quality.
 
 - **FIXED (2026-07-22, OCCT 8.0.0_p1 upgrade): partial-torus STEP round-trip
   volume loss (`pipe_elbow_10_fine`).** Under OCCT 7.9.3 the written STEP for
