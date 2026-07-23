@@ -33,7 +33,7 @@
 use crate::config::Config;
 use crate::stage1::ConnectedMesh;
 
-use super::bfs::SurfaceType;
+use super::surface::SurfaceType;
 use super::bspline::{self, BSplineHypothesis};
 use super::compete::{self, CompeteHyp};
 use super::conical::ConicalSurface;

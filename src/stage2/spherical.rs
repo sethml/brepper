@@ -1,16 +1,13 @@
 //! Stage 2.3: Spherical hypothesis deduction and comparison.
 
-use std::collections::HashSet;
 
 
-use crate::config::Config;
-use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_SPHERICAL_HYPOTHESIS};
-use crate::viz;
+use crate::stage1::{ConnectedMesh, MeshFace, MeshVertex};
 
 use super::{
-    dot3, eigenvalues_3x3_symmetric, face_area, face_centroid, normalize3,
-    SphericalHypothesis, Stage2CompareError,
-    MAX_SPHERE_RADIUS_FACTOR, MIN_SPHERE_EIGENVALUE_RATIO, MIN_SPHERE_FACES,
+    dot3, face_centroid,
+    SphericalHypothesis,
+    MAX_SPHERE_RADIUS_FACTOR,
 };
 
 // ---------------------------------------------------------------------------
@@ -251,118 +248,15 @@ fn determine_sphere_convexity(
     dot3(&n, &radial) > 0.0
 }
 
-/// Validate solid-angle coverage of a spherical hypothesis.
-/// Returns true if the centroid-to-center direction vectors span 3D
-/// (not a 1D strip like a cylinder fillet).
-fn solid_angle_coverage_valid(
-    face_list: &[usize],
-    center: &[f64; 3],
-    faces: &[MeshFace],
-    vertices: &[MeshVertex],
-) -> bool {
-    if face_list.len() < MIN_SPHERE_FACES {
-        return false;
-    }
-
-    // Compute area-weighted covariance of unit direction vectors from center to centroid.
-    let mut cov = [0.0_f64; 6]; // upper triangle: [c00, c01, c02, c11, c12, c22]
-    let mut total_weight = 0.0_f64;
-    for &fi in face_list {
-        let c = face_centroid(&faces[fi], vertices);
-        let mut d = [
-            c[0] - center[0],
-            c[1] - center[1],
-            c[2] - center[2],
-        ];
-        let len = normalize3(&mut d);
-        if len < 1e-15 {
-            continue;
-        }
-        let w = face_area(&faces[fi], vertices);
-        total_weight += w;
-        cov[0] += w * d[0] * d[0];
-        cov[1] += w * d[0] * d[1];
-        cov[2] += w * d[0] * d[2];
-        cov[3] += w * d[1] * d[1];
-        cov[4] += w * d[1] * d[2];
-        cov[5] += w * d[2] * d[2];
-    }
-    if total_weight < 1e-30 {
-        return false;
-    }
-    // Normalize
-    for v in &mut cov {
-        *v /= total_weight;
-    }
-
-    // Compute eigenvalues of the 3x3 symmetric matrix.
-    let eigenvalues = eigenvalues_3x3_symmetric(&cov);
-    let lambda_max = eigenvalues[0].max(eigenvalues[1]).max(eigenvalues[2]);
-    let lambda_min = eigenvalues[0].min(eigenvalues[1]).min(eigenvalues[2]);
-
-    if lambda_max < 1e-30 {
-        return false;
-    }
-    lambda_min / lambda_max >= MIN_SPHERE_EIGENVALUE_RATIO
-}
-
 // ---------------------------------------------------------------------------
 // Stage 2.3: Compare check
 // ---------------------------------------------------------------------------
-
-/// Validate fitted spherical hypotheses against a reference STEP shape.
-pub(super) fn compare_spherical_hypotheses(
-    hypotheses: &[SphericalHypothesis],
-    mesh: &ConnectedMesh,
-    config: &Config,
-) -> Result<(), Stage2CompareError> {
-    let compare_shape = config.compare_shape.as_ref().unwrap();
-
-    for (hi, hyp) in hypotheses.iter().enumerate() {
-        let projected_points: Vec<[f64; 3]> = hyp.faces.iter().map(|&fi| {
-            let centroid = face_centroid(&mesh.faces[fi], &mesh.vertices);
-
-            // Project centroid onto sphere surface (nearest point)
-            let d = [
-                centroid[0] - hyp.center[0],
-                centroid[1] - hyp.center[1],
-                centroid[2] - hyp.center[2],
-            ];
-            let dist_to_center = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-
-            if dist_to_center > 1e-15 {
-                let scale = hyp.radius / dist_to_center;
-                [
-                    hyp.center[0] + d[0] * scale,
-                    hyp.center[1] + d[1] * scale,
-                    hyp.center[2] + d[2] * scale,
-                ]
-            } else {
-                // Centroid is at the center — unlikely but handle gracefully
-                centroid
-            }
-        }).collect();
-
-        let (max_dist, _) = stage1::max_distance_to_shape(&projected_points, compare_shape);
-
-        if max_dist > config.surface_tolerance_mm {
-            return Err(Stage2CompareError {
-                hypothesis_type: "spherical",
-                hypothesis_index: hi,
-                max_distance: max_dist,
-                tolerance: config.surface_tolerance_mm,
-            });
-        }
-    }
-
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // SurfaceType trait implementation for generic BFS
 // ---------------------------------------------------------------------------
 
-use super::bfs::{BfsConfig, Seed, SurfaceType};
+use super::surface::SurfaceType;
 
 /// Fitted sphere parameters.
 #[derive(Clone)]
@@ -378,84 +272,6 @@ pub(super) struct SphericalSurface;
 impl SurfaceType for SphericalSurface {
     type Fit = SphereFit;
     type Hypothesis = SphericalHypothesis;
-
-    fn name() -> &'static str { "spherical" }
-
-    fn hypothesis_field(face: &MeshFace) -> i32 { face.spherical_hypothesis }
-
-    fn set_hypothesis_field(face: &mut MeshFace, value: i32) {
-        face.spherical_hypothesis = value;
-    }
-
-    fn undeduced_value() -> i32 { UNDEDUCED_SPHERICAL_HYPOTHESIS }
-
-    /// Two passes: pass 1 excludes junction faces from 1-ring seeds; pass 2
-    /// retries remaining undeduced faces without the filter.
-    fn seeding_passes() -> usize { 2 }
-
-    fn face_eligible(face: &MeshFace) -> bool {
-        face.spherical_hypothesis == UNDEDUCED_SPHERICAL_HYPOTHESIS
-    }
-
-    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig, relaxed: bool) -> Vec<Seed> {
-        if mesh.faces[fi].normal.is_none() {
-            return Vec::new();
-        }
-        // Junction faces (curvature transitions) produce contaminated
-        // 1-rings; pass 1 skips them as anchors and ring members.
-        if config.is_junction(fi, relaxed) {
-            return Vec::new();
-        }
-        // 1-ring: all faces sharing any vertex with fi. Gathered by 2-hop
-        // edge expansion + vertex-share filter (faces around a shared vertex
-        // are within 2 edge hops), instead of scanning the whole mesh per
-        // seed — the previous O(N) scan per start face made stage 2.3
-        // quadratic (20+ s on 26K-face meshes while finding nothing).
-        let vc = mesh.faces[fi].vertex_count as usize;
-        let anchor_verts = &mesh.faces[fi].vertex_indices[..vc];
-        let shares_vertex = |fj: usize| -> bool {
-            let f = &mesh.faces[fj];
-            let fj_vc = f.vertex_count as usize;
-            f.vertex_indices[..fj_vc]
-                .iter()
-                .any(|vi| anchor_verts.contains(vi))
-        };
-        let eligible = |fj: usize| -> bool {
-            let f = &mesh.faces[fj];
-            f.normal.is_some()
-                && f.spherical_hypothesis == UNDEDUCED_SPHERICAL_HYPOTHESIS
-                && !config.is_junction(fj, relaxed)
-        };
-        let mut seed_set: HashSet<usize> = HashSet::new();
-        seed_set.insert(fi);
-        let mut frontier: Vec<usize> = vec![fi];
-        let mut visited: HashSet<usize> = HashSet::new();
-        visited.insert(fi);
-        for _hop in 0..2 {
-            let mut next: Vec<usize> = Vec::new();
-            for &f in &frontier {
-                let f_vc = mesh.faces[f].vertex_count as usize;
-                for &ni in &mesh.faces[f].neighbors[..f_vc] {
-                    if ni >= 0 {
-                        let ni = ni as usize;
-                        if visited.insert(ni) {
-                            next.push(ni);
-                            if shares_vertex(ni) && eligible(ni) {
-                                seed_set.insert(ni);
-                            }
-                        }
-                    }
-                }
-            }
-            frontier = next;
-        }
-        if seed_set.len() < 3 {
-            return Vec::new();
-        }
-        let mut faces: Vec<usize> = seed_set.into_iter().collect();
-        faces.sort_unstable();
-        vec![Seed { faces }]
-    }
 
     fn fit_surface(
         mesh: &ConnectedMesh,
@@ -498,37 +314,6 @@ impl SurfaceType for SphericalSurface {
                 &mesh.faces[first], &mesh.vertices, &fit.center,
             ));
         }
-    }
-
-    fn acceptance_test(
-        mesh: &ConnectedMesh,
-        face_list: &[usize],
-        fit: &Self::Fit,
-        _config: &BfsConfig,
-    ) -> bool {
-        if face_list.len() < MIN_SPHERE_FACES {
-            return false;
-        }
-        solid_angle_coverage_valid(
-            face_list, &fit.center, &mesh.faces, &mesh.vertices,
-        )
-    }
-
-    fn viz_overlays(
-        fit: &Self::Fit,
-        _mesh: &ConnectedMesh,
-        _face_list: &[usize],
-    ) -> (Vec<viz::CylinderOverlay>, Vec<viz::ConeOverlay>, Vec<viz::SphereOverlay>, Vec<viz::TorusOverlay>) {
-        let sphere = viz::SphereOverlay {
-            center: fit.center,
-            radius: fit.radius,
-            color: [0.2, 0.4, 1.0, 0.15],
-        };
-        (Vec::new(), Vec::new(), vec![sphere], Vec::new())
-    }
-
-    fn viz_fit_description(fit: &Self::Fit) -> String {
-        format!("r={:.4}", fit.radius)
     }
 
     fn make_hypothesis(

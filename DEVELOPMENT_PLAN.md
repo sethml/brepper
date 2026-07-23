@@ -225,7 +225,7 @@ with the jump classifier and its hysteresis fixpoint) is **one-shot** — no
 compatibility path, no threshold gating: the jump machinery is deleted,
 not disabled.
 
-**Progress (Rewrite Roadmap steps 1–6 landed):** the jump classifier is
+**Progress (Rewrite Roadmap steps 1–7 landed — the rewrite is complete):** the jump classifier is
 deleted and the jet demoted to the `JetField` prior (step 1, `edges.rs`);
 the whole-region DOF ladder is implemented (step 2, `classify.rs`, stage
 2.3(a)); resolution & repair — relabel, merge, connectivity re-split,
@@ -244,10 +244,11 @@ models: **elliptical_arch → 1 B-spline + 3 walls**, **bspline_wave → 1
 B-spline + 5 walls**, **elliptical_cylinder → 1 periodic B-spline band + 2
 caps**. Coarse-mesh torus fillets (stepped_block_toroidal, part_rounded_cube)
 whose leftover blob neither competition nor freeform can fit still fall back
-to a clean per-facet polyhedron. The old BFS pipeline remains nerfed in
-place (`stage2_bfs_pipeline`, uncalled) until the step-7 deletion pass, and
-the old-BFS-era `--stage=2.1/2.2` integration tests stay red until that
-re-pin.
+to a clean per-facet polyhedron. The old BFS pipeline is fully deleted (step
+7): the analytic fitters now implement the trimmed `surface::SurfaceType`
+trait, driven only by the ladder and competition. The corpus is green; the
+models the new pipeline does not yet decompose as the old BFS did are
+disabled with blocker comments (see the step-7a list).
 
 **Pipeline:** sharp-edge classification + jet prior (2.1) → smooth-region
 extraction (2.2) → per-region surface discovery: whole-region ladder, then
@@ -1090,15 +1091,25 @@ criteria under "Acceptance narratives".
      mismatches** (cone_cylinder/filleted_* stage-4 `--compare`). 26 stage-2
      + 5 stage-3 + 6 stage-4 tests disabled. See TODO.md for the re-enable
      list.
-   - **7b deletion refactor [TODO].** Delete `bfs.rs`'s BFS engine
-     (`generate_hypotheses`, `BfsConfig`, `Seed`, `HypothesisFaces`),
-     `stage2_bfs_pipeline` + the old selection/absorb/prune/compare helpers
-     in `mod.rs`, the old `deduce_bspline_surfaces` gathering front end,
-     `--skip-stage`, and the now-dead `MeshFace` hypothesis fields +
-     `SurfaceType`'s BFS-only methods (generate_seeds, hypothesis_field,
-     acceptance_test, seed_*) across all 5 fitters; update SURFACE_FITTING.md
-     pointers. (Deleting the BFS engine cascades through the shared trait
-     and the MeshFace fields — there is no clippy-clean partial deletion.)
+   - **7b deletion refactor [DONE].** `bfs.rs` is deleted; its `SurfaceType`
+     trait — trimmed to the methods the ladder/competition use (`fit_surface`,
+     `vertex_distance`, `centroid_distance`, `convexity_check`,
+     `determine_convexity`, `make_hypothesis`) — moved to `surface.rs`. Gone:
+     `generate_hypotheses`/`BfsConfig`/`Seed`/`HypothesisFaces`;
+     `stage2_bfs_pipeline` + `select_surfaces`/`refine_boundary_assignments`/
+     `absorb_redundant_surfaces`/`prune_unselected_hypotheses`/
+     `compare_selected_surfaces`/`compute_seed_scores` and the old-BFS unit
+     tests in `mod.rs`; the old `deduce_bspline_surfaces` gathering front end;
+     `--skip-stage`; the `MeshFace.{planar,conical,spherical,toroidal}_hypothesis`
+     fields + the `UNDEDUCED_*`/`NO_HYPOTHESIS` constants; and each fitter's
+     BFS-only trait methods (`generate_seeds`, `hypothesis_field`,
+     `acceptance_test`, `seed_*`, `viz_overlays`, …) and their dead helpers.
+     Net −3860/+37 lines across 12 files; behaviour-preserving — the
+     integration suites are byte-identical to 7a (stage2 159/26, stage3 101/5,
+     stage4 31/6), only the deleted BFS unit tests drop out of the lib count
+     (90→74). clippy clean. (Deleting the BFS engine cascaded through the
+     shared trait and the MeshFace fields as expected — no clippy-clean
+     partial deletion existed.)
 
 Expected wins to verify along the way: pipe_elbow's torus without
 strip-merge seeding; nosecone with no absorb pass; stage-2 runtime on

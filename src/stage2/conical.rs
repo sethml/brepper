@@ -1,19 +1,15 @@
 //! Stage 2.4: Conical hypothesis deduction and comparison.
 
-use std::collections::HashSet;
 
 use levenberg_marquardt::{LeastSquaresProblem, LevenbergMarquardt};
 use nalgebra::{Const, Dyn, OMatrix, OVector, Owned};
 
-use crate::config::Config;
-use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_CONICAL_HYPOTHESIS};
-use crate::viz;
+use crate::stage1::{ConnectedMesh, MeshFace, MeshVertex};
 
 use super::{
-    build_normal_covariance, centered_cone_overlay, centered_cylinder_overlay, cross3, dot3, face_centroid,
+    build_normal_covariance, cross3, dot3, face_centroid,
     largest_eigenvector_3x3, normalize3, perpendicular_basis, smallest_eigenvector_3x3,
-    ConicalHypothesis, Stage2CompareError, MIN_CROSS_THRESHOLD, MIN_CONE_FACES,
-    MIN_CYLINDER_FACES,
+    ConicalHypothesis,
 };
 use super::cylindrical::{vertex_to_cylinder_distance, fit_cylinder};
 
@@ -1045,162 +1041,15 @@ fn determine_convexity(
     dot3(&n, &radial) > 0.0
 }
 
-/// Validate that faces in a conical hypothesis have sufficient angular
-/// coverage around the cone — same algorithm as cylindrical.
-/// `max_gap` is the largest acceptable inter-centroid gap, applied only when
-/// the hypothesis already spans a substantial arc (≥45°): a coarse
-/// tessellation legitimately spaces the rows of a quarter/half-round fillet up
-/// to the BFS dihedral limit apart, so the span-proportional criterion alone
-/// would reject real coarse fillets (observed: 4 rows across 90° = 24° gaps >
-/// span/3 = 23° on stepped_block MEDIUM r=0.5 edge fillets). Pass 0 to disable.
-fn angular_coverage_valid(
-    face_list: &[usize],
-    apex: &[f64; 3],
-    axis_direction: &[f64; 3],
-    faces: &[MeshFace],
-    vertices: &[MeshVertex],
-    max_gap: f64,
-) -> bool {
-    if face_list.len() < 3 {
-        return false;
-    }
-
-    let (u, w) = perpendicular_basis(axis_direction);
-
-    let mut thetas: Vec<f64> = Vec::with_capacity(face_list.len());
-    for &fi in face_list {
-        let c = face_centroid(&faces[fi], vertices);
-        let d = [c[0] - apex[0], c[1] - apex[1], c[2] - apex[2]];
-        let t = dot3(&d, axis_direction);
-        let radial = [
-            d[0] - t * axis_direction[0],
-            d[1] - t * axis_direction[1],
-            d[2] - t * axis_direction[2],
-        ];
-        let theta = f64::atan2(dot3(&radial, &w), dot3(&radial, &u));
-        thetas.push(theta);
-    }
-
-    thetas.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let n = thetas.len();
-
-    let mut gaps: Vec<f64> = Vec::with_capacity(n);
-    for i in 1..n {
-        gaps.push(thetas[i] - thetas[i - 1]);
-    }
-    gaps.push(thetas[0] + 2.0 * std::f64::consts::PI - thetas[n - 1]);
-
-    let mut largest = 0.0_f64;
-    let mut second_largest = 0.0_f64;
-    for &g in &gaps {
-        if g > largest {
-            second_largest = largest;
-            largest = g;
-        } else if g > second_largest {
-            second_largest = g;
-        }
-    }
-
-    let span = 2.0 * std::f64::consts::PI - largest;
-    if span <= 0.0 {
-        return false;
-    }
-
-    // The coarse-tessellation floor only applies to hypotheses that already
-    // span a substantial arc — a real quarter/half-round fillet, whose few
-    // wide-gap rows the strict span/3 rule wrongly rejects (stepped_block
-    // MEDIUM's corner edge fillets span ~70°). A narrow band (a thin slice of
-    // a cone fitted as a cylinder) has a small span and must keep the strict
-    // rule, else the floor admits a flood of bogus cylinder bands that
-    // over-segment smooth cones (nosecone_truncated's bands span ≤14°). The
-    // 45° gate sits well above those bands and below any genuine coarse
-    // quarter-round.
-    let floor = if span >= 45.0_f64.to_radians() {
-        max_gap.min(span / 2.0)
-    } else {
-        0.0
-    };
-    second_largest <= (span / 3.0).max(floor)
-}
-
 // ---------------------------------------------------------------------------
 // Stage 2.4: Compare check
 // ---------------------------------------------------------------------------
-
-/// Validate fitted conical hypotheses against a reference STEP shape.
-pub(super) fn compare_conical_hypotheses(
-    hypotheses: &[ConicalHypothesis],
-    mesh: &ConnectedMesh,
-    config: &Config,
-) -> Result<(), Stage2CompareError> {
-    let compare_shape = config.compare_shape.as_ref().unwrap();
-
-    for (hi, hyp) in hypotheses.iter().enumerate() {
-        let projected_points: Vec<[f64; 3]> = hyp.faces.iter().map(|&fi| {
-            let centroid = face_centroid(&mesh.faces[fi], &mesh.vertices);
-
-            // Project centroid onto cone surface
-            let d = [
-                centroid[0] - hyp.apex[0],
-                centroid[1] - hyp.apex[1],
-                centroid[2] - hyp.apex[2],
-            ];
-            let h = dot3(&d, &hyp.axis_direction);
-            let radial = [
-                d[0] - h * hyp.axis_direction[0],
-                d[1] - h * hyp.axis_direction[1],
-                d[2] - h * hyp.axis_direction[2],
-            ];
-            let radial_dist = (radial[0] * radial[0] + radial[1] * radial[1]
-                + radial[2] * radial[2]).sqrt();
-
-            if hyp.is_cylinder() {
-                // For cylinders: project onto cylinder surface at radius_at_apex
-                if radial_dist > 1e-15 {
-                    let scale = hyp.radius_at_apex / radial_dist;
-                    [
-                        hyp.apex[0] + h * hyp.axis_direction[0] + radial[0] * scale,
-                        hyp.apex[1] + h * hyp.axis_direction[1] + radial[1] * scale,
-                        hyp.apex[2] + h * hyp.axis_direction[2] + radial[2] * scale,
-                    ]
-                } else {
-                    centroid
-                }
-            } else if radial_dist > 1e-15 {
-                // Project onto cone surface: at height h, the cone radius is h * tan(half_angle)
-                let cone_r = h * hyp.half_angle.tan();
-                let scale = cone_r / radial_dist;
-                [
-                    hyp.apex[0] + h * hyp.axis_direction[0] + radial[0] * scale,
-                    hyp.apex[1] + h * hyp.axis_direction[1] + radial[1] * scale,
-                    hyp.apex[2] + h * hyp.axis_direction[2] + radial[2] * scale,
-                ]
-            } else {
-                centroid
-            }
-        }).collect();
-
-        let (max_dist, _) = stage1::max_distance_to_shape(&projected_points, compare_shape);
-        let tolerance = config.surface_tolerance_mm;
-
-        if max_dist > tolerance {
-            return Err(Stage2CompareError {
-                hypothesis_type: "conical",
-                hypothesis_index: hi,
-                max_distance: max_dist,
-                tolerance,
-            });
-        }
-    }
-
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // SurfaceType trait implementation for generic BFS
 // ---------------------------------------------------------------------------
 
-use super::bfs::{BfsConfig, Seed, SurfaceType};
+use super::surface::SurfaceType;
 
 /// Fitted cone/cylinder parameters.
 #[derive(Clone)]
@@ -1217,165 +1066,9 @@ pub(super) struct ConeFit {
 /// cylinders (half_angle == 0).
 pub(super) struct ConicalSurface;
 
-/// Check if two faces are pairwise qualified for conical/cylindrical seeding.
-/// Both must have normals, the normals must be sufficiently different, and the
-/// dihedral angle must be within tolerance.
-fn conical_pairwise_qualified(
-    mesh: &ConnectedMesh, fi: usize, ni: usize, angular_tol: f64,
-) -> bool {
-    if mesh.faces[ni].conical_hypothesis != UNDEDUCED_CONICAL_HYPOTHESIS {
-        return false;
-    }
-    let fi_normal = match mesh.faces[fi].normal {
-        Some(n) => n,
-        None => return false,
-    };
-    let ni_normal = match mesh.faces[ni].normal {
-        Some(n) => n,
-        None => return false,
-    };
-    let cross = cross3(&fi_normal, &ni_normal);
-    let cross_mag = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
-    if cross_mag < MIN_CROSS_THRESHOLD {
-        return false;
-    }
-    let cos_angle = dot3(&fi_normal, &ni_normal).clamp(-1.0, 1.0);
-    cos_angle.acos() <= angular_tol
-}
-
 impl SurfaceType for ConicalSurface {
     type Fit = ConeFit;
     type Hypothesis = ConicalHypothesis;
-
-    fn name() -> &'static str { "conical" }
-
-    fn hypothesis_field(face: &MeshFace) -> i32 { face.conical_hypothesis }
-
-    fn set_hypothesis_field(face: &mut MeshFace, value: i32) {
-        face.conical_hypothesis = value;
-    }
-
-    fn undeduced_value() -> i32 { UNDEDUCED_CONICAL_HYPOTHESIS }
-
-    /// Vertices should lie precisely on the conical surface, so
-    /// the seed vertex tolerance matches the base vertex tolerance.
-    fn seed_vtol_multiplier() -> f64 { 1.0 }
-
-    /// Tessellated cones with N circumferential divisions have inter-strip
-    /// dihedral angles ≈ 360°/N, which can exceed the default angular
-    /// tolerance (e.g. 20° for N=18 vs the 17.5° default). Vertex-to-surface
-    /// distance is the primary discriminator for cones/cylinders, so the
-    /// angular check is relaxed 2×.
-    fn angular_tol_multiplier() -> f64 { 2.0 }
-
-    /// Two passes: pass 1 excludes junction faces from fan seeds; pass 2
-    /// retries remaining undeduced faces without the filter (narrow cone
-    /// patches between tangent junctions can be all-transition faces).
-    fn seeding_passes() -> usize { 2 }
-
-    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig, relaxed: bool) -> Vec<Seed> {
-        if mesh.faces[fi].normal.is_none() {
-            return Vec::new();
-        }
-        if mesh.faces[fi].conical_hypothesis != UNDEDUCED_CONICAL_HYPOTHESIS {
-            return Vec::new();
-        }
-        // Skip faces already committed to a spherical hypothesis (stage 2.3
-        // runs before this stage). On a tessellated sphere, every band of
-        // quad rows lies exactly on some cone/cylinder, so without this check
-        // a fine sphere gets tiled with hundreds of bogus band hypotheses —
-        // enormously slow and all discarded by selection anyway. Faces near
-        // sphere junctions can still be *absorbed* during BFS expansion;
-        // only seeding is restricted.
-        if mesh.faces[fi].spherical_hypothesis >= 0 {
-            return Vec::new();
-        }
-        // Likewise skip faces committed to a toroidal hypothesis (stage 2.5
-        // also runs before this stage): any adjacent pair of quad rows on a
-        // torus tube lies exactly on some cone, so fillets would otherwise
-        // be tiled with 2-ring cone bands. BFS expansion may still absorb
-        // torus-committed faces at junctions.
-        if mesh.faces[fi].toroidal_hypothesis >= 0 {
-            return Vec::new();
-        }
-        // Junction faces (curvature transitions) produce contaminated fans;
-        // pass 1 skips them as anchors and fan members. Pass 2 (relaxed)
-        // lifts the filter for surfaces made entirely of transition faces.
-        if config.is_junction(fi, relaxed) {
-            return Vec::new();
-        }
-
-        let vc = mesh.faces[fi].vertex_count as usize;
-        let angular_tol = config.angular_tol;
-
-        // Collect qualified neighbors of fi
-        let qualified_neighbors: Vec<usize> = mesh.faces[fi].neighbors[..vc]
-            .iter()
-            .filter(|&&n| n >= 0)
-            .map(|&n| n as usize)
-            .filter(|&ni| !config.is_junction(ni, relaxed))
-            .filter(|&ni| conical_pairwise_qualified(mesh, fi, ni, angular_tol))
-            .collect();
-
-        // Generate 3-face seeds: fi + f1 + f2 where f1 and f2 are qualified
-        // neighbors of fi but not neighbors of each other.
-        // If the seed has only 5 unique vertices (all triangles), optionally
-        // add f3 adjacent to f2 (not sharing an edge with fi or f1) to get
-        // at least 6 vertices for reliable cone fitting.
-        let mut seeds = Vec::new();
-        for (i, &f1) in qualified_neighbors.iter().enumerate() {
-            for &f2 in &qualified_neighbors[(i + 1)..] {
-                // f2 must not be a neighbor of f1
-                if super::bfs::is_neighbor(mesh, f1, f2) { continue; }
-
-                // Count unique vertices across fi, f1, f2
-                let mut vset: HashSet<usize> = HashSet::new();
-                for &face_idx in &[fi, f1, f2] {
-                    let fvc = mesh.faces[face_idx].vertex_count as usize;
-                    for &vi in &mesh.faces[face_idx].vertex_indices[..fvc] {
-                        vset.insert(vi);
-                    }
-                }
-
-                if vset.len() >= 6 {
-                    // Enough vertices for a reliable cone fit
-                    seeds.push(Seed { faces: vec![fi, f1, f2] });
-                } else {
-                    // Need an f3 adjacent to f2, not sharing an edge with fi, f1, or f2
-                    let f2_vc = mesh.faces[f2].vertex_count as usize;
-                    let mut found_f3 = false;
-                    for &f3n in &mesh.faces[f2].neighbors[..f2_vc] {
-                        if f3n < 0 { continue; }
-                        let f3 = f3n as usize;
-                        if f3 == fi || f3 == f1 || f3 == f2 { continue; }
-                        if super::bfs::is_neighbor(mesh, f3, fi) { continue; }
-                        if super::bfs::is_neighbor(mesh, f3, f1) { continue; }
-                        if mesh.faces[f3].conical_hypothesis != UNDEDUCED_CONICAL_HYPOTHESIS {
-                            continue;
-                        }
-                        if mesh.faces[f3].normal.is_none() { continue; }
-                        // Count vertices with f3 added
-                        let mut vset4 = vset.clone();
-                        let f3_vc = mesh.faces[f3].vertex_count as usize;
-                        for &vi in &mesh.faces[f3].vertex_indices[..f3_vc] {
-                            vset4.insert(vi);
-                        }
-                        if vset4.len() >= 6 {
-                            seeds.push(Seed { faces: vec![fi, f1, f2, f3] });
-                            found_f3 = true;
-                            break;
-                        }
-                    }
-                    if !found_f3 {
-                        // Still emit the 3-face seed even with only 5 vertices;
-                        // fit_surface may succeed for cylinders (4 DOF)
-                        seeds.push(Seed { faces: vec![fi, f1, f2] });
-                    }
-                }
-            }
-        }
-        seeds
-    }
 
     fn fit_surface(
         mesh: &ConnectedMesh,
@@ -1582,99 +1275,6 @@ impl SurfaceType for ConicalSurface {
         }
     }
 
-    fn acceptance_test(
-        mesh: &ConnectedMesh,
-        face_list: &[usize],
-        fit: &Self::Fit,
-        config: &BfsConfig,
-    ) -> bool {
-        let min_faces = if fit.half_angle < 1e-4 { MIN_CYLINDER_FACES } else { MIN_CONE_FACES };
-        if face_list.len() < min_faces {
-            return false;
-        }
-        // Reject cones with very large half-angle (nearly a plane). Real CAD
-        // cones up to 85° exist (cone_tangent_planes has an 84.25° cone), and
-        // the historical worry — near-tangent bogus cones on sphere polar
-        // caps — is now prevented upstream: spherical detection runs before
-        // conical and sphere-committed faces don't seed cones.
-        if fit.half_angle > 85.0_f64.to_radians() {
-            return false;
-        }
-        // Normal-axis consistency: on a cone, n·axis = sin(half_angle) is
-        // constant (0 for cylinders). Reject hypotheses where the normal dot
-        // products with the axis vary too much — the faces lie on a sphere or
-        // torus, not a cone/cylinder. Without this check, stage 2.2 tiles
-        // spheres and torus fillets with hundreds of small bogus conical
-        // hypotheses. Area-based selection (2.6) would discard them, but they
-        // starve torus seeding (which excludes conical-committed faces) and
-        // waste large amounts of BFS+LM time on fine meshes.
-        let dots: Vec<f64> = face_list.iter()
-            .filter_map(|&fi| mesh.faces[fi].normal.map(|n| {
-                n[0] * fit.axis_direction[0]
-                    + n[1] * fit.axis_direction[1]
-                    + n[2] * fit.axis_direction[2]
-            }))
-            .collect();
-        if dots.len() >= 3 {
-            let mean = dots.iter().sum::<f64>() / dots.len() as f64;
-            let var = dots.iter().map(|d| (d - mean).powi(2)).sum::<f64>()
-                / dots.len() as f64;
-            if var > 0.0005 {
-                return false;
-            }
-        }
-        // The coarse-tessellation coverage allowance is for cylinders only.
-        // A true cone's spurious lookalikes are the narrow corner sphere-blend
-        // patches that fit a 6-face ~50° half-angle cone within tolerance;
-        // those must stay rejected by the strict span/3 rule (else they win
-        // selection over the correct sphere — observed on rounded_cube). A
-        // straight-edge fillet cylinder legitimately tessellates into a few
-        // wide-gap rows and needs the allowance (stepped_block MEDIUM r=0.5
-        // edge fillets).
-        let coverage_max_gap = if fit.half_angle < 1e-4 {
-            config.angular_tol * Self::angular_tol_multiplier()
-        } else {
-            0.0
-        };
-        angular_coverage_valid(
-            face_list, &fit.apex, &fit.axis_direction,
-            &mesh.faces, &mesh.vertices,
-            coverage_max_gap,
-        )
-    }
-
-    fn viz_overlays(
-        fit: &Self::Fit,
-        mesh: &ConnectedMesh,
-        face_list: &[usize],
-    ) -> (Vec<viz::CylinderOverlay>, Vec<viz::ConeOverlay>, Vec<viz::SphereOverlay>, Vec<viz::TorusOverlay>) {
-        if fit.half_angle.abs() < 1e-6 {
-            // Cylinder
-            let cyl = centered_cylinder_overlay(
-                fit.apex, fit.axis_direction, fit.radius,
-                face_list, mesh,
-                [0.2, 0.4, 1.0, 0.3],
-            );
-            (vec![cyl], Vec::new(), Vec::new(), Vec::new())
-        } else {
-            // True cone
-            let cone = centered_cone_overlay(
-                fit.apex, fit.axis_direction, fit.half_angle,
-                face_list, mesh,
-                [0.2, 0.4, 1.0, 0.3],
-            );
-            (Vec::new(), vec![cone], Vec::new(), Vec::new())
-        }
-    }
-
-    fn viz_fit_description(fit: &Self::Fit) -> String {
-        if fit.half_angle.abs() < 1e-6 {
-            format!("r={:.4}", fit.radius)
-        } else {
-            format!("r={:.4} half_angle={:.2}°", fit.radius, fit.half_angle.to_degrees())
-        }
-    }
-
     fn make_hypothesis(
         mesh: &ConnectedMesh,
         faces: Vec<usize>,
@@ -1800,10 +1400,6 @@ mod tests {
                     vertex_indices: [i0, i1, i2, 0],
                     neighbors: [-1, -1, -1, -1],
                     normal: Some(normals[fidx % normals.len()]),
-                    planar_hypothesis: -1,
-                    spherical_hypothesis: -1,
-                    conical_hypothesis: -2,
-                    toroidal_hypothesis: -2,
                 });
             }
         }
@@ -1909,10 +1505,6 @@ mod tests {
             vertex_indices: [0, 1, 2, 0],
             neighbors: [-1, -1, -1, -1],
             normal: Some([0.0, 0.0, 1.0]),
-            planar_hypothesis: -1,
-            spherical_hypothesis: -1,
-            conical_hypothesis: -2,
-            toroidal_hypothesis: -2,
         }];
         let vertices = vec![
             MeshVertex::from_xyz(1.0, 0.0, 0.0),
@@ -1975,10 +1567,6 @@ mod tests {
                 vertex_indices: [0, v1, v2, 0],
                 neighbors: [prev as i32, next as i32, -1, -1],
                 normal: Some(normal),
-                planar_hypothesis: -1,
-                spherical_hypothesis: -1,
-                conical_hypothesis: -2,
-                toroidal_hypothesis: -2,
             });
         }
 

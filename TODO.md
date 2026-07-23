@@ -4,13 +4,14 @@
 
 # Active
 
-- **CURRENT WORK: stage-2 rewrite (partition-then-classify).** Roadmap
-  steps 1–6 are landed; step 7 is split — 7a (corpus re-enable) is DONE
-  (suite green, blockers disabled), 7b (deletion refactor) remains. See the
-  **Rewrite Roadmap** in DEVELOPMENT_PLAN.md for the step list and the
-  **Stage-2 Retrospective** for the architecture rationale. The BFS-pipeline
-  items below are kept for reference until the step-7b deletion pass removes
-  that code.
+- **stage-2 rewrite (partition-then-classify) is COMPLETE.** All 7 roadmap
+  steps landed: the old BFS pipeline is deleted, the analytic fitters are
+  driven by the whole-region ladder + scoped competition + freeform rung via
+  the trimmed `surface::SurfaceType` trait, and the suite is green. See the
+  **Rewrite Roadmap** in DEVELOPMENT_PLAN.md and the **Stage-2 Retrospective**
+  for rationale. Remaining classification-quality gaps (disabled test
+  blockers) are listed in the item below; the old-pipeline BFS TODO items
+  further down are obsolete and can be pruned.
 
 - **Re-enable the models disabled in step 7a** (each `#[ignore]`/`ignore =`
   in tests/stage2_integration.rs, stage3_integration.rs, stage4_integration.rs

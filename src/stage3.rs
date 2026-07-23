@@ -721,7 +721,7 @@ fn refine_corner_vertices(
     // (DifferentPointsOnClosedCurve; even its straight-line fallback needs
     // distinct points). Adjacent surface sets that pin the same intersection
     // point arise when fits are coarser than the mesh — observed on 3DBenchy
-    // with --skip-stage forcing planar-only fits, where near-coplanar facet
+    // in a planar-only fallback, where near-coplanar facet
     // planes gave both endpoints of edge 5715 the same projection fixpoint
     // (4e-14 mm apart). Below this separation from any edge-adjacent corner,
     // the candidate is discarded and the corner keeps the raw mesh position

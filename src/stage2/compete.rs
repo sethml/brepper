@@ -43,7 +43,7 @@ use std::collections::HashSet;
 use crate::config::Config;
 use crate::stage1::ConnectedMesh;
 
-use super::bfs::SurfaceType;
+use super::surface::SurfaceType;
 use super::conical::ConicalSurface;
 use super::edges::JetField;
 use super::planar::PlanarSurface;

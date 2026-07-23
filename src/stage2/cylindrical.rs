@@ -390,10 +390,6 @@ mod tests {
                     vertex_indices: [i0, i1, i2, 0],
                     neighbors: [-1, -1, -1, -1],
                     normal: Some(normals[fidx % normals.len()]),
-                    planar_hypothesis: -1,
-                    spherical_hypothesis: -2,
-                    conical_hypothesis: -2,
-                    toroidal_hypothesis: -2,
                 });
             }
         }
@@ -504,10 +500,6 @@ mod tests {
             vertex_indices: [0, 1, 0, 0],
             neighbors: [-1, -1, -1, -1],
             normal: Some([0.0, 0.0, 1.0]),
-            planar_hypothesis: -1,
-            spherical_hypothesis: -2,
-            conical_hypothesis: -2,
-            toroidal_hypothesis: -2,
         }];
         let vertices = vec![
             MeshVertex::from_xyz(1.0, 0.0, 0.0),

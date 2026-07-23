@@ -32,10 +32,8 @@ GENERAL OPTIONS:
                              Stage 2 sub-stages (partition-then-classify rewrite): 2.1 sharp-edge
                              classification + jet prior, 2.2 smooth-region extraction, 2.3 per-region
                              surface ladder, 2.4 resolution & repair, 2.5 selected surfaces
-    --skip-stage=<stages>    (legacy) Skip sub-stages of the old BFS pipeline; retired by the stage-2
-                             rewrite and removed once the rewrite's deletion pass lands
     --viz-stages=<stages>    Open interactive 3D visualization at specified stages (e.g. 2.1,2.2)
-    --viz-stages-level=<N>   Viz detail level: 1 = committed hypotheses (default), 2 = seeds, 3 = BFS faces
+    --viz-stages-level=<N>   Viz detail level: 1 = committed hypotheses (default), 2 = region colors
 ```
 
 ### Examples

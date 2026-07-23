@@ -185,17 +185,6 @@ struct CliArgs {
     #[arg(long, value_parser = parse_stage)]
     pub stage: Option<Stage>,
 
-    /// Comma-separated list of sub-stages to skip entirely (e.g.
-    /// "2.2,2.3,2.5,2.7" disables conical, spherical, toroidal, and NURBS
-    /// recognition, leaving every mesh face to fall back to a planar
-    /// hypothesis). Unlike --stage, which stops the pipeline early, skipped
-    /// stages simply do nothing and the rest of the pipeline (selection,
-    /// stage 3, stage 4) still runs through to output. Honored sub-stages:
-    /// 2.2 (conical), 2.3 (spherical), 2.5 (toroidal), 2.7 (NURBS),
-    /// 2.8 (redundant-surface absorption), 2.9 (boundary refinement).
-    #[arg(long = "skip-stage", value_parser = parse_stage, value_delimiter = ',')]
-    pub skip_stages: Option<Vec<Stage>>,
-
     /// Comma-separated list of stages for interactive visualization (e.g. "2.2,3.1").
     #[arg(long = "viz-stages", value_parser = parse_stage, value_delimiter = ',')]
     pub viz_stages: Option<Vec<Stage>>,
@@ -246,9 +235,6 @@ pub struct Config {
     pub debug: bool,
     /// Stop after this stage.
     pub stage: Stage,
-    /// Sub-stages to skip entirely (produce zero hypotheses of that type)
-    /// while still running the rest of the pipeline through to output.
-    pub skip_stages: Vec<Stage>,
     /// Stages to visualize interactively.
     pub viz_stages: Vec<Stage>,
     /// Detail level for viz-stages visualization (1=commits, 2=seeds, 3=BFS faces).
@@ -273,7 +259,6 @@ impl std::fmt::Debug for Config {
             .field("strict_mesh", &self.strict_mesh)
             .field("debug", &self.debug)
             .field("stage", &self.stage)
-            .field("skip_stages", &self.skip_stages)
             .field("viz_stages", &self.viz_stages)
             .field("viz_stages_level", &self.viz_stages_level)
             .finish()
@@ -300,7 +285,6 @@ impl Config {
             strict_mesh: args.strict_mesh,
             debug: args.debug,
             stage: args.stage.unwrap_or_default(),
-            skip_stages: args.skip_stages.unwrap_or_default(),
             viz_stages: args.viz_stages.unwrap_or_default(),
             viz_stages_level: args.viz_stages_level,
         }
@@ -312,15 +296,6 @@ impl Config {
             let (sm, ss) = s.normalized();
             sm == major && ss == minor
         })
-    }
-
-    /// Check if a specific sub-stage was named in --skip-stage. Matches the
-    /// exact (major, minor) pair as parsed — unlike `viz_active`/`at_least`,
-    /// a bare major (minor 0) is not expanded, since the recognition
-    /// sub-stages this is meant for (2.2, 2.3, 2.5, 2.7) always need an
-    /// explicit minor.
-    pub fn skip_stage(&self, major: u8, minor: u8) -> bool {
-        self.skip_stages.iter().any(|s| s.0 == major && s.1 == minor)
     }
 
     /// If --compare was specified, load the STEP file shape for bounded distance comparison.
@@ -437,27 +412,6 @@ mod tests {
         // (2.9) passes.
         let s27 = Stage(2, 7);
         assert!(!s27.at_least(2, 8));
-    }
-
-    #[test]
-    fn skip_stage_parses_and_matches() {
-        let config = parse(&["input.stl", "--skip-stage=2.2,2.3,2.5,2.7,2.8,2.9"]);
-        assert!(config.skip_stage(2, 2));
-        assert!(config.skip_stage(2, 3));
-        assert!(config.skip_stage(2, 5));
-        assert!(config.skip_stage(2, 7));
-        assert!(config.skip_stage(2, 8));
-        assert!(config.skip_stage(2, 9));
-        assert!(!config.skip_stage(2, 1));
-        assert!(!config.skip_stage(2, 6));
-        assert!(!config.skip_stage(3, 1));
-    }
-
-    #[test]
-    fn skip_stage_defaults_to_none_skipped() {
-        let config = parse(&["input.stl"]);
-        assert!(config.skip_stages.is_empty());
-        assert!(!config.skip_stage(2, 2));
     }
 
     #[test]

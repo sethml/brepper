@@ -13,15 +13,12 @@ use std::collections::HashSet;
 use levenberg_marquardt::{LeastSquaresProblem, LevenbergMarquardt};
 use nalgebra::{Const, Dyn, OMatrix, OVector, Owned};
 
-use crate::config::Config;
-use crate::stage1::{self, ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_TOROIDAL_HYPOTHESIS};
-use crate::viz;
+use crate::stage1::{ConnectedMesh, MeshFace, MeshVertex};
 
 use super::{
     dot3, face_centroid,
     normalize3, perpendicular_basis, smallest_eigenvector_3x3,
-    ToroidalHypothesis, Stage2CompareError,
-    MIN_TORUS_FACES,
+    ToroidalHypothesis,
 };
 
 // ---------------------------------------------------------------------------
@@ -1052,219 +1049,15 @@ fn determine_convexity(
     dot3(&n, &to_face) > 0.0
 }
 
-/// Validate angular coverage around the torus minor circle (tube cross-section).
-/// For each face centroid, compute the angle φ = atan2(axial, radial - R) in
-/// the tube cross-section plane. Reject if the angular span is too narrow.
-/// This catches false positives where faces lie on a strip of the torus
-/// (e.g., just the outer equator) without wrapping around the tube.
-fn minor_circle_coverage_valid(
-    face_list: &[usize],
-    center: &[f64; 3],
-    axis_direction: &[f64; 3],
-    major_radius: f64,
-    faces: &[MeshFace],
-    vertices: &[MeshVertex],
-) -> bool {
-    if face_list.len() < MIN_TORUS_FACES {
-        return false;
-    }
-
-    // Measure tube coverage from face *normals*, not centroid positions.
-    // On a torus, the surface normal at tube angle φ makes exactly that
-    // angle with the radial direction, regardless of tube radius. Flat
-    // annuli and cylinder bands lie exactly on degenerate tori (their
-    // centroids can span a nonzero positional arc on a large tube), but
-    // their normals are all parallel — tube-angle span ≈ 0 — so the
-    // normal-based span cleanly rejects them.
-    let _ = major_radius;
-    let mut minor_angles: Vec<f64> = Vec::with_capacity(face_list.len());
-    for &fi in face_list {
-        let n = match faces[fi].normal {
-            Some(n) => n,
-            None => continue,
-        };
-        let c = face_centroid(&faces[fi], vertices);
-        let d = [c[0] - center[0], c[1] - center[1], c[2] - center[2]];
-        let axial = dot3(&d, axis_direction);
-        let radial_vec = [
-            d[0] - axial * axis_direction[0],
-            d[1] - axial * axis_direction[1],
-            d[2] - axial * axis_direction[2],
-        ];
-        let radial_dist = (radial_vec[0] * radial_vec[0]
-            + radial_vec[1] * radial_vec[1]
-            + radial_vec[2] * radial_vec[2]).sqrt();
-        if radial_dist < 1e-10 {
-            continue;
-        }
-        let radial_unit = [
-            radial_vec[0] / radial_dist,
-            radial_vec[1] / radial_dist,
-            radial_vec[2] / radial_dist,
-        ];
-        let phi = f64::atan2(dot3(&n, axis_direction), dot3(&n, &radial_unit));
-        minor_angles.push(phi);
-    }
-
-    if minor_angles.len() < MIN_TORUS_FACES {
-        return false;
-    }
-
-    minor_angles.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let n = minor_angles.len();
-
-    // Compute largest gap
-    let mut largest_gap = minor_angles[0] + 2.0 * std::f64::consts::PI - minor_angles[n - 1];
-    for i in 1..n {
-        let gap = minor_angles[i] - minor_angles[i - 1];
-        if gap > largest_gap {
-            largest_gap = gap;
-        }
-    }
-
-    let span = 2.0 * std::f64::consts::PI - largest_gap;
-    // Require meaningful normal coverage around the tube. A real fillet
-    // patch spans a significant tube arc (typically 90°); flat annuli and
-    // cylinder bands span ~0° (plus tessellation noise). 0.3 rad (~17°)
-    // admits patches of 3+ tessellation rows while rejecting degenerates.
-    span >= 0.3
-}
-
-/// Validate angular coverage around the torus (same gap-based check as cylindrical).
-fn angular_coverage_valid(
-    face_list: &[usize],
-    center: &[f64; 3],
-    axis_direction: &[f64; 3],
-    faces: &[MeshFace],
-    vertices: &[MeshVertex],
-) -> bool {
-    if face_list.len() < 3 {
-        return false;
-    }
-
-    let (u, w) = perpendicular_basis(axis_direction);
-
-    let mut thetas: Vec<f64> = Vec::with_capacity(face_list.len());
-    for &fi in face_list {
-        let c = face_centroid(&faces[fi], vertices);
-        let d = [c[0] - center[0], c[1] - center[1], c[2] - center[2]];
-        let radial = [
-            d[0] - dot3(&d, axis_direction) * axis_direction[0],
-            d[1] - dot3(&d, axis_direction) * axis_direction[1],
-            d[2] - dot3(&d, axis_direction) * axis_direction[2],
-        ];
-        let theta = f64::atan2(dot3(&radial, &w), dot3(&radial, &u));
-        thetas.push(theta);
-    }
-
-    thetas.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let n = thetas.len();
-
-    let mut gaps: Vec<f64> = Vec::with_capacity(n);
-    for i in 1..n {
-        gaps.push(thetas[i] - thetas[i - 1]);
-    }
-    gaps.push(thetas[0] + 2.0 * std::f64::consts::PI - thetas[n - 1]);
-
-    let mut largest = 0.0_f64;
-    let mut second_largest = 0.0_f64;
-    for &g in &gaps {
-        if g > largest {
-            second_largest = largest;
-            largest = g;
-        } else if g > second_largest {
-            second_largest = g;
-        }
-    }
-
-    let span = 2.0 * std::f64::consts::PI - largest;
-    if span <= 0.0 {
-        return false;
-    }
-
-    second_largest <= span / 3.0
-}
-
 // ---------------------------------------------------------------------------
 // Stage 2.5: Compare check
 // ---------------------------------------------------------------------------
-
-/// Validate fitted toroidal hypotheses against a reference STEP shape.
-pub(super) fn compare_toroidal_hypotheses(
-    hypotheses: &[ToroidalHypothesis],
-    mesh: &ConnectedMesh,
-    config: &Config,
-) -> Result<(), Stage2CompareError> {
-    let compare_shape = config.compare_shape.as_ref().unwrap();
-
-    for (hi, hyp) in hypotheses.iter().enumerate() {
-        let projected_points: Vec<[f64; 3]> = hyp.faces.iter().map(|&fi| {
-            let centroid = face_centroid(&mesh.faces[fi], &mesh.vertices);
-
-            // Project centroid onto torus surface
-            let d = [
-                centroid[0] - hyp.center[0],
-                centroid[1] - hyp.center[1],
-                centroid[2] - hyp.center[2],
-            ];
-            let axial = dot3(&d, &hyp.axis_direction);
-            let radial = [
-                d[0] - axial * hyp.axis_direction[0],
-                d[1] - axial * hyp.axis_direction[1],
-                d[2] - axial * hyp.axis_direction[2],
-            ];
-            let radial_dist = (radial[0] * radial[0] + radial[1] * radial[1]
-                + radial[2] * radial[2]).sqrt();
-
-            if radial_dist > 1e-15 {
-                let tube_center = [
-                    hyp.center[0] + hyp.major_radius * radial[0] / radial_dist,
-                    hyp.center[1] + hyp.major_radius * radial[1] / radial_dist,
-                    hyp.center[2] + hyp.major_radius * radial[2] / radial_dist,
-                ];
-                let tube_vec = [
-                    centroid[0] - tube_center[0],
-                    centroid[1] - tube_center[1],
-                    centroid[2] - tube_center[2],
-                ];
-                let tube_dist = (tube_vec[0] * tube_vec[0] + tube_vec[1] * tube_vec[1]
-                    + tube_vec[2] * tube_vec[2]).sqrt();
-                if tube_dist > 1e-15 {
-                    let scale = hyp.minor_radius / tube_dist;
-                    [
-                        tube_center[0] + tube_vec[0] * scale,
-                        tube_center[1] + tube_vec[1] * scale,
-                        tube_center[2] + tube_vec[2] * scale,
-                    ]
-                } else {
-                    centroid
-                }
-            } else {
-                centroid
-            }
-        }).collect();
-
-        let (max_dist, _) = stage1::max_distance_to_shape(&projected_points, compare_shape);
-        let tolerance = config.surface_tolerance_mm;
-
-        if max_dist > tolerance {
-            return Err(Stage2CompareError {
-                hypothesis_type: "toroidal",
-                hypothesis_index: hi,
-                max_distance: max_dist,
-                tolerance,
-            });
-        }
-    }
-
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // SurfaceType trait implementation for generic BFS
 // ---------------------------------------------------------------------------
 
-use super::bfs::{BfsConfig, Seed, SurfaceType};
+use super::surface::SurfaceType;
 
 /// Fitted torus parameters.
 #[derive(Clone)]
@@ -1282,123 +1075,6 @@ pub(super) struct ToroidalSurface;
 impl SurfaceType for ToroidalSurface {
     type Fit = TorusFit;
     type Hypothesis = ToroidalHypothesis;
-
-    fn name() -> &'static str { "toroidal" }
-
-    fn hypothesis_field(face: &MeshFace) -> i32 { face.toroidal_hypothesis }
-
-    fn set_hypothesis_field(face: &mut MeshFace, value: i32) {
-        face.toroidal_hypothesis = value;
-    }
-
-    fn undeduced_value() -> i32 { UNDEDUCED_TOROIDAL_HYPOTHESIS }
-
-    fn face_eligible(face: &MeshFace) -> bool {
-        face.toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS
-    }
-
-    /// Torus quads twist (they are doubly curved), so stage 1.3 coplanar
-    /// fusion often fails on fillet patches, leaving raw triangles whose
-    /// normals differ by up to ~2× the tessellation angular step. Vertex
-    /// distance is the primary discriminator, so relax the dihedral check
-    /// like the conical stage does.
-    fn angular_tol_multiplier() -> f64 { 2.0 }
-
-    /// Corner vertex-blend patches (where two fillets meet) have low face
-    /// indices and seed before the adjacent larger fillet tori commit, so
-    /// their 1-ring seeds mix faces from both surfaces and fail. A second
-    /// pass retries them once everything else is committed and excluded.
-    fn seeding_passes() -> usize { 2 }
-
-    /// Torus vertex-neighborhood seeds legitimately mix faces from two
-    /// adjacent fillet patches; trimming relative outliers and refitting
-    /// isolates the majority patch.
-    fn seed_outlier_trimming() -> bool { true }
-
-    fn generate_seeds(mesh: &ConnectedMesh, fi: usize, config: &BfsConfig, relaxed: bool) -> Vec<Seed> {
-        if mesh.faces[fi].normal.is_none() {
-            return Vec::new();
-        }
-        // Junction faces (curvature transitions) produce contaminated seeds;
-        // pass 1 skips them as anchors and gathering members.
-        if config.is_junction(fi, relaxed) {
-            return Vec::new();
-        }
-        // Exclude faces on LARGE spheres only: small spurious spheres (a
-        // corner vertex-blend patch locally fits a sphere of the tube
-        // radius) must not block torus seeding.
-        let on_large_sphere = |f: usize| -> bool {
-            if config.large_sphere.is_empty() {
-                mesh.faces[f].spherical_hypothesis >= 0
-            } else {
-                config.large_sphere.get(f).copied().unwrap_or(false)
-            }
-        };
-        if on_large_sphere(fi) {
-            return Vec::new();
-        }
-        // (Flat facets in seeds — e.g. top-face quads pulled into corner
-        // vertex-blend seeds — were excluded by a multiface_planar mask
-        // until 2026-07-15; the junction mask plus seed outlier trimming
-        // proved to cover that failure, so the mask was retired.)
-        // Gather the seed by hop-expansion from fi over edge neighbors,
-        // excluding committed/planar/junction faces, growing the radius (up
-        // to 3 hops) until the seed is large enough for a solid 7-DOF fit.
-        // Small fillets (e.g. r=0.5 tubes only 2-3 rows wide) have little or
-        // no interior left after junction exclusion across the tube, but
-        // extend far along the fillet axis — hop growth follows the strip.
-        let eligible = |fj: usize| -> bool {
-            let face = &mesh.faces[fj];
-            face.normal.is_some()
-                && face.toroidal_hypothesis == UNDEDUCED_TOROIDAL_HYPOTHESIS
-                && face.conical_hypothesis < 0
-                && !on_large_sphere(fj)
-                && !config.is_junction(fj, relaxed)
-        };
-        let mut seed_set: HashSet<usize> = HashSet::new();
-        seed_set.insert(fi);
-        let mut frontier: Vec<usize> = vec![fi];
-        const SEED_TARGET_FACES: usize = 16;
-        for _hop in 0..3 {
-            if seed_set.len() >= SEED_TARGET_FACES {
-                break;
-            }
-            let mut next: Vec<usize> = Vec::new();
-            for &f in &frontier {
-                let vc = mesh.faces[f].vertex_count as usize;
-                for &ni in &mesh.faces[f].neighbors[..vc] {
-                    if ni >= 0 {
-                        let ni = ni as usize;
-                        if !seed_set.contains(&ni) && eligible(ni) {
-                            seed_set.insert(ni);
-                            next.push(ni);
-                        }
-                    }
-                }
-            }
-            if next.is_empty() {
-                break;
-            }
-            frontier = next;
-        }
-
-        // Need enough faces and vertices for 7-DOF fit.
-        // Sorted for deterministic face iteration order in fitting.
-        let mut faces: Vec<usize> = seed_set.into_iter().collect();
-        faces.sort_unstable();
-        let mut verts: HashSet<usize> = HashSet::new();
-        for &sfi in &faces {
-            let svc = mesh.faces[sfi].vertex_count as usize;
-            for &vi in &mesh.faces[sfi].vertex_indices[..svc] {
-                verts.insert(vi);
-            }
-        }
-        if faces.len() < MIN_TORUS_FACES || verts.len() < 9 {
-            return Vec::new();
-        }
-
-        vec![Seed { faces }]
-    }
 
     fn fit_surface(
         mesh: &ConnectedMesh,
@@ -1454,58 +1130,6 @@ impl SurfaceType for ToroidalSurface {
                 &fit.center, &fit.axis_direction, fit.major_radius,
             ));
         }
-    }
-
-    fn acceptance_test(
-        mesh: &ConnectedMesh,
-        face_list: &[usize],
-        fit: &Self::Fit,
-        _config: &BfsConfig,
-    ) -> bool {
-        if face_list.len() < MIN_TORUS_FACES {
-            return false;
-        }
-        // Reject degenerate giant-radius tori: a straight-edge fillet
-        // (cylinder) is the R→∞ limit of a torus, and a short segment of one
-        // can be fitted within tolerance by a torus with an absurdly distant
-        // axis (observed R ≈ 1500–3600 mm on ~100 mm models). A legitimate
-        // torus's major radius cannot exceed the mesh extent. Analogous to
-        // the cone apex-distance bound.
-        let bb_diag = super::bounding_box_diagonal(&mesh.vertices);
-        if fit.major_radius > bb_diag {
-            return false;
-        }
-        // Major circle angular coverage (azimuthal)
-        if !angular_coverage_valid(
-            face_list, &fit.center, &fit.axis_direction,
-            &mesh.faces, &mesh.vertices,
-        ) {
-            return false;
-        }
-        // Minor circle angular coverage (tube cross-section)
-        minor_circle_coverage_valid(
-            face_list, &fit.center, &fit.axis_direction, fit.major_radius,
-            &mesh.faces, &mesh.vertices,
-        )
-    }
-
-    fn viz_overlays(
-        fit: &Self::Fit,
-        _mesh: &ConnectedMesh,
-        _face_list: &[usize],
-    ) -> (Vec<viz::CylinderOverlay>, Vec<viz::ConeOverlay>, Vec<viz::SphereOverlay>, Vec<viz::TorusOverlay>) {
-        let torus = viz::TorusOverlay {
-            center: fit.center,
-            direction: fit.axis_direction,
-            major_radius: fit.major_radius,
-            minor_radius: fit.minor_radius,
-            color: [0.2, 0.4, 1.0, 0.3],
-        };
-        (Vec::new(), Vec::new(), Vec::new(), vec![torus])
-    }
-
-    fn viz_fit_description(fit: &Self::Fit) -> String {
-        format!("R={:.4} r={:.4}", fit.major_radius, fit.minor_radius)
     }
 
     fn make_hypothesis(
@@ -1666,10 +1290,6 @@ mod tests {
                     vertex_indices: [i0, i1, i2, 0],
                     neighbors: [-1, -1, -1, -1],
                     normal: Some(normals[fidx % normals.len()]),
-                    planar_hypothesis: -1,
-                    spherical_hypothesis: -1,
-                    conical_hypothesis: -1,
-                    toroidal_hypothesis: -2,
                 });
             }
         }
@@ -1886,10 +1506,6 @@ mod tests {
             vertex_indices: [0, 1, 2, 0],
             neighbors: [-1, -1, -1, -1],
             normal: Some([0.0, 0.0, 1.0]),
-            planar_hypothesis: -1,
-            spherical_hypothesis: -1,
-            conical_hypothesis: -1,
-            toroidal_hypothesis: -2,
         }];
         let vertices = vec![
             MeshVertex::from_xyz(1.0, 0.0, 0.0),

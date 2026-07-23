@@ -2,7 +2,16 @@
 
 This document describes the surface fitting math and validation algorithms used in brepper's Stage 2 pipeline. Each section covers the fitting math and validation for one surface type.
 
-For the overall pipeline architecture, BFS region growing algorithm, and per-stage parameterization of the generic BFS, see [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
+> **Orientation (post stage-2 rewrite).** The per-type **fitting math and
+> validation** below (the `fit_surface`/`vertex_distance`/convexity content)
+> is current — those fitters now implement the trimmed `surface::SurfaceType`
+> trait and are driven generically by the whole-region DOF ladder
+> (`classify.rs`) and scoped competition (`compete.rs`). The **BFS region
+> growing / seeding / acceptance-test / seeding-mask** orchestration this
+> document still refers to in places was the old pipeline and **no longer
+> exists** (removed in Rewrite Roadmap step 7); read those mentions as
+> historical. See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) §2 for the
+> current partition-then-classify architecture.
 
 ---
 

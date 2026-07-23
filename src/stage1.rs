@@ -15,11 +15,6 @@ use std::fmt::{Display, Formatter};
 // Constants
 // ---------------------------------------------------------------------------
 
-pub const UNDEDUCED_PLANAR_HYPOTHESIS: i32 = -2;
-pub const NO_HYPOTHESIS: i32 = -1;
-pub const UNDEDUCED_CONICAL_HYPOTHESIS: i32 = -2;
-pub const UNDEDUCED_SPHERICAL_HYPOTHESIS: i32 = -2;
-pub const UNDEDUCED_TOROIDAL_HYPOTHESIS: i32 = -2;
 
 // ---------------------------------------------------------------------------
 // Data structures — Stage 1 output
@@ -44,10 +39,6 @@ pub struct MeshFace {
     pub vertex_indices: [usize; 4],
     pub neighbors: [i32; 4],
     pub normal: Option<[f64; 3]>,
-    pub planar_hypothesis: i32,
-    pub conical_hypothesis: i32,
-    pub spherical_hypothesis: i32,
-    pub toroidal_hypothesis: i32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -303,10 +294,6 @@ pub fn read_connected_mesh_from_stl(
             vertex_indices: face_vertex_indices,
             neighbors: [-1, -1, -1, -1],
             normal: None,
-            planar_hypothesis: UNDEDUCED_PLANAR_HYPOTHESIS,
-            conical_hypothesis: UNDEDUCED_CONICAL_HYPOTHESIS,
-            spherical_hypothesis: UNDEDUCED_SPHERICAL_HYPOTHESIS,
-            toroidal_hypothesis: UNDEDUCED_TOROIDAL_HYPOTHESIS,
         });
     }
 
@@ -717,10 +704,6 @@ impl ConnectedMesh {
                             vertex_indices: child_indices,
                             neighbors: [-1, -1, -1, -1],
                             normal: None,
-                            planar_hypothesis: UNDEDUCED_PLANAR_HYPOTHESIS,
-                            conical_hypothesis: UNDEDUCED_CONICAL_HYPOTHESIS,
-                            spherical_hypothesis: UNDEDUCED_SPHERICAL_HYPOTHESIS,
-                            toroidal_hypothesis: UNDEDUCED_TOROIDAL_HYPOTHESIS,
                         };
                         let child_idx = self.faces.len();
                         register_face_edges(&child, child_idx, &mut edge_map);
@@ -1452,10 +1435,6 @@ mod tests {
             vertex_indices: [a, b, c, 0],
             neighbors: [-1, -1, -1, -1],
             normal: None,
-            planar_hypothesis: UNDEDUCED_PLANAR_HYPOTHESIS,
-            conical_hypothesis: UNDEDUCED_CONICAL_HYPOTHESIS,
-            spherical_hypothesis: UNDEDUCED_SPHERICAL_HYPOTHESIS,
-            toroidal_hypothesis: UNDEDUCED_TOROIDAL_HYPOTHESIS,
         }
     }
 
@@ -1472,9 +1451,6 @@ mod tests {
             assert_eq!(face.vertex_count, 3);
             assert_eq!(face.neighbors, [-1, -1, -1, -1]);
             assert!(face.normal.is_none());
-            assert_eq!(face.planar_hypothesis, UNDEDUCED_PLANAR_HYPOTHESIS);
-            assert_eq!(face.conical_hypothesis, UNDEDUCED_CONICAL_HYPOTHESIS);
-            assert_eq!(face.spherical_hypothesis, UNDEDUCED_SPHERICAL_HYPOTHESIS);
         }
     }
 

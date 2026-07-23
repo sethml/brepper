@@ -569,8 +569,7 @@ mod tests {
     use super::*;
     use crate::config;
     use crate::stage1::{
-        ConnectedMesh, MeshFace, MeshVertex, UNDEDUCED_CONICAL_HYPOTHESIS,
-        UNDEDUCED_PLANAR_HYPOTHESIS, UNDEDUCED_SPHERICAL_HYPOTHESIS, UNDEDUCED_TOROIDAL_HYPOTHESIS,
+        ConnectedMesh, MeshFace, MeshVertex,
     };
 
     fn tri(a: usize, b: usize, c: usize) -> MeshFace {
@@ -579,10 +578,6 @@ mod tests {
             vertex_indices: [a, b, c, 0],
             neighbors: [-1, -1, -1, -1],
             normal: None,
-            planar_hypothesis: UNDEDUCED_PLANAR_HYPOTHESIS,
-            spherical_hypothesis: UNDEDUCED_SPHERICAL_HYPOTHESIS,
-            conical_hypothesis: UNDEDUCED_CONICAL_HYPOTHESIS,
-            toroidal_hypothesis: UNDEDUCED_TOROIDAL_HYPOTHESIS,
         }
     }
 
