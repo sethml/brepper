@@ -1079,18 +1079,23 @@ criteria under "Acceptance narratives".
      are **disabled with a blocker comment** (`#[ignore]`/`ignore =`), per
      the migration policy, NOT nerfed with loosened gates. Disabled
      blockers, all PRE-EXISTING (steps 2–5 classification quality, not
-     step 6): (a) **hole → sphere** — a cylindrical hole/feature fits a
-     sphere before the ladder reaches the cylinder rung (plate_with_hole,
-     fusion plate, l_bracket); (b) **fillet over-segmentation** — a fillet
+     step 6): (a) **hole → sphere** — a cylindrical hole tessellated as a few
+     rings is vertex-ambiguous with a sphere, which simplest-DOF-first
+     wrongly committed (plate_with_hole, fusion plate, l_bracket) — **FIXED
+     2026-07-23 by jet-informed rung ordering** (`region_is_developable` in
+     classify.rs tries the conical rung before the sphere rung for
+     developable regions); the 9 fusion `plate_with_hole` tests were
+     re-enabled; l_bracket (a second cylinder undetected) and the coarse
+     onshape plate (hole faceted, no cylinder region) stay disabled for
+     different gaps; (b) **fillet over-segmentation** — a fillet
      chain decomposes into extra tori + a freeform patch with the straight
      body absorbed (filleted_cylinder/hole_block/pipe); (c) **cone/cylinder
      + concave-fillet** decomposition differs from the old BFS
      (cone_cylinder, cone_tangent_planes); (d) **coarse-mesh leftover blob**
      exceeds `LEFTOVER_BLOB_MAX` → per-facet fallback (part_rounded_cube,
      stepped_block_toroidal coarse/medium); (e) **ccad reference
-     mismatches** (cone_cylinder/filleted_* stage-4 `--compare`). 26 stage-2
-     + 5 stage-3 + 6 stage-4 tests disabled. See TODO.md for the re-enable
-     list.
+     mismatches** (cone_cylinder/filleted_* stage-4 `--compare`). See TODO.md
+     for the current re-enable list.
    - **7b deletion refactor [DONE].** `bfs.rs` is deleted; its `SurfaceType`
      trait — trimmed to the methods the ladder/competition use (`fit_surface`,
      `vertex_distance`, `centroid_distance`, `convexity_check`,

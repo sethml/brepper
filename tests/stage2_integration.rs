@@ -599,13 +599,13 @@ test_stl_step_stage22_compare!(
     onshape_l_bracket_stage22_compare,
     "tests/onshape/l_bracket_simple_medium.stl",
     "tests/onshape/l_bracket_simple.step",
-    ignore = "step 7 re-enable: cylindrical hole classified as a sphere (ladder tries sphere before cylinder); pre-existing new-pipeline gap"
+    ignore = "step 7 re-enable: only 1 of 2 reference cylinders detected (a second cylindrical feature classifies as planar/split); separate from the hole->sphere fix"
 );
 test_stl_step_stage22_compare!(
     onshape_plate_with_hole_stage22_compare,
     "tests/onshape/plate_with_hole_100x50_coarse.stl",
     "tests/onshape/plate_with_hole_100x50.step",
-    ignore = "step 7 re-enable: cylindrical hole classified as a sphere (ladder tries sphere before cylinder); pre-existing new-pipeline gap"
+    ignore = "step 7 re-enable: coarse-mesh hole faceted into planar strips (coarse facet angles read as sharp), so no cylindrical region forms; different from hole->sphere"
 );
 test_stl_step_stage22_compare!(
     onshape_pipe_elbow_stage22_compare,
@@ -617,20 +617,17 @@ test_stl_step_stage22_compare!(
 test_stl_step_stage22_compare!(
     fusion_plate_low_stage22_compare,
     "tests/fusion/plate_with_hole_100x50_low.stl",
-    "tests/fusion/plate_with_hole_100x50.step",
-    ignore = "step 7 re-enable: cylindrical hole classified as a sphere (ladder tries sphere before cylinder); pre-existing new-pipeline gap"
+    "tests/fusion/plate_with_hole_100x50.step"
 );
 test_stl_step_stage22_compare!(
     fusion_plate_medium_stage22_compare,
     "tests/fusion/plate_with_hole_100x50_medium.stl",
-    "tests/fusion/plate_with_hole_100x50.step",
-    ignore = "step 7 re-enable: cylindrical hole classified as a sphere (ladder tries sphere before cylinder); pre-existing new-pipeline gap"
+    "tests/fusion/plate_with_hole_100x50.step"
 );
 test_stl_step_stage22_compare!(
     fusion_plate_high_stage22_compare,
     "tests/fusion/plate_with_hole_100x50_high.stl",
-    "tests/fusion/plate_with_hole_100x50.step",
-    ignore = "step 7 re-enable: cylindrical hole classified as a sphere (ladder tries sphere before cylinder); pre-existing new-pipeline gap"
+    "tests/fusion/plate_with_hole_100x50.step"
 );
 
 // ===========================================================================
@@ -877,13 +874,13 @@ test_stl_step_stage23_compare!(
     onshape_l_bracket_stage23_compare,
     "tests/onshape/l_bracket_simple_medium.stl",
     "tests/onshape/l_bracket_simple.step",
-    ignore = "step 7 re-enable: cylindrical hole classified as a sphere (ladder tries sphere before cylinder); pre-existing new-pipeline gap"
+    ignore = "step 7 re-enable: only 1 of 2 reference cylinders detected (a second cylindrical feature classifies as planar/split); separate from the hole->sphere fix"
 );
 test_stl_step_stage23_compare!(
     onshape_plate_with_hole_stage23_compare,
     "tests/onshape/plate_with_hole_100x50_coarse.stl",
     "tests/onshape/plate_with_hole_100x50.step",
-    ignore = "step 7 re-enable: cylindrical hole classified as a sphere (ladder tries sphere before cylinder); pre-existing new-pipeline gap"
+    ignore = "step 7 re-enable: coarse-mesh hole faceted into planar strips (coarse facet angles read as sharp), so no cylindrical region forms; different from hole->sphere"
 );
 test_stl_step_stage23_compare!(
     onshape_pipe_elbow_stage23_compare,
@@ -895,20 +892,17 @@ test_stl_step_stage23_compare!(
 test_stl_step_stage23_compare!(
     fusion_plate_low_stage23_compare,
     "tests/fusion/plate_with_hole_100x50_low.stl",
-    "tests/fusion/plate_with_hole_100x50.step",
-    ignore = "step 7 re-enable: cylindrical hole classified as a sphere (ladder tries sphere before cylinder); pre-existing new-pipeline gap"
+    "tests/fusion/plate_with_hole_100x50.step"
 );
 test_stl_step_stage23_compare!(
     fusion_plate_medium_stage23_compare,
     "tests/fusion/plate_with_hole_100x50_medium.stl",
-    "tests/fusion/plate_with_hole_100x50.step",
-    ignore = "step 7 re-enable: cylindrical hole classified as a sphere (ladder tries sphere before cylinder); pre-existing new-pipeline gap"
+    "tests/fusion/plate_with_hole_100x50.step"
 );
 test_stl_step_stage23_compare!(
     fusion_plate_high_stage23_compare,
     "tests/fusion/plate_with_hole_100x50_high.stl",
-    "tests/fusion/plate_with_hole_100x50.step",
-    ignore = "step 7 re-enable: cylindrical hole classified as a sphere (ladder tries sphere before cylinder); pre-existing new-pipeline gap"
+    "tests/fusion/plate_with_hole_100x50.step"
 );
 
 // ===========================================================================
@@ -2046,25 +2040,22 @@ test_cylinder_params_match!(
     onshape_plate_with_hole_params_match,
     "tests/onshape/plate_with_hole_100x50_coarse.stl",
     "tests/onshape/plate_with_hole_100x50.step",
-    ignore = "step 7 re-enable: cylindrical hole classified as a sphere (ladder tries sphere before cylinder); pre-existing new-pipeline gap"
+    ignore = "step 7 re-enable: coarse-mesh hole faceted into planar strips (coarse facet angles read as sharp), so no cylindrical region forms; different from hole->sphere"
 );
 test_cylinder_params_match!(
     fusion_plate_low_params_match,
     "tests/fusion/plate_with_hole_100x50_low.stl",
-    "tests/fusion/plate_with_hole_100x50.step",
-    ignore = "step 7 re-enable: cylindrical hole classified as a sphere (ladder tries sphere before cylinder); pre-existing new-pipeline gap"
+    "tests/fusion/plate_with_hole_100x50.step"
 );
 test_cylinder_params_match!(
     fusion_plate_medium_params_match,
     "tests/fusion/plate_with_hole_100x50_medium.stl",
-    "tests/fusion/plate_with_hole_100x50.step",
-    ignore = "step 7 re-enable: cylindrical hole classified as a sphere (ladder tries sphere before cylinder); pre-existing new-pipeline gap"
+    "tests/fusion/plate_with_hole_100x50.step"
 );
 test_cylinder_params_match!(
     fusion_plate_high_params_match,
     "tests/fusion/plate_with_hole_100x50_high.stl",
-    "tests/fusion/plate_with_hole_100x50.step",
-    ignore = "step 7 re-enable: cylindrical hole classified as a sphere (ladder tries sphere before cylinder); pre-existing new-pipeline gap"
+    "tests/fusion/plate_with_hole_100x50.step"
 );
 
 

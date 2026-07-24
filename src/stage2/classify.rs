@@ -16,6 +16,16 @@
 //! cylinder does not validate (`ConicalSurface::fit_surface`), so it covers
 //! both the 5-DOF cylinder and 6-DOF cone cases in DOF order.
 //!
+//! **Jet-informed order between the sphere and conical rungs.** Strict
+//! simplest-first breaks on a short cylinder/cone tessellated as a few rings:
+//! two same-radius rings at heights ±h lie exactly on a sphere of radius
+//! √(R²+h²), so the lower-DOF sphere would validate and wrongly win. The jet
+//! resolves it — a developable region (median `min/max` principal-curvature
+//! ratio ~0) tries the conical rung before the sphere rung; a bi-curved
+//! region (ratio ~1) keeps sphere-first. The jet only ORDERS; a genuine
+//! sphere it misreads still falls through to the sphere rung, since a
+//! cylinder fit cannot validate a sphere's vertices (`region_is_developable`).
+//!
 //! **Validation decides all geometry** (Design Principle #1): every claimed
 //! vertex within `--vertex-tolerance`, every claimed face centroid within
 //! `--surface-tolerance`, and orientation coherence (every face normal
@@ -155,7 +165,7 @@ pub(super) fn classify_regions(
     let mut freeform_surfaces = 0usize;
     let mut facet_faces = 0usize;
     for region in regions {
-        if classify_one_region(mesh, region, &centroids, config, &mut cls, &mut ladder_wins) {
+        if classify_one_region(mesh, region, &centroids, jet, config, &mut cls, &mut ladder_wins) {
             continue;
         }
         // The ladder cannot explain this region — scoped competition.
@@ -217,6 +227,42 @@ pub(super) fn classify_regions(
     cls
 }
 
+/// Median `min(|κ1|,|κ2|)/max(|κ1|,|κ2|)` at or below which a region is treated
+/// as developable (cylinder/cone) for rung ordering: a cylinder/cone reads ~0
+/// (one principal curvature vanishes), a sphere reads ~1 (both equal). Well
+/// clear of both classes' jet noise. Ordering only — never rejection.
+const DEVELOPABLE_MAX_RATIO: f64 = 0.4;
+
+/// Whether the region's jet reads developable (one principal curvature ~0),
+/// used only to order the sphere and conical rungs. A short cylinder/cone
+/// tessellated as a few rings is vertex-ambiguous with a sphere — two
+/// same-radius rings at heights ±h lie exactly on a sphere of radius
+/// √(R²+h²) — so simplest-DOF-first would wrongly commit the sphere; the jet
+/// breaks the tie by curvature class. Faces too flat to have a curvature
+/// signal are skipped; with no signal at all the region is not treated as
+/// developable (keeps the plane→sphere→conical default order).
+fn region_is_developable(region: &Region, jet: &[JetField]) -> bool {
+    let mut ratios: Vec<f64> = region
+        .faces
+        .iter()
+        .filter_map(|&fi| {
+            let j = &jet[fi];
+            let (a, b) = (j.k1.abs(), j.k2.abs());
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            if hi > 1e-9 {
+                Some(lo / hi)
+            } else {
+                None
+            }
+        })
+        .collect();
+    if ratios.is_empty() {
+        return false;
+    }
+    ratios.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    ratios[ratios.len() / 2] <= DEVELOPABLE_MAX_RATIO
+}
+
 /// Try the DOF ladder on one region; commit the first surface that validates.
 /// Returns true on a committed surface, false if the region fell through
 /// (caller applies the per-facet fallback).
@@ -224,6 +270,7 @@ fn classify_one_region(
     mesh: &ConnectedMesh,
     region: &Region,
     centroids: &[[f64; 3]],
+    jet: &[JetField],
     config: &Config,
     cls: &mut Classification,
     wins: &mut [usize; 4],
@@ -236,16 +283,40 @@ fn classify_one_region(
         wins[0] += 1;
         return true;
     }
-    if let Some(hyp) = fit_validate::<SphericalSurface>(mesh, faces, verts, centroids, config) {
-        cls.push_spherical(hyp);
-        wins[1] += 1;
+
+    let try_sphere = |cls: &mut Classification, wins: &mut [usize; 4]| {
+        if let Some(hyp) = fit_validate::<SphericalSurface>(mesh, faces, verts, centroids, config) {
+            cls.push_spherical(hyp);
+            wins[1] += 1;
+            true
+        } else {
+            false
+        }
+    };
+    let try_conical = |cls: &mut Classification, wins: &mut [usize; 4]| {
+        if let Some(hyp) = fit_validate::<ConicalSurface>(mesh, faces, verts, centroids, config) {
+            cls.push_conical(hyp);
+            wins[2] += 1;
+            true
+        } else {
+            false
+        }
+    };
+
+    // Jet-informed rung order: a developable region tries the conical
+    // (cylinder/cone) rung before the sphere rung, so a short ring-tessellated
+    // cylinder is not claimed by an ambiguous equal-radius sphere. The jet
+    // only orders — a genuine sphere the jet misread as developable still
+    // falls through to the sphere rung (a cylinder fit cannot validate a
+    // sphere's vertices).
+    if region_is_developable(region, jet) {
+        if try_conical(cls, wins) || try_sphere(cls, wins) {
+            return true;
+        }
+    } else if try_sphere(cls, wins) || try_conical(cls, wins) {
         return true;
     }
-    if let Some(hyp) = fit_validate::<ConicalSurface>(mesh, faces, verts, centroids, config) {
-        cls.push_conical(hyp);
-        wins[2] += 1;
-        return true;
-    }
+
     if let Some(hyp) = fit_validate::<ToroidalSurface>(mesh, faces, verts, centroids, config) {
         cls.push_toroidal(hyp);
         wins[3] += 1;
