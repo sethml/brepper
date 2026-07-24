@@ -1088,8 +1088,13 @@ criteria under "Acceptance narratives".
      re-enabled; l_bracket (a second cylinder undetected) and the coarse
      onshape plate (hole faceted, no cylinder region) stay disabled for
      different gaps; (b) **fillet over-segmentation** — a fillet
-     chain decomposes into extra tori + a freeform patch with the straight
-     body absorbed (filleted_cylinder/hole_block/pipe); (c) **cone/cylinder
+     chain decomposed into extra tori + a freeform patch with the straight
+     body absorbed (filleted_cylinder/hole_block/pipe) — **FIXED 2026-07-24**
+     by four competition fixes in compete.rs (magnitude-ordered principal
+     curvatures so a concave hole wall reads curved; seed-patch conditioning
+     that trims tangent-junction bleed; DOF-aware claim resolution; fat-torus
+     `r ≤ 0.7·R` rejection); all 13 filleted tests re-enabled and passing
+     `--compare`; (c) **cone/cylinder
      + concave-fillet** decomposition differs from the old BFS
      (cone_cylinder, cone_tangent_planes); (d) **coarse-mesh leftover blob**
      exceeds `LEFTOVER_BLOB_MAX` → per-facet fallback (part_rounded_cube,

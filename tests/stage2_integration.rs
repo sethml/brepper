@@ -1554,7 +1554,6 @@ fn nosecone_surface_selection() {
 }
 
 #[test]
-#[ignore = "step 7 re-enable: fillet chain over-segmented into extra tori + freeform, straight body absorbed; pre-existing new-pipeline gap"]
 fn filleted_cylinder_surface_selection() {
     let stl = format!("{}/tests/ccad/generated/filleted_cylinder.stl", manifest_dir());
     let config = config_for_stl_stage26(&stl);
@@ -1577,7 +1576,6 @@ fn filleted_cylinder_surface_selection() {
 }
 
 #[test]
-#[ignore = "step 7 re-enable: fillet chain over-segmented into extra tori + freeform, straight body absorbed; pre-existing new-pipeline gap"]
 fn filleted_hole_block_surface_selection() {
     let stl = format!("{}/tests/ccad/generated/filleted_hole_block.stl", manifest_dir());
     let config = config_for_stl_stage26(&stl);
@@ -1594,7 +1592,6 @@ fn filleted_hole_block_surface_selection() {
 }
 
 #[test]
-#[ignore = "step 7 re-enable: fillet chain over-segmented into extra tori + freeform, straight body absorbed; pre-existing new-pipeline gap"]
 fn filleted_pipe_surface_selection() {
     let stl = format!("{}/tests/ccad/generated/filleted_pipe.stl", manifest_dir());
     let config = config_for_stl_stage26(&stl);
@@ -2288,7 +2285,6 @@ fn assert_tori_match_step(
 }
 
 #[test]
-#[ignore = "step 7 re-enable: fillet chain over-segmented into extra tori + freeform, straight body absorbed; pre-existing new-pipeline gap"]
 fn filleted_cylinder_produces_two_convex_tori() {
     let stl = format!("{}/tests/ccad/generated/filleted_cylinder.stl", manifest_dir());
     let config = config_for_stl_stage25(&stl);
@@ -2376,22 +2372,19 @@ macro_rules! test_stl_step_stage25_compare {
 test_stl_step_stage25_compare!(
     filleted_cylinder_step_compare,
     "tests/ccad/generated/filleted_cylinder.stl",
-    "tests/ccad/generated/filleted_cylinder.step",
-    ignore = "step 7 re-enable: fillet chain over-segmented into extra tori + freeform, straight body absorbed; pre-existing new-pipeline gap"
+    "tests/ccad/generated/filleted_cylinder.step"
 );
 
 test_stl_step_stage25_compare!(
     filleted_hole_block_step_compare,
     "tests/ccad/generated/filleted_hole_block.stl",
-    "tests/ccad/generated/filleted_hole_block.step",
-    ignore = "step 7 re-enable: fillet chain over-segmented into extra tori + freeform, straight body absorbed; pre-existing new-pipeline gap"
+    "tests/ccad/generated/filleted_hole_block.step"
 );
 
 test_stl_step_stage25_compare!(
     filleted_pipe_step_compare,
     "tests/ccad/generated/filleted_pipe.stl",
-    "tests/ccad/generated/filleted_pipe.step",
-    ignore = "step 7 re-enable: fillet chain over-segmented into extra tori + freeform, straight body absorbed; pre-existing new-pipeline gap"
+    "tests/ccad/generated/filleted_pipe.step"
 );
 // ---------------------------------------------------------------------------
 // Stage 2.7: NURBS fallback (tests/nurbs models)

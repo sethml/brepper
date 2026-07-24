@@ -58,6 +58,13 @@ use super::{
 /// Max faces in the jet-similar seed patch used to condition the initial fit.
 const SEED_PATCH_CAP: usize = 32;
 
+/// Max trim rounds when conditioning a seed patch (one worst face per round).
+const PATCH_TRIM_ROUNDS: usize = 16;
+
+/// Floor on the patch size while conditioning — below this an analytic fit is
+/// under-determined and trimming would chase noise.
+const MIN_CONDITION_FACES: usize = 6;
+
 /// Max BFS depth of the seed patch. Kept shallow so the patch stays local to
 /// the seed and does not bleed across a tangent junction between two surfaces
 /// of the same curvature class (e.g. a cone meeting a cylinder, where the
@@ -107,6 +114,17 @@ impl CompeteHyp {
             CompeteHyp::Conical(h) => &h.faces,
             CompeteHyp::Spherical(h) => &h.faces,
             CompeteHyp::Toroidal(h) => &h.faces,
+        }
+    }
+    /// Simplest-first rank for claim resolution (a face both a cylinder and a
+    /// torus explain within tolerance is the cylinder's). Matches the ladder's
+    /// ascending-DOF order.
+    fn dof_rank(&self) -> u8 {
+        match self {
+            CompeteHyp::Planar(_) => 0,
+            CompeteHyp::Spherical(_) => 1,
+            CompeteHyp::Conical(_) => 2,
+            CompeteHyp::Toroidal(_) => 3,
         }
     }
     fn set_faces(&mut self, faces: Vec<usize>, verts: Vec<usize>) {
@@ -180,8 +198,13 @@ pub(super) fn compete_region(
             continue;
         }
         let jf = jet[seed];
-        let a1 = jf.k1.abs();
-        let a2 = jf.k2.abs();
+        // Dominant / secondary principal-curvature MAGNITUDES. The jet orders
+        // k1 ≥ k2 by signed value, so for a concave feature (a hole wall,
+        // κ = −1/r) the dominant curvature is negative and lands in k2 —
+        // taking |k1| as the dominant would read the wall's flat axial
+        // direction and treat the hole as planar. Order by magnitude instead.
+        let a1 = jf.k1.abs().max(jf.k2.abs());
+        let a2 = jf.k1.abs().min(jf.k2.abs());
 
         // Grow the jet-pruned candidate types; keep the largest validated
         // area (simplest-DOF tiebreak).
@@ -286,7 +309,7 @@ pub(super) fn compete_region(
         }
     }
 
-    resolve_claims(mesh, &region.faces, &mut committed, &claim_lists)
+    resolve_claims(mesh, &region.faces, &mut committed, &claim_lists, config.vertex_tolerance_mm)
 }
 
 /// Resolve multi-claimed faces to their best-fitting claimant (2× margin to
@@ -297,6 +320,7 @@ fn resolve_claims(
     region_faces: &[usize],
     committed: &mut Vec<CompeteHyp>,
     claim_lists: &[Vec<usize>],
+    vtol: f64,
 ) -> (Vec<CompeteHyp>, Vec<usize>) {
     let hyp_area: Vec<f64> = committed
         .iter()
@@ -316,27 +340,45 @@ fn resolve_claims(
             assigned[claimants[0]].push(fi);
             continue;
         }
-        // Best (smallest max-vertex-distance) claimant; the larger-area
-        // claimant wins ties and only loses by a 2× margin (a true junction
-        // face fits both sides equally — the margin prevents flapping).
         let dist = |ci: usize| max_vertex_dist(mesh, &committed[ci], fi);
-        let mut order: Vec<usize> = claimants.clone();
-        order.sort_by(|&a, &b| {
-            hyp_area[b]
-                .partial_cmp(&hyp_area[a])
+        // Among claimants that ALREADY explain the face within vertex
+        // tolerance, prefer the simplest surface (lowest DOF), then largest
+        // area, then lowest index: a face on both a cylinder and a torus near
+        // their tangency is the cylinder's; a face on a real fillet and a
+        // spurious thin junction torus (both sub-micron) is the larger
+        // fillet's. Comparing absolute best-fit here instead would let a tiny
+        // tighter sliver steal it and fragment one surface into a chain.
+        let within: Vec<usize> = claimants.iter().copied().filter(|&ci| dist(ci) <= vtol).collect();
+        let winner = if !within.is_empty() {
+            *within
+                .iter()
+                .min_by(|&&a, &&b| {
+                    committed[a]
+                        .dof_rank()
+                        .cmp(&committed[b].dof_rank())
+                        .then_with(|| hyp_area[b].partial_cmp(&hyp_area[a]).unwrap())
+                        .then_with(|| a.cmp(&b))
+                })
                 .unwrap()
-                .then_with(|| a.cmp(&b))
-        });
-        let incumbent = order[0]; // largest area
-        let mut winner = incumbent;
-        let mut winner_d = dist(incumbent);
-        for &ci in &order[1..] {
-            let d = dist(ci);
-            if d * 2.0 < winner_d {
-                winner = ci;
-                winner_d = d;
+        } else {
+            // No claimant fits within tolerance — best-fit, with a 2× margin
+            // to leave the larger-area claimant (a true junction face fits
+            // both sides equally; the margin prevents flapping).
+            let mut order: Vec<usize> = claimants.clone();
+            order.sort_by(|&a, &b| {
+                hyp_area[b].partial_cmp(&hyp_area[a]).unwrap().then_with(|| a.cmp(&b))
+            });
+            let mut winner = order[0];
+            let mut winner_d = dist(winner);
+            for &ci in &order[1..] {
+                let d = dist(ci);
+                if d * 2.0 < winner_d {
+                    winner = ci;
+                    winner_d = d;
+                }
             }
-        }
+            winner
+        };
         assigned[winner].push(fi);
     }
 
@@ -386,7 +428,7 @@ fn grow_from<S: SurfaceType>(
     let vtol = config.vertex_tolerance_mm * GROW_VTOL_FACTOR;
     let stol = config.surface_tolerance_mm;
 
-    let mut accepted = initial;
+    let mut accepted = condition_patch::<S>(mesh, start, initial, centroids, config, vtol, stol, min_faces);
     let mut prev = 0usize;
     for round in 0..MAX_GROW_ROUNDS {
         let verts = vertices_of(mesh, &accepted);
@@ -425,12 +467,20 @@ fn grow_from<S: SurfaceType>(
     Some((hyp, area, faces))
 }
 
+/// A committed torus's minor radius may not exceed this fraction of its major
+/// radius. Real fillets and bend tubes are slim (r/R ≤ 0.5 across the corpus:
+/// full donut 0.3, pipe-elbow 0.5, fillets 0.15–0.2); an r ≈ R "fat" torus is
+/// a bogus fit a flat cap or wall band accepts loosely and then wins on area
+/// (filleted_pipe: an r/R = 0.82 torus ate an annular end cap).
+const MAX_TORUS_RADIUS_RATIO: f64 = 0.7;
+
 /// Grow a toroidal candidate from an initial fit patch, trying flood starts
 /// in order until one grows. Rejects degenerate giant-major-radius fits: a
 /// short segment of straight cylinder fits a torus with an absurdly distant
 /// axis (observed R ≈ 1500–3600 mm on ~100 mm models under the old BFS), and
 /// a legitimate torus's major radius cannot exceed the mesh extent — the
-/// same guard as the ladder's acceptance test.
+/// same guard as the ladder's acceptance test. Also rejects "fat" tori
+/// (`r > MAX_TORUS_RADIUS_RATIO·R`).
 fn torus_candidate(
     mesh: &ConnectedMesh,
     in_region: &[bool],
@@ -450,7 +500,9 @@ fn torus_candidate(
             config,
             MIN_TORUS_FACES,
         ) {
-            if hyp.major_radius <= bb_diag {
+            if hyp.major_radius <= bb_diag
+                && hyp.minor_radius <= MAX_TORUS_RADIUS_RATIO * hyp.major_radius
+            {
                 return Some((hyp, area, faces));
             }
         }
@@ -652,6 +704,72 @@ fn face_validates<S: SurfaceType>(
     S::centroid_distance(fit, &centroids[fi]) <= stol
 }
 
+/// Max distance from any vertex of face `fi` to `fit` — the trim criterion for
+/// conditioning the seed patch (`condition_patch`).
+fn face_max_vertex_dist<S: SurfaceType>(mesh: &ConnectedMesh, fi: usize, fit: &S::Fit) -> f64 {
+    let face = &mesh.faces[fi];
+    let vc = face.vertex_count as usize;
+    face.vertex_indices[..vc]
+        .iter()
+        .map(|&vi| {
+            let v = &mesh.vertices[vi];
+            S::vertex_distance(fit, &[v.x, v.y, v.z])
+        })
+        .fold(0.0_f64, f64::max)
+}
+
+/// Condition the seed patch so the seed lies on the patch's own fit. A
+/// depth-limited jet-similar patch can bleed a row or two across a tangent
+/// junction between two surfaces of the same curvature class — a short
+/// cylinder wall into its fillet, where the transition faces' κ1 ramps from
+/// the wall's toward the fillet's — which pulls the fit off far enough that
+/// the seed fails its own fit and the grow gives up (leaving the wall to be
+/// eaten by an over-grown torus). Trim the worst-fitting patch face (never the
+/// seed) and refit until the seed validates, bottoming out at a size floor so
+/// the fit stays well-determined. Fit-validated, in the spirit of "validation
+/// decides geometry"; a no-op when the patch is already clean.
+#[allow(clippy::too_many_arguments)]
+fn condition_patch<S: SurfaceType>(
+    mesh: &ConnectedMesh,
+    seed: usize,
+    mut patch: Vec<usize>,
+    centroids: &[[f64; 3]],
+    config: &Config,
+    vtol: f64,
+    stol: f64,
+    min_faces: usize,
+) -> Vec<usize> {
+    let floor = min_faces.max(MIN_CONDITION_FACES);
+    for _ in 0..PATCH_TRIM_ROUNDS {
+        if patch.len() <= floor {
+            break;
+        }
+        let verts = vertices_of(mesh, &patch);
+        let mut fit = match S::fit_surface(mesh, &patch, &verts, config.verbosity) {
+            Some(f) => f,
+            None => break,
+        };
+        S::determine_convexity(mesh, &patch, &mut fit);
+        if face_validates::<S>(mesh, seed, &fit, centroids, vtol, stol) {
+            break;
+        }
+        let worst = patch
+            .iter()
+            .copied()
+            .filter(|&f| f != seed)
+            .max_by(|&a, &b| {
+                face_max_vertex_dist::<S>(mesh, a, &fit)
+                    .partial_cmp(&face_max_vertex_dist::<S>(mesh, b, &fit))
+                    .unwrap()
+            });
+        match worst {
+            Some(w) => patch.retain(|&f| f != w),
+            None => break,
+        }
+    }
+    patch
+}
+
 /// A small jet-similar patch around `seed` (same curvature class, magnitude
 /// within 2×), capped, for a well-conditioned initial fit.
 fn seed_patch(mesh: &ConnectedMesh, in_region: &[bool], seed: usize, jet: &[JetField]) -> Vec<usize> {
@@ -706,8 +824,10 @@ enum CurvClass {
 }
 
 fn curvature_class(jf: JetField) -> CurvClass {
-    let a1 = jf.k1.abs();
-    let a2 = jf.k2.abs();
+    // Magnitude-ordered so a concave feature (dominant curvature negative, in
+    // k2) is not misread — see the note in `compete_region`.
+    let a1 = jf.k1.abs().max(jf.k2.abs());
+    let a2 = jf.k1.abs().min(jf.k2.abs());
     // Absolute floor is generous; only used to cluster the seed patch.
     if a1 < 1e-4 {
         CurvClass::Flat

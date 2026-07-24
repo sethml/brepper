@@ -33,10 +33,22 @@
     as planar/split); (b) **onshape plate_with_hole (coarse)** faceted its
     hole into planar strips (coarse facet angles read as sharp) so no
     cylindrical region forms — a coarse-mesh angular-tolerance issue.
-  - **fillet over-segmentation** (filleted_cylinder/hole_block/pipe): a
-    fillet chain decomposes into extra tori + a freeform patch and the
-    straight cylinder/cone body is absorbed rather than kept as one primitive
-    — compete.rs growth/promotion.
+  - **fillet over-segmentation: FIXED 2026-07-24** (compete.rs). All three
+    filleted models (filleted_cylinder/hole_block/pipe, 13 tests) re-enabled
+    and passing `--compare`. Four competition fixes: (1) **magnitude-ordered
+    principal curvatures** — a concave hole wall's dominant curvature is
+    negative and lands in `k2`, so gating "is this curved?" on `|k1|` read the
+    wall as flat and skipped every curved candidate (the deep hole fell to
+    freeform); now `a1=max(|k1|,|k2|)`, `a2=min(...)`. (2) **seed-patch
+    conditioning** (`condition_patch`): a jet-similar patch bleeds a row or
+    two across a short cylinder→fillet tangent junction, pulling the fit off
+    so the seed fails its own fit; trim fit-outlier patch faces until the seed
+    validates. (3) **DOF-aware claim resolution**: a face several surfaces
+    explain within vertex tolerance goes to the simplest (cylinder over torus;
+    larger torus over a spurious thin junction ring) — absolute best-fit let a
+    sub-micron sliver steal a fillet's rows and fragment it. (4) **fat-torus
+    rejection** (`r ≤ 0.7·R`): an r≈R torus loosely fits a flat cap and wins
+    on area (filleted_pipe).
   - **cone/cylinder + concave-fillet** (cone_cylinder, cone_tangent_planes):
     decomposition differs from the old BFS.
   - **coarse-mesh leftover blob** (part_rounded_cube, stepped_block_toroidal
