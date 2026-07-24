@@ -27,12 +27,16 @@
     the jet only orders, so a genuine sphere the jet misreads still falls
     through. Fusion `plate_with_hole` (9 tests) re-enabled and passing
     (`--compare` volume rel diff 1.1e-9, was 10.8%); genuine spheres
-    unregressed. Two related tests stay disabled for DIFFERENT gaps: (a)
-    **l_bracket** now classes its hole as a cylinder but only 1 of the
-    reference's 2 cylinders is found (a second cylindrical feature classifies
-    as planar/split); (b) **onshape plate_with_hole (coarse)** faceted its
-    hole into planar strips (coarse facet angles read as sharp) so no
-    cylindrical region forms — a coarse-mesh angular-tolerance issue.
+    unregressed. **l_bracket FIXED 2026-07-24**: its second hole is a full
+    cylindrical band whose area-weighted plane normal cancels to NaN;
+    `PlanarSurface::fit_surface` returned that NaN plane and the ladder
+    VACUOUSLY validated it (`dist > vtol` is false for NaN), committing a
+    degenerate plane over the cylinder. Now the planar fit rejects a
+    non-finite plane so the ladder falls through to the cylinder rung; both
+    l_bracket holes are cylinders and it passes `--compare`. Still disabled:
+    **onshape plate_with_hole (coarse)** faceted its hole into planar strips
+    (coarse facet angles read as sharp) so no cylindrical region forms — a
+    coarse-mesh angular-tolerance issue.
   - **fillet over-segmentation: FIXED 2026-07-24** (compete.rs). All three
     filleted models (filleted_cylinder/hole_block/pipe, 13 tests) re-enabled
     and passing `--compare`. Four competition fixes: (1) **magnitude-ordered
@@ -49,8 +53,19 @@
     sub-micron sliver steal a fillet's rows and fragment it. (4) **fat-torus
     rejection** (`r ≤ 0.7·R`): an r≈R torus loosely fits a flat cap and wins
     on area (filleted_pipe).
-  - **cone/cylinder + concave-fillet** (cone_cylinder, cone_tangent_planes):
-    decomposition differs from the old BFS.
+  - **cone/cylinder** (cone_cylinder): FIXED 2026-07-24 as a bonus of the
+    fillet-competition fixes (now 2 planes + 1 cylinder + 1 cone, passing).
+    Still open: **cone_tangent_planes** — one cone of a tangent-cone chain
+    fits as a freeform patch plus a degenerate huge-radius cone; and
+    **cone_15x20** whose reference STEP is faceted (59 planes, not analytic),
+    so the surface-coverage test cannot match.
+  - **degenerate huge-radius analytic fits on coarse meshes** (NEW,
+    part_rounded_cube coarse stage31): a 3-face corner blend is
+    underdetermined and, once the NaN-plane rejection lands, fits a
+    huge-radius cylinder (r=32 on a 10 mm part) instead of the r=2 corner
+    sphere — reconstructs 0.39 mm off. Consider a radius/extent sanity guard
+    in the ladder, or rely on denser meshes. (part_rounded_cube's other
+    stages were already disabled for the coarse-blob gap below.)
   - **coarse-mesh leftover blob** (part_rounded_cube, stepped_block_toroidal
     coarse/medium): the undecomposed fillet blob exceeds `LEFTOVER_BLOB_MAX`
     so the whole region degrades to per-facet planes (documented in

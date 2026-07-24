@@ -80,6 +80,14 @@ impl SurfaceType for PlanarSurface {
     ) -> Option<Self::Fit> {
         let vertex_set: HashSet<usize> = vertex_list.iter().copied().collect();
         let (normal, distance) = fit_plane(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
+        // The area-weighted normal of a closed or symmetric region (a full
+        // cylindrical hole wall) cancels to ~zero and normalizes to NaN. A
+        // non-finite plane would then VACUOUSLY validate — every `dist > vtol`
+        // test is false for NaN — and be committed over the cylinder the
+        // region actually is. Reject it so the ladder falls through.
+        if !normal.iter().all(|c| c.is_finite()) || !distance.is_finite() {
+            return None;
+        }
         Some(PlaneFit { normal, distance })
     }
 

@@ -598,8 +598,7 @@ test_stl_step_stage22_compare!(
 test_stl_step_stage22_compare!(
     onshape_l_bracket_stage22_compare,
     "tests/onshape/l_bracket_simple_medium.stl",
-    "tests/onshape/l_bracket_simple.step",
-    ignore = "step 7 re-enable: only 1 of 2 reference cylinders detected (a second cylindrical feature classifies as planar/split); separate from the hole->sphere fix"
+    "tests/onshape/l_bracket_simple.step"
 );
 test_stl_step_stage22_compare!(
     onshape_plate_with_hole_stage22_compare,
@@ -873,8 +872,7 @@ test_stl_step_stage23_compare!(
 test_stl_step_stage23_compare!(
     onshape_l_bracket_stage23_compare,
     "tests/onshape/l_bracket_simple_medium.stl",
-    "tests/onshape/l_bracket_simple.step",
-    ignore = "step 7 re-enable: only 1 of 2 reference cylinders detected (a second cylindrical feature classifies as planar/split); separate from the hole->sphere fix"
+    "tests/onshape/l_bracket_simple.step"
 );
 test_stl_step_stage23_compare!(
     onshape_plate_with_hole_stage23_compare,
@@ -978,7 +976,6 @@ fn block_with_conical_hole_produces_one_concave_cone() {
 }
 
 #[test]
-#[ignore = "step 7 re-enable: cone/cylinder + concave fillet decomposed differently than old BFS; pre-existing new-pipeline gap"]
 fn cone_cylinder_produces_one_cone_one_cylinder() {
     // Assert on the stage-2.6 selection, not raw stage-2.2 hypotheses: a
     // shallow-cone band lies exactly on a cylinder (and vice versa), so the
@@ -1110,8 +1107,7 @@ test_stl_step_stage24_compare!(
 test_stl_step_stage24_compare!(
     ccad_cone_cylinder_stage24_compare,
     "tests/ccad/generated/cone_cylinder.stl",
-    "tests/ccad/generated/cone_cylinder.step",
-    ignore = "step 7 re-enable: cone/cylinder + concave fillet decomposed differently than old BFS; pre-existing new-pipeline gap"
+    "tests/ccad/generated/cone_cylinder.step"
 );
 test_stl_step_stage24_compare!(
     ccad_nosecone_stage24_compare,
@@ -1139,7 +1135,7 @@ test_stl_step_stage24_compare!(
     onshape_cone_stage24_compare,
     "tests/onshape/cone_15x20_medium.stl",
     "tests/onshape/cone_15x20.step",
-    ignore = "step 7 re-enable: cone/cylinder + concave fillet decomposed differently than old BFS; pre-existing new-pipeline gap"
+    ignore = "step 7 re-enable: tangent-cone chain — one cone fits as a freeform patch + a degenerate huge-radius cone (cone_tangent_planes); cone_15x20 reference is faceted"
 );
 // Note: cone_tangent_planes has conical STEP faces but the cone is not detected
 // at stage 2.4 (meshed as cylindrical patches). It passes at stage 2.6 compare
@@ -1301,7 +1297,7 @@ fn occt_full_torus_selection() {
 }
 
 #[test]
-#[ignore = "step 7 re-enable: tangent-cone group decomposed differently than old BFS; pre-existing new-pipeline gap"]
+#[ignore = "step 7 re-enable: tangent-cone chain — one cone fits as a freeform patch + a degenerate huge-radius cone (cone_tangent_planes); cone_15x20 reference is faceted"]
 fn onshape_cone_tangent_planes_three_cones() {
     // Transition piece: STEP has 3 cones (7.67°, 73.04°, 84.25°) + 5 planes.
     // The side cone patches span narrow azimuthal arcs (normal-line axis
@@ -1509,7 +1505,6 @@ fn simple_cone_surface_selection() {
 // }
 
 #[test]
-#[ignore = "step 7 re-enable: cone/cylinder + concave fillet decomposed differently than old BFS; pre-existing new-pipeline gap"]
 fn cone_cylinder_surface_selection() {
     let stl = format!("{}/tests/ccad/generated/cone_cylinder.stl", manifest_dir());
     let config = config_for_stl_stage26(&stl);
