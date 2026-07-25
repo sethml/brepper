@@ -603,8 +603,7 @@ test_stl_step_stage22_compare!(
 test_stl_step_stage22_compare!(
     onshape_plate_with_hole_stage22_compare,
     "tests/onshape/plate_with_hole_100x50_coarse.stl",
-    "tests/onshape/plate_with_hole_100x50.step",
-    ignore = "step 7 re-enable: coarse-mesh hole faceted into planar strips (coarse facet angles read as sharp), so no cylindrical region forms; different from hole->sphere"
+    "tests/onshape/plate_with_hole_100x50.step"
 );
 test_stl_step_stage22_compare!(
     onshape_pipe_elbow_stage22_compare,
@@ -877,8 +876,7 @@ test_stl_step_stage23_compare!(
 test_stl_step_stage23_compare!(
     onshape_plate_with_hole_stage23_compare,
     "tests/onshape/plate_with_hole_100x50_coarse.stl",
-    "tests/onshape/plate_with_hole_100x50.step",
-    ignore = "step 7 re-enable: coarse-mesh hole faceted into planar strips (coarse facet angles read as sharp), so no cylindrical region forms; different from hole->sphere"
+    "tests/onshape/plate_with_hole_100x50.step"
 );
 test_stl_step_stage23_compare!(
     onshape_pipe_elbow_stage23_compare,
@@ -2031,8 +2029,7 @@ test_cylinder_params_match!(
 test_cylinder_params_match!(
     onshape_plate_with_hole_params_match,
     "tests/onshape/plate_with_hole_100x50_coarse.stl",
-    "tests/onshape/plate_with_hole_100x50.step",
-    ignore = "step 7 re-enable: coarse-mesh hole faceted into planar strips (coarse facet angles read as sharp), so no cylindrical region forms; different from hole->sphere"
+    "tests/onshape/plate_with_hole_100x50.step"
 );
 test_cylinder_params_match!(
     fusion_plate_low_params_match,

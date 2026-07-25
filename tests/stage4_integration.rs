@@ -194,7 +194,6 @@ fn manual_cube_stage41_compare() {
 }
 
 #[test]
-#[ignore = "step 7 re-enable: coarse-mesh fillet leftover blob exceeds LEFTOVER_BLOB_MAX, per-facet fallback; documented pre-existing gap"]
 fn onshape_part_rounded_cube_stage41_compare() {
     let dir = manifest_dir();
     let config = config_for_compare(
@@ -262,7 +261,6 @@ fn ccad_simple_cone_stage41_compare() {
 }
 
 #[test]
-#[ignore = "step 7 re-enable: ccad reference geometry mismatch + new-pipeline fillet/cone decomposition; documented pre-existing gap"]
 fn ccad_cone_cylinder_stage41_compare() {
     let dir = manifest_dir();
     let config = config_for_compare(
@@ -298,7 +296,6 @@ fn ccad_block_with_conical_hole_stage41_compare() {
 // --- Torus fillet models: full pipeline with compare ---
 
 #[test]
-#[ignore = "step 7 re-enable: ccad reference geometry mismatch + new-pipeline fillet/cone decomposition; documented pre-existing gap"]
 fn ccad_filleted_cylinder_stage41_compare() {
     let dir = manifest_dir();
     let config = config_for_compare(
@@ -310,7 +307,6 @@ fn ccad_filleted_cylinder_stage41_compare() {
 }
 
 #[test]
-#[ignore = "step 7 re-enable: ccad reference geometry mismatch + new-pipeline fillet/cone decomposition; documented pre-existing gap"]
 fn ccad_filleted_pipe_stage41_compare() {
     let dir = manifest_dir();
     let config = config_for_compare(

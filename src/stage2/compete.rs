@@ -116,6 +116,21 @@ impl CompeteHyp {
             CompeteHyp::Toroidal(h) => &h.faces,
         }
     }
+    /// Short surface-type name for diagnostics.
+    fn kind_name(&self) -> &'static str {
+        match self {
+            CompeteHyp::Planar(_) => "plane",
+            CompeteHyp::Conical(h) => {
+                if h.is_cylinder() {
+                    "cyl"
+                } else {
+                    "cone"
+                }
+            }
+            CompeteHyp::Spherical(_) => "sphere",
+            CompeteHyp::Toroidal(_) => "torus",
+        }
+    }
     /// Simplest-first rank for claim resolution (a face both a cylinder and a
     /// torus explain within tolerance is the cylinder's). Matches the ladder's
     /// ascending-DOF order.
@@ -171,6 +186,9 @@ pub(super) fn compete_region(
     let extent = region_extent(mesh, region);
     let flat_eps = if extent > 0.0 { 1.0 / (2.0 * extent) } else { 1e-6 };
 
+    // Upper bound on any committed radius of curvature (see `radius_plausible`).
+    let bb_diag = bounding_box_diagonal(&mesh.vertices);
+
     // Seed order: jet-interior-first (ascending curvature mismatch with
     // region neighbors), ties by face index for determinism.
     let mut seeds = region.faces.clone();
@@ -211,6 +229,17 @@ pub(super) fn compete_region(
         let mut best: Option<(CompeteHyp, f64, u8)> = None; // (hyp, area, dof)
         let consider = |hyp_area: Option<(CompeteHyp, f64)>, dof: u8, best: &mut Option<(CompeteHyp, f64, u8)>| {
             if let Some((h, area)) = hyp_area {
+                if !radius_plausible(mesh, &h, bb_diag) {
+                    if debug {
+                        eprintln!(
+                            "    compete: seed {seed} rejected degenerate {} (radius {:.2} > bbox diag {bb_diag:.2}, {} faces, area {area:.2})",
+                            h.kind_name(),
+                            hyp_radius(mesh, &h),
+                            h.faces().len(),
+                        );
+                    }
+                    return;
+                }
                 let better = match best {
                     None => true,
                     Some((_, ba, bd)) => area > *ba + 1e-9 || ((area - *ba).abs() <= 1e-9 && dof < *bd),
@@ -283,14 +312,9 @@ pub(super) fn compete_region(
         match best {
             Some((hyp, area, dof)) => {
                 if debug {
-                    let kind = match hyp {
-                        CompeteHyp::Planar(_) => "plane",
-                        CompeteHyp::Conical(ref h) => if h.is_cylinder() { "cyl" } else { "cone" },
-                        CompeteHyp::Spherical(_) => "sphere",
-                        CompeteHyp::Toroidal(_) => "torus",
-                    };
                     eprintln!(
-                        "    compete: seed {seed} → {kind} ({} faces, area {area:.2}, dof {dof})",
+                        "    compete: seed {seed} → {} ({} faces, area {area:.2}, dof {dof})",
+                        hyp.kind_name(),
                         hyp.faces().len()
                     );
                 }
@@ -473,6 +497,53 @@ fn grow_from<S: SurfaceType>(
 /// a bogus fit a flat cap or wall band accepts loosely and then wins on area
 /// (filleted_pipe: an r/R = 0.82 torus ate an annular end cap).
 const MAX_TORUS_RADIUS_RATIO: f64 = 0.7;
+
+/// Largest distance from a conical hypothesis's own vertices to its axis: the
+/// radius for a cylinder, the local radius at the patch for a true cone
+/// (whose `radius_at_apex` is 0, so the field alone cannot be tested).
+fn conical_local_radius(mesh: &ConnectedMesh, hyp: &ConicalHypothesis) -> f64 {
+    let a = hyp.axis_direction;
+    let mut max_r: f64 = 0.0;
+    for &vi in &hyp.vertices {
+        let v = &mesh.vertices[vi];
+        let d = [v.x - hyp.apex[0], v.y - hyp.apex[1], v.z - hyp.apex[2]];
+        let t = d[0] * a[0] + d[1] * a[1] + d[2] * a[2];
+        let perp = [d[0] - t * a[0], d[1] - t * a[1], d[2] - t * a[2]];
+        max_r = max_r.max((perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2]).sqrt());
+    }
+    max_r
+}
+
+/// Rejects a degenerate giant-radius cylinder, cone, or sphere. A large-radius
+/// surface is locally almost flat, so a nearly-planar patch fits one within
+/// vertex tolerance while leaving its radius essentially unconstrained — and
+/// because the bogus fit floods further than the plane it displaces, it wins
+/// the area contest. On `part_rounded_cube` coarse (a 10 mm cube rounded on
+/// its 4 vertical edges: 4 cylinders + 6 planes) each flat side wall grew an
+/// r ≈ 32.6 cylinder — nearly twice the model's 17.3 mm bounding-box diagonal
+/// — over the correct plane, reconstructing 0.39 mm off.
+///
+/// A surface belonging to the model must fit inside it, so a radius past the
+/// bounding-box diagonal is degenerate by construction. This is the same guard
+/// `torus_candidate` already applies to a torus's major radius, extended to the
+/// other analytic types.
+///
+/// Note this is a *validation* fix, not a tolerance one: loosening
+/// `--vertex-tolerance` makes the reconstruction worse (0.39 mm at 1e-1,
+/// 1.79 mm at 5e-1), because a looser bar admits still more degenerate fits.
+fn radius_plausible(mesh: &ConnectedMesh, hyp: &CompeteHyp, bb_diag: f64) -> bool {
+    hyp_radius(mesh, hyp) <= bb_diag
+}
+
+/// The radius of curvature `radius_plausible` bounds. Planes are flat and tori
+/// are guarded in `torus_candidate`, so both report 0 (always plausible).
+fn hyp_radius(mesh: &ConnectedMesh, hyp: &CompeteHyp) -> f64 {
+    match hyp {
+        CompeteHyp::Conical(h) => conical_local_radius(mesh, h),
+        CompeteHyp::Spherical(h) => h.radius,
+        CompeteHyp::Planar(_) | CompeteHyp::Toroidal(_) => 0.0,
+    }
+}
 
 /// Grow a toroidal candidate from an initial fit patch, trying flood starts
 /// in order until one grows. Rejects degenerate giant-major-radius fits: a

@@ -16,7 +16,10 @@
 - **Re-enable the models disabled in step 7a** (each `#[ignore]`/`ignore =`
   in tests/stage2_integration.rs, stage3_integration.rs, stage4_integration.rs
   carries its blocker string). These are PRE-EXISTING new-pipeline
-  classification-quality gaps (steps 2–5), not step-6 regressions:
+  classification-quality gaps (steps 2–5), not step-6 regressions.
+  **Status 2026-07-24: 17 disabled → 4.** stage3_integration is fully
+  re-enabled; what remains is cone_tangent_planes + cone_15x20 (stage2) and
+  stepped_block_toroidal medium/fine (stage4):
   - **hole → sphere: FIXED 2026-07-23** (jet-informed rung ordering in
     classify.rs). A short cylinder tessellated as a few rings is
     vertex-ambiguous with a sphere (two same-radius rings at heights ±h lie
@@ -59,21 +62,48 @@
     fits as a freeform patch plus a degenerate huge-radius cone; and
     **cone_15x20** whose reference STEP is faceted (59 planes, not analytic),
     so the surface-coverage test cannot match.
-  - **degenerate huge-radius analytic fits on coarse meshes** (NEW,
-    part_rounded_cube coarse stage31): a 3-face corner blend is
-    underdetermined and, once the NaN-plane rejection lands, fits a
-    huge-radius cylinder (r=32 on a 10 mm part) instead of the r=2 corner
-    sphere — reconstructs 0.39 mm off. Consider a radius/extent sanity guard
-    in the ladder, or rely on denser meshes. (part_rounded_cube's other
-    stages were already disabled for the coarse-blob gap below.)
-  - **coarse-mesh leftover blob** (part_rounded_cube, stepped_block_toroidal
-    coarse/medium): the undecomposed fillet blob exceeds `LEFTOVER_BLOB_MAX`
-    so the whole region degrades to per-facet planes (documented in
-    classify.rs). Freeform (step 6) does not rescue it — the blob is not a
-    clean freeform patch.
-  - **ccad reference mismatches** (ccad cone_cylinder/filleted_* stage-4
-    `--compare`): the generated reference STEP disagrees with the
-    reconstruction at ~mm scale; environmental / reference-quality.
+  - **degenerate huge-radius analytic fits on coarse meshes: FIXED
+    2026-07-24** (`radius_plausible` in compete.rs). A large-radius surface is
+    locally almost flat, so a nearly-planar patch fits one within vertex
+    tolerance while leaving its radius essentially unconstrained — and because
+    the bogus fit floods further than the plane it displaces, it wins the area
+    contest. On `part_rounded_cube` coarse (a 10 mm cube rounded on its 4
+    vertical edges: 4 cylinders + 6 planes) each flat side wall grew an
+    r ≈ 32.6 cylinder — nearly twice the model's 17.3 mm bounding-box diagonal
+    — over the correct plane, reconstructing 0.39 mm off. A surface belonging
+    to the model must fit inside it, so a radius past the bounding-box
+    diagonal is degenerate by construction; this is the guard
+    `torus_candidate` already applied to a torus's major radius, extended to
+    cylinders/cones (via `conical_local_radius`, since a true cone's
+    `radius_at_apex` is 0) and spheres. part_rounded_cube coarse now
+    decomposes to the reference 4 cylinders + 6 planes and passes `--compare`
+    (volume rel diff 2.4e-7); all 6 of its tests re-enabled.
+    **This is a validation fix, not a tolerance fix** — relaxing
+    `--vertex-tolerance` makes the error *grow* (0.39 mm at 1e-1, 1.79 mm at
+    5e-1), because a looser bar admits still more degenerate fits.
+    (Correction: earlier notes described these patches as "3-face corner
+    blends" that should be "the r=2 corner sphere". The reference STEP has
+    **no spheres at all** — only the 4 vertical edges are rounded — and the
+    mis-fit patches are the flat side walls.)
+  - **coarse-mesh leftover blob** (stepped_block_toroidal medium/fine): the
+    undecomposed fillet blob exceeds `LEFTOVER_BLOB_MAX` so the whole region
+    degrades to per-facet planes (documented in classify.rs). Freeform
+    (step 6) does not rescue it — the blob is not a clean freeform patch.
+    Measured 2026-07-24: the fillet network tangent-connects the model into
+    ONE 2615-face region and competition commits **0 analytic surfaces**;
+    this is tolerance-independent (still 0 at a 200× looser vertex
+    tolerance), so it is a seeding/decomposition gap, not a tolerance gap.
+    A freeform bug is also visible on this model:
+    `Stage 2.3(e): 137-face freeform component left as per-facet planes:
+    closed band: no path between boundary loops`.
+  - **stale blockers pruned 2026-07-24**: 7 disabled tests were re-verified
+    and already passed (fixed incidentally by the hole→sphere, fillet
+    competition, and NaN-plane fixes) — onshape `plate_with_hole` coarse
+    (params_match/stage22/stage23), `rounded_cube_tangent_edges`, and the 3
+    ccad stage-4 `--compare` tests (cone_cylinder, filleted_cylinder,
+    filleted_pipe), whose "reference geometry mismatch" no longer reproduces.
+    Re-enabled. Lesson: re-run `-- --ignored` before assuming a blocker is
+    still live.
 
 - **FIXED (2026-07-22, OCCT 8.0.0_p1 upgrade): partial-torus STEP round-trip
   volume loss (`pipe_elbow_10_fine`).** Under OCCT 7.9.3 the written STEP for
