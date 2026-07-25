@@ -1018,6 +1018,48 @@ fn find_shared_apex_vertex(
     None
 }
 
+/// How far a facet normal may stray from the cone's exact normal-axis
+/// invariant (`|n·axis| = sin(half_angle)`) before it is judged not to lie on
+/// the fit. Tessellation rotates facet normals *around* the axis, which
+/// preserves the dot product exactly, so the slack only absorbs chordal sag.
+const NORMAL_AXIS_TOL: f64 = 0.05;
+
+/// Does the facet normal field agree with a cone/cylinder of this axis and
+/// half-angle? On a cone every facet normal satisfies `|n·axis| =
+/// sin(half_angle)`, so the normals pin the axis independently of the vertex
+/// positions.
+///
+/// This is the acceptance test for a fit, not just for a candidate face: on a
+/// support that is thin in the axial direction — a one-quad-tall cylinder band
+/// between two fillet tori, common in a dense fillet network — the vertex
+/// residual barely constrains the axis, and a least-squares cone will happily
+/// tip its axis into the band's own plane and beat the true cylinder on
+/// residual (measured on `stepped_block_toroidal_fillets`: a bogus 12.2°
+/// cone at 3.8e-7 mm against the correct r = 0.5 cylinder at 3.9e-6 mm, with
+/// the cone's axis nearly *anti-parallel* to the facet normals). The normals
+/// are unambiguous where the positions are degenerate, so they decide.
+///
+/// Judged on the median face so a few noisy facets cannot veto a real fit;
+/// individual offenders are still filtered by `convexity_check` during growth.
+fn axis_normals_consistent(
+    face_list: &[usize],
+    faces: &[MeshFace],
+    axis: &[f64; 3],
+    half_angle: f64,
+) -> bool {
+    let expected = half_angle.sin().abs();
+    let mut devs: Vec<f64> = face_list
+        .iter()
+        .filter_map(|&fi| faces[fi].normal)
+        .map(|n| (dot3(&n, axis).abs() - expected).abs())
+        .collect();
+    if devs.is_empty() {
+        return true;
+    }
+    devs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    devs[devs.len() / 2] <= NORMAL_AXIS_TOL
+}
+
 /// Determine convexity: does the face normal point away from the axis (convex) or toward it (concave)?
 fn determine_convexity(
     face: &MeshFace,
@@ -1089,9 +1131,11 @@ impl SurfaceType for ConicalSurface {
         // select the cylinder anyway. This roughly halves fit cost on
         // cylinder-dominated meshes.
         let cyl_result = fit_cylinder(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
-        let cyl_fit = cyl_result.map(|(origin, dir, radius)| {
-            ConeFit { apex: origin, axis_direction: dir, half_angle: 0.0, radius, convex: None }
-        });
+        let cyl_fit = cyl_result
+            .filter(|(_, dir, _)| axis_normals_consistent(face_list, &mesh.faces, dir, 0.0))
+            .map(|(origin, dir, radius)| {
+                ConeFit { apex: origin, axis_direction: dir, half_angle: 0.0, radius, convex: None }
+            });
 
         // Compute max vertex error and max surface (centroid) error for cylinder fit
         let (cyl_vtx_max, cyl_sfc_max) = if let Some(ref fit) = cyl_fit {
@@ -1156,6 +1200,17 @@ impl SurfaceType for ConicalSurface {
                     eprintln!(
                         "      cone fit rejected: apex dist {:.4e} > {:.1} * bb_diag {:.4e}",
                         apex_dist, MAX_APEX_DISTANCE_FACTOR, bb_diag
+                    );
+                }
+                return None;
+            }
+            // The facet normals pin the axis where a thin support leaves the
+            // vertex residual nearly blind to it.
+            if !axis_normals_consistent(face_list, &mesh.faces, &dir, ha) {
+                if verbosity >= 4 {
+                    eprintln!(
+                        "      cone fit rejected: axis inconsistent with facet normals (half_angle={:.2}\u{00b0})",
+                        ha_deg
                     );
                 }
                 return None;
@@ -1253,7 +1308,7 @@ impl SurfaceType for ConicalSurface {
                 + n[1] * fit.axis_direction[1]
                 + n[2] * fit.axis_direction[2];
             let expected = fit.half_angle.sin();
-            if (n_dot_axis.abs() - expected.abs()).abs() > 0.05 {
+            if (n_dot_axis.abs() - expected.abs()).abs() > NORMAL_AXIS_TOL {
                 return false;
             }
         }
@@ -1496,6 +1551,41 @@ mod tests {
         assert!(fit_apex[0].abs() < 0.5, "apex.x should be near 0, got {}", fit_apex[0]);
         assert!(fit_apex[1].abs() < 0.5, "apex.y should be near 0, got {}", fit_apex[1]);
         assert!((fit_apex[2] - 60.0).abs() < 1.5, "apex.z should be near 60, got {}", fit_apex[2]);
+    }
+
+    /// The normal-axis invariant accepts a true cone's own axis and rejects an
+    /// axis tipped into the surface — the degeneracy a thin, one-quad-tall band
+    /// leaves in the vertex residual (`axis_normals_consistent`).
+    #[test]
+    fn axis_normals_reject_axis_tipped_into_the_surface() {
+        let ha = (1.0_f64 / 6.0).atan();
+        let apex = [0.0, 0.0, 60.0];
+        let axis = [0.0, 0.0, -1.0];
+        let (faces, _vertices) = build_cone_mesh(apex, axis, ha, 4, 16, 40.0, 60.0);
+        let face_indices: Vec<usize> = (0..faces.len()).collect();
+
+        assert!(
+            axis_normals_consistent(&face_indices, &faces, &axis, ha),
+            "the cone's own axis and half-angle must agree with its normals"
+        );
+        // Same support, axis rotated 90° into the surface: every normal now
+        // reads |n·axis| far from sin(half_angle), whatever the vertices say.
+        assert!(
+            !axis_normals_consistent(&face_indices, &faces, &[1.0, 0.0, 0.0], ha),
+            "an axis lying in the surface must be rejected"
+        );
+        // A cylinder's normals are perpendicular to its axis; claiming a
+        // half-angle contradicts them.
+        let (cyl_faces, _) = build_cone_mesh(apex, axis, 1e-9, 4, 16, 40.0, 60.0);
+        let cyl_indices: Vec<usize> = (0..cyl_faces.len()).collect();
+        assert!(
+            axis_normals_consistent(&cyl_indices, &cyl_faces, &axis, 0.0),
+            "a cylinder's normals agree with half_angle 0"
+        );
+        assert!(
+            !axis_normals_consistent(&cyl_indices, &cyl_faces, &axis, 0.5),
+            "a cylinder's normals must not accept a 0.5 rad half-angle"
+        );
     }
 
     #[test]

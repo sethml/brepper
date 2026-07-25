@@ -329,7 +329,7 @@ fn ccad_filleted_hole_block_stage41_compare() {
 }
 
 #[test]
-#[ignore = "step 7 re-enable: coarse-mesh toroidal fillet leftover blob, per-facet fallback; documented pre-existing gap"]
+#[ignore = "decomposition is analytic now (74 surfaces vs the reference 71) but not yet an exact match: stage 3.1 reference-edge compare is 4.4e-2 mm out on the fine mesh, 2.1e-1 mm on medium. See TODO.md."]
 fn onshape_stepped_block_toroidal_fine_stage41_compare() {
     // The heaviest model (51K triangles, 72 surfaces incl. 18 tori in a
     // fillet network). Exercises curvature-guided seeding, boundary
@@ -344,7 +344,7 @@ fn onshape_stepped_block_toroidal_fine_stage41_compare() {
 }
 
 #[test]
-#[ignore = "step 7 re-enable: coarse-mesh toroidal fillet leftover blob, per-facet fallback; documented pre-existing gap"]
+#[ignore = "decomposition is analytic now (74 surfaces vs the reference 71) but not yet an exact match: stage 3.1 reference-edge compare is 4.4e-2 mm out on the fine mesh, 2.1e-1 mm on medium. See TODO.md."]
 fn onshape_stepped_block_toroidal_medium_stage41_compare() {
     // Same model at MEDIUM resolution (2.3K triangles): small-radius fillets
     // are tessellated with only ~4 rows across each 90° tube arc, so the

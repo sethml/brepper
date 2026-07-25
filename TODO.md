@@ -17,9 +17,11 @@
   in tests/stage2_integration.rs, stage3_integration.rs, stage4_integration.rs
   carries its blocker string). These are PRE-EXISTING new-pipeline
   classification-quality gaps (steps 2–5), not step-6 regressions.
-  **Status 2026-07-24: 17 disabled → 4.** stage3_integration is fully
+  **Status 2026-07-25: 17 disabled → 4.** stage3_integration is fully
   re-enabled; what remains is cone_tangent_planes + cone_15x20 (stage2) and
-  stepped_block_toroidal medium/fine (stage4):
+  stepped_block_toroidal medium/fine (stage4). The stepped_block blocker
+  changed character on 2026-07-25 — it is no longer a per-facet collapse but a
+  decomposition-exactness gap; see its entry below.
   - **hole → sphere: FIXED 2026-07-23** (jet-informed rung ordering in
     classify.rs). A short cylinder tessellated as a few rings is
     vertex-ambiguous with a sphere (two same-radius rings at heights ±h lie
@@ -85,17 +87,54 @@
     blends" that should be "the r=2 corner sphere". The reference STEP has
     **no spheres at all** — only the 4 vertical edges are rounded — and the
     mis-fit patches are the flat side walls.)
-  - **coarse-mesh leftover blob** (stepped_block_toroidal medium/fine): the
-    undecomposed fillet blob exceeds `LEFTOVER_BLOB_MAX` so the whole region
-    degrades to per-facet planes (documented in classify.rs). Freeform
-    (step 6) does not rescue it — the blob is not a clean freeform patch.
-    Measured 2026-07-24: the fillet network tangent-connects the model into
-    ONE 2615-face region and competition commits **0 analytic surfaces**;
-    this is tolerance-independent (still 0 at a 200× looser vertex
-    tolerance), so it is a seeding/decomposition gap, not a tolerance gap.
-    A freeform bug is also visible on this model:
-    `Stage 2.3(e): 137-face freeform component left as per-facet planes:
-    closed band: no path between boundary loops`.
+  - **stepped_block_toroidal medium/fine: the per-facet collapse is FIXED
+    2026-07-25; the remaining gap is decomposition *exactness*.** The whole
+    model tangent-connects into ONE region (2615 faces medium, 26122 fine), so
+    every surface must come out of competition. It used to leave a 30-face
+    leftover blob, which tripped the `LEFTOVER_BLOB_MAX` whole-region discard
+    and degraded all 26122 faces to per-facet planes. Three fixes (below) took
+    it to **74 analytic surfaces on fine** (reference: 71 = 37 cylinders + 18
+    tori + 16 planes) with 7 sliver faces left per-facet, and 124 on medium.
+    Both now build real B-rep topology and reach stage 3.
+    **Still open**: the decomposition is not an exact match — fine commits 24
+    tori against the reference's 18 and only 7 real planes against 16, i.e.
+    over-grown fillet tori are eating flat wall strips, and stage 3.1's
+    reference-edge compare is 4.4e-2 mm out (2.1e-1 mm on medium). That is
+    what the two `#[ignore]`d stage-4 `--compare` tests now wait on;
+    `competition_stepped_block_fillet_network_stays_analytic`
+    (tests/stage2_competition.rs) guards the part that works.
+    Fixes that got it here, each a real bug with a measured mechanism:
+    (a) **degenerate cone on a thin support** (`axis_normals_consistent`,
+    conical.rs). An r = 0.5 fillet band one quad tall between two corner tori
+    leaves the axis barely constrained by the vertex residual, so the
+    least-squares cone tips its axis *into the band's own plane* and beats the
+    true cylinder: a bogus 12.2° cone at 3.8e-7 mm against the correct
+    r = 0.5003 cylinder at 3.9e-6 mm, its axis nearly anti-parallel to the
+    facet normals. `convexity_check` then rejected every face of that fit, so
+    the seed grew nothing and the whole band fell through to the leftover
+    blob. The facet normals are unambiguous exactly where the positions are
+    degenerate (on a cone `|n·axis| = sin(half_angle)` identically), so the
+    fit is now accepted only if its own support's *median* facet agrees.
+    (b) **seed patch bounded in space, not just in hops** (`PATCH_RADII`,
+    compete.rs). `MAX_PATCH_DEPTH` = 3 hops walks ~18 mm along a fillet chain
+    swept with 6 mm facets, straddling several segments; the patch is now also
+    capped at 4 radii of curvature of the seed's own jet (flats unbounded).
+    Ablation: without it the medium mesh collapses back to 2615 per-facet
+    planes. `condition_patch` also shrinks toward the seed when the patch
+    admits no fit at all, instead of giving up with nothing to rank by.
+    (c) **freeform fitted a disconnected face set** (bspline.rs). When the
+    small analytic islands are *not* absorbed, stage 2.3(e) was fitting the
+    leftover faces alone — which the islands may have been the only thing
+    connecting. `build_region` then produced a region whose boundary loops
+    bound different pieces, and `cut_region_seam` failed with `closed band: no
+    path between boundary loops` (visible on stepped_block, part_rounded_cube
+    and bspline_wave). Each leftover piece is now fitted separately; and when
+    the islands split the leftovers into pieces that are each patch-sized, the
+    islands are the accident and get absorbed. The freeform domain also now
+    admits only *enclosed* islands — one bordering a surface competition
+    explained at scale is a real small feature, not an accident adrift in
+    freeform — which is what stops a densely-filleted model pulling its whole
+    decomposition into one nonsensical freeform domain.
   - **stale blockers pruned 2026-07-24**: 7 disabled tests were re-verified
     and already passed (fixed incidentally by the hole→sphere, fillet
     competition, and NaN-plane fixes) — onshape `plate_with_hole` coarse

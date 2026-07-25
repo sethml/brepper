@@ -73,6 +73,15 @@ const MIN_CONDITION_FACES: usize = 6;
 /// is all the initial fit needs; the flood then grows it to the true extent.
 const MAX_PATCH_DEPTH: usize = 3;
 
+/// Seed-patch radius bound, measured in radii of curvature of the seed's own
+/// jet. `MAX_PATCH_DEPTH` bounds the patch in *hops*, which stops bounding it
+/// in space once the facets are large: on a fillet network swept coarsely along
+/// its own length, three hops walk many millimetres around the fillet chain and
+/// straddle several of its segments. A surface of radius r is only locally
+/// itself over a few r, and a few r of support is all any fit needs — the flood
+/// grows the rest. Flats (jet magnitude ~0) are unbounded, as they should be.
+const PATCH_RADII: f64 = 4.0;
+
 /// Refit-and-reflood rounds while growing one hypothesis.
 const MAX_GROW_ROUNDS: usize = 8;
 
@@ -799,6 +808,12 @@ fn face_max_vertex_dist<S: SurfaceType>(mesh: &ConnectedMesh, fi: usize, fit: &S
 /// seed) and refit until the seed validates, bottoming out at a size floor so
 /// the fit stays well-determined. Fit-validated, in the spirit of "validation
 /// decides geometry"; a no-op when the patch is already clean.
+///
+/// When the patch admits no fit of this type at all there is no residual to
+/// rank by, so the round instead drops the face geometrically farthest from
+/// the seed: a straddling patch is unfittable precisely because its far end
+/// sits on another surface, and shrinking toward the seed is the one move that
+/// is monotonically local.
 #[allow(clippy::too_many_arguments)]
 fn condition_patch<S: SurfaceType>(
     mesh: &ConnectedMesh,
@@ -818,7 +833,25 @@ fn condition_patch<S: SurfaceType>(
         let verts = vertices_of(mesh, &patch);
         let mut fit = match S::fit_surface(mesh, &patch, &verts, config.verbosity) {
             Some(f) => f,
-            None => break,
+            None => {
+                // No fit to rank by — shrink toward the seed instead.
+                let far = patch
+                    .iter()
+                    .copied()
+                    .filter(|&f| f != seed)
+                    .max_by(|&a, &b| {
+                        centroid_gap(centroids, seed, a)
+                            .partial_cmp(&centroid_gap(centroids, seed, b))
+                            .unwrap()
+                    });
+                match far {
+                    Some(f) => {
+                        patch.retain(|&p| p != f);
+                        continue;
+                    }
+                    None => break,
+                }
+            }
         };
         S::determine_convexity(mesh, &patch, &mut fit);
         if face_validates::<S>(mesh, seed, &fit, centroids, vtol, stol) {
@@ -841,11 +874,23 @@ fn condition_patch<S: SurfaceType>(
     patch
 }
 
+/// Distance between two faces' centroids.
+fn centroid_gap(centroids: &[[f64; 3]], a: usize, b: usize) -> f64 {
+    let (p, q) = (centroids[a], centroids[b]);
+    ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
+}
+
 /// A small jet-similar patch around `seed` (same curvature class, magnitude
 /// within 2×), capped, for a well-conditioned initial fit.
 fn seed_patch(mesh: &ConnectedMesh, in_region: &[bool], seed: usize, jet: &[JetField]) -> Vec<usize> {
     let seed_class = curvature_class(jet[seed]);
     let seed_mag = jet[seed].k1.abs().max(jet[seed].k2.abs());
+    let seed_c = super::face_centroid(&mesh.faces[seed], &mesh.vertices);
+    let radius_limit = if seed_mag > 1e-9 {
+        PATCH_RADII / seed_mag
+    } else {
+        f64::INFINITY
+    };
     let mut seen: HashSet<usize> = HashSet::new();
     seen.insert(seed);
     let mut out = vec![seed];
@@ -872,6 +917,16 @@ fn seed_patch(mesh: &ConnectedMesh, in_region: &[bool], seed: usize, jet: &[JetF
                 let mag = jet[ni].k1.abs().max(jet[ni].k2.abs());
                 if seed_mag > 1e-9 && (mag > 1.5 * seed_mag || mag < 0.667 * seed_mag) {
                     continue;
+                }
+                if radius_limit.is_finite() {
+                    let c = super::face_centroid(&mesh.faces[ni], &mesh.vertices);
+                    let d = ((c[0] - seed_c[0]).powi(2)
+                        + (c[1] - seed_c[1]).powi(2)
+                        + (c[2] - seed_c[2]).powi(2))
+                    .sqrt();
+                    if d > radius_limit {
+                        continue;
+                    }
                 }
                 seen.insert(ni);
                 out.push(ni);

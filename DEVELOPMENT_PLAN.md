@@ -494,6 +494,15 @@ vertex-validates. (This is the old pipeline's one genuinely effective
 consistency heuristic — the |n·axis| = sin α normal-axis check — reborn
 in curvature space with a model to condition on.)
 
+The normal-axis check itself also survives literally, and as of 2026-07-25 it
+gates the conical *fit*, not just candidate faces: where the support is thin
+in the axial direction (a one-quad-tall cylinder band between two fillet
+tori) the vertex residual barely constrains the axis, and a least-squares
+cone tips its axis into the band's own plane and beats the true cylinder on
+residual. The facet normals are unambiguous exactly where the positions are
+degenerate, so a fit whose own support's median facet violates
+|n·axis| = sin α is rejected (`axis_normals_consistent`).
+
 **(e) Freeform leftovers.** Connected components of a smooth region left
 unclaimed after competition (nothing analytic explains them) go to the
 freeform rung below. Before fitting, **dissolve accidental analytic
@@ -1010,7 +1019,11 @@ criteria under "Acceptance narratives".
    tangent junction; every committed hypothesis is refit on full support to
    ~1e-6 mm, and claim resolution corrects any one-row leak); the seed patch
    is depth-limited so it does not straddle a tangent junction between two
-   same-class developables (a cone meeting a cylinder); and a region whose
+   same-class developables (a cone meeting a cylinder) — and, since
+   2026-07-25, also bounded in space at `PATCH_RADII` = 4 radii of curvature
+   of the seed's own jet, because a hop limit stops bounding the patch once
+   the facets are large (three hops walk ~18 mm along a fillet chain swept
+   with 6 mm facets, straddling several of its segments); and a region whose
    competition leaves a large per-facet leftover blob (a whole sub-surface
    it could not fit — e.g. a coarse fillet, or a concave torus fillet
    awaiting step 5) is discarded to a clean per-facet polyhedron rather than
@@ -1051,7 +1064,21 @@ criteria under "Acceptance narratives".
    validates, dissolved (dropped by the caller); otherwise the analytic fits
    are trusted and only the leftover freeform is fitted. Components whose
    leftover part is below `MIN_BSPLINE_FACES` (4), and fits that fail at
-   every grid density, degrade to per-facet planes. `face_region` (region id
+   every grid density, degrade to per-facet planes.
+   **Revised 2026-07-25** on three measured failures: (i) only *enclosed*
+   islands join the domain — one bordering a surface competition explained at
+   scale is a real small feature, not an accident adrift in freeform, and
+   without this a densely-filleted model (stepped_block_toroidal) pulls its
+   whole decomposition into one nonsensical domain; (ii) the islands are also
+   absorbed when dropping them *disconnects* the leftovers into pieces that
+   are each patch-sized (≥ `MIN_BSPLINE_FACES`) — islands cutting one freeform
+   surface into several patches are exactly the accident this rung undoes,
+   whereas real analytic surfaces separated by leftover *slivers*
+   (part_rounded_cube's four fillet cylinders) must stay committed;
+   (iii) the trust-the-analytic branch fits each connected leftover piece
+   separately, because `build_region` needs a connected face set — fitting a
+   disconnected one produced boundary loops bounding different pieces and the
+   spurious error `closed band: no path between boundary loops`. `face_region` (region id
    per mesh face) is the outside-surface key for boundary-corner detection.
    The old `LEFTOVER_BLOB_MAX` whole-region discard is now the *post-freeform*
    safety net: it fires only when a committed analytic surface survives AND

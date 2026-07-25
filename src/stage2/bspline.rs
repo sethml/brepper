@@ -555,7 +555,14 @@ fn cut_region_seam(
         frontier = next;
     }
     let Some(end) = hit else {
-        return Err("closed band: no path between boundary loops".to_string());
+        // The region is face-connected by construction, so the only way the
+        // two loops can be mutually unreachable is that they bound different
+        // pieces of a disconnected face set — which the caller must not build.
+        return Err(format!(
+            "closed band: no path between boundary loops ({} loops over {nv} verts, {} faces)",
+            region.loops.len(),
+            region.faces.len(),
+        ));
     };
     let mut path = vec![end];
     while parent[*path.last().unwrap()] != usize::MAX {
@@ -2041,10 +2048,33 @@ pub(super) fn fit_leftover_components(
     // committed island whose faces this rung absorbs into a validating patch
     // is dissolved (the caller drops it). `face_hyp[fi]` = the small hyp
     // owning face `fi` (or usize::MAX).
+    //
+    // Only *enclosed* islands join the domain: one that borders a surface
+    // competition explained at scale is a real small feature meeting a real
+    // neighbour (a short fillet ring between two cylinders), not an accident
+    // adrift in freeform. Without this a densely-filleted model, whose
+    // leftovers are slivers scattered along real seams, would pull its whole
+    // decomposition into one nonsensical freeform domain.
+    let mut on_large = vec![false; mesh.faces.len()];
+    for h in hyps.iter() {
+        if h.faces().len() > SMALL_SELECTION_ABSORB_FACES {
+            for &fi in h.faces() {
+                on_large[fi] = true;
+            }
+        }
+    }
+    let enclosed = |h: &CompeteHyp| {
+        h.faces().iter().all(|&fi| {
+            let f = &mesh.faces[fi];
+            f.neighbors[..f.vertex_count as usize]
+                .iter()
+                .all(|&ni| ni < 0 || !on_large[ni as usize])
+        })
+    };
     let mut face_hyp = vec![usize::MAX; mesh.faces.len()];
     let mut domain: Vec<usize> = leftovers.to_vec();
     for (hi, h) in hyps.iter().enumerate() {
-        if h.faces().len() <= SMALL_SELECTION_ABSORB_FACES {
+        if h.faces().len() <= SMALL_SELECTION_ABSORB_FACES && enclosed(h) {
             for &fi in h.faces() {
                 face_hyp[fi] = hi;
                 domain.push(fi);
@@ -2070,28 +2100,44 @@ pub(super) fn fit_leftover_components(
             continue;
         }
 
-        // Absorb the small analytic islands into the freeform patch only when
-        // the unexplained area dominates (evidence the islands are accidents);
-        // otherwise trust the analytic fits and fit just the leftover freeform.
+        // Absorb the small analytic islands into the freeform patch when the
+        // unexplained area dominates — or when the islands are what holds the
+        // leftover freeform together AND every piece they separate is itself a
+        // patch-sized run of freeform. Islands cutting one freeform surface into
+        // several real patches are the accident this rung exists to undo; that
+        // is different from real analytic surfaces (a rounded cube's four fillet
+        // cylinders) separated by leftover *slivers*, which must stay committed.
         let absorbed = comp.len() - single.len();
-        let (fit_faces, dissolve) = if absorbed <= single.len() {
-            (comp.clone(), true)
-        } else {
-            (single.clone(), false)
-        };
-
-        match fit_or_planarize(mesh, &fit_faces, face_region, config) {
-            Some(fit) => {
-                commit_component_fit(fit, &mut result);
-                if dissolve {
+        let parts = leftover_components(mesh, &single);
+        let islands_split_a_patch =
+            parts.len() > 1 && parts.iter().all(|p| p.len() >= MIN_BSPLINE_FACES);
+        if absorbed <= single.len() || islands_split_a_patch {
+            match fit_or_planarize(mesh, &comp, face_region, config) {
+                Some(fit) => {
+                    commit_component_fit(fit, &mut result);
                     for &fi in &comp {
                         if face_hyp[fi] != usize::MAX {
                             result.dissolved.insert(face_hyp[fi]);
                         }
                     }
                 }
+                None => result.residual.extend(single),
             }
-            None => result.residual.extend(single),
+            continue;
+        }
+
+        // Trust the analytic fits: fit only the leftover freeform, one piece at
+        // a time. `build_region` needs a connected face set — a disconnected one
+        // has no single boundary to parameterize over.
+        for part in parts {
+            if part.len() < MIN_BSPLINE_FACES {
+                result.residual.extend(part);
+                continue;
+            }
+            match fit_or_planarize(mesh, &part, face_region, config) {
+                Some(fit) => commit_component_fit(fit, &mut result),
+                None => result.residual.extend(part),
+            }
         }
     }
     result

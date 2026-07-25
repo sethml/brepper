@@ -186,6 +186,15 @@ pub(super) fn classify_regions(
         // freeform patches, so this fires only on undecomposable coarse
         // fillets.)
         let surviving_hyps = hyps.len() - ff.dissolved.len();
+        if config.verbosity >= 3 || std::env::var("BREPPER_DEBUG_COMPETE").is_ok() {
+            eprintln!(
+                "    compete: region {} faces → {surviving_hyps} surviving hyps, {} leftovers, freeform residual {} (largest blob {}, discard above {LEFTOVER_BLOB_MAX})",
+                region.faces.len(),
+                leftovers.len(),
+                ff.residual.len(),
+                largest_component(mesh, &ff.residual),
+            );
+        }
         if surviving_hyps > 0 && largest_component(mesh, &ff.residual) > LEFTOVER_BLOB_MAX {
             for &fi in &region.faces {
                 cls.push_planar(facet_plane(mesh, fi));
