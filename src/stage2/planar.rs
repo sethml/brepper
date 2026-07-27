@@ -1,6 +1,6 @@
 //! Stage 2.1: Planar hypothesis deduction and comparison.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 
 use crate::stage1::{ConnectedMesh, MeshFace, MeshVertex};
@@ -14,8 +14,23 @@ use super::{
 // Planar fitting helpers
 // ---------------------------------------------------------------------------
 
-/// Fit a plane to a set of faces using area-weighted normal averaging and
-/// vertex centroid for the distance.
+/// Fit a plane to a set of faces: area-weighted normal averaging, and an
+/// area-weighted vertex centroid for the distance.
+///
+/// The area weighting on the offset matters as much as it does on the normal.
+/// An unweighted vertex mean gives every vertex an equal vote, which is a
+/// discretization artifact — it over-weights whatever part of the surface the
+/// tessellator happened to sample densely. The continuous least-squares plane
+/// minimizes ∫(n·x − d)² dA, and weighting each vertex by the area it stands
+/// for is that integral's discretization.
+///
+/// It also makes the fit robust to a small-area leak, which is what exposed
+/// this: the end cap of `stepped_block_toroidal_fillets` is a handful of large
+/// flat quads ringed by the many tiny quads of its perimeter fillet's first
+/// row, 9.5e-4 mm off the plane. Those rows carry ~1% of the area but about
+/// half the vertices, so the unweighted mean placed the plane at the *midpoint*
+/// of the two levels — every one of its 95 faces 4.7e-4 mm out, with no
+/// outlier group for anything downstream to spot.
 pub(super) fn fit_plane(
     face_indices: &[usize],
     vertex_set: &HashSet<usize>,
@@ -38,12 +53,40 @@ pub(super) fn fit_plane(
     let len = (sum_nx * sum_nx + sum_ny * sum_ny + sum_nz * sum_nz).sqrt();
     let normal = [sum_nx / len, sum_ny / len, sum_nz / len];
 
+    // Each vertex carries the area of its incident faces within the support,
+    // shared equally among that face's corners.
+    let mut weight: HashMap<usize, f64> = HashMap::with_capacity(vertex_set.len());
+    for &fi in face_indices {
+        let face = &faces[fi];
+        let vc = face.vertex_count as usize;
+        let share = face_area(face, vertices) / vc as f64;
+        for &vi in &face.vertex_indices[..vc] {
+            if vertex_set.contains(&vi) {
+                *weight.entry(vi).or_insert(0.0) += share;
+            }
+        }
+    }
     let mut sum_d = 0.0_f64;
+    let mut sum_w = 0.0_f64;
     for &vi in vertex_set {
         let v = &vertices[vi];
-        sum_d += normal[0] * v.x + normal[1] * v.y + normal[2] * v.z;
+        let w = weight.get(&vi).copied().unwrap_or(0.0);
+        sum_d += w * (normal[0] * v.x + normal[1] * v.y + normal[2] * v.z);
+        sum_w += w;
     }
-    let distance = sum_d / vertex_set.len() as f64;
+    let distance = if sum_w > 0.0 {
+        sum_d / sum_w
+    } else {
+        // Degenerate support (zero total area) — fall back to the plain mean.
+        vertex_set
+            .iter()
+            .map(|&vi| {
+                let v = &vertices[vi];
+                normal[0] * v.x + normal[1] * v.y + normal[2] * v.z
+            })
+            .sum::<f64>()
+            / vertex_set.len().max(1) as f64
+    };
 
     (normal, distance)
 }

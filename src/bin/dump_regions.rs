@@ -54,6 +54,49 @@ fn tri_area(mesh: &ConnectedMesh, fi: usize) -> f64 {
     a
 }
 
+/// Distance from a point to a selected surface (analytic types only).
+fn dist_to(
+    out: &brepper::stage2::Stage2Output,
+    sel: &brepper::stage2::SelectedSurface,
+    q: [f64; 3],
+) -> f64 {
+    use brepper::stage2::SelectedSurface as S;
+    match sel {
+        S::Planar(i) => {
+            let h = &out.planar_hypotheses[*i];
+            (h.normal[0] * q[0] + h.normal[1] * q[1] + h.normal[2] * q[2] - h.distance).abs()
+        }
+        S::Conical(i) => {
+            let h = &out.conical_hypotheses[*i];
+            let d = [q[0] - h.apex[0], q[1] - h.apex[1], q[2] - h.apex[2]];
+            let a = h.axis_direction;
+            let t = d[0] * a[0] + d[1] * a[1] + d[2] * a[2];
+            let perp = [d[0] - t * a[0], d[1] - t * a[1], d[2] - t * a[2]];
+            let r = (perp[0].powi(2) + perp[1].powi(2) + perp[2].powi(2)).sqrt();
+            if h.half_angle == 0.0 {
+                (r - h.radius_at_apex).abs()
+            } else {
+                (r * h.half_angle.cos() - t * h.half_angle.sin()).abs()
+            }
+        }
+        S::Toroidal(i) => {
+            let h = &out.toroidal_hypotheses[*i];
+            let d = [q[0] - h.center[0], q[1] - h.center[1], q[2] - h.center[2]];
+            let a = h.axis_direction;
+            let t = d[0] * a[0] + d[1] * a[1] + d[2] * a[2];
+            let perp = [d[0] - t * a[0], d[1] - t * a[1], d[2] - t * a[2]];
+            let r = (perp[0].powi(2) + perp[1].powi(2) + perp[2].powi(2)).sqrt();
+            (((r - h.major_radius).powi(2) + t * t).sqrt() - h.minor_radius).abs()
+        }
+        S::Spherical(i) => {
+            let h = &out.spherical_hypotheses[*i];
+            let d = [q[0] - h.center[0], q[1] - h.center[1], q[2] - h.center[2]];
+            ((d[0].powi(2) + d[1].powi(2) + d[2].powi(2)).sqrt() - h.radius).abs()
+        }
+        S::BSpline(_) => f64::NAN,
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let path = &args[1];
@@ -353,8 +396,36 @@ fn main() {
                     }
                 };
                 let area: f64 = faces.iter().map(|&fi| tri_area(&out.mesh, fi)).sum();
-                let ids = if faces.len() <= 8 { format!("  {faces:?}") } else { String::new() };
-                rows.push((faces.len(), area, format!("{desc}{ids}")));
+                let ids = if faces.len() <= 40 { format!("  {faces:?}") } else { String::new() };
+                let mut vset: Vec<usize> = faces.iter().flat_map(|&fi| {
+                    let f = &out.mesh.faces[fi];
+                    f.vertex_indices[..f.vertex_count as usize].to_vec()
+                }).collect();
+                vset.sort_unstable();
+                vset.dedup();
+                let mut resid: Vec<f64> = vset.iter().map(|&vi| {
+                    let v = &out.mesh.vertices[vi];
+                    dist_to(&out, s, [v.x, v.y, v.z])
+                }).collect();
+                // A B-spline has no closed-form distance here; report nothing.
+                resid.retain(|d| d.is_finite());
+                if resid.is_empty() {
+                    resid.push(f64::NAN);
+                }
+                resid.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let q = |f: f64| resid[((resid.len() - 1) as f64 * f) as usize];
+                let own = match s {
+                    S::Planar(i) => out.planar_hypotheses[*i].error_max.abs(),
+                    S::Conical(i) => out.conical_hypotheses[*i].error_max,
+                    S::Spherical(i) => out.spherical_hypotheses[*i].error_max,
+                    S::Toroidal(i) => out.toroidal_hypotheses[*i].error_max,
+                    S::BSpline(_) => f64::NAN,
+                };
+                let stats = format!(
+                    " vresid p10 {:.1e} med {:.1e} max {:.1e} | hyp.error_max {own:.1e}",
+                    q(0.1), q(0.5), resid[resid.len() - 1]
+                );
+                rows.push((faces.len(), area, format!("{desc}{stats}{ids}")));
             }
             rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
             for (nf, area, desc) in &rows {
@@ -444,51 +515,13 @@ fn main() {
             };
             for arg in &args[3..] {
                 let fi: usize = arg.parse().unwrap();
-                let dist_to = |k: usize, q: [f64; 3]| -> f64 {
-                    match &out.selected_surfaces[k] {
-                        S::Planar(i) => {
-                            let h = &out.planar_hypotheses[*i];
-                            (h.normal[0] * q[0] + h.normal[1] * q[1] + h.normal[2] * q[2]
-                                - h.distance)
-                                .abs()
-                        }
-                        S::Conical(i) => {
-                            let h = &out.conical_hypotheses[*i];
-                            let d = [q[0] - h.apex[0], q[1] - h.apex[1], q[2] - h.apex[2]];
-                            let a = h.axis_direction;
-                            let t = d[0] * a[0] + d[1] * a[1] + d[2] * a[2];
-                            let perp = [d[0] - t * a[0], d[1] - t * a[1], d[2] - t * a[2]];
-                            let r = (perp[0].powi(2) + perp[1].powi(2) + perp[2].powi(2)).sqrt();
-                            if h.half_angle == 0.0 {
-                                (r - h.radius_at_apex).abs()
-                            } else {
-                                (r * h.half_angle.cos() - t * h.half_angle.sin()).abs()
-                            }
-                        }
-                        S::Toroidal(i) => {
-                            let h = &out.toroidal_hypotheses[*i];
-                            let d = [q[0] - h.center[0], q[1] - h.center[1], q[2] - h.center[2]];
-                            let a = h.axis_direction;
-                            let t = d[0] * a[0] + d[1] * a[1] + d[2] * a[2];
-                            let perp = [d[0] - t * a[0], d[1] - t * a[1], d[2] - t * a[2]];
-                            let r = (perp[0].powi(2) + perp[1].powi(2) + perp[2].powi(2)).sqrt();
-                            (((r - h.major_radius).powi(2) + t * t).sqrt() - h.minor_radius).abs()
-                        }
-                        S::Spherical(i) => {
-                            let h = &out.spherical_hypotheses[*i];
-                            let d = [q[0] - h.center[0], q[1] - h.center[1], q[2] - h.center[2]];
-                            ((d[0].powi(2) + d[1].powi(2) + d[2].powi(2)).sqrt() - h.radius).abs()
-                        }
-                        S::BSpline(_) => f64::NAN,
-                    }
-                };
                 let vdist = |k: usize| -> f64 {
                     let f = &out.mesh.faces[fi];
                     f.vertex_indices[..f.vertex_count as usize]
                         .iter()
                         .map(|&vi| {
                             let v = &out.mesh.vertices[vi];
-                            dist_to(k, [v.x, v.y, v.z])
+                            dist_to(&out, &out.selected_surfaces[k], [v.x, v.y, v.z])
                         })
                         .fold(0.0_f64, f64::max)
                 };

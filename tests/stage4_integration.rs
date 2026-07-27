@@ -329,7 +329,6 @@ fn ccad_filleted_hole_block_stage41_compare() {
 }
 
 #[test]
-#[ignore = "surfaces now match the reference (37 cylinders + 18 tori exactly, 72 vs 71 total), but the region boundary at a tangent junction sits one tessellation row off, which contaminates the fits and makes stage 3.1's reference-edge compare 4.4e-2 mm out on fine, 2.1e-1 mm on medium. Full chain in TODO.md."]
 fn onshape_stepped_block_toroidal_fine_stage41_compare() {
     // The heaviest model (51K triangles, 72 surfaces incl. 18 tori in a
     // fillet network). Exercises curvature-guided seeding, boundary
@@ -344,7 +343,7 @@ fn onshape_stepped_block_toroidal_fine_stage41_compare() {
 }
 
 #[test]
-#[ignore = "surfaces now match the reference (37 cylinders + 18 tori exactly, 72 vs 71 total), but the region boundary at a tangent junction sits one tessellation row off, which contaminates the fits and makes stage 3.1's reference-edge compare 4.4e-2 mm out on fine, 2.1e-1 mm on medium. Full chain in TODO.md."]
+#[ignore = "coarse sampling: the fine mesh passes, but at 2615 faces the r=0.5/r=1 perimeter fillets near the end caps have too few facets for competition and ~24 of them stay per-facet, giving 96 surfaces against the reference 71 and a 2.1e-1 mm reference-edge compare. See TODO.md."]
 fn onshape_stepped_block_toroidal_medium_stage41_compare() {
     // Same model at MEDIUM resolution (2.3K triangles): small-radius fillets
     // are tessellated with only ~4 rows across each 90° tube arc, so the

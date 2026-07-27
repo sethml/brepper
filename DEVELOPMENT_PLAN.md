@@ -494,6 +494,28 @@ vertex-validates. (This is the old pipeline's one genuinely effective
 consistency heuristic — the |n·axis| = sin α normal-axis check — reborn
 in curvature space with a model to condition on.)
 
+**Refit whenever the support changes.** A fit is only a statement about the
+faces it was computed from, so any step that changes a surface's face set
+invalidates its geometry — and the faces such a step removes are precisely the
+junction rows that pulled the fit off true, so a stale fit is not merely
+approximate, it carries the error of faces the surface no longer owns. Two
+places got this wrong and both are now fixed (2026-07-26): `resolve_claims`
+trimmed a hypothesis to the faces it won while keeping the fit from everything
+its flood reached, and `relabel_boundaries` iterated without refitting between
+rounds. The second is the more interesting one: boundary repair and fitting are
+one problem, not two, and comparing a face against two fits that are *both*
+contaminated by that same face is what stalls the relabel loop inside its 2×
+margin. Alternating assignment and fit is what makes the fixpoint worth
+iterating to. (Measured: rounded_cube's r = 2 fillets went from 1.9976–1.9984
+at 1.5e-3 mm error to 2.0000 at 1.6e-6; stepped_block_toroidal fine went from
+73 surfaces to exactly the reference's 71 and now passes `--compare`.)
+
+Relatedly, a fit's weighting must not inherit the tessellator's sampling
+density: `fit_plane` area-weighted its normal but took a plain vertex mean for
+the offset, so a large flat face ringed by the many tiny quads of a fillet's
+first row was placed at the *midpoint* of the two levels. Area weighting is the
+correct discretization of ∫(n·x − d)² dA.
+
 A second degeneracy of the same shape is the *unobserved rotation*
 (`MIN_AXIAL_SWEEP_DEG`, compete.rs, 2026-07-26). Each analytic type contains the
 next simpler one as a limit — a torus with R → ∞ is a cylinder, a cylinder with

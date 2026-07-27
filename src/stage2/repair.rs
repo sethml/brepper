@@ -6,9 +6,11 @@
 //! bounded rounds).
 //!
 //! - **Boundary relabel** (±1-row polish): move a region-boundary face to an
-//!   adjacent surface that fits its vertices at least 2× better. Region
-//!   geometry is not refitted — only the membership map changes. Iterates to
-//!   a fixpoint (≤ 10 rounds; boundaries only move locally).
+//!   adjacent surface that fits its vertices at least 2× better, refitting
+//!   every surface a move touched before the next round — assignment and fit
+//!   are one problem, since a surface holding its neighbour's row is pulled
+//!   off true by exactly that row. Iterates to a fixpoint (≤ 10 rounds;
+//!   boundaries only move locally).
 //! - **Merge**: absorb a small region S into an adjacent, larger, real
 //!   surface T when every vertex of S lies within `--vertex-tolerance` of T's
 //!   fitted surface and every centroid within `--surface-tolerance`; refit
@@ -29,6 +31,7 @@ use crate::config::Config;
 use crate::stage1::{ConnectedMesh, MeshVertex};
 
 use super::classify::{fit_validate, Classification};
+use super::surface::SurfaceType;
 use super::conical::ConicalSurface;
 use super::planar::PlanarSurface;
 use super::spherical::SphericalSurface;
@@ -154,12 +157,53 @@ fn vertices_of(mesh: &ConnectedMesh, faces: &[usize]) -> Vec<usize> {
     v
 }
 
+/// Refit a surface's geometry to its current face set, in place, keeping the
+/// existing fit if the fitter cannot produce one. Unlike `refit_union` this
+/// does not require the result to validate: it is used *during* boundary
+/// repair, where the support is mid-correction and a validating fit is the
+/// goal rather than the precondition.
+fn refit_geometry(mesh: &ConnectedMesh, cls: &mut Classification, si: usize) {
+    let faces = surface_faces(cls, si).to_vec();
+    if faces.is_empty() {
+        return;
+    }
+    let verts = vertices_of(mesh, &faces);
+    match cls.selected[si] {
+        SelectedSurface::Planar(i) => {
+            if let Some(fit) = PlanarSurface::fit_surface(mesh, &faces, &verts, 0) {
+                cls.planar[i] = PlanarSurface::make_hypothesis(mesh, faces, verts, &fit);
+            }
+        }
+        SelectedSurface::Conical(i) => {
+            if let Some(mut fit) = ConicalSurface::fit_surface(mesh, &faces, &verts, 0) {
+                ConicalSurface::determine_convexity(mesh, &faces, &mut fit);
+                cls.conical[i] = ConicalSurface::make_hypothesis(mesh, faces, verts, &fit);
+            }
+        }
+        SelectedSurface::Spherical(i) => {
+            if let Some(mut fit) = SphericalSurface::fit_surface(mesh, &faces, &verts, 0) {
+                SphericalSurface::determine_convexity(mesh, &faces, &mut fit);
+                cls.spherical[i] = SphericalSurface::make_hypothesis(mesh, faces, verts, &fit);
+            }
+        }
+        SelectedSurface::Toroidal(i) => {
+            if let Some(mut fit) = ToroidalSurface::fit_surface(mesh, &faces, &verts, 0) {
+                ToroidalSurface::determine_convexity(mesh, &faces, &mut fit);
+                cls.toroidal[i] = ToroidalSurface::make_hypothesis(mesh, faces, verts, &fit);
+            }
+        }
+        // A B-spline's fit vouches only for its own data and repair never
+        // changes its face set.
+        SelectedSurface::BSpline(_) => {}
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Boundary relabel (port of the old refine_boundary_assignments)
 // ---------------------------------------------------------------------------
 
 /// Move region-boundary faces to an adjacent surface that fits them at least
-/// 2× better. Geometry is not refitted; only the membership map changes.
+/// 2× better, refitting the surfaces each round's moves touched.
 fn relabel_boundaries(mesh: &ConnectedMesh, cls: &mut Classification, _config: &Config) -> usize {
     let num_faces = mesh.faces.len();
     let mut total_moved = 0usize;
@@ -212,6 +256,24 @@ fn relabel_boundaries(mesh: &ConnectedMesh, cls: &mut Classification, _config: &
         }
         for &(fi, _, sj) in &moves {
             surface_faces_mut(cls, sj).push(fi);
+        }
+
+        // Refit every surface a move touched before deciding the next round.
+        // Boundary repair and fitting are one problem, not two: a surface
+        // holding a row that belongs to its neighbour is pulled off true by
+        // exactly that row, and comparing a face against two fits both
+        // contaminated by it is what stalls the round. Refitting reopens the
+        // gap the 2× margin needs, and each round starts from cleaner
+        // geometry — alternating assignment and fit, which is what makes the
+        // fixpoint worth iterating to at all.
+        let mut touched: Vec<usize> = moves.iter().flat_map(|&(_, si, sj)| [si, sj]).collect();
+        touched.sort_unstable();
+        touched.dedup();
+        for si in touched {
+            let mut faces = surface_faces(cls, si).to_vec();
+            faces.sort_unstable();
+            set_surface_faces(mesh, cls, si, faces);
+            refit_geometry(mesh, cls, si);
         }
     }
 

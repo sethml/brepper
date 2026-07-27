@@ -313,6 +313,64 @@ mod tests {
     use super::*;
     use std::f64::consts::PI;
 
+    /// A partial arc — even a single row of quads across 90° — pins a cylinder
+    /// exactly. Worth pinning down, because fillet cylinders across the corpus
+    /// used to come out 1e-3 mm wrong (rounded_cube's r = 2 edge fillets read
+    /// 1.9976–1.9984) and the fitter was the obvious suspect. It is not: the
+    /// fits were stale, computed on the support the flood grew and never
+    /// recomputed after claim resolution trimmed the junction rows back off
+    /// (`refit_in_place` in compete.rs). If this test ever starts failing, the
+    /// suspicion is warranted again.
+    #[test]
+    fn cylinder_fit_exact_on_partial_arc() {
+        for (nrows, ncols) in [(7usize, 7usize), (2, 37), (2, 7), (3, 37), (2, 13)] {
+            let r = 2.0_f64;
+            let sweep = PI / 2.0;
+            let mut vertices = Vec::new();
+            for i in 0..nrows {
+                let h = 6.0 * i as f64 / (nrows - 1) as f64;
+                for j in 0..ncols {
+                    let th = sweep * j as f64 / (ncols - 1) as f64;
+                    vertices.push(MeshVertex::from_xyz(r * th.cos(), h, r * th.sin()));
+                }
+            }
+            let mut faces = Vec::new();
+            for i in 0..nrows - 1 {
+                for j in 0..ncols - 1 {
+                    let th = sweep * (j as f64 + 0.5) / (ncols - 1) as f64;
+                    faces.push(MeshFace {
+                        vertex_count: 4,
+                        vertex_indices: [
+                            i * ncols + j,
+                            i * ncols + j + 1,
+                            (i + 1) * ncols + j + 1,
+                            (i + 1) * ncols + j,
+                        ],
+                        neighbors: [-1, -1, -1, -1],
+                        normal: Some([th.cos(), 0.0, th.sin()]),
+                    });
+                }
+            }
+            let fi: Vec<usize> = (0..faces.len()).collect();
+            let vs: Vec<usize> = (0..vertices.len()).collect();
+            let (origin, dir, radius) = fit_cylinder(&fi, &vs, &faces, &vertices)
+                .unwrap_or_else(|| panic!("{nrows}x{ncols} arc should fit a cylinder"));
+            assert!(
+                (radius - r).abs() < 1e-9,
+                "{nrows}x{ncols}: radius should be {r}, got {radius}"
+            );
+            assert!(
+                dir[1].abs() > 1.0 - 1e-9,
+                "{nrows}x{ncols}: axis should be along Y, got {dir:?}"
+            );
+            let worst = vs
+                .iter()
+                .map(|&v| vertex_to_cylinder_distance(&vertices[v], &origin, &dir, radius).abs())
+                .fold(0.0_f64, f64::max);
+            assert!(worst < 1e-9, "{nrows}x{ncols}: worst vertex residual {worst:.3e}");
+        }
+    }
+
     /// Generate points on a cylinder: n_rings rings of n_pts_per_ring points.
     fn cylinder_points(
         axis_point: [f64; 3],

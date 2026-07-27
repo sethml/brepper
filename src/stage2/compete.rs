@@ -395,7 +395,14 @@ pub(super) fn compete_region(
         }
     }
 
-    resolve_claims(mesh, &region.faces, &mut committed, &claim_lists, config.vertex_tolerance_mm)
+    resolve_claims(
+        mesh,
+        &region.faces,
+        &mut committed,
+        &claim_lists,
+        config.vertex_tolerance_mm,
+        config,
+    )
 }
 
 /// Resolve multi-claimed faces to their best-fitting claimant (2× margin to
@@ -407,6 +414,7 @@ fn resolve_claims(
     committed: &mut Vec<CompeteHyp>,
     claim_lists: &[Vec<usize>],
     vtol: f64,
+    config: &Config,
 ) -> (Vec<CompeteHyp>, Vec<usize>) {
     let hyp_area: Vec<f64> = committed
         .iter()
@@ -476,9 +484,53 @@ fn resolve_claims(
         }
         let verts = vertices_of(mesh, &faces);
         hyp.set_faces(faces, verts);
+        // The fit was computed on the support the flood grew, which included
+        // every face this hypothesis could reach — junction rows it has now
+        // lost to a better claimant among them. Those rows are exactly the ones
+        // that pull a fit off true, so a hypothesis that has just been trimmed
+        // is carrying the error of faces it no longer owns. Refit on what it
+        // actually kept. (Measured on rounded_cube fine, whose r = 2 edge
+        // fillets read 1.9976–1.9984 with no vertex closer than 5e-4 mm to
+        // their own surface, against a mesh whose vertices are 1.9e-6 mm from
+        // the true CAD surfaces; refitting takes them to 2.0000.)
+        refit_in_place(mesh, &mut hyp, config);
         out.push(hyp);
     }
     (out, leftovers)
+}
+
+
+/// Refit a committed hypothesis to its current face set, keeping the existing
+/// fit if the fitter cannot produce one.
+fn refit_in_place(mesh: &ConnectedMesh, hyp: &mut CompeteHyp, config: &Config) {
+    let faces = hyp.faces().to_vec();
+    let verts = vertices_of(mesh, &faces);
+    let v = config.verbosity;
+    match hyp {
+        CompeteHyp::Planar(h) => {
+            if let Some(fit) = PlanarSurface::fit_surface(mesh, &faces, &verts, v) {
+                *h = PlanarSurface::make_hypothesis(mesh, faces, verts, &fit);
+            }
+        }
+        CompeteHyp::Conical(h) => {
+            if let Some(mut fit) = ConicalSurface::fit_surface(mesh, &faces, &verts, v) {
+                ConicalSurface::determine_convexity(mesh, &faces, &mut fit);
+                *h = ConicalSurface::make_hypothesis(mesh, faces, verts, &fit);
+            }
+        }
+        CompeteHyp::Spherical(h) => {
+            if let Some(mut fit) = SphericalSurface::fit_surface(mesh, &faces, &verts, v) {
+                SphericalSurface::determine_convexity(mesh, &faces, &mut fit);
+                *h = SphericalSurface::make_hypothesis(mesh, faces, verts, &fit);
+            }
+        }
+        CompeteHyp::Toroidal(h) => {
+            if let Some(mut fit) = ToroidalSurface::fit_surface(mesh, &faces, &verts, v) {
+                ToroidalSurface::determine_convexity(mesh, &faces, &mut fit);
+                *h = ToroidalSurface::make_hypothesis(mesh, faces, verts, &fit);
+            }
+        }
+    }
 }
 
 /// Grow a hypothesis of type `S` from `seed`: condition an initial fit on a
