@@ -145,18 +145,47 @@
     every one of its 95 faces 4.7e-4 mm out with no outlier group for relabel to
     see. Area-weighting is also just the correct discretization of the
     continuous least-squares plane (∫(n·x − d)² dA).
-  - **stepped_block_toroidal MEDIUM is still disabled** — a coarse-sampling
-    gap, not an accuracy one. At 2615 faces (10× coarser) the tori still come
-    out exactly right (18) and the cylinders nearly so (38 vs 37), and every
-    committed plane now fits its support to ~1e-14, but the r = 0.5 and r = 1
-    perimeter fillets near the end caps are tessellated into so few facets that
-    competition leaves ~24 of them as individual per-facet planes: 96 surfaces
-    against the reference's 71, and stage 3.1's reference-edge compare 2.1e-1 mm
-    out. The lead is a growth tolerance that scales with facet size — one row
-    past a tangent junction departs by ~h²/2r, so a fixed absolute bar is
-    simultaneously too loose at fine tessellation and too tight at coarse.
-    (A post-grow tightening pass at the strict vertex tolerance was tried and
-    does NOT work: 115 of 116 grows lose their own start face.)
+  - **stepped_block_toroidal MEDIUM is still disabled** — 82 surfaces against
+    the reference's 71 (was 96), and stage 3.1's reference-edge compare 1.6e-1
+    mm out (was 2.1e-1). The tori are exactly right (18); what is missing is
+    ~4 fillet cylinders, and ~14 facets of small fillet arcs survive as
+    individual per-facet planes.
+    **The improvement came from the seed patch, and it corrected a real
+    mis-use of the jet.** `seed_patch` gated its BFS on jet similarity — same
+    curvature class, magnitude within 2×. On a small fillet tessellated into a
+    handful of facets the jet is simply not reliable enough to gate on:
+    adjacent facets of one *exact* r = 0.5 arc read κ₁ = 0.023, 0.162 and 2.2
+    (radii of 43 mm, 6 mm and 0.45 mm for the same 0.5 mm fillet). The filter
+    then admitted 2–4 faces, too few to determine a 5-DOF cylinder, so every
+    candidate failed and the arc degraded to one plane per facet. The jet is a
+    *prior, not a gate* — validation decides every face — so the patch now
+    falls back to the plain topological neighbourhood when the filtered one is
+    too small to fit. Costs nothing in soundness: a patch straddling a junction
+    is what `condition_patch` trims and what flood validation rejects.
+    **The facet-scaled-growth-tolerance lead is REFUTED.** It was the obvious
+    next move — one row past a tangent junction departs by ~h²/2r, which the
+    fixed `GROW_VTOL_FACTOR` bar cannot track — but measured on medium the
+    response is not monotonic and not a matter of degree: ×1 gives 112
+    surfaces, ×3.3 **collapses the model to 2615 per-facet planes**, ×10 gives
+    90 with a spurious sphere and a 19th torus. Loosening does not recover
+    coarse fillets; it just changes which accidents win.
+    **What actually blocks medium now is `LEFTOVER_BLOB_MAX`'s whole-region
+    discard, and it is the next thing to attack.** Medium currently sits just
+    inside it (largest residual blob 5, threshold 8), and *every* knob tried —
+    growth tolerance ×3.3, `MIN_CONDITION_FACES` 6→4, `PATCH_TRIM_ROUNDS`
+    16→32, capping the fallback patch at 8/10/14 — pushes the blob over 8 and
+    nukes all 2615 faces to per-facet. That is a catastrophic, all-or-nothing
+    response to a local defect, and it makes the coarse path untunable: no
+    incremental improvement can be measured, because any perturbation lands on
+    the cliff. (It is also why several of those knobs *look* load-bearing at
+    their current values when they are really just on the safe side of it.)
+    The discard earned its place — an analytic surface islanded in a jagged
+    per-facet blob reconstructs to invalid wires (rounded_cube coarse: 43
+    BRepCheck failures → 0) — so the fix is not to delete it but to make it
+    proportionate: scope it to the offending neighbourhood rather than the
+    whole region, or gate it on the blob's size *relative* to the region. That
+    needs its own session with stage-3/4 validity measured directly, since
+    validity is the property it exists to protect.
   - **stale blockers pruned 2026-07-24**: 7 disabled tests were re-verified
     and already passed (fixed incidentally by the hole→sphere, fillet
     competition, and NaN-plane fixes) — onshape `plate_with_hole` coarse

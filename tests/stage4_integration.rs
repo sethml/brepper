@@ -343,7 +343,7 @@ fn onshape_stepped_block_toroidal_fine_stage41_compare() {
 }
 
 #[test]
-#[ignore = "coarse sampling: the fine mesh passes, but at 2615 faces the r=0.5/r=1 perimeter fillets near the end caps have too few facets for competition and ~24 of them stay per-facet, giving 96 surfaces against the reference 71 and a 2.1e-1 mm reference-edge compare. See TODO.md."]
+#[ignore = "coarse sampling: the fine mesh passes; at 2615 faces this is 82 surfaces against the reference 71 (~4 fillet cylinders missing, ~14 arc facets still per-facet) and a 1.6e-1 mm reference-edge compare. Blocked on LEFTOVER_BLOB_MAX's whole-region discard, which makes the coarse path untunable — see TODO.md."]
 fn onshape_stepped_block_toroidal_medium_stage41_compare() {
     // Same model at MEDIUM resolution (2.3K triangles): small-radius fillets
     // are tessellated with only ~4 rows across each 90° tube arc, so the

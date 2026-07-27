@@ -20,6 +20,30 @@ fn run(stl_rel: &str) -> stage2::Stage2Output {
     stage2::stage2(&config, mesh, None).expect("stage2")
 }
 
+/// Count selected surfaces by type: (planar, cylinder, cone, spherical,
+/// toroidal, bspline). Per project policy, assertions are on stage 2.6
+/// *selected* surfaces — the hypothesis vectors also carry entries that repair
+/// emptied out.
+fn selected_counts(out: &stage2::Stage2Output) -> [usize; 6] {
+    let mut n = [0usize; 6];
+    for s in &out.selected_surfaces {
+        match s {
+            stage2::SelectedSurface::Planar(_) => n[0] += 1,
+            stage2::SelectedSurface::Conical(i) => {
+                if out.conical_hypotheses[*i].is_cylinder() {
+                    n[1] += 1
+                } else {
+                    n[2] += 1
+                }
+            }
+            stage2::SelectedSurface::Spherical(_) => n[3] += 1,
+            stage2::SelectedSurface::Toroidal(_) => n[4] += 1,
+            stage2::SelectedSurface::BSpline(_) => n[5] += 1,
+        }
+    }
+    n
+}
+
 /// Every mesh face is covered by exactly one selected surface.
 fn assert_total_coverage(out: &stage2::Stage2Output) {
     let n = out.mesh.faces.len();
@@ -103,20 +127,15 @@ fn competition_stepped_block_fillet_network_stays_analytic() {
     // each winning on area as a super-model of the surface it displaced
     // (see `MIN_AXIAL_SWEEP_DEG`).
     //
-    // The curved surfaces now match the reference exactly, so assert that. The
-    // planes do not quite: one junction sliver survives as a per-facet plane,
-    // which is the 72nd surface against the reference's 71 (TODO.md).
+    // The decomposition now matches the reference exactly, surface for surface,
+    // and `onshape_stepped_block_toroidal_fine_stage41_compare` checks the
+    // geometry that comes out of it.
     let out = run("tests/onshape/stepped_block_toroidal_fillets_fine.stl");
-    let cylinders = out.conical_hypotheses.iter().filter(|h| h.is_cylinder()).count();
-    let cones = out.conical_hypotheses.iter().filter(|h| !h.is_cylinder()).count();
-    assert_eq!(out.toroidal_hypotheses.len(), 18, "the reference's 18 corner-blend tori");
+    let [planar, cylinders, cones, spheres, tori, bsplines] = selected_counts(&out);
+    assert_eq!(tori, 18, "the reference's 18 corner-blend tori");
     assert_eq!(cylinders, 37, "the reference's 37 fillet cylinders");
-    assert_eq!(cones, 0, "no cones on this model");
-    assert_eq!(out.spherical_hypotheses.len(), 0, "no spheres on this model");
-    assert!(
-        (16..=18).contains(&out.planar_hypotheses.len()),
-        "the reference's 16 planes, give or take a junction sliver, got {}",
-        out.planar_hypotheses.len()
-    );
+    assert_eq!(planar, 16, "the reference's 16 planes");
+    assert_eq!((cones, spheres, bsplines), (0, 0, 0), "no cones, spheres or freeform");
+    assert_eq!(out.selected_surfaces.len(), 71, "the reference's 71 surfaces");
     assert_total_coverage(&out);
 }

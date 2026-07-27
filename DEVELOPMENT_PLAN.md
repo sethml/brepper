@@ -494,6 +494,17 @@ vertex-validates. (This is the old pipeline's one genuinely effective
 consistency heuristic — the |n·axis| = sin α normal-axis check — reborn
 in curvature space with a model to condition on.)
 
+**The jet is a prior, not a gate.** Stage 2.3(b) states this — validation
+decides every face — but `seed_patch` was gating its BFS on jet similarity, and
+on a small fillet tessellated into a handful of facets the jet is not reliable
+enough to gate on: adjacent facets of one exact r = 0.5 arc read κ₁ = 0.023,
+0.162 and 2.2. The filter starved the patch below what a 5-DOF fit needs, so
+every candidate failed and the arc fell to one plane per facet. It now falls
+back to the plain topological neighbourhood whenever the filtered patch is too
+small to fit; a straddling patch is what `condition_patch` trims and what flood
+validation rejects, so nothing is risked. Wherever the jet is consulted, ask
+what happens when it is wrong — the answer must never be "no candidate at all".
+
 **Refit whenever the support changes.** A fit is only a statement about the
 faces it was computed from, so any step that changes a surface's face set
 invalidates its geometry — and the faces such a step removes are precisely the

@@ -1061,13 +1061,41 @@ fn centroid_gap(centroids: &[[f64; 3]], a: usize, b: usize) -> f64 {
     ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
 }
 
-/// A small jet-similar patch around `seed` (same curvature class, magnitude
-/// within 2×), capped, for a well-conditioned initial fit.
+/// A small patch around `seed`, capped and depth-limited, for a well-conditioned
+/// initial fit: jet-similar faces (same curvature class, magnitude within 2×,
+/// and within `PATCH_RADII` radii of curvature) where the jet is informative.
+///
+/// Falls back to the plain topological neighbourhood when that leaves too
+/// little to fit. The jet is a *prior*, not a gate — validation decides every
+/// face — and on a small fillet tessellated into a handful of facets it is
+/// simply not reliable enough to gate on: measured on
+/// `stepped_block_toroidal_fillets` medium, adjacent facets of one exact
+/// r = 0.5 arc read κ₁ = 0.023, 0.162 and 2.2 (radii of 43 mm, 6 mm and
+/// 0.45 mm for the same 0.5 mm fillet). The similarity filter then admits 2–4
+/// faces, too few to determine a 5-DOF cylinder, so every candidate fails and
+/// the arc degrades to one plane per facet. Handing the fit an unfiltered
+/// neighbourhood instead costs nothing in soundness: a patch straddling a
+/// junction is what `condition_patch` trims and what flood validation rejects.
 fn seed_patch(mesh: &ConnectedMesh, in_region: &[bool], seed: usize, jet: &[JetField]) -> Vec<usize> {
+    let patch = grow_patch(mesh, in_region, seed, jet, true);
+    if patch.len() >= MIN_CONDITION_FACES {
+        return patch;
+    }
+    grow_patch(mesh, in_region, seed, jet, false)
+}
+
+/// Depth-limited BFS around `seed`, optionally filtered by jet similarity.
+fn grow_patch(
+    mesh: &ConnectedMesh,
+    in_region: &[bool],
+    seed: usize,
+    jet: &[JetField],
+    use_jet: bool,
+) -> Vec<usize> {
     let seed_class = curvature_class(jet[seed]);
     let seed_mag = jet[seed].k1.abs().max(jet[seed].k2.abs());
     let seed_c = super::face_centroid(&mesh.faces[seed], &mesh.vertices);
-    let radius_limit = if seed_mag > 1e-9 {
+    let radius_limit = if use_jet && seed_mag > 1e-9 {
         PATCH_RADII / seed_mag
     } else {
         f64::INFINITY
@@ -1092,14 +1120,14 @@ fn seed_patch(mesh: &ConnectedMesh, in_region: &[bool], seed: usize, jet: &[JetF
                 if !in_region[ni] || seen.contains(&ni) {
                     continue;
                 }
-                if curvature_class(jet[ni]) != seed_class {
-                    continue;
-                }
-                let mag = jet[ni].k1.abs().max(jet[ni].k2.abs());
-                if seed_mag > 1e-9 && (mag > 1.5 * seed_mag || mag < 0.667 * seed_mag) {
-                    continue;
-                }
-                if radius_limit.is_finite() {
+                if use_jet {
+                    if curvature_class(jet[ni]) != seed_class {
+                        continue;
+                    }
+                    let mag = jet[ni].k1.abs().max(jet[ni].k2.abs());
+                    if seed_mag > 1e-9 && (mag > 1.5 * seed_mag || mag < 0.667 * seed_mag) {
+                        continue;
+                    }
                     let c = super::face_centroid(&mesh.faces[ni], &mesh.vertices);
                     let d = ((c[0] - seed_c[0]).powi(2)
                         + (c[1] - seed_c[1]).powi(2)
