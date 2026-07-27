@@ -1,4 +1,18 @@
-//! Debug dump for stage 2.1/2.2 segmentation (scratch tool, not shipped).
+//! Debug dump for stage 2 (scratch tool, not shipped).
+//!
+//! `dump_regions <model.stl> <mode> [args]`
+//!
+//! Stage 2.1/2.2 segmentation: `summary`, `singletons`, `adj`, `leaks`,
+//! `rdesc <region>`, `geom <face>...`, `probe <x> <y> <z> [radius]`, `jet
+//! <face>`.
+//!
+//! Stage 2.3 classification (runs the whole of stage 2):
+//! - `surfaces` — every committed surface, largest area first, with its
+//!   parameters, to line up against a reference STEP's surface list.
+//! - `at <x> <y> <z> [radius]` — which surfaces own the faces near a point;
+//!   for tracing a stage-3 compare failure back to stage 2.
+//! - `owner <face>...` — the surface owning a face and how well its
+//!   neighbours' surfaces explain it (the stage-2.4 relabel criterion).
 
 use brepper::config;
 use brepper::stage1::ConnectedMesh;
@@ -18,6 +32,26 @@ fn centroid(mesh: &ConnectedMesh, fi: usize) -> [f64; 3] {
     }
     let n = vc as f64;
     [c[0] / n, c[1] / n, c[2] / n]
+}
+
+/// Area of a mesh face (triangle, or a quad as two triangles).
+fn tri_area(mesh: &ConnectedMesh, fi: usize) -> f64 {
+    let f = &mesh.faces[fi];
+    let p = |k: usize| {
+        let v = &mesh.vertices[f.vertex_indices[k]];
+        [v.x, v.y, v.z]
+    };
+    let tri = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+        let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let x = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+        0.5 * (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt()
+    };
+    let mut a = tri(p(0), p(1), p(2));
+    if f.vertex_count == 4 {
+        a += tri(p(0), p(2), p(3));
+    }
+    a
 }
 
 fn main() {
@@ -281,6 +315,194 @@ fn main() {
                 "descriptor: sigma=[{:+.4},{:+.4}] centroid=[{:.3},{:.3},{:.3}] normal=[{:.4},{:.4},{:.4}]",
                 jet[fi].k1, jet[fi].k2, c[0], c[1], c[2], n[0], n[1], n[2]
             );
+        }
+        // Every surface stage 2 committed, largest first: type, extent, and
+        // the parameters to line up against a reference STEP's surface list.
+        "surfaces" => {
+            let out = brepper::stage2::stage2(&config, mesh, None).unwrap();
+            let mut rows: Vec<(usize, f64, String)> = Vec::new();
+            for s in &out.selected_surfaces {
+                use brepper::stage2::SelectedSurface as S;
+                let (faces, desc) = match s {
+                    S::Planar(i) => {
+                        let h = &out.planar_hypotheses[*i];
+                        let n = h.normal;
+                        (&h.faces, format!("plane   n=[{:+.3},{:+.3},{:+.3}] d={:+.4}", n[0], n[1], n[2], h.distance))
+                    }
+                    S::Conical(i) => {
+                        let h = &out.conical_hypotheses[*i];
+                        let a = h.axis_direction;
+                        if h.is_cylinder() {
+                            (&h.faces, format!("cyl     r={:.4} axis=[{:+.3},{:+.3},{:+.3}]", h.radius_at_apex, a[0], a[1], a[2]))
+                        } else {
+                            (&h.faces, format!("cone    ha={:.4} axis=[{:+.3},{:+.3},{:+.3}]", h.half_angle, a[0], a[1], a[2]))
+                        }
+                    }
+                    S::Spherical(i) => {
+                        let h = &out.spherical_hypotheses[*i];
+                        (&h.faces, format!("sphere  r={:.4}", h.radius))
+                    }
+                    S::Toroidal(i) => {
+                        let h = &out.toroidal_hypotheses[*i];
+                        let a = h.axis_direction;
+                        (&h.faces, format!("torus   R={:.4} r={:.4} axis=[{:+.3},{:+.3},{:+.3}]", h.major_radius, h.minor_radius, a[0], a[1], a[2]))
+                    }
+                    S::BSpline(i) => {
+                        let h = &out.bspline_hypotheses[*i];
+                        (&h.faces, "bspline".to_string())
+                    }
+                };
+                let area: f64 = faces.iter().map(|&fi| tri_area(&out.mesh, fi)).sum();
+                let ids = if faces.len() <= 8 { format!("  {faces:?}") } else { String::new() };
+                rows.push((faces.len(), area, format!("{desc}{ids}")));
+            }
+            rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            for (nf, area, desc) in &rows {
+                println!("{nf:6} faces  area {area:10.3}  {desc}");
+            }
+            println!("{} surfaces", rows.len());
+        }
+        // at <x> <y> <z> [radius]: which committed surfaces own the faces near
+        // a point — for tracing a stage-3 compare failure back to stage 2.
+        "at" => {
+            let p: [f64; 3] = [
+                args[3].parse().unwrap(),
+                args[4].parse().unwrap(),
+                args[5].parse().unwrap(),
+            ];
+            let radius: f64 = args.get(6).map(|s| s.parse().unwrap()).unwrap_or(0.3);
+            let out = brepper::stage2::stage2(&config, mesh, None).unwrap();
+            use brepper::stage2::SelectedSurface as S;
+            for (k, s) in out.selected_surfaces.iter().enumerate() {
+                let (faces, desc) = match s {
+                    S::Planar(i) => {
+                        let h = &out.planar_hypotheses[*i];
+                        (&h.faces, format!("plane n=[{:+.3},{:+.3},{:+.3}] d={:+.4}", h.normal[0], h.normal[1], h.normal[2], h.distance))
+                    }
+                    S::Conical(i) => {
+                        let h = &out.conical_hypotheses[*i];
+                        (&h.faces, format!("cyl/cone r={:.4} ha={:.4}", h.radius_at_apex, h.half_angle))
+                    }
+                    S::Spherical(i) => (&out.spherical_hypotheses[*i].faces, "sphere".to_string()),
+                    S::Toroidal(i) => {
+                        let h = &out.toroidal_hypotheses[*i];
+                        (&h.faces, format!("torus R={:.4} r={:.4}", h.major_radius, h.minor_radius))
+                    }
+                    S::BSpline(i) => (&out.bspline_hypotheses[*i].faces, "bspline".to_string()),
+                };
+                let near: Vec<usize> = faces
+                    .iter()
+                    .copied()
+                    .filter(|&fi| {
+                        let c = centroid(&out.mesh, fi);
+                        (c[0] - p[0]).powi(2) + (c[1] - p[1]).powi(2) + (c[2] - p[2]).powi(2)
+                            < radius * radius
+                    })
+                    .collect();
+                if !near.is_empty() {
+                    println!(
+                        "surface {k:3} ({:5} faces) {desc}  — {} nearby: {:?}",
+                        faces.len(),
+                        near.len(),
+                        &near[..near.len().min(8)]
+                    );
+                }
+            }
+        }
+        // owner <face>...: which surface owns each face, and how well its
+        // neighbours' surfaces explain it (the stage-2.4 relabel criterion).
+        "owner" => {
+            let out = brepper::stage2::stage2(&config, mesh, None).unwrap();
+            let mut f2s = vec![usize::MAX; out.mesh.faces.len()];
+            use brepper::stage2::SelectedSurface as S;
+            let faces_of = |k: usize| -> &Vec<usize> {
+                match &out.selected_surfaces[k] {
+                    S::Planar(i) => &out.planar_hypotheses[*i].faces,
+                    S::Conical(i) => &out.conical_hypotheses[*i].faces,
+                    S::Spherical(i) => &out.spherical_hypotheses[*i].faces,
+                    S::Toroidal(i) => &out.toroidal_hypotheses[*i].faces,
+                    S::BSpline(i) => &out.bspline_hypotheses[*i].faces,
+                }
+            };
+            for k in 0..out.selected_surfaces.len() {
+                for &fi in faces_of(k) {
+                    f2s[fi] = k;
+                }
+            }
+            let kind = |k: usize| match &out.selected_surfaces[k] {
+                S::Planar(i) => {
+                    let h = &out.planar_hypotheses[*i];
+                    format!("plane d={:+.5} n=[{:+.3},{:+.3},{:+.3}]", h.distance, h.normal[0], h.normal[1], h.normal[2])
+                }
+                S::Conical(i) => format!("cyl r={:.4}", out.conical_hypotheses[*i].radius_at_apex),
+                S::Spherical(_) => "sphere".to_string(),
+                S::Toroidal(i) => {
+                    let h = &out.toroidal_hypotheses[*i];
+                    format!("torus R={:.4} r={:.4}", h.major_radius, h.minor_radius)
+                }
+                S::BSpline(_) => "bspline".to_string(),
+            };
+            for arg in &args[3..] {
+                let fi: usize = arg.parse().unwrap();
+                let dist_to = |k: usize, q: [f64; 3]| -> f64 {
+                    match &out.selected_surfaces[k] {
+                        S::Planar(i) => {
+                            let h = &out.planar_hypotheses[*i];
+                            (h.normal[0] * q[0] + h.normal[1] * q[1] + h.normal[2] * q[2]
+                                - h.distance)
+                                .abs()
+                        }
+                        S::Conical(i) => {
+                            let h = &out.conical_hypotheses[*i];
+                            let d = [q[0] - h.apex[0], q[1] - h.apex[1], q[2] - h.apex[2]];
+                            let a = h.axis_direction;
+                            let t = d[0] * a[0] + d[1] * a[1] + d[2] * a[2];
+                            let perp = [d[0] - t * a[0], d[1] - t * a[1], d[2] - t * a[2]];
+                            let r = (perp[0].powi(2) + perp[1].powi(2) + perp[2].powi(2)).sqrt();
+                            if h.half_angle == 0.0 {
+                                (r - h.radius_at_apex).abs()
+                            } else {
+                                (r * h.half_angle.cos() - t * h.half_angle.sin()).abs()
+                            }
+                        }
+                        S::Toroidal(i) => {
+                            let h = &out.toroidal_hypotheses[*i];
+                            let d = [q[0] - h.center[0], q[1] - h.center[1], q[2] - h.center[2]];
+                            let a = h.axis_direction;
+                            let t = d[0] * a[0] + d[1] * a[1] + d[2] * a[2];
+                            let perp = [d[0] - t * a[0], d[1] - t * a[1], d[2] - t * a[2]];
+                            let r = (perp[0].powi(2) + perp[1].powi(2) + perp[2].powi(2)).sqrt();
+                            (((r - h.major_radius).powi(2) + t * t).sqrt() - h.minor_radius).abs()
+                        }
+                        S::Spherical(i) => {
+                            let h = &out.spherical_hypotheses[*i];
+                            let d = [q[0] - h.center[0], q[1] - h.center[1], q[2] - h.center[2]];
+                            ((d[0].powi(2) + d[1].powi(2) + d[2].powi(2)).sqrt() - h.radius).abs()
+                        }
+                        S::BSpline(_) => f64::NAN,
+                    }
+                };
+                let vdist = |k: usize| -> f64 {
+                    let f = &out.mesh.faces[fi];
+                    f.vertex_indices[..f.vertex_count as usize]
+                        .iter()
+                        .map(|&vi| {
+                            let v = &out.mesh.vertices[vi];
+                            dist_to(k, [v.x, v.y, v.z])
+                        })
+                        .fold(0.0_f64, f64::max)
+                };
+                println!("face {fi}: owner surface {} = {} (max vertex dist {:.3e})",
+                    f2s[fi], kind(f2s[fi]), vdist(f2s[fi]));
+                let f = &out.mesh.faces[fi];
+                for &ni in &f.neighbors[..f.vertex_count as usize] {
+                    if ni >= 0 {
+                        let sj = f2s[ni as usize];
+                        println!("   neighbour face {ni} -> surface {sj} = {} (this face's max vertex dist to it {:.3e})",
+                            kind(sj), vdist(sj));
+                    }
+                }
+            }
         }
         _ => eprintln!("unknown mode {mode}"),
     }

@@ -494,6 +494,19 @@ vertex-validates. (This is the old pipeline's one genuinely effective
 consistency heuristic — the |n·axis| = sin α normal-axis check — reborn
 in curvature space with a model to condition on.)
 
+A second degeneracy of the same shape is the *unobserved rotation*
+(`MIN_AXIAL_SWEEP_DEG`, compete.rs, 2026-07-26). Each analytic type contains the
+next simpler one as a limit — a torus with R → ∞ is a cylinder, a cylinder with
+r → ∞ is a plane — and a patch that sweeps only a few degrees about its own axis
+never observes the revolution, so that radius is free. A free parameter does not
+merely produce a useless fit; it produces a *winning* one, because the richer
+model is a super-model of the surface it should have lost to: it covers
+everything that surface covers and then floods one row further on the slack,
+carrying the largest-validated-area contest. So a candidate whose support does
+not sweep far enough about its axis to determine its radius is rejected, and the
+simpler surface wins the ground back. (Measured on stepped_block_toroidal:
+ten such impostors, sweeping 2.8°–6.7°, against real surfaces at 64.8°–103.4°.)
+
 The normal-axis check itself also survives literally, and as of 2026-07-25 it
 gates the conical *fit*, not just candidate faces: where the support is thin
 in the axial direction (a one-quad-tall cylinder band between two fillet

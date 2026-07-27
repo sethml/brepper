@@ -93,16 +93,60 @@
     every surface must come out of competition. It used to leave a 30-face
     leftover blob, which tripped the `LEFTOVER_BLOB_MAX` whole-region discard
     and degraded all 26122 faces to per-facet planes. Three fixes (below) took
-    it to **74 analytic surfaces on fine** (reference: 71 = 37 cylinders + 18
-    tori + 16 planes) with 7 sliver faces left per-facet, and 124 on medium.
-    Both now build real B-rep topology and reach stage 3.
-    **Still open**: the decomposition is not an exact match — fine commits 24
-    tori against the reference's 18 and only 7 real planes against 16, i.e.
-    over-grown fillet tori are eating flat wall strips, and stage 3.1's
-    reference-edge compare is 4.4e-2 mm out (2.1e-1 mm on medium). That is
-    what the two `#[ignore]`d stage-4 `--compare` tests now wait on;
-    `competition_stepped_block_fillet_network_stays_analytic`
-    (tests/stage2_competition.rs) guards the part that works.
+    it to 74 analytic surfaces on fine (reference: 71 = 37 cylinders + 18 tori
+    + 16 planes) and 124 on medium; both now build real B-rep topology and
+    reach stage 3.
+    **The surface decomposition is now essentially exact (2026-07-26).** Fine
+    commits **37 cylinders and 18 tori — the reference's counts exactly** — plus
+    17 planes against its 16, for 72 surfaces against 71. The extra one is a
+    single 0.253 mm² junction sliver left as a per-facet plane. This came from
+    one more guard, `MIN_AXIAL_SWEEP_DEG` in compete.rs: ten surfaces were
+    degenerate super-models of the surface they displaced (six near-cylindrical
+    tori over perimeter fillets, four near-planar cylinders over wall strips).
+    A patch that sweeps only a few degrees about its own axis never observes the
+    revolution, so the radius is free — and a free radius is worse than useless
+    in competition, because the richer model covers everything the simpler one
+    covers and then floods one row further on the slack, taking the
+    largest-area contest every time. The two populations do not overlap: real
+    tori sweep 84.7°–103.4° (fitting R to the reference's exact 2.0000 / 2.5000
+    / 14.0000), the impostors 3.1°–6.7° (reporting R = 20, 26, 29, 37, 87, 114);
+    real cylinders sweep ≥ 64.8°, the impostors 2.8°–2.9°.
+
+    **Still open — and now precisely diagnosed.** Both `--compare` tests still
+    fail at the stage 3.1 reference-edge check (fine: edge 27 at 4.4e-2 mm;
+    medium: 2.1e-1 mm). The chain, measured end to end on fine:
+      1. Face 11548 is the first tessellation row of the y = -164 end cap's
+         1 mm perimeter fillet. Its far vertices sit 9.5e-4 mm off the end-cap
+         plane — *under* the 1.5e-3 mm flood tolerance — so the plane's grow
+         swallows the row.
+      2. That drags the least-squares plane to y = -163.99953, 4.7e-4 mm off
+         true. The fillet cylinder is contaminated the same way (r = 1.0009).
+      3. Stage 2.4 `relabel_boundaries` should hand the row back — the cylinder
+         explains it better — but only by 3.2e-4 against the plane's 4.7e-4,
+         inside the 2× margin that exists to stop relabel flapping. Both fits
+         being contaminated by the *same* row is what closes the gap; the
+         distances would separate if the loop refitted between rounds instead
+         of only at the end.
+      4. Edge 27 is the plane↔torus junction, which is tangent in the
+         reference. Stage 3.2 does not classify it tangent, because the
+         boundary sits one row into the fillet where the torus normal has
+         already turned ~2.5°, so the compare applies the strict
+         `--vertex-tolerance` bar instead of the chordal one it reserves for
+         tangent edges.
+      5. At that bar the check is unachievable in principle: a plane offset δ
+         moves its intersection with a torus it should graze by √(2rδ), so
+         landing the edge within 5e-5 mm would need the plane fitted to
+         ~1e-9 mm.
+    So the fix is upstream of the compare — place the region boundary exactly
+    on the tangent circle — and the leads are (3) refit inside the relabel
+    loop, and a growth tolerance that scales with facet size rather than the
+    fixed `GROW_VTOL_FACTOR` × vertex tolerance (one row past a tangent
+    junction departs by ~h²/2r, which shrinks quadratically as the mesh
+    refines, so a fixed absolute bar is always too loose at fine tessellation).
+    A tightening pass at the strict vertex tolerance was tried and does NOT
+    work: 115 of 116 grows lose their own start face, because the fits
+    themselves are only ~1e-4 mm accurate on full support.
+
     Fixes that got it here, each a real bug with a measured mechanism:
     (a) **degenerate cone on a thin support** (`axis_normals_consistent`,
     conical.rs). An r = 0.5 fillet band one quad tall between two corner tori

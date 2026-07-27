@@ -103,6 +103,42 @@ const BEND_PATCH_DEPTH: usize = 4;
 /// Face cap of the pure-bend fit patch.
 const BEND_PATCH_CAP: usize = 64;
 
+/// How far a surface of revolution's support must sweep around its own axis, in
+/// degrees, before the radius counts as determined by the data.
+///
+/// A patch subtending a negligible angle about the axis never observes the
+/// revolution, so the radius is free — and at the limit of a free radius each
+/// type collapses into the simpler one below it: a torus with R → ∞ is a
+/// cylinder, a cylinder with r → ∞ is a plane. Such a fit is not merely
+/// useless, it actively wins. Being a super-model of the simpler surface it
+/// covers everything that surface covers, then floods a little further on the
+/// slack — over the first tessellation row past a tangent junction, whose
+/// chordal sag the simpler surface cannot take — and so carries the
+/// largest-validated-area contest every time.
+///
+/// Measured on `stepped_block_toroidal_fillets` fine, where neither population
+/// overlaps by anything close to this bar:
+///
+/// - **Tori.** The 18 real corner blends sweep 84.7°–103.4° and fit R to the
+///   reference's exact 2.0000 / 2.5000 / 14.0000. Six impostors astride the
+///   r = 0.5 and r = 1 perimeter fillets sweep 3.1°–6.7° and report
+///   R = 20, 26, 29, 37, 87, 114 — junk, each an unconstrained parameter's
+///   arbitrary landing place, and all comfortably inside the 121 mm
+///   bounding-box bound `radius_plausible` applies.
+/// - **Cylinders.** Every real one sweeps ≥ 64.8°. Four impostors sweep
+///   2.8°–2.9°, each a flat wall plus the first tessellation row of the four
+///   fillets bordering it (those rows sit 2.9e-3 mm off the wall plane, over
+///   the flood tolerance, so the plane that should have won them cannot).
+///
+/// 20° sits 3× above every impostor and 3× below every real surface. Note that
+/// sagitta-versus-tolerance does *not* separate them — the toroidal impostors'
+/// spines still deviate 0.016–0.042 mm, well above the flood tolerance. The
+/// angle is what matters, not the sag.
+///
+/// This is the counterpart to `MIN_HALF_ANGLE_DEG` in conical.rs, which rejects
+/// a cone too shallow to be told apart from a cylinder.
+const MIN_AXIAL_SWEEP_DEG: f64 = 20.0;
+
 /// How many flood-start faces a toroidal candidate tries before giving up
 /// (each attempt refits from the same initial patch, so extras only matter
 /// when the best start happens not to validate its own fit).
@@ -249,6 +285,18 @@ pub(super) fn compete_region(
                     }
                     return;
                 }
+                let sweep = candidate_sweep(mesh, &h);
+                if sweep < MIN_AXIAL_SWEEP_DEG.to_radians() {
+                    if debug {
+                        eprintln!(
+                            "    compete: seed {seed} rejected {} sweeping only {:.1}\u{00b0} about its axis — radius undetermined ({} faces, area {area:.2})",
+                            h.kind_name(),
+                            sweep.to_degrees(),
+                            h.faces().len(),
+                        );
+                    }
+                    return;
+                }
                 let better = match best {
                     None => true,
                     Some((_, ba, bd)) => area > *ba + 1e-9 || ((area - *ba).abs() <= 1e-9 && dof < *bd),
@@ -322,9 +370,14 @@ pub(super) fn compete_region(
             Some((hyp, area, dof)) => {
                 if debug {
                     eprintln!(
-                        "    compete: seed {seed} → {} ({} faces, area {area:.2}, dof {dof})",
+                        "    compete: seed {seed} → {} ({} faces, area {area:.2}, dof {dof}, sweep {:.1}\u{00b0})",
                         hyp.kind_name(),
-                        hyp.faces().len()
+                        hyp.faces().len(),
+                        match &hyp {
+                            CompeteHyp::Toroidal(t) => torus_sweep(mesh, t).to_degrees(),
+                            CompeteHyp::Conical(c) => conical_sweep(mesh, c).to_degrees(),
+                            _ => 0.0,
+                        }
                     );
                 }
                 let idx = committed.len();
@@ -544,14 +597,86 @@ fn radius_plausible(mesh: &ConnectedMesh, hyp: &CompeteHyp, bb_diag: f64) -> boo
     hyp_radius(mesh, hyp) <= bb_diag
 }
 
-/// The radius of curvature `radius_plausible` bounds. Planes are flat and tori
-/// are guarded in `torus_candidate`, so both report 0 (always plausible).
+/// The radius of curvature `radius_plausible` bounds. A torus reports its major
+/// radius (the same quantity `torus_candidate` bounds while growing); a plane is
+/// flat and reports 0, always plausible.
 fn hyp_radius(mesh: &ConnectedMesh, hyp: &CompeteHyp) -> f64 {
     match hyp {
         CompeteHyp::Conical(h) => conical_local_radius(mesh, h),
         CompeteHyp::Spherical(h) => h.radius,
-        CompeteHyp::Planar(_) | CompeteHyp::Toroidal(_) => 0.0,
+        CompeteHyp::Toroidal(h) => h.major_radius,
+        CompeteHyp::Planar(_) => 0.0,
     }
+}
+
+/// How far a support sweeps around an axis, in radians: the angular extent of
+/// `verts` about the line through `origin` along `axis`, taken as 2π minus the
+/// largest angular gap between consecutive vertices, so a patch straddling the
+/// angle origin measures correctly.
+///
+/// This is the observable that says whether a rotational parameter is
+/// determined by the data at all. A surface of revolution fitted to a patch
+/// that never goes around its axis has its radius free, and a free parameter is
+/// worse than useless in competition: the fit becomes a super-model of the
+/// simpler surface it should have lost to — covering everything that surface
+/// covers, then flooding a little further on the slack — so it takes the
+/// largest-validated-area contest every time. See `MIN_TORUS_SWEEP_DEG` and
+/// `MIN_CYLINDER_SWEEP_DEG`.
+fn axial_sweep(
+    mesh: &ConnectedMesh,
+    verts: &[usize],
+    origin: &[f64; 3],
+    axis: &[f64; 3],
+) -> f64 {
+    let (u, w) = super::perpendicular_basis(axis);
+    let mut angles: Vec<f64> = verts
+        .iter()
+        .filter_map(|&vi| {
+            let v = &mesh.vertices[vi];
+            let d = [v.x - origin[0], v.y - origin[1], v.z - origin[2]];
+            let (x, y) = (
+                d[0] * u[0] + d[1] * u[1] + d[2] * u[2],
+                d[0] * w[0] + d[1] * w[1] + d[2] * w[2],
+            );
+            // A vertex on the axis has no meaningful angle.
+            (x.hypot(y) > 1e-12).then(|| y.atan2(x))
+        })
+        .collect();
+    if angles.len() < 2 {
+        return 0.0;
+    }
+    angles.sort_by(|p, q| p.partial_cmp(q).unwrap());
+    let mut gap = angles[0] + std::f64::consts::TAU - angles[angles.len() - 1];
+    for pair in angles.windows(2) {
+        gap = gap.max(pair[1] - pair[0]);
+    }
+    (std::f64::consts::TAU - gap).max(0.0)
+}
+
+/// Sweep of a candidate's support about the axis whose radius it determines.
+/// Planes and spheres have no axis — a sphere's radius is pinned by any patch —
+/// so they report a full turn and are never rejected on this ground.
+fn candidate_sweep(mesh: &ConnectedMesh, hyp: &CompeteHyp) -> f64 {
+    match hyp {
+        CompeteHyp::Toroidal(h) => torus_sweep(mesh, h),
+        CompeteHyp::Conical(h) => conical_sweep(mesh, h),
+        CompeteHyp::Planar(_) | CompeteHyp::Spherical(_) => std::f64::consts::TAU,
+    }
+}
+
+/// Sweep of a toroidal hypothesis's support about its own axis.
+fn torus_sweep(mesh: &ConnectedMesh, hyp: &ToroidalHypothesis) -> f64 {
+    axial_sweep(mesh, &hyp.vertices, &hyp.center, &hyp.axis_direction)
+}
+
+/// Sweep of a cylinder's support about its own axis. Meaningless for a true
+/// cone, whose apex pins the axis regardless of sweep, so cones report a full
+/// turn.
+fn conical_sweep(mesh: &ConnectedMesh, hyp: &ConicalHypothesis) -> f64 {
+    if !hyp.is_cylinder() {
+        return std::f64::consts::TAU;
+    }
+    axial_sweep(mesh, &hyp.vertices, &hyp.apex, &hyp.axis_direction)
 }
 
 /// Grow a toroidal candidate from an initial fit patch, trying flood starts
@@ -560,7 +685,9 @@ fn hyp_radius(mesh: &ConnectedMesh, hyp: &CompeteHyp) -> f64 {
 /// axis (observed R ≈ 1500–3600 mm on ~100 mm models under the old BFS), and
 /// a legitimate torus's major radius cannot exceed the mesh extent — the
 /// same guard as the ladder's acceptance test. Also rejects "fat" tori
-/// (`r > MAX_TORUS_RADIUS_RATIO·R`).
+/// (`r > MAX_TORUS_RADIUS_RATIO·R`). The sweep guard that rejects a torus too
+/// straight to have a major radius at all is applied to every candidate type
+/// alike, in `compete_region` (see `MIN_AXIAL_SWEEP_DEG`).
 fn torus_candidate(
     mesh: &ConnectedMesh,
     in_region: &[bool],
@@ -580,11 +707,13 @@ fn torus_candidate(
             config,
             MIN_TORUS_FACES,
         ) {
-            if hyp.major_radius <= bb_diag
-                && hyp.minor_radius <= MAX_TORUS_RADIUS_RATIO * hyp.major_radius
-            {
-                return Some((hyp, area, faces));
-            }
+            // A grow that succeeded but produced an implausible torus says the
+            // *type* is wrong here, so stop — retrying other flood starts from
+            // the same fit patch would only rediscover it. Extra starts are
+            // for the case where the grow itself failed.
+            return (hyp.major_radius <= bb_diag
+                && hyp.minor_radius <= MAX_TORUS_RADIUS_RATIO * hyp.major_radius)
+            .then_some((hyp, area, faces));
         }
     }
     None

@@ -90,23 +90,33 @@ fn competition_nosecone_cone_sphere_base() {
 
 #[test]
 fn competition_stepped_block_fillet_network_stays_analytic() {
-    // A dense fillet network (37 cylinders + 18 tori + 16 planes in the
-    // reference) tangent-connects the whole model into ONE 26122-face region,
-    // so every surface has to come out of competition. This model used to
-    // collapse: one r = 0.5 fillet band, one quad tall between two corner
-    // tori, left the axis so weakly constrained that a bogus 12° cone beat the
-    // true cylinder on residual, and the 30-face leftover blob then tripped
-    // classify.rs's whole-region discard — degrading all 26122 faces to
-    // per-facet planes. The exact decomposition is still short of the
-    // reference (see TODO.md), so this guards the property that matters: the
-    // model decomposes analytically and leaves only slivers behind.
+    // A dense fillet network — 37 cylinders + 18 tori + 16 planes in the
+    // reference — tangent-connects the whole model into ONE 26122-face region,
+    // so every surface has to come out of competition.
+    //
+    // This model used to collapse entirely to per-facet planes: one r = 0.5
+    // fillet band, a single quad tall between two corner tori, left the axis so
+    // weakly constrained that a bogus 12° cone beat the true cylinder on
+    // residual, and the leftover blob that left behind tripped classify.rs's
+    // whole-region discard. Then it decomposed but over-fitted: near-cylindrical
+    // tori ate perimeter fillets and near-planar cylinders ate wall strips,
+    // each winning on area as a super-model of the surface it displaced
+    // (see `MIN_AXIAL_SWEEP_DEG`).
+    //
+    // The curved surfaces now match the reference exactly, so assert that. The
+    // planes do not quite: one junction sliver survives as a per-facet plane,
+    // which is the 72nd surface against the reference's 71 (TODO.md).
     let out = run("tests/onshape/stepped_block_toroidal_fillets_fine.stl");
-    let analytic = out.conical_hypotheses.len()
-        + out.spherical_hypotheses.len()
-        + out.toroidal_hypotheses.len();
-    assert!(analytic >= 60, "expected the fillet network to decompose analytically, got {analytic} curved surfaces");
-    assert!(out.toroidal_hypotheses.len() >= 18, "at least the reference's 18 corner-blend tori");
-    let per_facet = out.planar_hypotheses.iter().filter(|h| h.faces.len() == 1).count();
-    assert!(per_facet <= 16, "only slivers may degrade to per-facet planes, got {per_facet}");
+    let cylinders = out.conical_hypotheses.iter().filter(|h| h.is_cylinder()).count();
+    let cones = out.conical_hypotheses.iter().filter(|h| !h.is_cylinder()).count();
+    assert_eq!(out.toroidal_hypotheses.len(), 18, "the reference's 18 corner-blend tori");
+    assert_eq!(cylinders, 37, "the reference's 37 fillet cylinders");
+    assert_eq!(cones, 0, "no cones on this model");
+    assert_eq!(out.spherical_hypotheses.len(), 0, "no spheres on this model");
+    assert!(
+        (16..=18).contains(&out.planar_hypotheses.len()),
+        "the reference's 16 planes, give or take a junction sliver, got {}",
+        out.planar_hypotheses.len()
+    );
     assert_total_coverage(&out);
 }
