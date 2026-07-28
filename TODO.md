@@ -30,17 +30,43 @@
      parameter over a 3× range, but it did not remove a constant —
      `GROW_VTOL_FACTOR` is demoted from operative value to a load-bearing
      safety ceiling and `RESIDUAL_SIGMAS` is added in its place.
-  2. **Price model complexity instead of maximizing area.** Competition commits
-     the candidate with the largest validated area, but the surface types nest
-     — a torus contains a cylinder contains a plane — so a richer model can
-     always match the simpler one's area and add a little more by bending
-     across a junction. Largest-area therefore has a *systematic* bias toward
-     over-parameterization, and `radius_plausible`, `MAX_TORUS_RADIUS_RATIO`,
-     `MIN_AXIAL_SWEEP_DEG` and `MIN/MAX_HALF_ANGLE_DEG` are five guards all
-     fighting that one bias from different directions. An MDL-style score
-     (residual cost + parameters × cost-per-parameter) makes a torus *earn* its
-     extra two degrees of freedom. Falsifiable directly: delete those five and
-     check the corpus still decomposes correctly.
+  2. **Price model complexity instead of maximizing area — TRIED 2026-07-28,
+     PREMISE DOES NOT HOLD. Do not retry as stated.** The idea was that
+     `radius_plausible`, `MAX_TORUS_RADIUS_RATIO`, `MIN_AXIAL_SWEEP_DEG` and
+     `MIN/MAX_HALF_ANGLE_DEG` are five guards fighting one bias — that the
+     surface types nest, so a richer model can always match a simpler one's
+     coverage and add a little more — and that an MDL-style score charging for
+     parameters would subsume all five. Two measurements killed it.
+     *First, the arithmetic.* Coverage pricing cannot reach the case it was
+     aimed at. The degenerate torus on `stepped_block_toroidal` covers 180
+     faces where the cylinder it displaces covers 94: 86 extra faces for 2
+     extra degrees of freedom. Any price that rejects it must charge more than
+     ~43 faces per DOF, which would also forbid a cylinder from ever beating a
+     plane by fewer than 86 faces — wrong everywhere else. The degenerate fit
+     genuinely *is* the better description of its own support; MDL is right and
+     unhelpful. The fault is not in the scoring, it is that the support is
+     stolen from a neighbour, which greedy per-seed selection cannot see.
+     *Second, the guards had already stopped being five.* Ablated individually
+     against per-model surface-type breakdowns (`tmp/probe.sh`, 14 models) plus
+     the full suite: `radius_plausible` is **completely inert** — deleted, along
+     with `hyp_radius` and `conical_local_radius`; `MIN/MAX_HALF_ANGLE_DEG` are
+     inert on the corpus but kept as *validity* guards, since a cone with a
+     near-zero half-angle has its apex at infinity and cannot be exported
+     sanely; `MAX_TORUS_RADIUS_RATIO` still fires (medium 18→19 tori,
+     filleted_pipe 4→5); `MIN_AXIAL_SWEEP_DEG` is firmly load-bearing (without
+     it stepped_block fine goes 16/37/18 planes/cylinders/tori → 12/38/21).
+     Most of the pile had already been dissolved by the tolerance and refit
+     work rather than by anything aimed at it.
+     **What replaced the framing** is the identifiability/validity/selection
+     split now in DEVELOPMENT_PLAN.md. The lesson for the next attempt: check
+     whether a guard still fires before designing its replacement, and use
+     per-type breakdowns — a surface *count* is too coarse a metric and hid a
+     3-torus regression here.
+     **Methodology note:** `tmp/probe.sh` prints the per-model
+     plane/cyl/cone/sphere/torus/bspline breakdown across 14 models and is the
+     cheap first check for any stage-2 change; the full suite remains the
+     decisive one.
+
   3. **Global parameter consensus.** Every surface is fitted independently,
      which throws away the strongest prior a CAD model has — that its features
      repeat. `stepped_block_toroidal` has exactly four distinct radii (0.5, 1,

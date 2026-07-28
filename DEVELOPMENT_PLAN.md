@@ -494,6 +494,32 @@ vertex-validates. (This is the old pipeline's one genuinely effective
 consistency heuristic — the |n·axis| = sin α normal-axis check — reborn
 in curvature space with a model to condition on.)
 
+**Identifiability is not model selection.** Two different questions get
+conflated when a fit looks wrong. *Model selection* asks which of several
+candidates explains the data best, and is answered by comparing residuals and
+coverage. *Identifiability* asks whether the data pins a parameter at all — and
+a fit with an unpinned parameter is not a slightly-worse explanation but a free
+variable that happened to land somewhere, which no comparison between candidates
+can detect. The degenerate tori on `stepped_block_toroidal` are the case in
+point: they report R = 20…114 mm on 0.5 mm fillets, and on their own support
+they genuinely fit *better* than the cylinder they displace, so every
+residual-based or coverage-based rule prefers them. What is wrong with them is
+that their support sweeps 3–7° about the axis, which cannot determine a major
+radius. `MIN_AXIAL_SWEEP_DEG` states exactly that and nothing else.
+
+Keep the three kinds of guard distinct when adding one, because they have
+different justifications and different evidence:
+
+- *Identifiability* — the data does not determine this parameter
+  (`MIN_AXIAL_SWEEP_DEG`, `axis_normals_consistent`).
+- *Validity* — this surface cannot be represented or exported sanely
+  (`MIN/MAX_HALF_ANGLE_DEG` bounding a cone away from a cylinder and a plane,
+  `MAX_TORUS_RADIUS_RATIO` keeping a torus off its self-intersecting limit,
+  rejecting non-finite fits).
+- *Model selection* — which candidate wins. This is the only one that should be
+  a comparison, and it is the one that most often gets written as a threshold
+  when it should not be.
+
 **Calibrate acceptance on the fit, not on a constant.** Whether a face belongs
 to a surface is decided at a tolerance, and a single absolute tolerance cannot
 be right: it has to be loose enough for the worst-conditioned fit in the corpus,

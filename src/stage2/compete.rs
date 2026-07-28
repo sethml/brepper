@@ -123,6 +123,14 @@ const BEND_PATCH_CAP: usize = 64;
 /// How far a surface of revolution's support must sweep around its own axis, in
 /// degrees, before the radius counts as determined by the data.
 ///
+/// This is an *identifiability* test, and worth naming as such because the
+/// distinction is easy to lose: it does not ask which surface fits best, it
+/// asks whether the data pins the parameter at all. A fit whose parameter is
+/// unpinned is not a slightly-worse explanation, it is a free variable that
+/// happened to land somewhere, and no amount of comparing residuals or coverage
+/// between candidates can detect it — see the note on complexity pricing in
+/// TODO.md for why the obvious model-selection fix does not work here.
+///
 /// A patch subtending a negligible angle about the axis never observes the
 /// revolution, so the radius is free — and at the limit of a free radius each
 /// type collapses into the simpler one below it: a torus with R → ∞ is a
@@ -140,8 +148,8 @@ const BEND_PATCH_CAP: usize = 64;
 ///   reference's exact 2.0000 / 2.5000 / 14.0000. Six impostors astride the
 ///   r = 0.5 and r = 1 perimeter fillets sweep 3.1°–6.7° and report
 ///   R = 20, 26, 29, 37, 87, 114 — junk, each an unconstrained parameter's
-///   arbitrary landing place, and all comfortably inside the 121 mm
-///   bounding-box bound `radius_plausible` applies.
+///   arbitrary landing place, and every one of them inside the model's own
+///   121 mm bounding box, which is why bounding the radius never caught them.
 /// - **Cylinders.** Every real one sweeps ≥ 64.8°. Four impostors sweep
 ///   2.8°–2.9°, each a flat wall plus the first tessellation row of the four
 ///   fillets bordering it (those rows sit 2.9e-3 mm off the wall plane, over
@@ -248,9 +256,6 @@ pub(super) fn compete_region(
     let extent = region_extent(mesh, region);
     let flat_eps = if extent > 0.0 { 1.0 / (2.0 * extent) } else { 1e-6 };
 
-    // Upper bound on any committed radius of curvature (see `radius_plausible`).
-    let bb_diag = bounding_box_diagonal(&mesh.vertices);
-
     // Seed order: jet-interior-first (ascending curvature mismatch with
     // region neighbors), ties by face index for determinism.
     let mut seeds = region.faces.clone();
@@ -291,17 +296,6 @@ pub(super) fn compete_region(
         let mut best: Option<(CompeteHyp, f64, u8)> = None; // (hyp, area, dof)
         let consider = |hyp_area: Option<(CompeteHyp, f64)>, dof: u8, best: &mut Option<(CompeteHyp, f64, u8)>| {
             if let Some((h, area)) = hyp_area {
-                if !radius_plausible(mesh, &h, bb_diag) {
-                    if debug {
-                        eprintln!(
-                            "    compete: seed {seed} rejected degenerate {} (radius {:.2} > bbox diag {bb_diag:.2}, {} faces, area {area:.2})",
-                            h.kind_name(),
-                            hyp_radius(mesh, &h),
-                            h.faces().len(),
-                        );
-                    }
-                    return;
-                }
                 let sweep = candidate_sweep(mesh, &h);
                 if sweep < MIN_AXIAL_SWEEP_DEG.to_radians() {
                     if debug {
@@ -694,55 +688,6 @@ fn acceptance_tol<S: SurfaceType>(
 /// a bogus fit a flat cap or wall band accepts loosely and then wins on area
 /// (filleted_pipe: an r/R = 0.82 torus ate an annular end cap).
 const MAX_TORUS_RADIUS_RATIO: f64 = 0.7;
-
-/// Largest distance from a conical hypothesis's own vertices to its axis: the
-/// radius for a cylinder, the local radius at the patch for a true cone
-/// (whose `radius_at_apex` is 0, so the field alone cannot be tested).
-fn conical_local_radius(mesh: &ConnectedMesh, hyp: &ConicalHypothesis) -> f64 {
-    let a = hyp.axis_direction;
-    let mut max_r: f64 = 0.0;
-    for &vi in &hyp.vertices {
-        let v = &mesh.vertices[vi];
-        let d = [v.x - hyp.apex[0], v.y - hyp.apex[1], v.z - hyp.apex[2]];
-        let t = d[0] * a[0] + d[1] * a[1] + d[2] * a[2];
-        let perp = [d[0] - t * a[0], d[1] - t * a[1], d[2] - t * a[2]];
-        max_r = max_r.max((perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2]).sqrt());
-    }
-    max_r
-}
-
-/// Rejects a degenerate giant-radius cylinder, cone, or sphere. A large-radius
-/// surface is locally almost flat, so a nearly-planar patch fits one within
-/// vertex tolerance while leaving its radius essentially unconstrained — and
-/// because the bogus fit floods further than the plane it displaces, it wins
-/// the area contest. On `part_rounded_cube` coarse (a 10 mm cube rounded on
-/// its 4 vertical edges: 4 cylinders + 6 planes) each flat side wall grew an
-/// r ≈ 32.6 cylinder — nearly twice the model's 17.3 mm bounding-box diagonal
-/// — over the correct plane, reconstructing 0.39 mm off.
-///
-/// A surface belonging to the model must fit inside it, so a radius past the
-/// bounding-box diagonal is degenerate by construction. This is the same guard
-/// `torus_candidate` already applies to a torus's major radius, extended to the
-/// other analytic types.
-///
-/// Note this is a *validation* fix, not a tolerance one: loosening
-/// `--vertex-tolerance` makes the reconstruction worse (0.39 mm at 1e-1,
-/// 1.79 mm at 5e-1), because a looser bar admits still more degenerate fits.
-fn radius_plausible(mesh: &ConnectedMesh, hyp: &CompeteHyp, bb_diag: f64) -> bool {
-    hyp_radius(mesh, hyp) <= bb_diag
-}
-
-/// The radius of curvature `radius_plausible` bounds. A torus reports its major
-/// radius (the same quantity `torus_candidate` bounds while growing); a plane is
-/// flat and reports 0, always plausible.
-fn hyp_radius(mesh: &ConnectedMesh, hyp: &CompeteHyp) -> f64 {
-    match hyp {
-        CompeteHyp::Conical(h) => conical_local_radius(mesh, h),
-        CompeteHyp::Spherical(h) => h.radius,
-        CompeteHyp::Toroidal(h) => h.major_radius,
-        CompeteHyp::Planar(_) => 0.0,
-    }
-}
 
 /// How far a support sweeps around an axis, in radians: the angular extent of
 /// `verts` about the line through `origin` along `axis`, taken as 2π minus the
