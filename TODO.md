@@ -256,6 +256,91 @@
   and near-absent on OCCT's Delaunay interiors, so a detector would have to
   fall back to competition anyway and would not retire any parameter.
 
+- **The NURBS corpus: 5 of 8 models pass, 3 fail, and the failures were
+  invisible.** Surveyed 2026-07-28 against the reference STEPs that were
+  already in the repo. **`bspline_hill`, `bspline_terrain`, `bspline_wave`,
+  `elliptical_arch`, `elliptical_cylinder` all pass full `--compare` at
+  0.000000e0 mm.** Failing: **`hill_with_hole`** (6.73 mm at stage 3.1),
+  **`bspline_blister`** (8.04 mm), **`bspline_saddle`** (1.41 mm).
+
+  **The correlation is the finding: every NURBS model with a test past stage 1
+  passes, and every one that fails had stage-1-only coverage.** Five of the
+  eight were untested past stage 1. These are not hard cases that resisted
+  effort, they are unwatched ones — and every one has a reference STEP sitting
+  next to it, so the tests could have been written at any time. Two of them
+  (`blister`, `saddle`) had silently collapsed to all-per-facet polyhedra;
+  that half is now pinned. **Adding `--compare` coverage for the whole NURBS
+  corpus is the first thing to do here, before any fix.**
+
+  Two distinct bugs behind the three failures:
+
+  **(a) `hill_with_hole` — competition carves the freeform hill into 40
+  spurious analytic patches** (47 surfaces against a reference 7: 5 planes +
+  1 B-spline + 1 cylinder). The correct 7 are all present and correct — the
+  hole cylinder is r=5.0000 fitted to 1.8e-6 — with 40 cones/spheres of 4–23
+  faces and 2–8 mm² area littered over the 1541 mm² hill. `bspline_hill` is
+  the *same hill without the hole* and decomposes perfectly, so the pair is a
+  controlled reproducer; the difference is that hill_with_hole's mesh is
+  coarser (1740 faces for the hill vs 3200), and analytic surfaces fit
+  freeform patches happily at coarse density.
+
+  The mechanism that should catch this is the stage-2.3(e) island absorption,
+  whose candidacy rule (`SMALL_SELECTION_ABSORB_FACES = 16` plus enclosure) is
+  too weak two ways: the accidents run to 23 faces, and because the same test
+  decides which surfaces count as "real" for enclosure, the accidents just over
+  the cap mark *themselves* real and disqualify their smaller neighbours from
+  absorption too — so a whole cluster survives.
+
+  **Four candidacy formulations were tried. Three are measured wrong — do not
+  re-derive them:**
+  - **Fit quality** (`error_max > --vertex-tolerance`). Tempting, because on
+    hill_with_hole the accidents sit 200–800× worse than the genuine surfaces
+    (4.0e-4…1.4e-3 against 1.8e-6), with vertex tolerance in the gap. **Wrong
+    in general: an accidental fit is frequently an *excellent* fit** — a run of
+    coplanar facets along an inflection really is planar, a band of a singly
+    curved patch really is cylindrical. `bspline_hill`: 6 surfaces → **2719**.
+  - **A fraction of the region.** Fixed both hills; broke `elliptical_arch`
+    and `elliptical_cylinder`, because a fraction is *stricter* than a count on
+    small regions and looser on large ones.
+  - **Smaller than the region's total leftover count.** Fixed hill_with_hole
+    (exactly 7 surfaces) and kept the ellipticals; broke `stepped_block`
+    medium, 81 → 84 surfaces with a spurious 19th torus — scattered slivers
+    along real seams are not a freeform patch.
+  - **Smaller than the largest *connected* leftover patch.** Probe clean, all
+    eight NURBS models at their best; but it dissolves `cone_tangent_planes`'
+    real 16-face cones into a B-spline and re-breaks the test just re-enabled.
+
+  **Why no such rule works, and what it actually needs.** A B-spline can fit
+  anything, a cone included — so "the freeform patch validates over these
+  faces" is *not* evidence that the region is freeform, and the absorption
+  guard has no way to tell a real analytic surface adrift in leftovers from an
+  accident. The window the corpus demands is 13.5%–18.6% of the patch, which is
+  overfitting, not a criterion. **This needs genuine model selection between a
+  B-spline and an analytic surface on the same support.** Note the relation to
+  item 2: complexity pricing was refuted there for *nested analytic* types,
+  where the DOF difference is 1–2; here it is a B-spline's dozens against a
+  cone's six, so the argument that killed it there does not obviously apply and
+  it is worth re-deriving for this case specifically.
+
+  **Also learned: `cone_tangent_planes` has been passing for an accidental
+  reason.** Its region's freeform fit fails as ill-conditioned, and that is the
+  only thing leaving its cones alone. Give the freeform rung a
+  better-conditioned domain and it swallows a real cone. Treat that test as
+  fragile.
+
+  **And a second, downstream problem on hill_with_hole**: with the decomposition
+  corrected to exactly 7 surfaces it clears stage 3.1 and then fails stage 4.1
+  on **volume, 6.96e-2 relative**. So candidacy is necessary but not sufficient
+  there — expect a freeform-accuracy or export issue behind it.
+
+  **(b) `bspline_blister` and `bspline_saddle` — the freeform fit itself
+  fails.** Their large components are rejected by the §2.7 pole-bound check
+  (blister: one 926-face component, "control points 2749.5 mm outside the data
+  bounding box"; saddle: three components). The check is doing its job — the
+  fit really is ill-conditioned — but nothing recovers, so the region falls to
+  per-facet. This is where to start: it is a fitting problem with a clear
+  signal, not a model-selection argument.
+
 - **Faceted-by-construction sources (OpenSCAD, Tinkercad, Blender): a flag or
   auto-detection.** Not a bug today, and not being worried about yet — recorded
   so the eventual decision is informed. These have no B-rep at any stage, so
