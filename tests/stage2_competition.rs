@@ -69,12 +69,11 @@ fn competition_rounded_cube_shell_decomposes_6_12_8() {
     // competition must split it into 6 planes + 12 fillet cylinders + 8
     // corner spheres — the reference's 26 analytic faces.
     let out = run("tests/onshape/rounded_cube_10_r2_fine.stl");
-    let cylinders = out.conical_hypotheses.iter().filter(|h| h.is_cylinder()).count();
-    let cones = out.conical_hypotheses.iter().filter(|h| !h.is_cylinder()).count();
-    assert_eq!(out.spherical_hypotheses.len(), 8, "8 corner spheres");
+    let [planar, cylinders, cones, spheres, tori, _] = selected_counts(&out);
+    assert_eq!(spheres, 8, "8 corner spheres");
     assert_eq!(cylinders, 12, "12 edge-fillet cylinders");
-    assert_eq!(cones, 0, "no cones");
-    assert_eq!(out.planar_hypotheses.len(), 6, "6 face planes");
+    assert_eq!((cones, tori), (0, 0), "no cones or tori");
+    assert_eq!(planar, 6, "6 face planes");
     assert_eq!(out.selected_surfaces.len(), 26, "26 analytic surfaces total");
     assert_total_coverage(&out);
 }
@@ -88,12 +87,11 @@ fn competition_pipe_elbow_torus_two_cylinders() {
     // reference's 5 analytic faces), with no strip machinery and no
     // per-facet leftovers.
     let out = run("tests/onshape/pipe_elbow_10_medium.stl");
-    assert_eq!(out.toroidal_hypotheses.len(), 1, "1 bend torus");
-    let cylinders = out.conical_hypotheses.iter().filter(|h| h.is_cylinder()).count();
-    let cones = out.conical_hypotheses.iter().filter(|h| !h.is_cylinder()).count();
+    let [planar, cylinders, cones, _, tori, _] = selected_counts(&out);
+    assert_eq!(tori, 1, "1 bend torus");
     assert_eq!(cylinders, 2, "2 straight tube cylinders");
     assert_eq!(cones, 0, "no cones");
-    assert_eq!(out.planar_hypotheses.len(), 2, "2 end-cap planes");
+    assert_eq!(planar, 2, "2 end-cap planes");
     assert_eq!(out.selected_surfaces.len(), 5, "torus + 2 cyl + 2 planes");
     assert_total_coverage(&out);
 }
@@ -104,10 +102,10 @@ fn competition_nosecone_cone_sphere_base() {
     // is a separate sharp-bounded plane. Competition + the ladder together
     // yield cone + sphere + base = 3 surfaces (the reference's 3 faces).
     let out = run("tests/onshape/nosecone_medium.stl");
-    assert_eq!(out.spherical_hypotheses.len(), 1, "1 nose sphere");
-    let cones = out.conical_hypotheses.iter().filter(|h| !h.is_cylinder()).count();
+    let [planar, _, cones, spheres, _, _] = selected_counts(&out);
+    assert_eq!(spheres, 1, "1 nose sphere");
     assert_eq!(cones, 1, "1 body cone");
-    assert_eq!(out.planar_hypotheses.len(), 1, "1 base plane");
+    assert_eq!(planar, 1, "1 base plane");
     assert_eq!(out.selected_surfaces.len(), 3, "cone + sphere + base");
     assert_total_coverage(&out);
 }

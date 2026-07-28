@@ -494,6 +494,31 @@ vertex-validates. (This is the old pipeline's one genuinely effective
 consistency heuristic — the |n·axis| = sin α normal-axis check — reborn
 in curvature space with a model to condition on.)
 
+**Calibrate acceptance on the fit, not on a constant.** Whether a face belongs
+to a surface is decided at a tolerance, and a single absolute tolerance cannot
+be right: it has to be loose enough for the worst-conditioned fit in the corpus,
+which leaves it hundreds of times too loose for a converged one. The quantities
+involved are not comparable. A mesh vertex lies on the true CAD surface to
+~1e-6 mm (measured across the corpus, coarse tessellations included), so a face
+that really belongs misses its fit by the *fit's* error alone, while a face that
+does not belong misses it by a geometric departure — one tessellation row past a
+tangent junction sits ~h²/2r away, which shrinks quadratically as the mesh
+refines. So the flood scales its bar by the fit's own robust residual scale
+(`acceptance_tol`, compete.rs): a fit still bootstrapping off a partial patch
+reports a large scale and keeps the room it needs, and the bar tightens by
+itself as the support fills in. The scale is a *median*, not an RMS, because the
+faces it exists to detect are sitting in the sample and would inflate an RMS.
+
+Two properties are worth keeping: the criterion carries no length, so it needs
+no recalibration per model, feature size or tessellation density; and it is
+insensitive to its own parameter — the corpus gives identical decompositions at
+5, 8 and 15 σ, where the absolute bar it replaces went from correct to total
+collapse over a 3.3× change. Bounds remain: the floor is `--vertex-tolerance`,
+below which no distinction is claimed, and the ceiling is the old fixed bar, so
+the criterion can only ever be *tighter* than the previous behaviour. The
+ceiling is load-bearing — removing it lets a poor fit report a large scale,
+admit more foreign faces and inflate its scale further.
+
 **The jet is a prior, not a gate.** Stage 2.3(b) states this — validation
 decides every face — but `seed_patch` was gating its BFS on jet similarity, and
 on a small fillet tessellated into a handful of facets the jet is not reliable

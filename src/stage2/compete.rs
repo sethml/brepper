@@ -85,15 +85,32 @@ const PATCH_RADII: f64 = 4.0;
 /// Refit-and-reflood rounds while growing one hypothesis.
 const MAX_GROW_ROUNDS: usize = 8;
 
-/// Flood-acceptance tolerance as a multiple of `--vertex-tolerance`. A fit
-/// grown from partial support has ~1e-4 mm residual and a coarsely-tessellated
-/// "flat" face reads a small nonzero curvature (plane residual ~1e-3 mm), both
-/// well above the 5e-5 mm default vertex tolerance yet far below the ~0.1 mm a
-/// neighbouring surface diverges by one row past a tangent junction — so a
-/// modest loosening bootstraps the grow without leaking across junctions.
-/// Any residual one-row leak is corrected by claim resolution, and every
-/// committed hypothesis is refit on its full support (accurate to ~1e-6 mm).
+/// Ceiling on the flood-acceptance tolerance, as a multiple of
+/// `--vertex-tolerance`, and the bar `condition_patch` bootstraps at before
+/// there is a fit to calibrate against.
+///
+/// This was the operative tolerance until 2026-07-27; `acceptance_tol` now
+/// derives the bar from each fit's own residuals and this only bounds it. The
+/// bound is load-bearing, and for the reason a self-calibrating criterion
+/// always needs one: a poor fit reports a large residual scale, which admits
+/// more foreign faces, which inflates the scale further. Removing it costs
+/// bspline_wave its single freeform patch (6 surfaces → 16) and
+/// stepped_block_toroidal fine its exact decomposition (71 → 74).
+///
+/// Its value is sized by what a *bootstrapping* fit needs: grown from partial
+/// support a fit has ~1e-4 mm residual, well above the 5e-5 mm default vertex
+/// tolerance yet far below the ~0.1 mm a neighbouring surface diverges by one
+/// row past a tangent junction on a coarse mesh.
 const GROW_VTOL_FACTOR: f64 = 30.0;
+
+/// How many robust standard deviations of a fit's own residuals a face may sit
+/// at and still be claimed by it (`acceptance_tol`). For normally distributed
+/// errors the median absolute residual is ≈0.674σ, so this is a ~3.4σ outlier
+/// test — the usual bar, and the only free parameter in the criterion. It is a
+/// statistical choice about what counts as an outlier, not a geometric one:
+/// unlike an absolute tolerance it carries no length, so it needs no
+/// recalibration per model, per feature size or per tessellation density.
+const RESIDUAL_SIGMAS: f64 = 5.0;
 
 /// Max BFS depth of the pure-bend fit patch grown past a stalled cylinder's
 /// frontier (bent-tube promotion). A few rows of bend arc condition the
@@ -563,16 +580,20 @@ fn grow_from<S: SurfaceType>(
     config: &Config,
     min_faces: usize,
 ) -> Option<(S::Hypothesis, f64, Vec<usize>)> {
-    let vtol = config.vertex_tolerance_mm * GROW_VTOL_FACTOR;
+    // Conditioning runs before there is a fit to calibrate against, so it
+    // bootstraps at the fixed bar; every flood below calibrates on its own fit.
     let stol = config.surface_tolerance_mm;
+    let boot_vtol = config.vertex_tolerance_mm * GROW_VTOL_FACTOR;
 
-    let mut accepted = condition_patch::<S>(mesh, start, initial, centroids, config, vtol, stol, min_faces);
+    let mut accepted =
+        condition_patch::<S>(mesh, start, initial, centroids, config, boot_vtol, stol, min_faces);
     let mut prev = 0usize;
     for round in 0..MAX_GROW_ROUNDS {
         let verts = vertices_of(mesh, &accepted);
         let mut fit = S::fit_surface(mesh, &accepted, &verts, config.verbosity)?;
         S::determine_convexity(mesh, &accepted, &mut fit);
-        let comp = flood::<S>(mesh, in_region, start, &fit, centroids, vtol, stol);
+        let tol = acceptance_tol::<S>(mesh, &accepted, &fit, config);
+        let comp = flood::<S>(mesh, in_region, start, &fit, centroids, tol, stol);
         if comp.is_empty() {
             return None; // the start face does not lie on its own fit — reject
         }
@@ -595,7 +616,8 @@ fn grow_from<S: SurfaceType>(
     let verts = vertices_of(mesh, &accepted);
     let mut fit = S::fit_surface(mesh, &accepted, &verts, config.verbosity)?;
     S::determine_convexity(mesh, &accepted, &mut fit);
-    let faces = flood::<S>(mesh, in_region, start, &fit, centroids, vtol, stol);
+    let tol = acceptance_tol::<S>(mesh, &accepted, &fit, config);
+    let faces = flood::<S>(mesh, in_region, start, &fit, centroids, tol, stol);
     if faces.len() < min_faces {
         return None;
     }
@@ -603,6 +625,67 @@ fn grow_from<S: SurfaceType>(
     let verts = vertices_of(mesh, &faces);
     let hyp = S::make_hypothesis(mesh, faces.clone(), verts, &fit);
     Some((hyp, area, faces))
+}
+
+
+/// Robust scale of a fit's own residuals over its support: the median distance
+/// from a support vertex to the fitted surface.
+///
+/// The *median*, not the RMS, because the faces this scale exists to detect are
+/// sitting in the sample. A support of 85 true faces plus 10 leaked junction
+/// rows at 9.5e-4 mm has an RMS of 3.1e-4 — inflated by the very outliers it is
+/// meant to expose, and enough to keep admitting them — while its median stays
+/// at the true faces' ~1e-6.
+fn residual_scale<S: SurfaceType>(mesh: &ConnectedMesh, faces: &[usize], fit: &S::Fit) -> f64 {
+    let verts = vertices_of(mesh, faces);
+    if verts.is_empty() {
+        return 0.0;
+    }
+    let mut d: Vec<f64> = verts
+        .iter()
+        .map(|&vi| {
+            let v = &mesh.vertices[vi];
+            S::vertex_distance(fit, &[v.x, v.y, v.z])
+        })
+        .collect();
+    d.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    d[d.len() / 2]
+}
+
+/// The tolerance at which a fit may claim a face: what the fit's own accuracy
+/// justifies, bounded below by the user's stated precision and above by
+/// `GROW_VTOL_FACTOR`.
+///
+/// A mesh vertex lies on the true CAD surface to ~1e-6 mm — measured across the
+/// corpus, and on coarse tessellations too (rounded_cube fine 1.9e-6,
+/// stepped_block fine 1.2e-5). So a face that really belongs to a surface
+/// misses its fit by the *fit's* error and nothing else, while a face that does
+/// not belong misses it by a geometric departure: one tessellation row past a
+/// tangent junction sits ~h²/2r away. Those are different quantities, and the
+/// gap between them is enormous — the row that used to be swallowed on
+/// stepped_block fine was 9.5e-4 mm from a fit accurate to 1e-6, roughly 950
+/// times the fit's own scale, where a genuine face is at 1.
+///
+/// A single absolute bar cannot see that, because it has to be loose enough for
+/// the worst-conditioned fit in the corpus and is then hundreds of times too
+/// loose for a converged one. Scaling by the fit's own residuals is
+/// self-calibrating: a fit still being bootstrapped off a partial patch reports
+/// a large scale and keeps the room it needs to grow, and the bar tightens on
+/// its own as the support fills in and the fit converges.
+///
+/// The bounds are not tuning. The floor is `--vertex-tolerance`, the precision
+/// the user asked for, below which no distinction is claimed. The ceiling is
+/// the old fixed bar, so this can only ever be *tighter* than the previous
+/// behaviour, never looser — today's bar is simply pinned at that ceiling.
+fn acceptance_tol<S: SurfaceType>(
+    mesh: &ConnectedMesh,
+    faces: &[usize],
+    fit: &S::Fit,
+    config: &Config,
+) -> f64 {
+    let floor = config.vertex_tolerance_mm;
+    let ceiling = floor * GROW_VTOL_FACTOR;
+    (RESIDUAL_SIGMAS * residual_scale::<S>(mesh, faces, fit)).clamp(floor, ceiling)
 }
 
 /// A committed torus's minor radius may not exceed this fraction of its major

@@ -13,6 +13,64 @@
   blockers) are listed in the item below; the obsolete old-BFS-pipeline TODO
   items (absorb pass, `--skip-stage`, planar-only mode) were pruned 2026-07-23.
 
+- **Make the stage-2 decomposition robust rather than tuned.** Stage 2 carries
+  ~25 behavioural thresholds, and several sit one step from catastrophe: on
+  `stepped_block_toroidal` medium, four *unrelated* knobs — `GROW_VTOL_FACTOR`
+  ×3.3, `MIN_CONDITION_FACES` 6→4, `PATCH_TRIM_ROUNDS` 16→32, and capping the
+  fallback seed patch — each flip the model from 83 surfaces to a full collapse
+  to per-facet planes. When unrelated parameters all sit on a cliff the values
+  are not the problem, the structure is. (This is the same failure mode the
+  2026-07-17 pivot was called for; it re-grew on the new architecture within a
+  fortnight, so it is worth watching for deliberately.) Ranked candidates, each
+  aimed at *replacing* guards rather than adding one:
+  1. **Self-calibrating acceptance tolerance — DONE 2026-07-27**
+     (`acceptance_tol`, compete.rs). See the DEVELOPMENT_PLAN section
+     "Calibrate acceptance on the fit, not on a constant". Note what it did and
+     did not achieve: the operative bar is now scale-free and insensitive to its
+     parameter over a 3× range, but it did not remove a constant —
+     `GROW_VTOL_FACTOR` is demoted from operative value to a load-bearing
+     safety ceiling and `RESIDUAL_SIGMAS` is added in its place.
+  2. **Price model complexity instead of maximizing area.** Competition commits
+     the candidate with the largest validated area, but the surface types nest
+     — a torus contains a cylinder contains a plane — so a richer model can
+     always match the simpler one's area and add a little more by bending
+     across a junction. Largest-area therefore has a *systematic* bias toward
+     over-parameterization, and `radius_plausible`, `MAX_TORUS_RADIUS_RATIO`,
+     `MIN_AXIAL_SWEEP_DEG` and `MIN/MAX_HALF_ANGLE_DEG` are five guards all
+     fighting that one bias from different directions. An MDL-style score
+     (residual cost + parameters × cost-per-parameter) makes a torus *earn* its
+     extra two degrees of freedom. Falsifiable directly: delete those five and
+     check the corpus still decomposes correctly.
+  3. **Global parameter consensus.** Every surface is fitted independently,
+     which throws away the strongest prior a CAD model has — that its features
+     repeat. `stepped_block_toroidal` has exactly four distinct radii (0.5, 1,
+     3, 15) and the pipeline produces a cloud around each (2.9996, 2.9997,
+     3.0004, 1.0009, 1.0018). Cluster the fitted parameters, recover the shared
+     radii and axes, and refit under those constraints. Should improve accuracy
+     *and* remove spurious surfaces that belong to no cluster; it is what
+     commercial reverse-engineering tools do as "beautification".
+  4. **Make the `LEFTOVER_BLOB_MAX` fallback proportionate.** It is the cliff
+     above: a local defect triggers a global catastrophe, which makes coarse
+     meshes untunable because no incremental improvement can be measured. Scope
+     it to the offending neighbourhood, or gate it on the blob's size relative
+     to the region. It earned its place (rounded_cube coarse: 43 BRepCheck
+     failures → 0), so measure stage-3/4 *validity* directly when changing it —
+     that is the property it protects. Needs stage-3 robustness at
+     analytic/per-facet boundaries first.
+  5. **Snap region boundaries to computed intersection curves.** Every
+     remaining `--compare` failure has been a boundary sitting one tessellation
+     row off, yet nothing in the pipeline reasons about where a boundary
+     *should* be — it falls out of flood plus claim resolution. Once two
+     adjacent surfaces are fitted their true intersection curve is computable,
+     and faces could be assigned by which side of it they fall on rather than
+     by comparing residuals.
+  6. **Make robustness measurable instead of anecdotal.** Guards accumulate
+     because the feedback loop is one model at a time, inspected by hand, which
+     is how overfitting happens. `gen_test_models` already exists: a sweep over
+     randomized radii, feature sizes and tessellation densities, scored
+     automatically against the generated references, would say whether a guard
+     generalizes or just memorizes the corpus.
+
 - **Re-enable the models disabled in step 7a** (each `#[ignore]`/`ignore =`
   in tests/stage2_integration.rs, stage3_integration.rs, stage4_integration.rs
   carries its blocker string). These are PRE-EXISTING new-pipeline
