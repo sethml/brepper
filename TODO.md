@@ -13,6 +13,33 @@
   blockers) are listed in the item below; the obsolete old-BFS-pipeline TODO
   items (absorb pass, `--skip-stage`, planar-only mode) were pruned 2026-07-23.
 
+- **Faceted-by-construction sources (OpenSCAD, Tinkercad, Blender): a flag or
+  auto-detection.** Not a bug today, and not being worried about yet — recorded
+  so the eventual decision is informed. These have no B-rep at any stage, so
+  there are no tangent junctions to recover, only discretization steps, and the
+  seam assumption that carries the whole pipeline holds trivially but conveys
+  no information (every edge is a facet boundary). Full findings, with the
+  fragment-count arithmetic and the thresholds, are under **Mesh provenance and
+  the seam assumption** in DEVELOPMENT_PLAN.md. The headlines:
+  - `--angular-tolerance` (default 25°) silently decides whether an OpenSCAD
+    revolution comes out as an analytic surface or as the prism it literally
+    is: `$fn ≥ 15` reads smooth, `$fn ≤ 14` reads sharp. On OpenSCAD's own
+    defaults that is radius ≳ 4.5 mm. A `$fn = 6` hex nut is handled correctly
+    by accident of the same rule.
+  - The ambiguity is *genuine* — a 15-gon prism and a coarse cylinder are the
+    same mesh — so this is a policy choice, not something to be measured. That
+    argues for an explicit flag over silent auto-detection, or at least for
+    auto-detection that reports what it decided.
+  - Expected failure mode where a fit *is* attempted: large radii at default
+    resolution, where the sagitta `r(1 − cos(180/n))` breaks
+    `--surface-tolerance` (0.55 mm at r = 100, n = 30) and the surface falls to
+    per-facet planes. Vertex validation never fails, because OpenSCAD inscribes
+    its polygons and the vertices sit exactly on the ideal surface.
+  - Detection signals if we go that way: a constant dihedral of exactly 360/n
+    all the way around a revolution (B-rep tessellation steps vary, and density
+    changes at seams), and vertices exactly on the circumscribed circle.
+  - Worth a corpus model or two before deciding anything.
+
 - **Make the stage-2 decomposition robust rather than tuned.** Stage 2 carries
   ~25 behavioural thresholds, and several sit one step from catastrophe: on
   `stepped_block_toroidal` medium, four *unrelated* knobs — `GROW_VTOL_FACTOR`

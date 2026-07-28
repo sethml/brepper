@@ -26,6 +26,9 @@ principles drive it; retired mechanisms and the reasons they died are in
    triangles straddle the tangency ring; 104 vertices lie exactly on it). So
    the true segmentation is a partition of the mesh face graph whose region
    boundaries are a subset of mesh edges, and every region is connected.
+   This is architectural rather than lucky, and it is worth knowing why,
+   because the whole pipeline rests on it — see **Mesh provenance and the seam
+   assumption** below.
 3. **Partition by what is certain; decompose the rest by fit competition.**
    Sharp dihedral edges are exact and cheap — they partition the mesh into
    smooth regions with no calibration (measured: every sharp-edged corpus
@@ -56,13 +59,102 @@ principles drive it; retired mechanisms and the reasons they died are in
 
 - Assumes the vertices of the mesh lie precisely on the CAD surfaces, modulo numerical error/stability.
 - Assumes transitions between shapes always have a seam — verified to hold
-  even for tangent transitions (see Design Principles #2).
+  even for tangent transitions (see Design Principles #2 and **Mesh
+  provenance** below). This holds for every B-rep CAD tessellator; it does
+  *not* carry information for mesh-native sources such as OpenSCAD, which are
+  a known, deliberately unhandled gap.
 - Assumes manifold mesh (each edge shared by exactly 2 faces).
 - Assumes consistent face orientation (all normals point outward).
 
 Fails noisily if any of the assumptions are violated, after stage 1.2's
 repair pass has fixed what can be fixed without moving a vertex
 (`--strict-mesh` disables repair).
+
+### Mesh provenance and the seam assumption
+
+Design Principle #2 — that a B-rep face boundary is always a chain of mesh
+edges, tangent or not — is load-bearing for the entire pipeline, so this
+records why it holds and where it stops holding. (Researched 2026-07-28.)
+
+**Why it holds: every B-rep faceter is edge-first.** They all discretize each
+edge *once*, shared by both adjacent faces, and then fill each face's
+parametric domain out to those fixed boundary polylines. This is not a
+stylistic choice a vendor might change — it is how watertightness is
+guaranteed. OCCT states it outright: "At the first step all edges from a face
+are discretized… At the second step, the faces are tessellated", with "edges
+tessellation data … used to form contours of target faces and passed as input
+to the triangulation algorithm" and "each face is processed separately". ACIS
+is documented as "maintaining the edge consistency between adjacent faces";
+Parasolid's vertex-matching machinery exists so that neighbouring face meshes
+meet exactly. A tangent edge is an edge in the *topology*, so it is discretized
+like any other and no triangle can straddle it.
+
+**What the likely sources are.** For models destined for STL and print-sharing
+sites:
+
+| Tool | Kernel | Faceter |
+|------|--------|---------|
+| Fusion 360, Inventor | ShapeManager (Autodesk's ACIS fork) | quad-tree gridding |
+| SolidWorks, Onshape, Solid Edge, Shapr3D, Plasticity | Parasolid | per-face, vendor |
+| FreeCAD | Open CASCADE | **Delaunay** (Watson) in UV space |
+| Rhino | own | regular quad grid + recursive subdivision |
+| Tinkercad, SketchUp, Blender, OpenSCAD | none — mesh/CSG native | n/a |
+
+Note the corpus is Onshape-heavy (Parasolid) plus CodeCAD, so it is *not*
+representative of the faceter mix in the wild.
+
+**Delaunay does occur, and the assumption survives it.** FreeCAD — the
+fastest-growing free option, and the same mesher brepper itself uses — meshes
+with OCCT's `BRepMesh`, which is genuinely Delaunay. But it is a *constrained*
+Delaunay whose constraints are the pre-discretized face boundaries, so seams
+are preserved exactly as elsewhere. What differs between faceters is the
+*interior* pattern: grid-based faceters (ACIS, Rhino, Parasolid) leave a
+strongly structured, anisotropic mesh, Delaunay much less so. The practical
+consequence is that **boundary preservation is dependable across all of them,
+while sampling density and anisotropy are corroborating evidence only** — worth
+remembering if the tessellation layout is ever used as a signal (it is not
+today; stage 2 uses only dihedral angle and the curvature jet).
+
+**OpenSCAD and other mesh-native sources: a known gap, not handled.** These
+have no B-rep at any stage — `cylinder()` is a prism and `sphere()` a
+polyhedron from the moment they are created, with CSG run on polyhedra (CGAL,
+or the newer Manifold backend). Consequences:
+
+- *The seam assumption holds trivially and uselessly.* Every facet is planar,
+  so no triangle can span an orientation change — a stronger guarantee than any
+  B-rep faceter gives. But **every** edge is a facet boundary, so nothing
+  distinguishes an intended face boundary from a discretization step. The seam
+  carries no information; only the curvature jump does (a constant dihedral
+  through a fillet, dropping to 0° on the flat it meets).
+- *There are no tangencies.* What was meant as a C¹ junction becomes a finite
+  dihedral of one discretization step. OpenSCAD's fragment rule is
+  `n = ceil(max(min(360/$fa, r*2*PI/$fs), 5))` with defaults `$fa = 12`,
+  `$fs = 2`, so `n` caps at 30 and *every* curve carries a dihedral of at least
+  12°.
+- *Our `--angular-tolerance` of 25° is therefore the arbiter*, with a sharp
+  crossover: `$fn ≥ 15` — or, on defaults, radius ≳ 4.5 mm, where
+  `ceil(πr) ≥ 15` — reads as smooth and gets an analytic fit, while `$fn ≤ 14`
+  reads as sharp and stays a prism. A `$fn = 6` hex nut correctly stays
+  hexagonal; the near-ubiquitous `$fn = 100` reads as smooth.
+- *Where a fit is attempted it will succeed easily.* OpenSCAD **inscribes** its
+  polygons — the reason holes print undersized — so a prism's vertices lie
+  exactly on the ideal cylinder of radius r, and vertex validation passes at
+  ~zero residual. The binding check is the centroid one against
+  `--surface-tolerance`: the sagitta is `r(1 − cos(180/n))`, which is 0.11 mm
+  for r = 20, n = 30 (passes 0.4) but 0.55 mm for r = 100, n = 30 (fails, so
+  the surface degrades to per-facet planes). Large-radius curves at default
+  resolution are thus the expected failure mode.
+- *The ambiguity is genuine, not a defect.* A 15-gon prism and a coarsely
+  tessellated cylinder are the same mesh; nothing in it says which the designer
+  meant. `--angular-tolerance` decides, which makes it a policy dial here
+  rather than a measurement.
+
+We are not addressing this yet. When we do, the likely shape is a flag marking
+the input as faceted-by-construction, or auto-detection — see TODO.md. Two
+signals look promising for detection: an OpenSCAD revolution has a *constant*
+dihedral of exactly 360/n around the whole curve (a B-rep tessellation's steps
+vary and its density changes at seams), and its vertices sit exactly on the
+circumscribed circle rather than straddling the true surface.
 
 ## Dependencies
 
