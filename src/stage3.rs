@@ -229,6 +229,17 @@ fn min_distance_to_shape(pt: &gp::Pnt, shape: &topo_ds::Shape) -> f64 {
     stage1::min_distance_to_shape(pt, shape)
 }
 
+/// How many mesh faces a selected surface owns.
+fn selected_surface_face_count(stage2: &Stage2Output, si: usize) -> usize {
+    match stage2.selected_surfaces[si] {
+        SelectedSurface::Planar(i) => stage2.planar_hypotheses[i].faces.len(),
+        SelectedSurface::Conical(i) => stage2.conical_hypotheses[i].faces.len(),
+        SelectedSurface::Spherical(i) => stage2.spherical_hypotheses[i].faces.len(),
+        SelectedSurface::Toroidal(i) => stage2.toroidal_hypotheses[i].faces.len(),
+        SelectedSurface::BSpline(i) => stage2.bspline_hypotheses[i].faces.len(),
+    }
+}
+
 /// Name an edge by the two surfaces it joins, whether it is tangent, and where
 /// its worst boundary vertex sits — enough to take straight to
 /// `dump_regions at <x> <y> <z>` or `dump_regions locus`.
@@ -3896,10 +3907,19 @@ fn validate_face_detailed(
                     if issues.is_empty() {
                         issues.push("edge/vertex consistency issue".to_string());
                     }
+                    // The owning surface's mesh-face count separates the two
+                    // families these failures come in: a per-facet sliver
+                    // (1 face) is a different problem from a fitted surface
+                    // whose wire came out wrong.
+                    let mesh_faces = selected_surface_face_count(
+                        &output.stage2,
+                        output.face_descriptors[fi].selected_surface_idx,
+                    );
                     eprintln!(
-                        "  Warning: face {} ({}) failed BRepCheck: {}",
+                        "  Warning: face {} ({}, {} mesh face(s)) failed BRepCheck: {}",
                         fi,
                         surface_desc,
+                        mesh_faces,
                         issues.join("; ")
                     );
                     if config.verbose {

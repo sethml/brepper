@@ -1133,7 +1133,7 @@ test_stl_step_stage24_compare!(
     onshape_cone_stage24_compare,
     "tests/onshape/cone_15x20_medium.stl",
     "tests/onshape/cone_15x20.step",
-    ignore = "step 7 re-enable: tangent-cone chain — one cone fits as a freeform patch + a degenerate huge-radius cone (cone_tangent_planes); cone_15x20 reference is faceted"
+    ignore = "the cone_15x20 reference STEP is faceted, so a correct fit cannot match it; needs new reference data, not a pipeline change (the cone_tangent_planes half of this blocker was fixed 2026-07-28)"
 );
 // Note: cone_tangent_planes has conical STEP faces but the cone is not detected
 // at stage 2.4 (meshed as cylindrical patches). It passes at stage 2.6 compare
@@ -1294,8 +1294,12 @@ fn occt_full_torus_selection() {
     assert!((t.minor_radius - 3.0).abs() < 0.01, "r should be 3, got {}", t.minor_radius);
 }
 
+/// Re-enabled 2026-07-28: the third cone was never a fitting failure. It was
+/// being fitted correctly and then thrown away by the `LEFTOVER_BLOB_MAX`
+/// whole-region discard, which per-facetted the entire 118-face region because
+/// freeform could not clear an 86-face blob inside it. The discard is gone; see
+/// `dissolve_fragmented_surfaces` in classify.rs.
 #[test]
-#[ignore = "step 7 re-enable: tangent-cone chain — one cone fits as a freeform patch + a degenerate huge-radius cone (cone_tangent_planes); cone_15x20 reference is faceted"]
 fn onshape_cone_tangent_planes_three_cones() {
     // Transition piece: STEP has 3 cones (7.67°, 73.04°, 84.25°) + 5 planes.
     // The side cone patches span narrow azimuthal arcs (normal-line axis

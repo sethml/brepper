@@ -1442,3 +1442,63 @@ fn onshape_cone_stage36_compare() {
     );
     run_stage3_36(&config);
 }
+// ---------------------------------------------------------------------------
+// Freeform models with no coverage past stage 1 (found 2026-07-28)
+// ---------------------------------------------------------------------------
+
+/// `bspline_blister` and `bspline_saddle` are in the corpus but were only ever
+/// tested at stage 1, so nothing noticed when the stage-2 rewrite stopped
+/// decomposing them: both collapsed to an all-per-facet polyhedron (2137 and
+/// 1605 planar surfaces, zero analytic or freeform), which is a valid solid
+/// carrying no information. Removing the `LEFTOVER_BLOB_MAX` whole-region
+/// discard recovered the decomposition — but exposed that they then build a
+/// handful of invalid faces, so neither is whole yet.
+///
+/// This test pins the half that is now true: they must decompose, not collapse.
+/// The validity gap is tracked separately below.
+#[test]
+fn freeform_models_decompose_rather_than_collapsing() {
+    for (model, min_analytic) in [
+        ("tests/nurbs/bspline_blister.stl", 5),
+        ("tests/nurbs/bspline_saddle.stl", 3),
+    ] {
+        let config = config_for_stl(&format!("{}/{model}", manifest_dir()));
+        let mesh = stage1::stage1(&config).expect("stage1 should pass");
+        let out = stage2::stage2(&config, mesh, None).expect("stage2 should pass");
+        let analytic = out
+            .selected_surfaces
+            .iter()
+            .filter(|s| {
+                !matches!(
+                    s,
+                    stage2::SelectedSurface::Planar(_) | stage2::SelectedSurface::BSpline(_)
+                )
+            })
+            .count();
+        assert!(
+            analytic >= min_analytic,
+            "{model}: {analytic} analytic surfaces, expected at least {min_analytic} \
+             — a collapse back to an all-per-facet polyhedron",
+        );
+    }
+}
+
+#[test]
+#[ignore = "pre-existing, exposed 2026-07-28 by removing the LEFTOVER_BLOB_MAX whole-region discard: \
+bspline_blister builds 4 invalid faces (and so an invalid solid) and bspline_saddle 3. Every one is a \
+SINGLE-mesh-face per-facet plane, or one 43-face B-spline — i.e. the micro-sliver/degenerate-edge family \
+(cf. the 3DBenchy work), NOT the 'analytic surface islanded in a jagged blob' family the discard claimed \
+to protect against. The discard only avoided them by per-facetting the whole region, which changed the \
+edge structure wholesale. Root cause for blister is upstream anyway: its 926-face freeform component \
+fails the pole-bound check ('control points 2749.5 mm outside the data bounding box'), so nothing can \
+explain it. Fix the freeform fit first, then this."]
+fn freeform_models_build_valid_solids() {
+    for model in ["tests/nurbs/bspline_blister.stl", "tests/nurbs/bspline_saddle.stl"] {
+        let config = config_for_stl(&format!("{}/{model}", manifest_dir()));
+        let output = run_stage3(&config);
+        for (fi, face) in output.faces.iter().enumerate() {
+            let analyzer = b_rep_check::Analyzer::new_shape_bool(face.as_shape(), true);
+            assert!(analyzer.is_valid(), "{model}: face {fi} failed BRepCheck");
+        }
+    }
+}

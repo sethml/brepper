@@ -284,9 +284,12 @@ impl Locus {
 pub(crate) enum LocusFailure {
     /// One side is a B-spline: no closed-form geometry to intersect.
     Freeform,
-    /// Two planes, or a plane and a sphere: a coplanar pair has no junction
-    /// and a plane grazes a sphere at a single point, not along a curve.
-    PointOrPlanePair,
+    /// Two planes, or a plane and a sphere. Not an unimplemented junction —
+    /// no junction *exists*. Two tangent planes are the same plane (so any
+    /// boundary between them is merge's business, not snap's, and a smooth
+    /// surface left as per-facet planes produces thousands of such pairs), and
+    /// a plane grazes a sphere at a single point rather than along a curve.
+    NoJunctionExists,
     /// A plane grazing a cone along a ruling. Constructible in principle;
     /// deliberately not implemented until a corpus model needs it.
     ConePlaneRuling,
@@ -306,7 +309,7 @@ impl LocusFailure {
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             LocusFailure::Freeform => "one side is a B-spline",
-            LocusFailure::PointOrPlanePair => "plane/plane or plane/sphere: no junction curve",
+            LocusFailure::NoJunctionExists => "plane/plane or plane/sphere: no junction curve exists",
             LocusFailure::ConePlaneRuling => "cone-plane ruling tangency is not implemented",
             LocusFailure::NotCoaxial => "surfaces do not share an axis",
             LocusFailure::MeridianLinesParallel => "meridian curves are parallel lines",
@@ -334,7 +337,13 @@ pub(crate) fn build_locus(
     // A plane grazing a cylinder or cone along a ruling is not axisymmetric:
     // recognised by the plane's normal being perpendicular to the axis.
     if let Some((plane, cone, flip)) = as_plane_conical(a, b) {
-        if dot(plane.normal, cone.axis_direction).abs() < COAXIAL_TOL {
+        // Along a ruling the conical surface's normal equals ±the plane's, and
+        // a cone's normal makes the angle (90° − half-angle) with its axis —
+        // so the test is |n·a| = sin(half_angle), which is 0 only in the
+        // cylinder case. Testing for the cylinder condition alone reported
+        // every cone-plane ruling tangency as "not coaxial".
+        let axial = dot(plane.normal, cone.axis_direction).abs();
+        if (axial - cone.half_angle.sin()).abs() < COAXIAL_TOL {
             if !cone.is_cylinder() {
                 return Err(LocusFailure::ConePlaneRuling);
             }
@@ -481,7 +490,7 @@ fn shared_axis(
             // junction at all unless they are the same plane.
             _ => {
                 let _ = sample;
-                Err(LocusFailure::PointOrPlanePair)
+                Err(LocusFailure::NoJunctionExists)
             }
         },
     }
@@ -693,11 +702,19 @@ pub(crate) struct PairAnalysis {
 impl PairAnalysis {
     /// True when snap took responsibility for the pair and something is wrong
     /// — the cases the caller reports loudly.
+    ///
+    /// A pair whose surfaces simply have no junction between them is not one
+    /// of those: it is out of scope in the same way a transversal junction is.
+    /// This matters in practice, not just in principle — a smooth surface left
+    /// as per-facet planes makes every adjacent facet pair a tangent
+    /// plane/plane pair, which would bury a real report under thousands of
+    /// lines on exactly the models most likely to have one.
     pub(crate) fn is_problem(&self) -> bool {
-        matches!(
-            self.outcome,
-            PairOutcome::NoLocus(_) | PairOutcome::Rejected(_)
-        )
+        match &self.outcome {
+            PairOutcome::NoLocus(LocusFailure::NoJunctionExists) => false,
+            PairOutcome::NoLocus(_) | PairOutcome::Rejected(_) => true,
+            PairOutcome::Transversal | PairOutcome::Snapped { .. } => false,
+        }
     }
 
     pub(crate) fn describe(&self) -> String {
@@ -1365,7 +1382,7 @@ mod tests {
         let p2 = plane([0.0, 0.0, 1.0], 3.0);
         assert_eq!(
             build_locus(Surf::Planar(&p1), Surf::Planar(&p2), &[0.0, 0.0, 0.0]),
-            Err(LocusFailure::PointOrPlanePair)
+            Err(LocusFailure::NoJunctionExists)
         );
     }
 

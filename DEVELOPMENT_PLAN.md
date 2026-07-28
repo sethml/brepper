@@ -717,9 +717,74 @@ model — unconstrained relabel now reaches the same boundary on its own, and th
 suite passes with snap ablated.** So snap is currently a correctness *guarantee*
 rather than a correctness *fix*: the boundaries relabel converges to are the
 ones the junction geometry demands, which the `dump_regions locus` diagnostic
-confirms corpus-wide (zero wrong-side faces). Recorded plainly so the next
-session can decide whether an inert pass earns its place; it is also the exact
-per-face assignment criterion item C (variational shape approximation) needs.
+confirms corpus-wide (zero wrong-side faces). Note what did *not* happen — snap
+is not what made retiring the margin safe. Relabel without the margin passes on
+its own; snap supplied the *evidence* that where it converges is where the
+junction geometry says it should be, which is a claim nothing could previously
+make.
+
+**Kept deliberately, and here is when to revisit it.** An inert pass is exactly
+the kind of crust this project keeps having to cut away, so it does not get to
+stay on sentiment. Two things should decide it, and neither is true yet. First,
+**the corpus is not complete enough to say "inert"**: it is Onshape-heavy
+(Parasolid — see *Mesh provenance*), every model in it decomposes well enough
+that relabel has an easy job, and the place snap would first earn its keep is a
+model where relabel does *not* converge — which today is coarse-mesh territory
+that `LEFTOVER_BLOB_MAX` makes unmeasurable anyway. Re-ablate once the corpus
+covers other faceters and the coarse path is measurable. Second, **the next
+deliberate complexity-reduction pass should put it on the list**: run the
+ablation protocol on it like any other candidate, and if it is still moving zero
+faces on a corpus that can actually distinguish, delete `snap_boundaries` and
+keep `locus.rs` for the diagnostic and the invariant test — the property is
+worth enforcing even if nothing needs to act on it. Until one of those, it stays:
+it is the exact per-face assignment criterion item C (variational shape
+approximation) needs, and deleting it now would only mean writing it again.
+
+**The leftover blob is a boundary problem, not a size problem.** When
+competition plus freeform left a connected leftover blob bigger than
+`LEFTOVER_BLOB_MAX` (8 faces), stage 2.3 threw away the *entire region's*
+decomposition and per-facetted it. The premise was sound — a surface abutting a
+jagged per-facet blob reconstructs to an invalid wire, and that fallback took
+rounded_cube coarse from 43 BRepCheck failures to 0 — but a local defect
+triggered a global catastrophe, which is what made coarse meshes untunable:
+several unrelated constants looked load-bearing only because they sat on the
+safe side of this cliff.
+
+*Size is the wrong quantity, and this is measured rather than argued.*
+`cone_tangent_planes` leaves a blob covering **73%** of its region and
+reconstructs with **zero** BRepCheck failures; `bspline_blister` leaves one
+covering **43%** and produces sixteen invalid faces. No threshold on the blob —
+absolute or relative, before or after dissolution — separates those two, and
+both a relative gate and a "does the decomposition explain a minority of the
+region" gate were tried and rejected on exactly this evidence.
+
+*What does separate them is where the invalidity comes from.* A face's wire
+gains one edge per distinct per-facet neighbour, so the face that goes invalid
+is the one whose boundary has been shattered into more pieces than the face has
+substance. `dissolve_fragmented_surfaces` (classify.rs) therefore compares each
+committed surface's per-facet neighbour count against its own face count and
+dissolves only the surfaces that lose — carrying no length and no tuned number,
+and leaving the rest of the region alone. It is iterated to a fixpoint, since
+dissolving one surface can shatter its neighbour's boundary in turn; in the
+limit that reproduces the old whole-region behaviour, but only when every
+surface in the region individually earns it.
+
+*Results.* `LEFTOVER_BLOB_MAX` is deleted (stage-2 constant count 37 → 36).
+`onshape_cone_tangent_planes_three_cones` is **re-enabled and passing** — its
+third cone was never a fitting failure, it was fitted correctly and then thrown
+away with the region around it. Corpus decomposition is otherwise identical.
+
+*What this exposed, and did not fix.* `bspline_blister` and `bspline_saddle`
+had no coverage past stage 1, and had silently collapsed to an all-per-facet
+polyhedron (2137 and 1605 planar surfaces, zero analytic) — a valid solid
+carrying no information. They now decompose, and that is pinned by
+`freeform_models_decompose_rather_than_collapsing`. They also now build a
+handful of invalid faces (4 and 3), which the old discard avoided only by
+per-facetting everything. Every one of them is a **single-mesh-face** per-facet
+plane or one B-spline — the micro-sliver/degenerate-edge family, not the family
+the discard claimed to address — and blister's root cause is upstream regardless:
+its 926-face freeform component fails the pole-bound check, so nothing can
+explain it. Tracked by an `#[ignore]`d test carrying the whole measurement.
 
 **The jet is a prior, not a gate.** Stage 2.3(b) states this — validation
 decides every face — but `seed_patch` was gating its BFS on jet similarity, and

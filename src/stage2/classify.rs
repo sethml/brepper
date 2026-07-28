@@ -78,11 +78,9 @@ const REFIT_ADD: usize = 32;
 /// surface and no amount of augmenting will help.
 const REFIT_GIVE_UP: f64 = 8.0;
 
-/// Largest connected leftover blob competition may leave before its result is
-/// discarded in favour of a clean per-facet polyhedron (see the fallback in
-/// `classify_regions`). A junction sliver is 1–2 faces; a whole undecomposed
-/// sub-surface is many more.
-const LEFTOVER_BLOB_MAX: usize = 8;
+// The former `LEFTOVER_BLOB_MAX` whole-region discard lived here. It is gone;
+// `dissolve_fragmented_surfaces` replaces it. See DEVELOPMENT_PLAN,
+// "The leftover blob is a boundary problem, not a size problem".
 
 /// The output of stage 2.3(a): committed hypotheses in the typed vectors plus
 /// one `SelectedSurface` per committed surface. Regions partition the mesh,
@@ -177,30 +175,22 @@ pub(super) fn classify_regions(
         // island enclosed by a validating B-spline patch.
         let ff = bspline::fit_leftover_components(mesh, &leftovers, &hyps, face_region, config);
 
-        // A committed analytic surface islanded among a large jagged
-        // per-facet blob reconstructs to invalid wires where they abut —
-        // worse than a clean polyhedron. When an analytic hypothesis
-        // survives AND freeform could not clear a big leftover blob, discard
-        // competition and per-facet the whole region. (Healthy competition
-        // leaves only tiny scattered slivers, and freeform absorbs genuine
-        // freeform patches, so this fires only on undecomposable coarse
-        // fillets.)
-        let surviving_hyps = hyps.len() - ff.dissolved.len();
+        // A committed analytic surface whose boundary with the per-facet
+        // residual is more fragmented than the surface itself reconstructs to
+        // an invalid wire; dissolve exactly those, and leave the rest of the
+        // region's decomposition alone.
+        let mut residual = ff.residual;
+        let fragmented = dissolve_fragmented_surfaces(mesh, &hyps, &ff.dissolved, &mut residual);
+        let surviving_hyps = hyps.len() - ff.dissolved.len() - fragmented.len();
         if config.verbosity >= 3 || std::env::var("BREPPER_DEBUG_COMPETE").is_ok() {
             eprintln!(
-                "    compete: region {} faces → {surviving_hyps} surviving hyps, {} leftovers, freeform residual {} (largest blob {}, discard above {LEFTOVER_BLOB_MAX})",
+                "    compete: region {} faces → {surviving_hyps} surviving hyps, {} leftovers, freeform residual {} (largest blob {}, {} dissolved as over-fragmented)",
                 region.faces.len(),
                 leftovers.len(),
-                ff.residual.len(),
-                largest_component(mesh, &ff.residual),
+                residual.len(),
+                largest_component(mesh, &residual),
+                fragmented.len(),
             );
-        }
-        if surviving_hyps > 0 && largest_component(mesh, &ff.residual) > LEFTOVER_BLOB_MAX {
-            for &fi in &region.faces {
-                cls.push_planar(facet_plane(mesh, fi));
-            }
-            facet_faces += region.faces.len();
-            continue;
         }
 
         // Commit surviving analytic hypotheses (skipping dissolved islands),
@@ -208,7 +198,7 @@ pub(super) fn classify_regions(
         // planes (total coverage can never fail; a triangle is exactly a
         // plane).
         for (i, hyp) in hyps.into_iter().enumerate() {
-            if !ff.dissolved.contains(&i) {
+            if !ff.dissolved.contains(&i) && !fragmented.contains(&i) {
                 cls.push_compete(hyp);
                 competed_surfaces += 1;
             }
@@ -220,8 +210,8 @@ pub(super) fn classify_regions(
             cls.push_bspline(hyp);
             freeform_surfaces += 1;
         }
-        facet_faces += ff.residual.len();
-        for fi in ff.residual {
+        facet_faces += residual.len();
+        for fi in residual {
             cls.push_planar(facet_plane(mesh, fi));
         }
     }
@@ -431,6 +421,77 @@ pub(super) fn fit_validate<S: SurfaceType>(
 }
 
 /// Size of the largest mesh-connected component within a face set.
+/// Dissolve into the per-facet residual any committed surface whose boundary
+/// with that residual is more fragmented than the surface itself, and return
+/// the indices dissolved.
+///
+/// This replaces the old whole-region discard, which threw away a region's
+/// entire decomposition whenever freeform left a connected leftover blob
+/// bigger than a fixed size. The premise it protected is real — a surface
+/// abutting a jagged per-facet blob reconstructs to an invalid wire — but the
+/// remedy was wildly out of proportion to it, and *size was the wrong
+/// quantity*. Measured: `cone_tangent_planes` leaves a blob covering 73% of
+/// its region and reconstructs with zero BRepCheck failures, while
+/// `bspline_blister` leaves one covering 43% and produces sixteen invalid
+/// faces — so no threshold on the blob, absolute or relative, separates them.
+///
+/// What does separate them is *where the invalidity comes from*: a face's wire
+/// gains one edge per distinct per-facet neighbour, so the face that goes
+/// invalid is the one whose boundary has been shattered into more pieces than
+/// the face has substance. Comparing a surface's per-facet neighbour count
+/// against its own face count says exactly that, carries no length and no
+/// tuned number, and dissolves only the surfaces that are actually in trouble
+/// rather than every surface that happens to share a region with them.
+///
+/// Iterated to a fixpoint, because dissolving one surface enlarges the
+/// residual and can shatter its neighbour's boundary in turn. In the limit
+/// this reproduces the old whole-region behaviour — but only when every
+/// surface in the region individually earns it.
+fn dissolve_fragmented_surfaces(
+    mesh: &ConnectedMesh,
+    hyps: &[CompeteHyp],
+    already_dissolved: &HashSet<usize>,
+    residual: &mut Vec<usize>,
+) -> HashSet<usize> {
+    let mut dissolved: HashSet<usize> = HashSet::new();
+    let mut in_residual: HashSet<usize> = residual.iter().copied().collect();
+    loop {
+        let mut round: Vec<usize> = Vec::new();
+        for (i, hyp) in hyps.iter().enumerate() {
+            if already_dissolved.contains(&i) || dissolved.contains(&i) {
+                continue;
+            }
+            let own: HashSet<usize> = hyp.faces().iter().copied().collect();
+            let mut neighbours: HashSet<usize> = HashSet::new();
+            for &fi in hyp.faces() {
+                let vc = mesh.faces[fi].vertex_count as usize;
+                for &ni in &mesh.faces[fi].neighbors[..vc] {
+                    if ni >= 0 {
+                        let ni = ni as usize;
+                        if in_residual.contains(&ni) && !own.contains(&ni) {
+                            neighbours.insert(ni);
+                        }
+                    }
+                }
+            }
+            if neighbours.len() > hyp.faces().len() {
+                round.push(i);
+            }
+        }
+        if round.is_empty() {
+            return dissolved;
+        }
+        for i in round {
+            dissolved.insert(i);
+            for &fi in hyps[i].faces() {
+                if in_residual.insert(fi) {
+                    residual.push(fi);
+                }
+            }
+        }
+    }
+}
+
 fn largest_component(mesh: &ConnectedMesh, faces: &[usize]) -> usize {
     let member: HashSet<usize> = faces.iter().copied().collect();
     let mut seen: HashSet<usize> = HashSet::new();

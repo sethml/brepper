@@ -41,9 +41,9 @@
   `MIN_CONDITION_FACES`, `MAX_GROW_ROUNDS`, `GROW_VTOL_FACTOR`,
   `RESIDUAL_SIGMAS`, `MIN_AXIAL_SWEEP_DEG`, `MAX_TORUS_RADIUS_RATIO`,
   `BEND_PATCH_DEPTH`, `BEND_PATCH_CAP`, `MAX_TORUS_STARTS`,
-  `LEFTOVER_BLOB_MAX`, `MERGE_MAX_SMALL`, `SMALL_SELECTION_ABSORB_FACES`,
-  ~~relabel's 2× margin and 10-round cap~~ (retired by A, 2026-07-28), and the
-  freeform island rules — roughly **two-thirds of stage 2's behavioural
+  ~~`LEFTOVER_BLOB_MAX`~~ (deleted 2026-07-28, item 4), `MERGE_MAX_SMALL`,
+  `SMALL_SELECTION_ABSORB_FACES`, ~~relabel's 2× margin and 10-round cap~~
+  (retired by A, 2026-07-28), and the freeform island rules — roughly **two-thirds of stage 2's behavioural
   thresholds**.
 
   ---
@@ -337,24 +337,61 @@
      cheap first check for any stage-2 change; the full suite remains the
      decisive one.
 
-  3. **Global parameter consensus.** *Still open and still worth doing; it is
-     independent of A/B/C above and could be slotted in anywhere.* Every
-     surface is fitted independently,
-     which throws away the strongest prior a CAD model has — that its features
+  3. **Refine fitted radii — but NOT by clustering them.** *The problem is
+     real; the two obvious answers are both rejected. Open, unassigned.*
+     The observation stands: every surface is fitted independently, which
+     throws away the strongest prior a CAD model has — that its features
      repeat. `stepped_block_toroidal` has exactly four distinct radii (0.5, 1,
      3, 15) and the pipeline produces a cloud around each (2.9996, 2.9997,
-     3.0004, 1.0009, 1.0018). Cluster the fitted parameters, recover the shared
-     radii and axes, and refit under those constraints. Should improve accuracy
-     *and* remove spurious surfaces that belong to no cluster; it is what
-     commercial reverse-engineering tools do as "beautification".
-  4. **Make the `LEFTOVER_BLOB_MAX` fallback proportionate.** It is the cliff
-     above: a local defect triggers a global catastrophe, which makes coarse
-     meshes untunable because no incremental improvement can be measured. Scope
-     it to the offending neighbourhood, or gate it on the blob's size relative
-     to the region. It earned its place (rounded_cube coarse: 43 BRepCheck
-     failures → 0), so measure stage-3/4 *validity* directly when changing it —
-     that is the property it protects. Needs stage-3 robustness at
-     analytic/per-facet boundaries first.
+     3.0004, 1.0009, 1.0018).
+     - **Clustering the fitted parameters and refitting under a shared value
+       is NOT the approach to take** (user's call, 2026-07-28). It treats the
+       symptom: the cloud exists because individual fits are being pulled off
+       by supports that are still slightly wrong, and averaging a cloud of
+       biased estimates gives a well-centred biased estimate. It also needs a
+       cluster-width threshold, which is the kind of parameter this whole
+       effort is trying to remove, and it silently destroys the case where a
+       part legitimately has two nearly-equal radii.
+     - **Snapping to round numbers of mm or inches is TABLED**, not rejected —
+       a plausible future improvement once radii are accurate enough that
+       "extremely close to round" is a safe judgement rather than a guess, and
+       it would need a unit inference to go with it. Do not build it now.
+     - **What to look for instead: why an individual radius is off at all.**
+       The precedent is the 2026-07-26 stale-fit work, which took rounded_cube's
+       r=2 fillets from 1.9976–1.9984 to 2.0000 (1000×) purely by refitting on
+       corrected supports — no consensus, no snapping, and it improved
+       everything downstream rather than just the radii. Treat a spread of
+       2.9996/3.0004 as evidence that those two supports still disagree about
+       which faces they own, and go find that.
+  4. **Make the `LEFTOVER_BLOB_MAX` fallback proportionate — DONE 2026-07-28.**
+     The constant is deleted and `dissolve_fragmented_surfaces` (classify.rs)
+     replaces it; full write-up in DEVELOPMENT_PLAN, "The leftover blob is a
+     boundary problem, not a size problem". Headlines:
+     - **Size is the wrong quantity — measured, do not retry a size gate.**
+       `cone_tangent_planes` leaves a blob covering 73% of its region and
+       reconstructs with zero BRepCheck failures; `bspline_blister` covers 43%
+       and produces sixteen invalid faces. Neither an absolute nor a relative
+       blob threshold separates them, and nor does "does the decomposition
+       explain a minority of the region". Both were tried.
+     - **What replaced it**: a face's wire gains one edge per distinct
+       per-facet neighbour, so dissolve exactly those surfaces whose per-facet
+       neighbour count exceeds their own face count. No length, no tuned
+       number, local. Iterated to a fixpoint.
+     - **`onshape_cone_tangent_planes_three_cones` re-enabled and passing** —
+       its third cone was fitted correctly all along and thrown away with the
+       region around it. Stage-2 constant count 37 → 36.
+     - **Two corpus models had no coverage past stage 1** and had silently
+       collapsed to all-per-facet polyhedra: `bspline_blister` (2137 planar,
+       zero analytic) and `bspline_saddle` (1605). They now decompose, pinned
+       by `freeform_models_decompose_rather_than_collapsing`. **Look for more
+       of this** — a model with only a stage-1 test is a model nobody is
+       watching.
+     - **Open, tracked by an `#[ignore]`d test**: those two now build 4 and 3
+       invalid faces. All are single-mesh-face per-facet planes (plus one
+       B-spline) — the micro-sliver family, not the one the discard addressed.
+       Blister's root cause is upstream: its 926-face freeform component fails
+       the pole-bound check, so nothing can explain it. **Fix the freeform fit
+       first.**
   5. **Snap region boundaries to computed intersection curves.** → **SUPERSEDED
      by item A** in "NEXT MAJOR WORK — exploit the seam assumption" above,
      which adds the reason it is sound (the assumption guarantees the answer
