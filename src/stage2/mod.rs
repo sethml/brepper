@@ -11,8 +11,8 @@
 //!      with bent-tube/torus promotion (2.3(c)) for the tangent chains the
 //!      ladder cannot explain, and B-spline fitting of the leftover components
 //!      (2.3(e), `bspline.rs`). Whatever remains degrades to per-facet planes.
-//! 2.4: Resolution & repair — relabel / merge / re-split + invariants
-//!      (`repair.rs`).
+//! 2.4: Resolution & repair — boundary snap / relabel / merge / re-split +
+//!      invariants (`repair.rs`, with the junction geometry in `locus.rs`).
 //! 2.5: Selected-surface output.
 //!
 //! The analytic fitters (`planar.rs`, `conical.rs`, `spherical.rs`,
@@ -29,6 +29,7 @@ mod classify;
 mod compete;
 mod conical;
 mod cylindrical;
+mod locus;
 mod planar;
 mod repair;
 mod spherical;
@@ -539,6 +540,96 @@ pub(super) fn vertex_distance_to_selected(
     }
 }
 
+/// Diagnostic: what the stage-2.4 boundary locus (`locus.rs`) concludes about
+/// every adjacent pair of committed surfaces — whether the pair is tangent,
+/// whether a junction locus could be built for it, and how many faces the
+/// locus places on the other surface's side. One line per pair, sorted with
+/// the problems first. Scratch-tool support for `dump_regions locus`; it reads
+/// stage-2 output and changes nothing.
+pub fn locus_report(out: &Stage2Output, config: &Config) -> Vec<String> {
+    let (surfs, f2s) = locus_inputs(out);
+    let mut pairs = locus::analyze_pairs(&out.mesh, &surfs, &f2s, config.vertex_tolerance_mm);
+    pairs.sort_by_key(|p| (!p.is_problem(), p.a, p.b));
+    pairs
+        .iter()
+        .map(|p| {
+            format!(
+                "{:>4} {:<7} | {:>4} {:<7} | {:>4} interface faces | {}",
+                p.a,
+                p.kind_a,
+                p.b,
+                p.kind_b,
+                p.interface_faces,
+                p.describe(),
+            )
+        })
+        .collect()
+}
+
+/// How many adjacent surface pairs stage 2.4's boundary snap could not handle,
+/// and how many faces are still on the wrong side of a junction it could.
+///
+/// Both should be zero on a well-decomposed model: the second is the property
+/// snap exists to establish, and the first is the set of junction geometries
+/// `locus.rs` does not implement. Exposed so tests can assert on it.
+pub fn locus_summary(out: &Stage2Output, config: &Config) -> (usize, usize) {
+    let (surfs, f2s) = locus_inputs(out);
+    let pairs = locus::analyze_pairs(&out.mesh, &surfs, &f2s, config.vertex_tolerance_mm);
+    let problems = pairs.iter().filter(|p| p.is_problem()).count();
+    let wrong_side = pairs
+        .iter()
+        .map(|p| match &p.outcome {
+            locus::PairOutcome::Snapped { moves, .. } => moves.len(),
+            _ => 0,
+        })
+        .sum();
+    (problems, wrong_side)
+}
+
+/// Diagnostic: per-face detail for one pair's shared boundary — which faces
+/// the locus would move and, for the ones it would not, which test stopped it.
+pub fn locus_pair_detail(out: &Stage2Output, config: &Config, a: usize, b: usize) -> Vec<String> {
+    let (surfs, f2s) = locus_inputs(out);
+    locus::explain_pair(&out.mesh, &surfs, &f2s, config.vertex_tolerance_mm, a, b)
+}
+
+/// The surface views and face→surface map the locus analysis works over.
+fn locus_inputs<'a>(out: &'a Stage2Output) -> (Vec<locus::Surf<'a>>, Vec<usize>) {
+    let surfs: Vec<locus::Surf<'_>> = out
+        .selected_surfaces
+        .iter()
+        .map(|s| {
+            locus::Surf::of(
+                s,
+                &out.planar_hypotheses,
+                &out.conical_hypotheses,
+                &out.spherical_hypotheses,
+                &out.toroidal_hypotheses,
+            )
+        })
+        .collect();
+
+    let mut f2s = vec![usize::MAX; out.mesh.faces.len()];
+    for (si, sel) in out.selected_surfaces.iter().enumerate() {
+        for &fi in selected_surface_faces(out, sel) {
+            f2s[fi] = si;
+        }
+    }
+
+    (surfs, f2s)
+}
+
+/// The mesh faces a selected surface owns.
+fn selected_surface_faces<'a>(out: &'a Stage2Output, sel: &SelectedSurface) -> &'a [usize] {
+    match *sel {
+        SelectedSurface::Planar(i) => &out.planar_hypotheses[i].faces,
+        SelectedSurface::Conical(i) => &out.conical_hypotheses[i].faces,
+        SelectedSurface::Spherical(i) => &out.spherical_hypotheses[i].faces,
+        SelectedSurface::Toroidal(i) => &out.toroidal_hypotheses[i].faces,
+        SelectedSurface::BSpline(i) => &out.bspline_hypotheses[i].faces,
+    }
+}
+
 /// Refine surface assignments at region boundaries (DEVELOPMENT_PLAN §2.6
 /// "Surface refitting"). BFS greedily absorbs border faces that fit within
 /// tolerance but belong more naturally to the adjacent surface — e.g. a face
@@ -665,14 +756,16 @@ pub fn stage2(
         );
     }
 
-    // --- Stage 2.4: resolution & repair (relabel, merge, re-split) ---
+    // --- Stage 2.4: resolution & repair (snap, relabel, merge, re-split) ---
     if config.stage.at_least(2, 4) {
         let t = Instant::now();
         let stats = repair::repair(&mesh, &mut cls, config);
         if config.verbosity >= 1 {
             eprintln!(
-                "Stage 2.4 ({:.3}s): Repair: {} relabeled, {} merged, {} re-split → {} surfaces",
+                "Stage 2.4 ({:.3}s): Repair: {} snapped ({} pair(s) unhandled), {} relabeled, {} merged, {} re-split → {} surfaces",
                 t.elapsed().as_secs_f64(),
+                stats.snapped,
+                stats.snap_problems,
                 stats.relabeled,
                 stats.merged,
                 stats.split,

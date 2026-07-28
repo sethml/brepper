@@ -637,6 +637,90 @@ the criterion can only ever be *tighter* than the previous behaviour. The
 ceiling is load-bearing — removing it lets a poor fit report a large scale,
 admit more foreign faces and inflate its scale further.
 
+**Snap shared boundaries to the junction, not to a residual comparison.**
+Nothing in stage 2 reasoned about where a boundary *should* be — it fell out of
+flood plus claim resolution, and every remaining `--compare` failure has been a
+boundary sitting a tessellation row off. The seam assumption says the correct
+boundary already exists in the mesh as a chain of edges, so this is selection
+from a guaranteed-nonempty set rather than a search. `locus.rs` supplies the
+criterion and `snap_boundaries` (repair.rs) applies it.
+
+*Use the minimum-distance locus, not the intersection.* At a tangent junction
+the surfaces graze rather than cross, and their intersection is catastrophically
+ill-conditioned: a plane offset by δ from the torus it should graze meets it in
+a circle displaced by √(2rδ), which is how a 4.7e-4 mm plane-fit error became
+the recorded 4.4e-2 mm edge error. The locus of minimum distance — the set of
+points where the two normal fields agree — has no such amplification, and the
+reason is worth remembering: displacing the plane along its own normal leaves
+the tangency circle exactly where it was, so the locus does not depend on the
+quantity that gets amplified at all. Only a *direction* error moves it, and
+linearly. Positions depart quadratically from a tangency while normals turn
+linearly; key the boundary off the latter. (This is verified by unit test in
+`locus.rs`, not just asserted.)
+
+*The meridian reduction.* Nearly every tangent junction in CAD joins two
+surfaces of revolution about a common axis. Reduce the pair to the meridian
+half-plane (ρ, h) of that axis, where each surface is a line (plane ⊥ axis,
+cylinder, cone) or a circle (sphere, torus) and coaxial tangency is exactly
+meridian tangency; the junction is the circle swept by one meridian point q,
+and the side test is displacement along the curves' common tangent there. This
+subsumes the cases one would otherwise write out separately, and explains why:
+at a plane-torus junction ρ is the informative coordinate and h is stationary,
+at a cylinder-torus junction it is the other way round, so neither coordinate
+works alone and the common tangent is the thing to project onto. Two junctions
+are not axisymmetric and are built directly: a plane grazing a cylinder along a
+ruling, and the tube junction where a straight fillet (cylinder) continues into
+a corner fillet (torus) — there the axes are *perpendicular*, the surfaces share
+the tube rather than an axis, and C¹ continuity forces the cylinder's axis to be
+tangent to the torus's spine circle, so the junction is the foot of the
+perpendicular from the torus centre onto that axis. Note that neither fit says
+where its own surface *ends*; the junction has to be read off the pair.
+
+*What makes a move safe.* Three conditions together, none of them a tuned
+number: the surface a face would move to must actually fit it (soundness — a
+boundary correction must never hand a face to a surface that does not explain
+it, and this is what stops a large fused planar quad from being swallowed by a
+fillet it happens to touch); the locus must put the whole face on that side,
+*including its interior* — a disc triangulated with every vertex on its rim has
+all its corners sitting on the junction and on both surfaces at once, so the
+corners decide nothing and the centroid must; and the moved set must be
+reachable from the current boundary through other moving faces. Orientation —
+which side belongs to which surface — cannot be read off the supports globally,
+because a locus circle is complete while the junction is only the arc where the
+surfaces meet, so a large planar face wanders to the far side of its own
+tangency circle while remaining unambiguously the plane's. Read it off the
+finely tessellated side, whose extent is comparable to the junction, and only
+from faces the other surface cannot explain.
+
+*Loud, not lenient.* A tangent pair whose locus cannot be built or does not
+validate is reported and left alone; transversal junctions are out of scope by
+construction, being sharp mesh edges that 2.1 already partitions exactly. The
+report is what found the rim-triangulated-disc case above. Snap runs *after*
+relabel and merge, so it neither fights the approximate criterion nor complains
+about slivers merge is about to dissolve; on the corpus nothing is reported.
+`boundaries_sit_on_their_junctions` (stage2_competition.rs) pins both counts at
+zero, which is a much sharper regression guard than a surface count — a
+boundary one row off leaves the counts intact.
+
+*What it retired, and honest accounting.* Relabel's **2× anti-flapping margin**
+and **10-round cap** are gone. Both were the price of a criterion that compares
+a face against two fits *each contaminated by that face*: it could oscillate, so
+the margin held it back and the cap stopped it. In-loop refitting removed the
+contamination, and allowing each face to move at most once bounds the
+alternation as a statement about convergence rather than a tuned number. Both
+were inline literals, so the stage-2 constant count does not fall; `locus.rs`
+adds two (`COAXIAL_TOL`, a validity precondition on the meridian reduction, and
+`TANGENCY_TOL_RAD`, which is stage 3.2's existing tangency criterion given one
+definition shared by both stages), taking the grep count 35 → 37.
+**Measured: with the margin and cap gone, snap moves zero faces on every corpus
+model — unconstrained relabel now reaches the same boundary on its own, and the
+suite passes with snap ablated.** So snap is currently a correctness *guarantee*
+rather than a correctness *fix*: the boundaries relabel converges to are the
+ones the junction geometry demands, which the `dump_regions locus` diagnostic
+confirms corpus-wide (zero wrong-side faces). Recorded plainly so the next
+session can decide whether an inert pass earns its place; it is also the exact
+per-face assignment criterion item C (variational shape approximation) needs.
+
 **The jet is a prior, not a gate.** Stage 2.3(b) states this — validation
 decides every face — but `seed_patch` was gating its BFS on jet similarity, and
 on a small fillet tessellated into a handful of facets the jet is not reliable
@@ -770,10 +854,14 @@ distances, no curvature involved.
 
 **Boundary relabel** (±1-row polish; port of the old
 `refine_boundary_assignments`): after resolution, walk region-boundary
-faces; move a face when an adjacent region's surface fits its vertices at
-least 2× better; iterate to a fixpoint (≤ 10 rounds; boundaries only move
-locally), then rebuild affected regions' vertex lists. Region *geometry*
-is not refitted — only the membership map changes.
+faces; move a face when an adjacent region's surface fits its vertices
+better; refit every surface a move touched, and iterate to a fixpoint,
+allowing each face to move at most once.
+
+**Boundary snap** (`locus.rs`): after relabel and merge, put each *tangent*
+junction on the mesh-edge chain the two fitted surfaces' junction geometry
+picks out. See "Snap shared boundaries to the junction, not to a residual
+comparison" above.
 
 **Merge**: absorb region S into an adjacent larger region T when every
 vertex of S lies within `--vertex-tolerance` of T's fitted surface and

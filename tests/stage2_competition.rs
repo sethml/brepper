@@ -14,10 +14,15 @@ fn manifest_dir() -> String {
 }
 
 fn run(stl_rel: &str) -> stage2::Stage2Output {
+    run_with_config(stl_rel).0
+}
+
+fn run_with_config(stl_rel: &str) -> (stage2::Stage2Output, config::Config) {
     let stl = format!("{}/{stl_rel}", manifest_dir());
     let config = config::parse_config_from(["brepper", &stl, "-q"]).unwrap();
     let mesh = stage1::stage1(&config).expect("stage1");
-    stage2::stage2(&config, mesh, None).expect("stage2")
+    let out = stage2::stage2(&config, mesh, None).expect("stage2");
+    (out, config)
 }
 
 /// Count selected surfaces by type: (planar, cylinder, cone, spherical,
@@ -136,4 +141,40 @@ fn competition_stepped_block_fillet_network_stays_analytic() {
     assert_eq!((cones, spheres, bsplines), (0, 0, 0), "no cones, spheres or freeform");
     assert_eq!(out.selected_surfaces.len(), 71, "the reference's 71 surfaces");
     assert_total_coverage(&out);
+}
+
+/// Every tangent junction must end up on the mesh-edge chain the two fitted
+/// surfaces' junction geometry picks out (stage 2.4 boundary snap,
+/// `locus.rs`). This is the property snap exists to establish, and it is
+/// stronger than a surface count: a boundary one tessellation row off leaves
+/// the counts intact and shows up only here (and, much later, as a stage-3
+/// `--compare` edge distance).
+///
+/// The second number is how many adjacent pairs have a junction geometry
+/// `locus.rs` does not implement — cone-plane ruling tangency, non-coaxial
+/// pairs other than the cylinder-to-torus tube junction, point tangencies.
+/// Every corpus model here reaches zero of both; a rise in the second is a new
+/// junction type the module should learn, and stage 2.4 reports it by name.
+#[test]
+fn boundaries_sit_on_their_junctions() {
+    for model in [
+        "tests/onshape/stepped_block_toroidal_fillets_fine.stl",
+        "tests/onshape/stepped_block_toroidal_fillets_medium.stl",
+        "tests/onshape/rounded_cube_10_r2_fine.stl",
+        "tests/onshape/pipe_elbow_10_medium.stl",
+        "tests/onshape/pill_fine.stl",
+        "tests/ccad/generated/filleted_cylinder.stl",
+        "tests/ccad/generated/filleted_pipe.stl",
+    ] {
+        let (out, config) = run_with_config(model);
+        let (unhandled, wrong_side) = stage2::locus_summary(&out, &config);
+        assert_eq!(
+            wrong_side, 0,
+            "{model}: {wrong_side} face(s) sit on the wrong side of a tangent junction",
+        );
+        assert_eq!(
+            unhandled, 0,
+            "{model}: {unhandled} pair(s) with a tangent junction locus.rs cannot build",
+        );
+    }
 }

@@ -13,6 +13,10 @@
 //!   for tracing a stage-3 compare failure back to stage 2.
 //! - `owner <face>...` — the surface owning a face and how well its
 //!   neighbours' surfaces explain it (the stage-2.4 relabel criterion).
+//! - `locus [a b]` — per adjacent surface pair, what the stage-2.4 junction
+//!   locus concludes (tangent/transversal, locus built or not, faces on the
+//!   wrong side of it); problems first. With two surface indices, the
+//!   per-face detail for that one pair.
 
 use brepper::config;
 use brepper::stage1::ConnectedMesh;
@@ -358,6 +362,25 @@ fn main() {
                 "descriptor: sigma=[{:+.4},{:+.4}] centroid=[{:.3},{:.3},{:.3}] normal=[{:.4},{:.4},{:.4}]",
                 jet[fi].k1, jet[fi].k2, c[0], c[1], c[2], n[0], n[1], n[2]
             );
+        }
+        // What the stage-2.4 boundary locus concludes about each adjacent
+        // pair of committed surfaces: tangent or transversal, whether a
+        // junction locus exists, and how many faces sit on the wrong side of
+        // it. Problems first. Read-only — it does not run snap.
+        "locus" => {
+            let out = brepper::stage2::stage2(&config, mesh, None).unwrap();
+            let lines = match (args.get(3), args.get(4)) {
+                (Some(a), Some(b)) => brepper::stage2::locus_pair_detail(
+                    &out,
+                    &config,
+                    a.parse().unwrap(),
+                    b.parse().unwrap(),
+                ),
+                _ => brepper::stage2::locus_report(&out, &config),
+            };
+            for line in lines {
+                println!("{line}");
+            }
         }
         // Every surface stage 2 committed, largest first: type, extent, and
         // the parameters to line up against a reference STEP's surface list.

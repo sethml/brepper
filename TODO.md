@@ -42,14 +42,47 @@
   `RESIDUAL_SIGMAS`, `MIN_AXIAL_SWEEP_DEG`, `MAX_TORUS_RADIUS_RATIO`,
   `BEND_PATCH_DEPTH`, `BEND_PATCH_CAP`, `MAX_TORUS_STARTS`,
   `LEFTOVER_BLOB_MAX`, `MERGE_MAX_SMALL`, `SMALL_SELECTION_ABSORB_FACES`,
-  relabel's 2× margin and 10-round cap, and the freeform island rules —
-  roughly **two-thirds of stage 2's behavioural thresholds**.
+  ~~relabel's 2× margin and 10-round cap~~ (retired by A, 2026-07-28), and the
+  freeform island rules — roughly **two-thirds of stage 2's behavioural
+  thresholds**.
 
   ---
 
-  **A. Snap shared region boundaries to mesh-edge chains.** *Start here:
-  narrow, provenance-independent, and it removes a heuristic rather than adding
-  one.*
+  **A. Snap shared region boundaries to mesh-edge chains. — DONE 2026-07-28.**
+  Implemented as `src/stage2/locus.rs` + `snap_boundaries` (repair.rs), with a
+  `dump_regions locus [a b]` diagnostic. Full write-up in DEVELOPMENT_PLAN,
+  "Snap shared boundaries to the junction, not to a residual comparison".
+  Read that before touching any of it; the summary and the caveats:
+  - **Retired relabel's 2× anti-flapping margin and its 10-round cap**, exactly
+    as predicted here. Both were the price of comparing a face against two fits
+    each contaminated by that face; in-loop refitting removed the
+    contamination, and "each face moves at most once" bounds the loop as a
+    convergence statement rather than a number. Suite 509 passing / 3 ignored,
+    corpus decomposition byte-identical, clippy clean.
+  - **`MERGE_MAX_SMALL` was NOT retired** — untested; it is a merge criterion,
+    not a boundary one, and nothing this session touched merge.
+  - **Snap itself measures as inert on the corpus**: with the margin and cap
+    gone, unconstrained relabel reaches the same boundary on its own, and the
+    suite passes with snap ablated. It is a guarantee rather than a fix today.
+    Decide deliberately whether to keep it — it is the per-face assignment
+    criterion item C needs, and the diagnostic that verifies boundaries are
+    right (zero wrong-side faces corpus-wide) depends on the same module.
+  - **The validation target did not move, and the reason is worth knowing.**
+    `stepped_block` fine still reports a 4.36e-2 mm `Compare 3.1` edge distance
+    and medium still fails at 1.56e-1. Neither is a wrong-side-face problem:
+    fine's worst edge is a torus↔cylinder tube junction whose boundary sits on
+    the locus to ~1e-6 mm, and medium's is a torus↔B-spline edge, i.e. the
+    known decomposition gap. Stage 3.1's compare now names the worst edge by
+    its two surfaces and tangency even when it passes, so this is one run to
+    re-check rather than an investigation.
+  - **Still unhandled, reported loudly if hit:** cone-plane ruling tangency;
+    non-coaxial pairs other than the cylinder→torus tube junction (notably
+    torus↔torus, which the corpus does not contain); point tangencies. Nothing
+    in the corpus fires today, and `boundaries_sit_on_their_junctions`
+    (stage2_competition.rs) pins that at zero across seven models along with
+    the zero-wrong-side-faces invariant.
+
+  Original plan, kept for the reasoning:
 
   Every remaining `--compare` failure has been a boundary sitting one
   tessellation row off, and nothing in the pipeline reasons about where a
@@ -78,6 +111,13 @@
   - **Validation:** `stepped_block_toroidal_fillets_medium` is the target (a
     1.6e-1 mm reference-edge compare, `#[ignore]`d in stage4_integration);
     fine must stay passing. Use `tmp/probe.sh` first, full suite to decide.
+
+  ---
+
+  **Next after A: B.** Note one input B now has that it did not before — stage
+  3.1's `--compare` names its worst edge on success, so the chordal-tolerance
+  question ("how far off may a tangent boundary be?") can be asked per junction
+  rather than per model.
 
   ---
 

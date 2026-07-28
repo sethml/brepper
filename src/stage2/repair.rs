@@ -6,11 +6,17 @@
 //! bounded rounds).
 //!
 //! - **Boundary relabel** (±1-row polish): move a region-boundary face to an
-//!   adjacent surface that fits its vertices at least 2× better, refitting
-//!   every surface a move touched before the next round — assignment and fit
-//!   are one problem, since a surface holding its neighbour's row is pulled
-//!   off true by exactly that row. Iterates to a fixpoint (≤ 10 rounds;
-//!   boundaries only move locally).
+//!   adjacent surface that fits its vertices better, refitting every surface a
+//!   move touched before the next round — assignment and fit are one problem,
+//!   since a surface holding its neighbour's row is pulled off true by exactly
+//!   that row. Iterates to a fixpoint, bounded by each face being allowed to
+//!   move at most once.
+//! - **Boundary snap**: put every *tangent* junction on the mesh-edge chain
+//!   the two fitted surfaces' junction geometry picks out (`locus.rs`), rather
+//!   than on whichever chain a residual comparison happens to prefer. Runs
+//!   after relabel and merge, so the exact criterion has the last word on
+//!   whatever survives them; junctions it cannot build a locus for are
+//!   reported, not guessed.
 //! - **Merge**: absorb a small region S into an adjacent, larger, real
 //!   surface T when every vertex of S lies within `--vertex-tolerance` of T's
 //!   fitted surface and every centroid within `--surface-tolerance`; refit
@@ -30,7 +36,10 @@
 use crate::config::Config;
 use crate::stage1::{ConnectedMesh, MeshVertex};
 
+use std::collections::BTreeSet;
+
 use super::classify::{fit_validate, Classification};
+use super::locus::{analyze_pairs, PairOutcome, Surf};
 use super::surface::SurfaceType;
 use super::conical::ConicalSurface;
 use super::planar::PlanarSurface;
@@ -49,6 +58,8 @@ const MERGE_MAX_SMALL: usize = 16;
 /// Repair-operation counts, for logging.
 #[derive(Default)]
 pub(super) struct RepairStats {
+    pub snapped: usize,
+    pub snap_problems: usize,
     pub relabeled: usize,
     pub merged: usize,
     pub split: usize,
@@ -63,9 +74,21 @@ pub(super) fn repair(mesh: &ConnectedMesh, cls: &mut Classification, config: &Co
         .map(|f| face_centroid(f, &mesh.vertices))
         .collect();
 
+    // Snap runs late, after relabel and merge: relabel is a residual
+    // comparison that gets the boundary approximately right everywhere,
+    // including the junctions snap does not own, merge dissolves the slivers
+    // that would otherwise be reported as junctions with no locus, and snap is
+    // the exact criterion that should have the last word on what survives.
+    // Re-split still follows it, since a snap can in principle disconnect a
+    // surface.
+    let relabeled = relabel_boundaries(mesh, cls, config);
+    let merged = merge_regions(mesh, cls, &centroids, config);
+    let (snapped, snap_problems) = snap_boundaries(mesh, cls, config);
     let stats = RepairStats {
-        relabeled: relabel_boundaries(mesh, cls, config),
-        merged: merge_regions(mesh, cls, &centroids, config),
+        snapped,
+        snap_problems,
+        relabeled,
+        merged,
         split: resplit_disconnected(mesh, cls),
     };
     drop_empty_surfaces(cls);
@@ -199,23 +222,128 @@ fn refit_geometry(mesh: &ConnectedMesh, cls: &mut Classification, si: usize) {
 }
 
 // ---------------------------------------------------------------------------
+// Boundary snap
+// ---------------------------------------------------------------------------
+
+/// Put every shared boundary on the mesh-edge chain the junction geometry
+/// picks out, rather than wherever flood and claim resolution happened to
+/// leave it.
+///
+/// For each adjacent pair of committed surfaces, `locus.rs` builds the curve
+/// where they meet and turns it into a signed side test; a face on the wrong
+/// side, that the other surface also fits, moves. This is a *selection*, not a
+/// search: the seam assumption guarantees the correct boundary already exists
+/// as a chain of mesh edges, so the only question is which one.
+///
+/// Assignment and fit are one problem (the same lesson `relabel_boundaries`
+/// records), so each round refits every surface its moves touched and rebuilds
+/// the loci from the corrected geometry. A face may move at most once per
+/// invocation, which bounds the alternation without a round cap: the locus
+/// each round is computed from strictly better-supported fits, so a face that
+/// wants to move back is evidence the locus was wrong rather than a step to
+/// iterate on.
+///
+/// Pairs the module cannot build a locus for, or whose locus fails validation,
+/// are **reported and left alone**. Transversal junctions are not snap's
+/// business at all — they are sharp mesh edges, which stage 2.1 already
+/// partitions exactly.
+fn snap_boundaries(
+    mesh: &ConnectedMesh,
+    cls: &mut Classification,
+    config: &Config,
+) -> (usize, usize) {
+    let mut already_moved = vec![false; mesh.faces.len()];
+    let mut total = 0usize;
+    let mut reported: BTreeSet<String> = BTreeSet::new();
+
+    loop {
+        let f2s = face_to_surface(mesh, cls);
+        let surfs: Vec<Surf<'_>> = cls
+            .selected
+            .iter()
+            .map(|s| Surf::of(s, &cls.planar, &cls.conical, &cls.spherical, &cls.toroidal))
+            .collect();
+        let pairs = analyze_pairs(mesh, &surfs, &f2s, config.vertex_tolerance_mm);
+
+        let mut round: Vec<(usize, usize, usize)> = Vec::new();
+        let mut claimed = vec![false; mesh.faces.len()];
+        for p in &pairs {
+            if p.is_problem() {
+                reported.insert(format!(
+                    "  Stage 2.4 snap: surfaces {} ({}) and {} ({}), {} interface faces — {}",
+                    p.a, p.kind_a, p.b, p.kind_b, p.interface_faces, p.describe(),
+                ));
+                continue;
+            }
+            if let PairOutcome::Snapped { moves, .. } = &p.outcome {
+                for &(fi, from, to) in moves {
+                    // One move per face per invocation, and one claimant per
+                    // face per round: a face at a triple point borders two
+                    // junctions, and the first pair in index order takes it.
+                    if !already_moved[fi] && !claimed[fi] {
+                        claimed[fi] = true;
+                        round.push((fi, from, to));
+                    }
+                }
+            }
+        }
+
+        if round.is_empty() {
+            for line in &reported {
+                eprintln!("{line}");
+            }
+            return (total, reported.len());
+        }
+
+        let mut touched: BTreeSet<usize> = BTreeSet::new();
+        for &(fi, from, _) in &round {
+            surface_faces_mut(cls, from).retain(|&f| f != fi);
+            touched.insert(from);
+        }
+        for &(fi, _, to) in &round {
+            surface_faces_mut(cls, to).push(fi);
+            touched.insert(to);
+            already_moved[fi] = true;
+        }
+        for si in touched {
+            refit_geometry(mesh, cls, si);
+        }
+        total += round.len();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Boundary relabel (port of the old refine_boundary_assignments)
 // ---------------------------------------------------------------------------
 
 /// Move region-boundary faces to an adjacent surface that fits them at least
-/// 2× better, refitting the surfaces each round's moves touched.
+/// better, refitting the surfaces each round's moves touched.
+///
+/// The 2× anti-flapping margin and the 10-round cap this used to carry are
+/// gone. Both were the price of a criterion that compares a face against two
+/// fits *both* contaminated by that face: it could oscillate, so the margin
+/// held it back and the cap stopped it. Refitting inside the loop (added
+/// 2026-07-26) removed the contamination, and allowing each face to move at
+/// most once bounds the alternation directly, which is a statement about
+/// convergence rather than a tuned number. See DEVELOPMENT_PLAN, "Snap shared
+/// boundaries to the junction, not to a residual comparison".
 fn relabel_boundaries(mesh: &ConnectedMesh, cls: &mut Classification, _config: &Config) -> usize {
     let num_faces = mesh.faces.len();
     let mut total_moved = 0usize;
+    // A face moves at most once. This is what makes the loop terminate
+    // without a round cap: each round refits from a cleaner support, so a
+    // face asking to move back is not converging, it is oscillating between
+    // two fits that each still hold some of the other's data.
+    let mut already_moved = vec![false; num_faces];
 
-    for _iter in 0..10 {
+    loop {
         let f2s = face_to_surface(mesh, cls);
         let mut moves: Vec<(usize, usize, usize)> = Vec::new(); // (face, from, to)
         for fi in 0..num_faces {
             let si = f2s[fi];
             // Unassigned faces and B-spline faces never move (a B-spline's
             // fit vouches only for its own data).
-            if si == usize::MAX || is_bspline(cls, si) {
+            if si == usize::MAX || is_bspline(cls, si) || already_moved[fi] {
                 continue;
             }
             let face = &mesh.faces[fi];
@@ -241,7 +369,7 @@ fn relabel_boundaries(mesh: &ConnectedMesh, cls: &mut Classification, _config: &
                 }
             }
             if let Some((d_best, sj)) = best {
-                if d_best < d_own * 0.5 {
+                if d_best < d_own {
                     moves.push((fi, si, sj));
                 }
             }
@@ -251,6 +379,9 @@ fn relabel_boundaries(mesh: &ConnectedMesh, cls: &mut Classification, _config: &
             break;
         }
         total_moved += moves.len();
+        for &(fi, _, _) in &moves {
+            already_moved[fi] = true;
+        }
         for &(fi, si, _) in &moves {
             surface_faces_mut(cls, si).retain(|&f| f != fi);
         }

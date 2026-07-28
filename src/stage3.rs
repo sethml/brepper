@@ -229,6 +229,47 @@ fn min_distance_to_shape(pt: &gp::Pnt, shape: &topo_ds::Shape) -> f64 {
     stage1::min_distance_to_shape(pt, shape)
 }
 
+/// Name an edge by the two surfaces it joins, whether it is tangent, and where
+/// its worst boundary vertex sits — enough to take straight to
+/// `dump_regions at <x> <y> <z>` or `dump_regions locus`.
+fn describe_edge(
+    ei: usize,
+    worst_vi: usize,
+    edges: &[ReconEdge],
+    face_descriptors: &[FaceDescriptor],
+    stage2: &Stage2Output,
+) -> String {
+    let kind = |fi: usize| -> String {
+        let si = face_descriptors[fi].selected_surface_idx;
+        let name = match stage2.selected_surfaces[si] {
+            SelectedSurface::Planar(_) => "plane",
+            SelectedSurface::Conical(i) => {
+                if stage2.conical_hypotheses[i].is_cylinder() {
+                    "cyl"
+                } else {
+                    "cone"
+                }
+            }
+            SelectedSurface::Spherical(_) => "sphere",
+            SelectedSurface::Toroidal(_) => "torus",
+            SelectedSurface::BSpline(_) => "bspline",
+        };
+        format!("{si} {name}")
+    };
+    let edge = &edges[ei];
+    let [f0, f1] = edge.face_indices;
+    let v = &stage2.mesh.vertices[worst_vi];
+    format!(
+        "edge {ei} ({} | {}){}, worst boundary vertex {worst_vi} at ({:.4}, {:.4}, {:.4})",
+        kind(f0),
+        kind(f1),
+        if edge.tangent { " tangent" } else { "" },
+        v.x,
+        v.y,
+        v.z,
+    )
+}
+
 /// Compare stage 3.1 adjacency graph against reference STEP shape.
 ///
 /// For each ReconEdge, samples mesh boundary vertices along the edge and checks
@@ -237,6 +278,7 @@ fn min_distance_to_shape(pt: &gp::Pnt, shape: &topo_ds::Shape) -> f64 {
 fn compare_adjacency_to_step(
     edges: &[ReconEdge],
     vertices: &[BRepVertex],
+    face_descriptors: &[FaceDescriptor],
     stage2: &Stage2Output,
     config: &Config,
 ) -> Result<(), Stage3CompareError> {
@@ -249,6 +291,7 @@ fn compare_adjacency_to_step(
 
     // Check ReconEdge boundary vertices against STEP edges
     let mut edge_overall_max = 0.0_f64;
+    let mut worst_edge: Option<(usize, usize)> = None;
     for (ei, edge) in edges.iter().enumerate() {
         let mut max_dist = 0.0_f64;
         let boundary = &edge.mesh_boundary_vertices;
@@ -275,7 +318,10 @@ fn compare_adjacency_to_step(
             }
         }
 
-        edge_overall_max = edge_overall_max.max(max_dist);
+        if max_dist > edge_overall_max {
+            edge_overall_max = max_dist;
+            worst_edge = Some((ei, worst_vi));
+        }
         // Boundary vertices of tangent edges are allowed the chordal surface
         // tolerance: an imprecise tessellation can place the region boundary
         // one row off the tangent junction (see stage3() comment).
@@ -286,10 +332,9 @@ fn compare_adjacency_to_step(
         };
         if max_dist > edge_tol {
             if !config.quiet && worst_vi != usize::MAX {
-                let v = &mesh.vertices[worst_vi];
                 eprintln!(
-                    "  Compare 3.1: edge {ei} worst boundary vertex {worst_vi} at ({:.4}, {:.4}, {:.4}), dist {max_dist:.6e}",
-                    v.x, v.y, v.z,
+                    "  Compare 3.1: {}, dist {max_dist:.6e}",
+                    describe_edge(ei, worst_vi, edges, face_descriptors, stage2),
                 );
             }
             return Err(Stage3CompareError {
@@ -340,6 +385,12 @@ fn compare_adjacency_to_step(
             "  Compare 3.1: edge boundary max dist {:.6e} mm, vertex max dist {:.6e} mm",
             edge_overall_max, vert_overall_max
         );
+        // Name the worst edge even when it passes: it is the boundary the
+        // next improvement has to move, and locating it by coordinate alone
+        // is guesswork.
+        if let Some((ei, vi)) = worst_edge {
+            eprintln!("    worst edge {}", describe_edge(ei, vi, edges, face_descriptors, stage2));
+        }
     }
 
     Ok(())
@@ -7414,7 +7465,13 @@ pub fn stage3(config: &Config, input: Stage2Output, viz: Option<&crate::viz::Viz
     }
 
     if config.compare_shape.is_some() {
-        compare_adjacency_to_step(&output.edges, &output.vertices, &output.stage2, config)?;
+        compare_adjacency_to_step(
+            &output.edges,
+            &output.vertices,
+            &output.face_descriptors,
+            &output.stage2,
+            config,
+        )?;
     }
 
     if !config.stage.at_least(3, 2) {
