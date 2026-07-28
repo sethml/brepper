@@ -13,6 +13,209 @@
   blockers) are listed in the item below; the obsolete old-BFS-pipeline TODO
   items (absorb pass, `--skip-stage`, planar-only mode) were pruned 2026-07-23.
 
+- **NEXT MAJOR WORK — exploit the seam assumption. Read this first.** This is
+  the recommended plan for the next several sessions, in order (A → B → C).
+  Background reading before starting: **Mesh provenance and the seam
+  assumption** and **Identifiability is not model selection** in
+  DEVELOPMENT_PLAN.md, plus the ranked list in the item below (which records
+  two ideas already tried and refuted — do not re-derive them).
+
+  **The framing.** The assumption is that a B-rep face boundary is always a
+  chain of mesh edges, tangent junctions included. There are two ways to use
+  it, with very different risk: as a **constraint** ("the answer's boundaries
+  must be mesh-edge chains" — provenance-independent, true for every faceter)
+  or as a **detector** ("here is where the seams are" — provenance-dependent,
+  weak on OCCT's Delaunay interiors, information-free on mesh-native input).
+  **Stage 2 currently uses it as neither.** Stage 3 uses it fully, and is the
+  proof of concept: §3.x "shared-edge topological assembly instead of geometric
+  sewing" *deleted* a heuristic-laden alternative outright.
+
+  **The prize, quantified.** Almost every tuned parameter in stage 2 is the
+  price of not knowing the tangent seams. If the partition were known, each
+  region goes to the whole-region DOF ladder (`classify_one_region`, which
+  already exists and whose few constants are cost-control — subsampling, refit
+  rounds — not decision thresholds). The evidence is already in hand: **sharp-
+  edged models pass the ladder with 0 competition regions and no tuning at
+  all.** Everything below exists only because tangent seams are invisible:
+  `SEED_PATCH_CAP`, `MAX_PATCH_DEPTH`, `PATCH_RADII`, `PATCH_TRIM_ROUNDS`,
+  `MIN_CONDITION_FACES`, `MAX_GROW_ROUNDS`, `GROW_VTOL_FACTOR`,
+  `RESIDUAL_SIGMAS`, `MIN_AXIAL_SWEEP_DEG`, `MAX_TORUS_RADIUS_RATIO`,
+  `BEND_PATCH_DEPTH`, `BEND_PATCH_CAP`, `MAX_TORUS_STARTS`,
+  `LEFTOVER_BLOB_MAX`, `MERGE_MAX_SMALL`, `SMALL_SELECTION_ABSORB_FACES`,
+  relabel's 2× margin and 10-round cap, and the freeform island rules —
+  roughly **two-thirds of stage 2's behavioural thresholds**.
+
+  ---
+
+  **A. Snap shared region boundaries to mesh-edge chains.** *Start here:
+  narrow, provenance-independent, and it removes a heuristic rather than adding
+  one.*
+
+  Every remaining `--compare` failure has been a boundary sitting one
+  tessellation row off, and nothing in the pipeline reasons about where a
+  boundary *should* be — it falls out of flood plus claim resolution. The
+  assumption guarantees the correct boundary **exists** as a mesh-edge chain,
+  so this is selection from a guaranteed-nonempty set, not a search.
+
+  - Once two adjacent surfaces are committed, compute the curve where they
+    meet, then reassign the boundary faces by which side of it they fall on,
+    choosing the mesh-edge chain that best follows it.
+  - **The hard case is exactly the one that matters.** At a *tangent* junction
+    the surfaces graze rather than cross, so `GeomAPI_IntSS` is the wrong tool
+    — it is numerically fragile there and that fragility is what produced the
+    original 4.4e-2 mm error (a plane offset δ moves its intersection with a
+    torus it should graze by √(2rδ), so tiny fit error is hugely amplified).
+    For tangency, find the locus of minimum distance between the two fitted
+    surfaces instead — for a plane grazing a torus that is the tangency circle,
+    computable in closed form from the fitted parameters. Consider handling
+    tangent and transversal junctions by different code paths; stage 3.2
+    already classifies edges as tangent, and stage 3's compare already exempts
+    tangent edges to the chordal tolerance for this reason.
+  - Note OCCT gotchas already recorded in DONE/DEVELOPMENT_PLAN: `IntSS`
+    construction can *throw* (knots too close) rather than report `!IsDone`.
+  - **Retires:** relabel's 2× anti-flapping margin and 10-round cap, probably
+    `MERGE_MAX_SMALL`.
+  - **Validation:** `stepped_block_toroidal_fillets_medium` is the target (a
+    1.6e-1 mm reference-edge compare, `#[ignore]`d in stage4_integration);
+    fine must stay passing. Use `tmp/probe.sh` first, full suite to decide.
+
+  ---
+
+  **B. Estimate `--surface-tolerance` and `--angular-tolerance` from the mesh
+  instead of defaulting them.** Both are stand-ins for settings the *exporter*
+  used and then discarded; neither is a property of the fitting problem.
+  `--vertex-tolerance` is different — it is a genuine precision request from
+  the user and should stay a plain flag.
+
+  *Why it is measurable without a reference STEP.* The mesh is its own
+  reference, because **vertices lie on the true surface (~1e-6 mm) while
+  centroids sit inside it by the chordal sag**. For a facet whose vertices lie
+  on a surface of radius R, with circumradius ρ perpendicular to the axis:
+  `depth = R − √(R² − ρ²) ≈ ρ²/(2R)`. The tessellator sized the facet so this
+  stays under its deflection setting ε, so the sag distribution over the mesh
+  *is* a sample of ε.
+
+  *How far off the default is:* stage 1's `--compare` already reports the true
+  sag — **8.9e-4 mm** on stepped_block fine, **9.5e-4 mm** on rounded_cube
+  fine — against a default of **0.4 mm**, i.e. ~400× too loose. (0.4 was a hand
+  edit in March 2026 with no recorded rationale; see the tolerance-history
+  notes.) Earlier measurements: worst centroid sag 0.026 mm Onshape-coarse,
+  0.038 mm Fusion-low.
+
+  Three estimators, increasingly independent:
+  1. **Fit-based, bootstrapped from the unambiguous regions.** Sharp-bounded
+     regions are solved by the ladder with no tolerance choices beyond vertex
+     validation. For each of their facets, distance from centroid to its own
+     committed fit is a direct sag sample. High quantile → ε. Available before
+     competition runs.
+  2. **Fit-free, from the mesh's second-order structure.** For adjacent facets
+     on a cylinder of radius R spanning dihedral θ with width h = Rθ:
+     `sag ≈ (h/2)²/(2R) = h²/(8R) = h·θ/8`. So **sag ≈ dihedral × facet size /
+     8**, per facet, no fits and no jet inversion — computable in stage 2.1.
+  3. **Cross-check.** (1) and (2) should agree. Disagreement means the
+     provenance premise is violated — a decimated, repaired or remeshed STL —
+     which is itself worth detecting and reporting.
+
+  *Prove it before trusting it:* the corpus has reference STEPs and stage 1
+  `--compare` reports the true centroid max distance, so run the reference-free
+  estimator across the corpus and check it reproduces those numbers. The
+  reference is the **validation instrument, never the production input**.
+
+  *The angular tolerance falls out of the same reasoning.* Its own doc comment
+  admits it is a stand-in ("Medium-resolution CAD exports step small-radius
+  fillets up to ~24° between rows… the default must admit those"), and Onshape
+  exposes the setting directly (12.5° / 6.25° / 2.5° for coarse/medium/fine).
+  Recover it as a **clustering** rather than a threshold: the dihedral
+  distribution should be bimodal — tessellation steps near zero, real sharp
+  edges well separated — so find the gap (Otsu-style). Plot it before
+  believing it; on stepped_block fine only 384 of 51603 edges are called sharp,
+  so the populations are very lopsided. **Bonus:** the absence of a clean gap,
+  or a spiky constant-dihedral distribution, is exactly the OpenSCAD
+  faceted-by-construction detector described in the item below.
+
+  *Risks to measure first:*
+  - ε is not truly global — exporters also cap angular deviation and minimum
+    facet width, so different features are bound by different constraints. Take
+    a high quantile or max, **never a median**, or legitimate faces get
+    rejected.
+  - Tightening 0.4 → ~1e-3 is a 400× change that moves behaviour everywhere.
+    `REFIT_GIVE_UP` is defined as 8×stol; merge's centroid gate and every
+    `face_validates` use it. Do the sweep harness (item 6 below) first.
+  - Coarse meshes genuinely have larger sag — the corpus's coarse variants are
+    the real test, not the fine ones.
+
+  ---
+
+  **C. Reformulate competition as alternating partition/fit.** *The big one —
+  where the real simplification lives. Do it last, and only after the sweep
+  harness, because it is a rewrite of stage 2.3(b)–2.4 and the before/after
+  must be measurable on more than the handful of models one inspects by hand.*
+
+  The assumption says face-level assignment is the right granularity, which is
+  exactly the setting for Lloyd-style iteration — this is **Variational Shape
+  Approximation** (Cohen-Steiner et al.): alternate (assign faces to proxies)
+  and (refit proxies) to a fixpoint. Half of it already exists and is known to
+  work here: `relabel_boundaries` + `refit_geometry` converged this session and
+  took stepped_block fine from 73 surfaces to exactly the reference's 71.
+
+  - **Subsumes:** seed ordering (`neighbor_jet_mismatch`), `seed_patch`,
+    `condition_patch`, `grow`/`grow_from`/`flood`, `resolve_claims`,
+    `relabel_boundaries`, `merge_regions`, `resplit_disconnected`.
+  - **Needs:** an error metric (vertex distance, self-calibrated as in
+    `acceptance_tol`); a proxy-count rule (add a proxy where regional error is
+    worst, drop one whose faces are all absorbed); and the existing DOF ladder
+    to choose each proxy's *type*.
+  - **Keep:** the DOF ladder itself, `axis_normals_consistent`, and the
+    identifiability guards until measured inert (see below).
+  - Beware the known failure mode of greedy selection that VSA is meant to fix:
+    a richer model stealing a neighbour's support. Global iteration should
+    dissolve it — that is the main hypothesis to test.
+
+  ---
+
+  **After A/B/C: measure how much of the rest can be deleted.** Do not guess —
+  this session found three of five guards already inert. Protocol, per
+  candidate, one at a time:
+  1. Disable it (set the constant to a no-op value, or short-circuit the
+     predicate) and rebuild.
+  2. `./tmp/probe.sh` — per-model plane/cyl/cone/sphere/torus/bspline
+     breakdown over 14 models; diff against a saved baseline. **Surface counts
+     alone are not enough: a 3-torus regression once hid behind an unchanged
+     total of 71.**
+  3. Full suite (`cargo test --release --no-fail-fast`, ~2.5 min) — decisive.
+  4. Inert on both ⇒ delete it, and record in DEVELOPMENT_PLAN what it was for
+     and what superseded it, so the knowledge is not lost with the code.
+
+  Re-test in roughly this order, most-likely-dead first:
+  - `MIN_AXIAL_SWEEP_DEG`, `MAX_TORUS_RADIUS_RATIO` — degeneracy guards that
+    exist because competition builds wrong supports; correct supports should
+    make them unnecessary.
+  - `LEFTOVER_BLOB_MAX` — its rationale is that an analytic surface islanded in
+    a jagged per-facet blob makes invalid wires; if boundaries are clean chains
+    after A, that rationale may simply evaporate.
+  - `GROW_VTOL_FACTOR` + `RESIDUAL_SIGMAS` — both belong to flood, which C
+    replaces.
+  - The whole `PATCH_*` / `SEED_PATCH_CAP` / `MIN_CONDITION_FACES` family —
+    gone with seeds.
+  - `MERGE_MAX_SMALL`, `SMALL_SELECTION_ABSORB_FACES` and the freeform island
+    rules (`enclosed`, `islands_split_a_patch`).
+  - `MIN_CYLINDER_FACES` / `MIN_SPHERE_FACES` / `MIN_TORUS_FACES`.
+  - Finally, ask whether the **jet** is still needed at all beyond the
+    ladder's rung ordering (`region_is_developable`). It was demoted to a prior
+    in the 2026-07-20 pivot; C may remove its last real job.
+
+  Track the constant count as a headline number: stage 2 carried **35** at the
+  time of writing (`grep -h "^const \|^pub(crate) const \|^pub(super) const "
+  src/stage2/*.rs | wc -l`). Report it in the commit each time it moves.
+
+  *Deliberately not recommended:* seam **detection** proper (finding tangent
+  seams directly). Curvature-based detection was measured dead in the
+  2026-07-20 pivot — no threshold separates real junctions from real curvature
+  gradients, the classes overlap. Structural signals (grid-direction
+  discontinuity, density change) were never tried but are provenance-dependent
+  and near-absent on OCCT's Delaunay interiors, so a detector would have to
+  fall back to competition anyway and would not retire any parameter.
+
 - **Faceted-by-construction sources (OpenSCAD, Tinkercad, Blender): a flag or
   auto-detection.** Not a bug today, and not being worried about yet — recorded
   so the eventual decision is informed. These have no B-rep at any stage, so
@@ -94,7 +297,9 @@
      cheap first check for any stage-2 change; the full suite remains the
      decisive one.
 
-  3. **Global parameter consensus.** Every surface is fitted independently,
+  3. **Global parameter consensus.** *Still open and still worth doing; it is
+     independent of A/B/C above and could be slotted in anywhere.* Every
+     surface is fitted independently,
      which throws away the strongest prior a CAD model has — that its features
      repeat. `stepped_block_toroidal` has exactly four distinct radii (0.5, 1,
      3, 15) and the pipeline produces a cloud around each (2.9996, 2.9997,
@@ -110,19 +315,20 @@
      failures → 0), so measure stage-3/4 *validity* directly when changing it —
      that is the property it protects. Needs stage-3 robustness at
      analytic/per-facet boundaries first.
-  5. **Snap region boundaries to computed intersection curves.** Every
-     remaining `--compare` failure has been a boundary sitting one tessellation
-     row off, yet nothing in the pipeline reasons about where a boundary
-     *should* be — it falls out of flood plus claim resolution. Once two
-     adjacent surfaces are fitted their true intersection curve is computable,
-     and faces could be assigned by which side of it they fall on rather than
-     by comparing residuals.
-  6. **Make robustness measurable instead of anecdotal.** Guards accumulate
-     because the feedback loop is one model at a time, inspected by hand, which
-     is how overfitting happens. `gen_test_models` already exists: a sweep over
+  5. **Snap region boundaries to computed intersection curves.** → **SUPERSEDED
+     by item A** in "NEXT MAJOR WORK — exploit the seam assumption" above,
+     which adds the reason it is sound (the assumption guarantees the answer
+     exists as a mesh-edge chain, so this is selection, not search) and the
+     warning about tangent junctions, where `IntSS` is the wrong tool.
+  6. **Make robustness measurable instead of anecdotal.** *Prerequisite for
+     item C above, and advisable before item B.* Guards accumulate because the
+     feedback loop is one model at a time, inspected by hand, which is how
+     overfitting happens. `gen_test_models` already exists: a sweep over
      randomized radii, feature sizes and tessellation densities, scored
      automatically against the generated references, would say whether a guard
-     generalizes or just memorizes the corpus.
+     generalizes or just memorizes the corpus. Note the corpus is Onshape-heavy
+     (Parasolid) and so is not representative of the faceter mix in the wild —
+     see **Mesh provenance** in DEVELOPMENT_PLAN.md.
 
 - **Re-enable the models disabled in step 7a** (each `#[ignore]`/`ignore =`
   in tests/stage2_integration.rs, stage3_integration.rs, stage4_integration.rs
