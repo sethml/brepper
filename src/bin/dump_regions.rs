@@ -367,8 +367,7 @@ fn main() {
         // face: `<face> <k1> <k2> <area>`. For asking whether a curvature-based
         // partition would separate a model's surfaces.
         "jetdump" => {
-            for fi in 0..mesh.faces.len() {
-                let j = &jet[fi];
+            for (fi, j) in jet.iter().enumerate() {
                 let f = &mesh.faces[fi];
                 let vc = f.vertex_count as usize;
                 let nb: Vec<String> = f.neighbors[..vc].iter().map(|n| n.to_string()).collect();
