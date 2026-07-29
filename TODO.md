@@ -409,7 +409,20 @@
   returning NO GROWTH, and plausible-but-wrong fits whose members all genuinely
   validate. Validation is sound; what it validates against is wrong.
 
-  **Build order, each step measurable on its own:**
+  **Step 0 DONE 2026-07-28 — leftover-component ladder rescue (2.3(d)).**
+  `rescue_leftover_components` (classify.rs) runs the whole-region DOF ladder on
+  each connected component of competition's leftovers, before freeform. No new
+  math: the existing conical fitter already estimates its axis from the normal
+  covariance (`smallest_eigenvector_3x3`), and given an *uncontaminated* face
+  set it recovers r = 0.99998 / 0.99999 / 0.50008 against true 1.0 / 1.0 / 0.5.
+  Competition was simply never handing it a clean face set.
+  Result on `stepped_block_toroidal` fine: **138 → 108 surfaces**, cylinders
+  34 → 36 (reference 37), tori 21 → 19 (18), B-splines 3 → 1, per-facet planes
+  80 → 52. Twelve of fourteen probe models bit-identical; suite 508/0/6.
+  It can only add surfaces — it runs on faces nothing else explained and every
+  rung is vertex-tolerance validated.
+
+  **Build order for the rest, each step measurable on its own:**
   1. **Visited ≠ claimed.** A seed that commits nothing costs one entry from the
      untried list; the faces it touched stay seedable. Makes seed misordering
      cost only time (as the plan has always claimed but never delivered) and

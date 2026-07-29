@@ -54,7 +54,7 @@ use super::spherical::SphericalSurface;
 use super::toroidal::ToroidalSurface;
 use super::{
     face_centroid, ConicalHypothesis, PlanarHypothesis, SelectedSurface, SphericalHypothesis,
-    ToroidalHypothesis,
+    ToroidalHypothesis, MIN_CYLINDER_FACES, MIN_SPHERE_FACES, MIN_TORUS_FACES,
 };
 
 use std::collections::HashSet;
@@ -168,7 +168,28 @@ pub(super) fn classify_regions(
         }
         // The ladder cannot explain this region — scoped competition.
         competed_regions += 1;
-        let (hyps, leftovers) = compete::compete_region(mesh, region, jet, &centroids, config);
+        let (mut hyps, leftovers) = compete::compete_region(mesh, region, jet, &centroids, config);
+
+        // Stage 2.3(d): run the whole-region ladder on each connected
+        // component of the leftovers.
+        //
+        // Competition seeds a fit from an unvalidated neighbourhood of one
+        // face, so a surface whose every seed patch straddles a junction is
+        // never fitted at all — measured on `stepped_block_toroidal` fine,
+        // three fillet cylinders are lost this way and reach stage 3 as
+        // B-splines. But the *component* those faces form is exactly the kind
+        // of input the ladder handles: given the right face set the existing
+        // conical fitter estimates its axis from the normal covariance and
+        // recovers r = 0.99998 / 0.99999 / 0.50008 against true 1.0 / 1.0 /
+        // 0.5, at five to ten times under vertex tolerance. Nothing new is
+        // needed — only feeding the fitter a face set that is not
+        // contaminated by a neighbouring surface.
+        //
+        // This can only *add* surfaces: it runs on faces nothing else
+        // explained, and every rung is vertex-tolerance validated, so a
+        // component that is genuinely freeform simply falls through to
+        // 2.3(e) as before.
+        let leftovers = rescue_leftover_components(mesh, &leftovers, &centroids, config, &mut hyps);
 
         // Stage 2.3(e): freeform-fit the leftover components competition
         // could not explain analytically, dissolving any small analytic
@@ -421,6 +442,84 @@ pub(super) fn fit_validate<S: SurfaceType>(
 }
 
 /// Size of the largest mesh-connected component within a face set.
+/// Try the whole-region DOF ladder on each connected component of the
+/// leftovers, appending any that validate to `hyps` and returning the faces
+/// still unexplained.
+///
+/// Rungs in ascending DOF, first validating fit wins, exactly as
+/// `classify_one_region` does — a leftover component *is* a region that
+/// competition failed to explain, so it deserves the same treatment before
+/// freeform gets it.
+fn rescue_leftover_components(
+    mesh: &ConnectedMesh,
+    leftovers: &[usize],
+    centroids: &[[f64; 3]],
+    config: &Config,
+    hyps: &mut Vec<CompeteHyp>,
+) -> Vec<usize> {
+    let mut still: Vec<usize> = Vec::new();
+    for comp in components_of(mesh, leftovers) {
+        if comp.len() < MIN_CYLINDER_FACES {
+            still.extend(comp);
+            continue;
+        }
+        let verts = vertices_of(mesh, &comp);
+        if let Some(h) = fit_validate::<PlanarSurface>(mesh, &comp, &verts, centroids, config) {
+            hyps.push(CompeteHyp::Planar(h));
+        } else if let Some(h) = (comp.len() >= MIN_SPHERE_FACES)
+            .then(|| fit_validate::<SphericalSurface>(mesh, &comp, &verts, centroids, config))
+            .flatten()
+        {
+            hyps.push(CompeteHyp::Spherical(h));
+        } else if let Some(h) =
+            fit_validate::<ConicalSurface>(mesh, &comp, &verts, centroids, config)
+        {
+            hyps.push(CompeteHyp::Conical(h));
+        } else if let Some(h) = (comp.len() >= MIN_TORUS_FACES)
+            .then(|| fit_validate::<ToroidalSurface>(mesh, &comp, &verts, centroids, config))
+            .flatten()
+        {
+            hyps.push(CompeteHyp::Toroidal(h));
+        } else {
+            still.extend(comp);
+        }
+    }
+    still.sort_unstable();
+    still
+}
+
+/// Connected components of a face set, over mesh adjacency.
+fn components_of(mesh: &ConnectedMesh, faces: &[usize]) -> Vec<Vec<usize>> {
+    let member: HashSet<usize> = faces.iter().copied().collect();
+    let mut seen: HashSet<usize> = HashSet::new();
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    let mut starts = faces.to_vec();
+    starts.sort_unstable();
+    for &start in &starts {
+        if seen.contains(&start) {
+            continue;
+        }
+        let mut comp = Vec::new();
+        let mut stack = vec![start];
+        seen.insert(start);
+        while let Some(fi) = stack.pop() {
+            comp.push(fi);
+            let vc = mesh.faces[fi].vertex_count as usize;
+            for &ni in &mesh.faces[fi].neighbors[..vc] {
+                if ni >= 0 {
+                    let ni = ni as usize;
+                    if member.contains(&ni) && seen.insert(ni) {
+                        stack.push(ni);
+                    }
+                }
+            }
+        }
+        comp.sort_unstable();
+        out.push(comp);
+    }
+    out
+}
+
 /// Dissolve into the per-facet residual any committed surface whose boundary
 /// with that residual is more fragmented than the surface itself, and return
 /// the indices dissolved.
