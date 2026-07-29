@@ -397,6 +397,57 @@
   per-facet. This is where to start: it is a fitting problem with a clear
   signal, not a model-selection argument.
 
+- **stepped_block_toroidal: the seeding is scale-blind — and face size is NOT
+  the fix.** Diagnosis in DEVELOPMENT_PLAN, "Why stepped_block_toroidal is hard".
+  This is the model every stage-2 threshold sits on a cliff for; it is one
+  tangent-connected region of 26122 faces, so all 71 reference surfaces come out
+  of competition.
+
+  **The mechanism is established.** 89% of faces are fillet facets covering
+  224 mm²; the planes are 2.5% of faces covering 13783 mm². `seed_patch` grows
+  a depth-3 BFS neighbourhood capped at `SEED_PATCH_CAP = 32` from surfaces that
+  often have fewer than 32 faces (a 3232 mm² plane is **12 faces**; 72 of 75
+  connected flat components are under 32). Measured: of 200 sampled flat seeds,
+  **zero** produced a patch that stayed on the flat — median 50% fillet, worst
+  96%. `PATCH_RADII` is the one spatial bound and is explicitly disabled for
+  flats. So the constants are face counts standing in for lengths, which is why
+  every sweep of them is non-monotonic.
+
+  **MEASURED DEAD END — do not implement a face-size test.** The obvious fix
+  ("a facet much smaller than its neighbour is across a boundary") is not merely
+  unreliable, it is **anti-correlated**. Neighbour size ratio (√area):
+  *across* a flat|curved junction the median is **1.26** (p90 15); *within* the
+  flats it is p75 **18.7**, p90 **47.5**. The discontinuity is inside the
+  planes, not at their edges — a 4380 mm² plane spans 0.048…54.36 mm (1100×
+  within one surface): one huge interior quad ringed by fine slivers, and of the
+  170 faces touching a fillet the median size is 0.118 mm, *finer* than the
+  0.52 mm fillet facets they abut. This is constrained-Delaunay grading, exactly
+  as predicted by **Mesh provenance** — the plane's triangulation must match the
+  fillet's edge discretization along the shared edge. A size-ratio detector
+  would fire inside planes and stay silent at junctions. The weaker version
+  (keep the seed patch *scale-homogeneous*) dies with it: a 0.118 mm plane
+  sliver and a 0.52 mm fillet facet are "comparable".
+
+  **Partially explored, unresolved:** classify by *exact face normals* instead
+  of the jet. Motivation: the jet is unreliable here (adjacent jet-"flat" faces
+  have a median dihedral of 1.24°, so the jet's flat set is not the planes),
+  while facet normals are exact and `curved|curved` dihedrals are a tight 2.44°
+  (p90 2.51) against the exporter's angular tolerance. But connected components
+  over near-zero-dihedral edges give **342 components above 10 mm² where the
+  reference has 16 planes**, and the count is insensitive to the threshold from
+  0.001° to 0.2°. The top ~16 sum to 14301 mm² against an expected 13783, so the
+  planes are in there with a 326-component tail that is not yet explained.
+  **Next step: identify that tail.** Classify mesh faces against the reference
+  STEP's 16 planes to get ground truth, then ask what the extra components are —
+  large-radius fillets whose dihedral steps are below the threshold
+  (`curved|curved` p10 is 0.70°, so some curved edges are much flatter than
+  2.5°) is the leading hypothesis. If it is, the separation is between "constant
+  dihedral" and "zero dihedral", not between flat and curved, and wants a
+  different statistic.
+
+  Diagnostic: `dump_regions <model> jetdump` prints per-face k1/k2/area,
+  adjacency and normal — all the measurements above came from it.
+
 - **Faceted-by-construction sources (OpenSCAD, Tinkercad, Blender): a flag or
   auto-detection.** Not a bug today, and not being worried about yet — recorded
   so the eventual decision is informed. These have no B-rep at any stage, so

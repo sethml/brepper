@@ -372,7 +372,9 @@ fn main() {
                 let f = &mesh.faces[fi];
                 let vc = f.vertex_count as usize;
                 let nb: Vec<String> = f.neighbors[..vc].iter().map(|n| n.to_string()).collect();
-                println!("{fi} {:.6} {:.6} {:.6} {}", j.k1, j.k2, tri_area(&mesh, fi), nb.join(","));
+                let n = f.normal.unwrap_or([0.0, 0.0, 0.0]);
+                println!("{fi} {:.6} {:.6} {:.6} {} {:.9} {:.9} {:.9}",
+                    j.k1, j.k2, tri_area(&mesh, fi), nb.join(","), n[0], n[1], n[2]);
             }
         }
         // What the stage-2.4 boundary locus concludes about each adjacent
