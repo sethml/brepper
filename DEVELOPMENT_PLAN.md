@@ -672,7 +672,7 @@ on a quad whose four neighbours sample only two directions. And *dimensionless*
 curvature κ·extent does not separate either — the plane quad sits at 0.139
 against fillet strips at 2.10, inside a continuum.
 
-**Status: steps 0 and 1 are built (2026-07-28).**
+**Status: steps 0, 1 and 3 are built (2026-07-28).**
 
 - **2.3(d), the leftover-component ladder rescue** (`rescue_leftover_components`,
   classify.rs). A leftover connected component *is* a region competition failed
@@ -691,7 +691,22 @@ against fillet strips at 2.10, inside a continuum.
   minutes on `stepped_block_toroidal` fine and abandoned; the bounded form costs
   42 s → 103 s.
 
-Together: that model went **138 → 95 surfaces** (cylinders 34 → 36 against a
+- **2.3(d2), junction-constrained growth** (`grow_with_axis` in compete.rs,
+  `rescue_with_neighbour_axes` in classify.rs). Borrow the axis direction from
+  an adjacent committed surface and grow a cylinder with it fixed, largest
+  validated area first, iterating until nothing more grows. With the axis fixed
+  the fit is a 3-DOF circle in the perpendicular plane — well conditioned even
+  on a short arc — so growth starts from the seed facet alone and there is no
+  blind patch to straddle. This is what closes the leftover blob that 2.3(d)
+  cannot: a blob spanning several fillets validates no single ladder rung, but
+  it is bounded by surfaces that are already right.
+
+Together: that model went **138 → 75 surfaces** (planes 80 → 18 against a
+reference 16, cylinders 34 → 38 against 37, **tori 21 → 18, exactly the
+reference**, B-splines 3 → 1), with the other 13 probe models bit-identical.
+
+Superseded numbers from the intermediate state: after steps 0–1 alone it was
+**138 → 95 surfaces** (cylinders 34 → 36 against a
 reference 37, tori 21 → 19 against 18, B-splines 3 → 1, per-facet planes
 80 → 39), with the other 13 probe models bit-identical.
 
