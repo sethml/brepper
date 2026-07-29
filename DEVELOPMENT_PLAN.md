@@ -511,20 +511,38 @@ bounded and cross-region accidents are impossible.
 - **Per seed**: run the surface types' fit-and-expand from that same seed
   (jet-pruned rung set, as in (a)) and commit the hypothesis with the
   **largest validated area** (simplest-DOF tiebreak — a plane ties an
-  infinite-radius cylinder). Initial parameters come from the jet:
-  r ≈ 1/κ1, sphere center ≈ centroid − n̂/κ1, ruling/axis from the κ≈0
-  principal direction, torus tube centers directly from medial points —
-  which also repairs a known weakness of the medial-axis torus fitter on
-  strip meshes (its pairwise normal-line intersections must reject
-  near-parallel normal pairs, |n₁·n₂| > 0.95 — exactly what strips are
-  made of; jet κ1 needs no pairing). Expect the multi-axis LM rescue
-  ladders to become mostly dead — delete them only once the corpus proves
-  it.
-- **Expansion**: BFS from the seed; accept a face when the current fit
-  validates it (vertex tolerance + orientation coherence). Jet-informed
-  candidate ordering grows the clean core first, so refits always run
-  from well-conditioned support and junction rows arrive last, when the
-  model is already determined.
+  infinite-radius cylinder).
+- **Growth is two phases, and only the second is validated.** *This is the
+  as-built shape and it differs from the original design; the difference
+  matters, so it is spelled out here rather than left to the roadmap notes.*
+  1. **Conditioning patch** (`seed_patch` → `condition_patch`): an
+     **unvalidated** depth-limited BFS neighbourhood of the seed —
+     `MAX_PATCH_DEPTH` 3 hops, `SEED_PATCH_CAP` 32 faces — optionally
+     filtered by *jet similarity* (same coarse curvature class; magnitude
+     within 1.5×; within `PATCH_RADII` = 4 curvature radii of the seed).
+     The initial fit is a least-squares fit to that patch. `condition_patch`
+     then trims fit-outlier faces until the seed validates against its own
+     patch's fit, bottoming out at a size floor.
+  2. **Flood**: BFS from the seed accepting a face only when the current fit
+     validates it (vertex tolerance + centroid tolerance + orientation
+     coherence), refitting to a fixpoint.
+- *Why not the original design.* §2.3(b) first specified that initial
+  parameters come **analytically from the jet at the seed face** — r ≈ 1/κ1,
+  sphere centre ≈ centroid − n̂/κ1, ruling/axis from the κ≈0 principal
+  direction, torus tube centres from medial points. That was abandoned
+  because the jet's *magnitude* is not trustworthy at the scale of a small
+  fillet: adjacent facets of one exact r = 0.5 arc read κ1 = 0.023, 0.162 and
+  2.2, i.e. radii of 43 mm, 6 mm and 0.45 mm for the same feature, so
+  "r ≈ 1/κ1" would be wrong by 100×. Fitting a neighbourhood is robust to
+  that — but it introduces a failure the original design could not have,
+  since there is no patch to straddle when the parameters come from one
+  face. See "Why stepped_block_toroidal is hard" above: on a mesh whose
+  facet sizes vary 2000:1 the patch cannot stay on its own surface, and the
+  jet filter that is supposed to keep it there classifies only 0.17% of that
+  model's faces as flat.
+- **Ordering**: jet-informed candidate ordering grows the clean core first,
+  so refits run from well-conditioned support and junction rows arrive last,
+  when the model is already determined.
 - **Claims**: expansion may grow through faces claimed by earlier
   hypotheses — junction-row faces whose vertices genuinely lie on two
   surfaces end up claimed by both, which is the true ambiguity; 2.4
