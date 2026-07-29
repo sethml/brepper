@@ -422,8 +422,20 @@
   It can only add surfaces — it runs on faces nothing else explained and every
   rung is vertex-tolerance validated.
 
+  **Step 1 DONE 2026-07-28 — visited ≠ claimed.** Committing a hypothesis no
+  longer retires the faces it grew into; every region face seeds exactly once.
+  `stepped_block_toroidal` fine **108 → 95 surfaces** (planes 52 → 39), other
+  13 probe models bit-identical, suite 508/0/6.
+  **Cost, and it is real: that model goes 42 s → 103 s (~2.5×).** Reseeding
+  every face unbounded was far worse (>10 min, abandoned), so faces in the
+  *interior* of the explained set — every neighbour claimed — are skipped:
+  a fit grown from the middle of a validated surface only refits that surface,
+  so it is pure cost. Faces at the margin still seed, which is where a
+  competitor can actually arise. If the runtime becomes a problem, that
+  interior test is the knob, not the principle.
+
   **Build order for the rest, each step measurable on its own:**
-  1. **Visited ≠ claimed.** A seed that commits nothing costs one entry from the
+  1. ~~**Visited ≠ claimed.**~~ DONE, see above. A seed that commits nothing costs one entry from the
      untried list; the faces it touched stay seedable. Makes seed misordering
      cost only time (as the plan has always claimed but never delivered) and
      makes an unreliable bootstrap survivable — a 36-face surface gets 36

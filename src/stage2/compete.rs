@@ -7,9 +7,14 @@
 //! boundary cordons the arena, so competition cost is bounded and
 //! cross-region accidents are impossible.
 //!
-//! - **Seeds**: region faces not yet claimed by any committed hypothesis, in
-//!   jet-interior-first order (faces whose (κ1,κ2) best match their
-//!   neighbors' seed before junction rows). Claimed faces never seed.
+//! - **Seeds**: every region face seeds exactly once, in jet-interior-first
+//!   order (faces whose (κ1,κ2) best match their neighbors' seed before
+//!   junction rows). Committing a hypothesis does NOT retire the faces it grew
+//!   into — growing into a face is a hypothesis, not a conclusion, and a face
+//!   swallowed by a wrong surface must still be able to seed the right one
+//!   (`resolve_claims` arbitrates the resulting multi-claims). Only faces in
+//!   the *interior* of the explained set are skipped, since a fit grown from
+//!   the middle of a validated surface merely refits that surface.
 //! - **Per seed**: grow each candidate surface type (jet-pruned) from a
 //!   small jet-similar seed patch — fit, flood-accept every region face the
 //!   fit validates, refit on the grown support, to a fixpoint — and commit
@@ -252,12 +257,31 @@ pub(super) fn compete_region(
             .then_with(|| a.cmp(&b))
     });
 
-    let mut claimed = vec![false; n]; // out of the seed pool once claimed
+    // Every region face seeds exactly once — `seeds` is a permutation of them,
+    // which is what terminates the loop. Committing a hypothesis does NOT
+    // remove the faces it grew into from the seed pool.
+    //
+    // Growing into a face is a hypothesis, not a conclusion. The committed
+    // face set is always a `flood` output, so every member validates — but
+    // against a fit whose parameters came from an unvalidated seed
+    // neighbourhood, so "validated" does not mean "the right surface". Letting
+    // those faces seed too means a wrong hypothesis can be out-competed by a
+    // right one grown from a face it had swallowed; `resolve_claims` already
+    // exists to arbitrate the multi-claims that produces.
+    //
+    // It also makes the long-standing claim that seed misordering "costs only
+    // time" actually true: previously an early bad hypothesis consumed faces a
+    // later, better seed needed.
     let mut committed: Vec<CompeteHyp> = Vec::new();
     let mut claim_lists: Vec<Vec<usize>> = vec![Vec::new(); n]; // face -> committed idxs
+    let mut claimed = vec![false; n];
 
     for &seed in &seeds {
-        if claimed[seed] {
+        // Skip only faces in the INTERIOR of what is already explained: every
+        // neighbour claimed too. Seeding there cannot produce a competitor —
+        // a fit grown from the middle of a validated surface refits that same
+        // surface — so it is pure cost. Faces at the margin still seed.
+        if claimed[seed] && interior_of_claims(mesh, seed, &claimed) {
             continue;
         }
         let jf = jet[seed];
@@ -371,16 +395,13 @@ pub(super) fn compete_region(
                 }
                 let idx = committed.len();
                 for &f in hyp.faces() {
-                    claimed[f] = true;
                     claim_lists[f].push(idx);
+                    claimed[f] = true;
                 }
                 committed.push(hyp);
             }
-            None => {
-                // The seed grows nothing analytic; drop it from the pool so
-                // the loop terminates. It becomes a leftover.
-                claimed[seed] = true;
-            }
+            // A seed that grows nothing analytic costs only its own turn.
+            None => {}
         }
     }
 
@@ -397,6 +418,16 @@ pub(super) fn compete_region(
 /// Resolve multi-claimed faces to their best-fitting claimant (2× margin to
 /// leave the larger claimant), rebuild each hypothesis's face/vertex lists,
 /// drop hypotheses that lost all faces, and collect unclaimed leftovers.
+/// Is every neighbour of `fi` claimed too? Such a face is interior to the
+/// explained set and cannot seed anything new.
+fn interior_of_claims(mesh: &ConnectedMesh, fi: usize, claimed: &[bool]) -> bool {
+    let face = &mesh.faces[fi];
+    let vc = face.vertex_count as usize;
+    face.neighbors[..vc]
+        .iter()
+        .all(|&ni| ni < 0 || claimed[ni as usize])
+}
+
 fn resolve_claims(
     mesh: &ConnectedMesh,
     region_faces: &[usize],
