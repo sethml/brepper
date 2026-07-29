@@ -672,7 +672,58 @@ on a quad whose four neighbours sample only two directions. And *dimensionless*
 curvature κ·extent does not separate either — the plane quad sits at 0.139
 against fillet strips at 2.10, inside a continuum.
 
-**The design.**
+**Status: steps 0 and 1 are built (2026-07-28).**
+
+- **2.3(d), the leftover-component ladder rescue** (`rescue_leftover_components`,
+  classify.rs). A leftover connected component *is* a region competition failed
+  to explain, so the whole-region DOF ladder runs on each one before freeform
+  gets it. No new math was needed: the conical fitter already estimates its axis
+  as the smallest eigenvector of the normal covariance, and given an
+  uncontaminated face set recovers r = 0.99998 / 0.99999 / 0.50008 against true
+  1.0 / 1.0 / 0.5. Competition was simply never handing it a clean face set.
+  It can only *add* surfaces — every rung is vertex-tolerance validated, so a
+  genuinely freeform component still falls through to 2.3(e).
+- **Visited ≠ claimed** (compete.rs). Committing no longer retires the faces a
+  hypothesis grew into; every region face seeds exactly once. Faces in the
+  *interior* of the explained set are skipped, because a fit grown from the
+  middle of a validated surface merely refits that surface — a pragmatic bound,
+  not a derived one. Reseeding with no bound at all was measured at over ten
+  minutes on `stepped_block_toroidal` fine and abandoned; the bounded form costs
+  42 s → 103 s.
+
+Together: that model went **138 → 95 surfaces** (cylinders 34 → 36 against a
+reference 37, tori 21 → 19 against 18, B-splines 3 → 1, per-facet planes
+80 → 39), with the other 13 probe models bit-identical.
+
+**What the remaining 24-surface gap now is** (measured after steps 0–1, on
+`stepped_block_toroidal` fine: 95 against a reference 71). Twenty-three of the
+twenty-four surplus surfaces are **single-facet planes** — leftover slivers that
+nothing explained — plus one extra torus, one spurious B-spline, one missing
+cylinder. Two distinct kinds of sliver, and they want different fixes:
+
+- *Absorbable ones.* Face 6758 sits 7.7e-5 mm from an adjacent committed
+  `cyl r=1.0000` and 4.1e-5 from an adjacent single-facet plane — the first is
+  1.5× vertex tolerance, the second *inside* it. These are boundary faces that
+  stage 2.4's relabel/merge/snap ought to take, and mostly the repair pass does
+  reduce 140 committed surfaces to 95.
+- *Unfitted curved runs.* Faces 9857/9866 and their neighbours are a chain of
+  per-facet planes whose normals rotate progressively — n = [0,−0.280,0.960],
+  [0,−0.269,0.963], [0,−0.248,0.969], [0,−0.238,0.971], [0,−0.227,0.974],
+  [0,−0.206,0.979] — with adjacent-facet distances of 4.7e-4 to 1.4e-3 mm, far
+  above vertex tolerance. That is a fillet arc that was never fitted as a
+  cylinder, sitting in per-facet pieces.
+
+**Limitation of 2.3(d) found doing this, and it shapes step 3.** The rescue
+fits *one* surface per leftover component. After steps 0–1 the region still
+leaves 104 leftovers whose largest connected blob is **49 faces**, and that blob
+spans several distinct fillets — so no single ladder rung validates it and the
+whole blob falls through. Re-running competition inside it does not help either,
+since visited ≠ claimed already seeded every one of those faces. What such a
+blob has that competition lacks is *committed neighbours*: it is bounded by
+surfaces that are already correct, which is exactly the junction constraint of
+step 3. Expect step 3 to be what closes this, not more seeding.
+
+**The design (remaining steps).**
 
 - **Seeding stays universal.** Every unclaimed face is a candidate seed; the
   constraint machinery below is an addition, never a fallback.
