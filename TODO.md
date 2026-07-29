@@ -68,7 +68,7 @@
     criterion item C needs, and the diagnostic that verifies boundaries are
     right (zero wrong-side faces corpus-wide) depends on the same module.
   - **The validation target did not move, and the reason is worth knowing.**
-    `stepped_block` fine still reports a 4.36e-2 mm `Compare 3.1` edge distance
+    `stepped_block_toroidal` fine still reports a 4.36e-2 mm `Compare 3.1` edge distance
     and medium still fails at 1.56e-1. Neither is a wrong-side-face problem:
     fine's worst edge is a torus↔cylinder tube junction whose boundary sits on
     the locus to ~1e-6 mm, and medium's is a torus↔B-spline edge, i.e. the
@@ -121,6 +121,43 @@
 
   ---
 
+  **B-prime. Compute the mesh's precision floor and use it as the UNIT, not as
+  a knob.** *Slots in ahead of B; the two share a premise and this half is
+  exact rather than estimated.* Full write-up in DEVELOPMENT_PLAN, "Mesh
+  precision is a float32 quantum, not a constant".
+
+  The corpus's STLs are binary, so vertices are float32 and the floor on vertex
+  accuracy is `max|coordinate| × 1.19e-7` — 2.76e-6 mm for rounded_cube,
+  **1.96e-5 mm for stepped_block_toroidal**, matching their measured stage-1
+  vertex distances. So `--vertex-tolerance` at 5e-5 demands 18× the quantum of
+  one model and 2.6× of another.
+
+  - **DO NOT make the acceptance tolerance scale with it — measured wrong.**
+    Sweeping `--vertex-tolerance` on stepped_block_toroidal fine gives 138 / 87
+    / 148 / 161 / 111 / 76 surfaces at 5e-5 / 1e-4 / 2e-4 / 4e-4 / 8e-4 /
+    1.5e-3. Chaotic, no plateau. A scale-adaptive bar lands that model at
+    ~3.5e-4, which is worse than today.
+  - **DO use it as the unit for fit quality.** Committed analytic surfaces fit
+    their support to under ~1 quantum across a 7× range of quanta (medians
+    0.31–0.47, maxima 0.6–1.2), while the spurious fits `hill_with_hole` used
+    to commit sat at 80×. That is the scale-free commit criterion the
+    post-refit tightening idea needs, and it is what "a genuine fit explains
+    its support to the precision the data has" actually means.
+  - **DO clamp and report.** A `--vertex-tolerance` below the quantum is
+    unsatisfiable — the data does not carry that precision. Clamp, warn, and
+    print the quantum in the stage-1 summary next to the existing vertex and
+    centroid compare numbers.
+  - **Not a flag.** The quantum is a measurable property of the input file, not
+    a user preference; a flag would only let someone misdeclare it.
+    `--vertex-tolerance` stays the user's *request*, the quantum is what the
+    data can *support*, and the effective value is the larger of the two.
+  - Note the quantum depends on distance from the origin, so the same part
+    authored 200 mm off-origin carries ~10× worse data than one centred. Worth
+    saying in the README: recentring before export improves precision, and
+    nothing downstream can recover it afterwards.
+
+  ---
+
   **B. Estimate `--surface-tolerance` and `--angular-tolerance` from the mesh
   instead of defaulting them.** Both are stand-ins for settings the *exporter*
   used and then discarded; neither is a property of the fitting problem.
@@ -136,7 +173,7 @@
   *is* a sample of ε.
 
   *How far off the default is:* stage 1's `--compare` already reports the true
-  sag — **8.9e-4 mm** on stepped_block fine, **9.5e-4 mm** on rounded_cube
+  sag — **8.9e-4 mm** on stepped_block_toroidal fine, **9.5e-4 mm** on rounded_cube
   fine — against a default of **0.4 mm**, i.e. ~400× too loose. (0.4 was a hand
   edit in March 2026 with no recorded rationale; see the tolerance-history
   notes.) Earlier measurements: worst centroid sag 0.026 mm Onshape-coarse,
@@ -168,7 +205,7 @@
   Recover it as a **clustering** rather than a threshold: the dihedral
   distribution should be bimodal — tessellation steps near zero, real sharp
   edges well separated — so find the gap (Otsu-style). Plot it before
-  believing it; on stepped_block fine only 384 of 51603 edges are called sharp,
+  believing it; on stepped_block_toroidal fine only 384 of 51603 edges are called sharp,
   so the populations are very lopsided. **Bonus:** the absence of a clean gap,
   or a spiky constant-dihedral distribution, is exactly the OpenSCAD
   faceted-by-construction detector described in the item below.
@@ -196,7 +233,7 @@
   Approximation** (Cohen-Steiner et al.): alternate (assign faces to proxies)
   and (refit proxies) to a fixpoint. Half of it already exists and is known to
   work here: `relabel_boundaries` + `refit_geometry` converged this session and
-  took stepped_block fine from 73 surfaces to exactly the reference's 71.
+  took stepped_block_toroidal fine from 73 surfaces to exactly the reference's 71.
 
   - **Subsumes:** seed ordering (`neighbor_jet_mismatch`), `seed_patch`,
     `condition_patch`, `grow`/`grow_from`/`flood`, `resolve_claims`,
@@ -384,7 +421,7 @@
      constant count 36 → 34. Full write-up in DEVELOPMENT_PLAN, "The flood bar
      is the vertex tolerance". Headlines:
      - **It was masking a seed-conditioning defect, not doing its stated job.**
-       Its response is non-monotonic (stepped_block fine: 138 / 90 / 134 / 113
+       Its response is non-monotonic (stepped_block_toroidal fine: 138 / 90 / 134 / 113
        / 71 surfaces at 1× / 2× / 5× / 12× / 30×), which is a lever, not a
        bound. And `residual_scale` measured interpolation error over the fit's
        own support and spent it on extrapolation to faces outside it.
@@ -394,7 +431,7 @@
      - **Won**: `bspline_blister` 968 → 7 surfaces (reference 6),
        `hill_with_hole` 47 → 8 (reference 7). The spurious analytic patches
        were what had prevented their freeform fits from taking the region.
-     - **Cost, now blocking 3 disabled tests**: stepped_block fine 71 → 138,
+     - **Cost, now blocking 3 disabled tests**: stepped_block_toroidal fine 71 → 138,
        via 323 no-growth seeds — including flat seeds failing to grow a plane.
        `condition_patch` gives up at `MIN_CONDITION_FACES` without checking the
        seed validates, and stepped_block's flats are narrow strips between
@@ -438,7 +475,7 @@
      near-zero half-angle has its apex at infinity and cannot be exported
      sanely; `MAX_TORUS_RADIUS_RATIO` still fires (medium 18→19 tori,
      filleted_pipe 4→5); `MIN_AXIAL_SWEEP_DEG` is firmly load-bearing (without
-     it stepped_block fine goes 16/37/18 planes/cylinders/tori → 12/38/21).
+     it stepped_block_toroidal fine goes 16/37/18 planes/cylinders/tori → 12/38/21).
      Most of the pile had already been dissolved by the tolerance and refit
      work rather than by anything aimed at it.
      **What replaced the framing** is the identifiability/validity/selection

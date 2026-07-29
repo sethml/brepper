@@ -612,6 +612,49 @@ different justifications and different evidence:
   a comparison, and it is the one that most often gets written as a threshold
   when it should not be.
 
+**Mesh precision is a float32 quantum, not a constant — and it scales with the
+model.** The corpus's STLs (Onshape, Fusion, the NURBS set) are *binary*, so
+vertices are float32 and carry ~1.19e-7 relative precision. The absolute floor
+on vertex accuracy is therefore `max|coordinate| × 1.19e-7`, which is a property
+of how far the model sits from the origin as much as of the tessellation:
+
+| model | max coord | quantum | measured stage-1 vertex max dist |
+|---|---|---|---|
+| rounded_cube fine | 23.1 | 2.76e-6 mm | 1.9e-6 |
+| stepped_block_toroidal fine | 164.0 | **1.96e-5 mm** | **1.23e-5** |
+
+Both measurements sit just under their quantum. So the "a mesh vertex lies on
+the true CAD surface to ~1e-6 mm" figure this plan leans on repeatedly is not a
+constant: it is ~1e-6 for small models and twenty times worse for
+stepped_block_toroidal, purely because that model is 164 mm across. (ccad's STLs
+are ASCII at 7 significant digits, which works out similar.)
+
+*The consequence for `--vertex-tolerance`.* At its 5e-5 default it means
+**18× the quantum on rounded_cube and 2.6× on stepped_block_toroidal** — wildly
+different demands dressed as one number. That is a strong candidate explanation
+for why stepped_block_toroidal is the model every threshold experiment breaks
+on: it runs closest to its own data's precision floor, so small changes flip
+which fit wins. It also explains the two surfaces of 55 that sit at 6.9e-5 there
+— at 164 mm in float32 they largely cannot do better.
+
+*What separates cleanly in quantum units.* Committed analytic surfaces fit their
+own support to well under one quantum, across a 7× range of quanta:
+rounded_cube 0.47 median / 0.7 max, pipe_elbow 0.37 / 0.6, hill_with_hole
+0.38 / 1.2, stepped_block_toroidal fine 0.31 / 1.0. Against that, the spurious
+fits `hill_with_hole` used to commit sat at **80×** its quantum. So "a genuine
+fit explains its support to about the precision the data has" is a scale-free
+statement that holds across the corpus, where the same claim in millimetres does
+not.
+
+*What this does NOT justify.* Making the acceptance tolerance adaptive by
+scaling it with the quantum was tried and measured wrong. Loosening
+`--vertex-tolerance` on stepped_block_toroidal fine gives 138 / 87 / 148 / 161 /
+111 / 76 surfaces at 5e-5 / 1e-4 / 2e-4 / 4e-4 / 8e-4 / 1.5e-3 — chaotic, no
+trend, no plateau, exactly the signature of the `GROW_VTOL_FACTOR` sweep. A
+scale-adaptive bar would put that model at ~3.5e-4 (preserving rounded_cube's
+current 18× ratio), which is *worse* than the default. The quantum is the right
+**unit** and the wrong **knob**.
+
 **The flood bar is the vertex tolerance — and the self-calibrating one it
 replaced was masking a seeding defect.** From 2026-07-27 the flood scaled its
 acceptance bar by each fit's own median residual, clamped between
@@ -637,7 +680,7 @@ bit-identical — `condition_patch`, the seed-patch fallback, the stale-fit refi
 and the area-weighted plane offset had each removed part of the cause.
 
 Third, and decisively, **the response to the constant is non-monotonic**:
-stepped_block fine gives 138 surfaces at 1×, 90 at 2×, 134 at 5×, 113 at 12× and
+stepped_block_toroidal fine gives 138 surfaces at 1×, 90 at 2×, 134 at 5×, 113 at 12× and
 the exact 71 at 30×. A bound behaves monotonically with a plateau. A lever does
 this. The constant was not buying tolerance, it was choosing which accidental
 fit won a contested support.
@@ -648,7 +691,7 @@ competition was carving out of it were what had prevented the freeform fit from
 taking the region at all. `hill_with_hole` goes from 47 to **8** against a
 reference of 7. Both had been broken and unwatched.
 
-*What it exposed, and what is now blocked on it.* stepped_block fine regresses
+*What it exposed, and what is now blocked on it.* stepped_block_toroidal fine regresses
 71 → 138, through **323 seeds that produce no growth** — including *flat* seeds
 failing to grow a *plane*, which cannot be a tolerance problem, since a wall's
 vertices sit at ~1e-15. The cause is `condition_patch`: it trims a straddling
@@ -659,7 +702,7 @@ cannot be trimmed to a clean one. The loose bar hid this by validating the
 contaminated fit anyway.
 
 **That floor cannot simply be retuned, and this is measured.** At a conical
-conditioning floor of 2, stepped_block fine recovers to 75 surfaces with its
+conditioning floor of 2, stepped_block_toroidal fine recovers to 75 surfaces with its
 cylinders and tori exactly right (37 and 18) — but `filleted_pipe` acquires a
 spurious 18-face 5.6° cone that fits at 6e-7. At 6, filleted_pipe is correct and
 stepped_block is 136. At 4, both are wrong. Making the floor per-type via a
