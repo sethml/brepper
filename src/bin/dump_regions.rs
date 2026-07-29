@@ -363,6 +363,18 @@ fn main() {
                 jet[fi].k1, jet[fi].k2, c[0], c[1], c[2], n[0], n[1], n[2]
             );
         }
+        // Per-face principal curvatures from the stage-2.1 jet, one line per
+        // face: `<face> <k1> <k2> <area>`. For asking whether a curvature-based
+        // partition would separate a model's surfaces.
+        "jetdump" => {
+            for fi in 0..mesh.faces.len() {
+                let j = &jet[fi];
+                let f = &mesh.faces[fi];
+                let vc = f.vertex_count as usize;
+                let nb: Vec<String> = f.neighbors[..vc].iter().map(|n| n.to_string()).collect();
+                println!("{fi} {:.6} {:.6} {:.6} {}", j.k1, j.k2, tri_area(&mesh, fi), nb.join(","));
+            }
+        }
         // What the stage-2.4 boundary locus concludes about each adjacent
         // pair of committed surfaces: tangent or transversal, whether a
         // junction locus exists, and how many faces sit on the wrong side of

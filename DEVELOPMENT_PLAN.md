@@ -612,6 +612,51 @@ different justifications and different evidence:
   a comparison, and it is the one that most often gets written as a threshold
   when it should not be.
 
+**Why stepped_block_toroidal is hard: the seeding is scale-blind, and its mesh
+is not scale-uniform.** This model is one tangent-connected region of 26122
+faces (384 sharp edges partition nothing), so all 71 reference surfaces —
+16 planes, 37 cylinders, 18 tori — must come out of competition. It is the model
+every threshold in stage 2 sits on a cliff for, and the reason is not that its
+surfaces are hard to tell apart. They are trivially distinguishable: the fillets
+are r = 0.5 and 1 against planes of ~100 mm, a curvature contrast of 4000:1.
+
+*The mesh is wildly non-uniform.* 89% of the faces are fillet facets covering
+224 mm²; the planes are 2.5% of the faces covering 13783 mm². Mean facet size is
+**0.52 mm on the fillets and 4.6 mm on the flats**, and per-plane it is worse —
+a 3232 mm² plane is **12 faces** (16 mm each) and a 550 mm² plane is 9. Facet
+*area* varies by ~2000:1 across the model.
+
+*Every neighbourhood mechanism in stage 2 counts faces, not space.* `seed_patch`
+grows a depth-3 BFS neighbourhood capped at `SEED_PATCH_CAP = 32` — from a
+surface that often has fewer than 32 faces in total (72 of 75 connected flat
+components are under 32). Measured: of 200 sampled flat seeds, **none** produced
+a patch that stayed on the flat; the median patch is 50% fillet facets and the
+worst is 96%. The plane fit is then computed from a patch that is half a
+different surface, and `condition_patch` is left to repair it against a floor of
+6 and 16 trim rounds.
+
+`PATCH_RADII` exists precisely to bound the patch in space rather than hops —
+but it is measured in curvature radii of the seed's own jet, and its doc notes
+"flats (jet magnitude ~0) are unbounded, as they should be". So on exactly the
+seeds that need it here, the spatial bound is switched off.
+
+*It corrupts the curvature estimate too.* Only **7 of the 16 reference planes**
+appear as connected flat components at all. A plane that is one or two quads
+ringed by fillets has its jet computed from a neighbourhood dominated by fillet
+vertices, so it reads curved before seeding even begins.
+
+*What follows.* The constants are not badly-chosen values; they are face counts
+standing in for lengths, on a mesh where face size varies by 30× across a
+junction. That is why their responses are non-monotonic and why loosening or
+tightening any of them "changes which accident wins" rather than converging.
+**The lead is to bound and filter the seed patch by mesh scale**: a neighbour
+whose facet is many times smaller than the seed's is, on a B-rep tessellation,
+almost certainly on the other side of a face boundary — the density change the
+*Mesh provenance* section lists as corroborating evidence, which here is a 9–30×
+signal rather than a subtle one. Provenance-dependent, so it must stay a seeding
+prior with validation still deciding every face; but as a prior it is far
+stronger on this model than the jet it would supplement.
+
 **Mesh precision is a float32 quantum, not a constant — and it scales with the
 model.** The corpus's STLs (Onshape, Fusion, the NURBS set) are *binary*, so
 vertices are float32 and carry ~1.19e-7 relative precision. The absolute floor
