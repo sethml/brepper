@@ -460,9 +460,20 @@
      Measured on the three cylinders this model loses: fixing the axis alone
      recovers r = 0.99998 / 0.99999 / 0.50008 at 5–10× under vertex tolerance.
      The free fit fails on the axis, not the radius.
-  4. **Fixpoint over seed passes**, so pass 2 can use what pass 1 committed.
-  5. Only then delete `seed_patch`/`condition_patch` and the `PATCH_*`/
-     `SEED_PATCH_CAP`/`MIN_CONDITION_FACES` family.
+  4. ~~**Fixpoint over seed passes**~~ **DONE 2026-07-28** as a (d)/(d2)
+     fixpoint — they alternate until neither commits. **Measured inert**: both
+     already converge in one round on every corpus model. Kept as a guarantee.
+  5. **Delete `seed_patch`/`condition_patch` and the `PATCH_*` family —
+     MEASURED NOT YET POSSIBLE, and it is NOT a cleanup.** Cutting the blind
+     patch to the seed alone (`SEED_PATCH_CAP` = 1) collapses
+     `stepped_block_toroidal` fine to **24872 surfaces**, one per facet. The
+     blind patch is still the only source of initial parameters for the FREE
+     fit path, which commits ~63 hypotheses before either rescue runs; (d) and
+     (d2) merely clean up after it. **The prerequisite is a bootstrap for the
+     free path that is not a blind neighbourhood** — e.g. making every growth
+     axis-constrained from the outset, which needs a first axis from something
+     other than a patch. That is a design step, not a deletion. Constant count
+     stays at 34.
 
   **The one real risk**, and it is narrower than "no anchor" (seeding stays
   universal, so with nothing committed the design degrades to today's behaviour,

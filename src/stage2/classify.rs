@@ -189,16 +189,23 @@ pub(super) fn classify_regions(
         // explained, and every rung is vertex-tolerance validated, so a
         // component that is genuinely freeform simply falls through to
         // 2.3(e) as before.
-        let leftovers = rescue_leftover_components(mesh, &leftovers, &centroids, config, &mut hyps);
-
-        // Stage 2.3(d2): grow cylinders through what is still left, borrowing
-        // the axis direction from an already-committed neighbour. A leftover
-        // blob spanning several fillets validates no single ladder rung, so
-        // 2.3(d) leaves it whole — but it is bounded by surfaces that are
-        // already correct, and their axes are exactly what a free fit gets
-        // wrong. See `grow_with_axis`.
-        let leftovers =
-            rescue_with_neighbour_axes(mesh, &leftovers, &centroids, config, &mut hyps);
+        // Stages 2.3(d) and 2.3(d2), alternated to a fixpoint. Each changes
+        // the leftover set the other sees: (d2) splitting a blob can leave a
+        // remainder one ladder rung explains, and (d) committing a surface
+        // gives (d2) another axis to borrow. Terminating — a round that
+        // commits nothing ends the loop, and every round strictly shrinks the
+        // leftovers.
+        let mut leftovers = leftovers;
+        loop {
+            let before = leftovers.len();
+            leftovers =
+                rescue_leftover_components(mesh, &leftovers, &centroids, config, &mut hyps);
+            leftovers =
+                rescue_with_neighbour_axes(mesh, &leftovers, &centroids, config, &mut hyps);
+            if leftovers.len() == before {
+                break;
+            }
+        }
 
         // Stage 2.3(e): freeform-fit the leftover components competition
         // could not explain analytically, dissolving any small analytic

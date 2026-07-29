@@ -672,7 +672,7 @@ on a quad whose four neighbours sample only two directions. And *dimensionless*
 curvature κ·extent does not separate either — the plane quad sits at 0.139
 against fillet strips at 2.10, inside a continuum.
 
-**Status: steps 0, 1 and 3 are built (2026-07-28).**
+**Status: steps 0, 1, 3 and 4 are built; step 5 is measured NOT YET POSSIBLE (2026-07-28).**
 
 - **2.3(d), the leftover-component ladder rescue** (`rescue_leftover_components`,
   classify.rs). A leftover connected component *is* a region competition failed
@@ -709,6 +709,25 @@ Superseded numbers from the intermediate state: after steps 0–1 alone it was
 **138 → 95 surfaces** (cylinders 34 → 36 against a
 reference 37, tori 21 → 19 against 18, B-splines 3 → 1, per-facet planes
 80 → 39), with the other 13 probe models bit-identical.
+
+- **Step 4, the (d)/(d2) fixpoint.** The two rescues alternate until neither
+  commits anything: (d2) splitting a blob can leave a remainder one ladder rung
+  explains, and (d) committing a surface gives (d2) another axis to borrow.
+  Terminating, since every round strictly shrinks the leftovers. **Measured
+  inert on the corpus** — the two already converge in one round on every model
+  — so it is a guarantee rather than a fix, kept because the cost is one extra
+  pass over an unchanged set.
+
+**Step 5 — deleting `seed_patch`/`condition_patch`/`PATCH_*` — is NOT a cleanup,
+and is not yet possible. Measured.** Cutting the blind patch to the seed alone
+(`SEED_PATCH_CAP` = 1) collapses `stepped_block_toroidal` fine to **24872
+surfaces**, essentially one per facet. The blind patch is still the sole source
+of initial parameters for the *free* fit path, which commits ~63 hypotheses
+before either rescue runs; (d) and (d2) only clean up after it. Deleting it
+requires the constrained path to take over the primary role — every surface
+grown on an axis borrowed from a committed neighbour, bootstrapped from
+somewhere other than a blind neighbourhood — which is a further design step, not
+a removal. The stage-2 constant count therefore stays at 34.
 
 **What the remaining 24-surface gap now is** (measured after steps 0–1, on
 `stepped_block_toroidal` fine: 95 against a reference 71). Twenty-three of the
