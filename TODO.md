@@ -156,6 +156,25 @@
     saying in the README: recentring before export improves precision, and
     nothing downstream can recover it afterwards.
 
+  - **Add an off-origin corpus model so the quantum question is testable.**
+    `max(--vertex-tolerance, 2·quantum(p))` — a *per-point* floor, tight near
+    the origin and loose far from it — is physically well-motivated but
+    **inert on today's corpus**: only `cone_truncated_medium` binds, and
+    marginally (2q = 5.8e-5 against a 5e-5 default). On
+    `stepped_block_toroidal` fine the whole model spans |p|∞ 64…164, so 2q
+    spans 1.5e-5…3.9e-5 and never reaches the default. Generate the same part
+    at the origin and translated ~1 m out (`gen_test_models` can do it): there
+    2q ≈ 2.4e-4, five times the default, so the floor would actually bind and
+    could be *validated* rather than argued about. It would also test the
+    "recentre before export" advice directly.
+    Two things to get right when it is built: the quantum for a *distance* is
+    direction-weighted, `Σᵢ|n̂ᵢ||pᵢ|ε`, not `|p|∞ ε` — on stepped_block the
+    y = −164 end-cap plane really does eat the full 1.96e-5 while a fillet
+    cylinder measuring radially in xz does not, and a blanket `|p|∞` would
+    loosen the latter ~20× more than the data justifies. And least squares
+    averages quantization down by ~√N, which is why fits land at 0.3–0.5 q
+    while individual vertices need ~2 q of headroom.
+
   ---
 
   **B. Estimate `--surface-tolerance` and `--angular-tolerance` from the mesh
