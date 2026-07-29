@@ -663,6 +663,25 @@ appear as connected flat components at all. A plane that is one or two quads
 ringed by fillets has its jet computed from a neighbourhood dominated by fillet
 vertices, so it reads curved before seeding even begins.
 
+*But this is NOT what costs the model its surfaces — correction, 2026-07-28.*
+The mechanism above is real and measured, and it is tempting to conclude the
+planes are therefore lost. **They are not.** `facet_plane` turns every
+unexplained face into its own plane, and for a single-quad plane that fallback
+is geometrically *exact* — one quad, one plane, correct normal and offset. The
+committed decomposition contains **exactly 16 planar surfaces of meaningful
+area totalling 14301 mm²**, matching the reference's 16 planes: fourteen
+single-quad "steps" arriving via the fallback, and the two sliver-heavy "sides"
+(195 and 193 faces) found analytically by competition. A seed that returns NO
+GROWTH on a single-quad plane is harmless, because a per-facet plane and a
+committed plane are the same surface there.
+
+The real losses on this model are entirely in the **curved** surfaces: 34
+cylinders against a reference 37, 21 tori against 18, 3 spurious B-splines, and
+~62 junk single-facet planes of 0.04–0.11 mm² that should belong to neighbouring
+fillets. Read the scale-blindness as a mechanism that *will* bite — it is why
+the conditioning patch cannot be trusted — not as the explanation for this
+model's surface count.
+
 *What follows.* The constants are not badly-chosen values; they are face counts
 standing in for lengths, on a mesh where face size varies by 30× across a
 junction. That is why their responses are non-monotonic and why loosening or
