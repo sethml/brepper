@@ -148,6 +148,9 @@ All node/triangle indices are **1-based** (OCCT convention).
 - Solution: stage 1.3 merges coplanar triangle pairs back into quads, so curved-surface facets become single faces with single-face planar hypotheses.
 - This restores the clean "single-face = curved surface candidate" criterion for stages 2.2 and 2.3.
 - Sphere poles are an exception: triangles in the polar fan pattern don't have coplanar neighbors and correctly remain as triangles.
+- **The strips are extreme, and the aspect ratio is the ruling announcing itself** (measured on stepped_block_toroidal fine, 2026-07-28): fillet facets are **155:1**, 4.61 mm along the ruling by 0.025 mm across the arc. A faceter subdivides where the surface curves and not where it doesn't, so a developable gets long facets along its zero-curvature direction. Dihedral ÷ spacing across the short direction recovers radius 0.586 mm (true 0.5); along the ruling it is 0 → infinite radius.
+- **But do NOT use edge direction as a ruling signal.** On the same model 35% of strip long edges are not axis-parallel, and adjacent strips' long directions differ by up to **76°** — mismatched end subdivisions and Delaunay interiors skew them. It is corroborating at best.
+- **Tessellation density is wildly non-uniform, and NOT in the way you would guess.** On that model 89% of faces are fillet facets covering 224 mm², while the planes are 2.5% of faces covering 13783 mm² — facet *area* varies ~2000:1. The size discontinuity is **inside** the planes, not at their junctions: across a flat|curved junction the median neighbour size ratio is 1.26, while *within* a plane it is p90 47.5. Constrained-Delaunay grading rings a plane with slivers **finer** than the fillet facets they abut (median 0.118 mm against 0.52 mm). Any "small facet ⇒ different surface" rule is therefore anti-correlated with the truth.
 
 ### Stage 2.2 cylindrical hypothesis algorithm
 - Three-step fitting: (1) axis direction from smallest eigenvector of area-weighted normal covariance matrix M = Σ wᵢ nᵢ nᵢᵀ, (2) axis position and radius via 2D algebraic circle fit after projecting vertices perpendicular to axis, (3) Levenberg-Marquardt refinement of all 6 parameters [alpha, beta (tilt from initial axis), qx, qy, qz (axis point), radius]. LM uses `levenberg-marquardt` crate with `nalgebra` types. Residual per vertex: `||cross(p - q, a)|| - r`. Numerical Jacobian via central differences (eps=1e-8). This replaces a previous grid-search approach and an unsuccessful Newton-on-SSE attempt.
@@ -536,3 +539,33 @@ stepped_block_toroidal_fillets MEDIUM (2.3K triangles) went from one undetected 
 ### GeomAPI_PointsToBSplineSurface::Interpolate blows up between nodes on uneven chord spacing
 
 Chord-length-parametrized C2 cubic interpolation is ill-conditioned when adjacent data spacing jumps sharply: noise amplification grows roughly with the SQUARE of the adjacent knot-spacing ratio. On the xyz-cube letter walls (grid stations pinned to boundary vertices mixing 0.175 mm facet chords with one 3.66 mm straight chord — a 21× jump), a ribbon flat to 0.02 mm interpolated to a surface with control points 150 mm off the part — while `IsDone()` returned true, the residual at every grid node was ~1e-14, and per-vertex/per-centroid validation passed (all those sample at or near data points; the excursion lives BETWEEN nodes). Two defenses in stage 2.7: `axis_stations` conditions station spacing in 3D-arc measure (merge stations closer than 0.25× the median gap; subdivide, uniformly in arc, until no piece exceeds 2× either neighbor's pieces), and `fit_grid` rejects any fit with a control point outside the grid data's bounding box inflated by half its diagonal (the surface lies in its poles' convex hull, so poles near the data bound the surface near the data — legit fits, including periodic bands, stay well inside).
+
+
+### A single facet is always exactly planar — and 14 of 16 planes can be one facet
+
+On stepped_block_toroidal fine the "step" planes are single fused quads (one is
+3152 mm², 56 mm across) entirely surrounded by fillet facets at 1.24° dihedral —
+half the 2.5° angular step, the tangency signature. Two consequences that cost a
+lot of time to learn:
+
+- The **per-facet fallback (`facet_plane`) is geometrically exact** for these.
+  A committed plane and a per-facet plane are the *same surface* when the plane
+  is one quad. So a seed returning NO GROWTH on such a face is harmless, and
+  "planes are being lost" was a misdiagnosis — the model recovers all 16 planes
+  (14301 mm², matching the reference's ~13783).
+- Conversely, **you cannot identify a plane from a facet alone.** Flooding each
+  facet's own plane at vertex tolerance yields 414 "surfaces" against 16 real
+  ones, because one facet of a coarsely-tessellated *curved* surface is also
+  exactly planar. Competition (largest validated area) is what resolves it.
+
+### The jet is unreliable in a specific, scale-dependent way
+
+`curvature_class` calls a face Flat only if `a1 < 1e-4` — an absolute curvature,
+i.e. radius > 10000 mm. On stepped_block_toroidal fine that classifies **44 of
+26122 faces (0.17%)** as Flat, and the 3152 mm² plane quad reads κ = 0.0013 and
+comes out `Developable`, because its jet is computed from a vertex neighbourhood
+dominated by the adjacent fillet. On *fillet strips* the same jet is accurate
+(2.0055 against a true 2.0) — so it is good where the tessellation is uniform and
+wrong where a face's neighbourhood spans a junction. Making it dimensionless
+(κ · facet extent) does *not* fix it: the plane quad sits at 0.139 against strips
+at 2.10, inside a continuum, not a bimodal split.

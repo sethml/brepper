@@ -630,6 +630,97 @@ different justifications and different evidence:
   a comparison, and it is the one that most often gets written as a threshold
   when it should not be.
 
+### Rewriting stage 2.3(b): the blind patch is the root cause
+
+*Design proposed 2026-07-28 from a session of measurements; not yet built. Every
+claim below has a number behind it, and the dead ends are recorded so they are
+not re-derived.*
+
+**Root cause.** `grow_from` seeds a hypothesis by fitting to an *unvalidated*
+BFS neighbourhood (`seed_patch` → `condition_patch`, depth 3, up to 32 faces).
+The patch never survives into the hypothesis — after round 0 it is replaced by
+the flood output, so every committed face has passed `face_validates`. What
+survives is its influence on the *initial fit parameters*, and that is enough to
+produce both observed failures:
+
+1. The seed fails its own contaminated fit → `flood` returns empty → the
+   candidate is rejected. 323 such events on `stepped_block_toroidal` fine.
+2. Or the contaminated fit is merely *plausible*, and the flood validates a set
+   of faces against the wrong surface. Every member genuinely lies within
+   tolerance of it.
+
+So validation is working perfectly and is not protecting us: the membership test
+is sound, the thing being tested against is wrong. That is also why "prune to
+what validates" is nearly a no-op — there is nothing unvalidated to prune.
+
+**What survived this session's measurements, and is what the rework should lean
+on.** Validation by vertex distance always behaved. The whole-region DOF ladder
+is exact when the region is right (sharp-edged models need no tuning at all).
+The per-facet fallback is *geometrically exact* for single-facet surfaces — 14
+of this model's 16 planes arrive that way and are correct. Largest-validated-area
+selection works (all 18 tori exact, 34/37 cylinders). The junction locus is exact
+and verified corpus-wide. Refitting on corrected support is what buys accuracy.
+
+**What did not survive — four local per-face signals, all measured wrong. Do not
+re-derive.** Relative *face size* is anti-correlated with junctions (across a
+flat|curved junction the median size ratio is 1.26; *within* a plane it is p90
+47.5, because Delaunay grading rings a plane with slivers finer than the fillet
+facets it abuts). The strip *long edge* is not reliably the ruling (adjacent
+strips' long directions differ by up to 76°). A ring-local **shape operator**
+from neighbour normals is worse than the jet on 155:1 strips and rank-deficient
+on a quad whose four neighbours sample only two directions. And *dimensionless*
+curvature κ·extent does not separate either — the plane quad sits at 0.139
+against fillet strips at 2.10, inside a continuum.
+
+**The design.**
+
+- **Seeding stays universal.** Every unclaimed face is a candidate seed; the
+  constraint machinery below is an addition, never a fallback.
+- **Visited ≠ claimed.** Growing into a face is a hypothesis, not a conclusion.
+  A seed that commits nothing costs one entry from the untried list and nothing
+  else; the faces it touched stay available. This is what makes an unreliable
+  bootstrap survivable — a 36-face surface gets 36 independent attempts — and it
+  makes the plan's long-standing claim that seed misordering "costs only time"
+  actually true, where today an early bad hypothesis consumes faces a later,
+  better seed needed.
+- **The commit gate is IDENTIFIABILITY, not residual.** Measured and important:
+  the three spurious tori on `stepped_block_toroidal` fine fit their 7–8 faces
+  to **0.52 / 0.72 / 0.87 mesh quanta**, against genuine surfaces at mean 0.39
+  and max 0.56. They overlap — a 7-DOF torus on 7 faces is essentially exactly
+  determined and fits perfectly by construction. No residual or coverage test
+  can reject them, exactly as *Identifiability is not model selection* says. The
+  gate must ask whether the support pins the parameters (`MIN_AXIAL_SWEEP_DEG`
+  and the conditioning it stands for), and the quantum belongs where it did
+  work — as the *unit* for judging a fit whose parameters are already pinned.
+- **Expand under junction constraints where a neighbour is already committed.**
+  This is what `locus.rs` unlocked. Measured on the three cylinders this model
+  loses: each is a fillet-chain segment sitting between committed neighbours of
+  *exactly its own tube radius* (cyl r=1.0 / cyl r=1.0; torus r=1.0 / cyl r=1.0;
+  torus r=0.5 / cyl r=0.5). Fixing only the axis direction recovers
+  **r = 0.99998, 0.99999, 0.50008** from arcs of 65°, 60° and 40°, with maximum
+  residuals of 1.0e-5, 1.0e-5 and 5.0e-6 mm — five to ten times *under* vertex
+  tolerance. The free 5-DOF fit fails on the **axis**, not the radius, and the
+  neighbour supplies exactly that.
+- **Iterate seed passes to a fixpoint**, so a segment that cannot be fitted
+  freely on pass 1 becomes a nearly-constrained problem on pass 2 once its
+  neighbour is committed. Terminating: each pass either commits a face or ends.
+
+**What it deletes.** `seed_patch`, `condition_patch`, `grow_patch`,
+`SEED_PATCH_CAP`, `MAX_PATCH_DEPTH`, `PATCH_RADII`, `PATCH_TRIM_ROUNDS`,
+`MIN_CONDITION_FACES`, and the jet's role in seeding (leaving it to the ladder's
+rung ordering). The flood is sound and stays.
+
+**The open risk, stated narrowly.** Not "a model with no anchor" — seeding stays
+universal, so with nothing committed the design degrades to today's behaviour,
+which finds 34/37 cylinders and 18/18 tori. The real gap is the **bootstrap for
+curved surfaces on coarse meshes**: a plane is exact from one facet, and on fine
+meshes the jet is good (four of six sampled fillet strips read κ₁ = 2.0055,
+2.0051, 2.0049, 2.0058 against a true 2.0), but the recorded κ₁ = 0.023 / 0.162 /
+2.2 spread over one exact r = 0.5 arc was measured on stepped_block **medium**.
+That is the one place the blind patch is doing irreplaceable work. Test any
+replacement against stepped_block_toroidal medium and part_rounded_cube coarse
+before deleting it.
+
 **Why stepped_block_toroidal is hard: the seeding is scale-blind, and its mesh
 is not scale-uniform.** This model is one tangent-connected region of 26122
 faces (384 sharp edges partition nothing), so all 71 reference surfaces —

@@ -397,6 +397,51 @@
   per-facet. This is where to start: it is a fitting problem with a clear
   signal, not a model-selection argument.
 
+- **REWRITE stage 2.3(b) seeding: kill the blind patch. — NEXT MAJOR WORK on
+  stage 2.** Design and all supporting measurements are in DEVELOPMENT_PLAN,
+  "Rewriting stage 2.3(b): the blind patch is the root cause". Read it first;
+  it records four measured dead ends that must not be re-derived.
+
+  **Why.** `grow_from` derives its initial fit from an *unvalidated* 32-face BFS
+  neighbourhood. The patch itself is discarded (the committed face set is always
+  a `flood` output, so every member is validated) — but its contamination lives
+  on in the fit *parameters*, which produces both observed failures: 323 seeds
+  returning NO GROWTH, and plausible-but-wrong fits whose members all genuinely
+  validate. Validation is sound; what it validates against is wrong.
+
+  **Build order, each step measurable on its own:**
+  1. **Visited ≠ claimed.** A seed that commits nothing costs one entry from the
+     untried list; the faces it touched stay seedable. Makes seed misordering
+     cost only time (as the plan has always claimed but never delivered) and
+     makes an unreliable bootstrap survivable — a 36-face surface gets 36
+     attempts. Small, self-contained, and testable alone.
+  2. **Identifiability as the commit gate, never residual.** Measured: the three
+     spurious tori fit at 0.52/0.72/0.87 quanta against genuine surfaces at mean
+     0.39, max 0.56 — overlapping, because a 7-DOF torus on 7 faces is exactly
+     determined. Use sweep/conditioning; keep the quantum as the *unit* for
+     already-pinned fits.
+  3. **Junction-constrained expansion** from committed neighbours (`locus.rs`).
+     Measured on the three cylinders this model loses: fixing the axis alone
+     recovers r = 0.99998 / 0.99999 / 0.50008 at 5–10× under vertex tolerance.
+     The free fit fails on the axis, not the radius.
+  4. **Fixpoint over seed passes**, so pass 2 can use what pass 1 committed.
+  5. Only then delete `seed_patch`/`condition_patch` and the `PATCH_*`/
+     `SEED_PATCH_CAP`/`MIN_CONDITION_FACES` family.
+
+  **The one real risk**, and it is narrower than "no anchor" (seeding stays
+  universal, so with nothing committed the design degrades to today's behaviour,
+  which already finds 34/37 cylinders and 18/18 tori): the **coarse-mesh curved
+  bootstrap**. A plane is exact from one facet; on fine meshes the jet is good
+  (4 of 6 sampled strips read 2.005 against a true 2.0); but the κ₁ = 0.023 /
+  0.162 / 2.2 spread over one r=0.5 arc was measured on stepped_block **medium**.
+  That is where the blind patch is irreplaceable today. **Validate any
+  replacement against stepped_block_toroidal medium and part_rounded_cube coarse
+  before deleting anything.**
+
+  **Also re-enables**: the three tests disabled 2026-07-28 (two in
+  stage2_competition.rs, one in stage4_integration.rs) all carry this as their
+  blocker.
+
 - **stepped_block_toroidal: the seeding is scale-blind — and face size is NOT
   the fix.** Diagnosis in DEVELOPMENT_PLAN, "Why stepped_block_toroidal is hard".
   This is the model every stage-2 threshold sits on a cliff for; it is one

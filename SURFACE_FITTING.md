@@ -256,6 +256,49 @@ All vertex set iterations (HashSet) are sorted before use to ensure deterministi
 
 ---
 
+## Precision and conditioning (measured 2026-07-28)
+
+What limits a fit is not the fitter but the data and the support. Three facts,
+all measured on the corpus, that the fitting math has to respect.
+
+**The accuracy floor is a float32 quantum, and it scales with the model.** The
+corpus ships *binary* STLs, so vertices are float32 and the floor on vertex
+accuracy is `max|coordinate| × 1.19e-7`: 2.76e-6 mm for rounded_cube (max coord
+23.1, measured stage-1 vertex distance 1.9e-6) and **1.96e-5 mm for
+stepped_block_toroidal** (max coord 164, measured 1.23e-5). So "a mesh vertex
+lies on the true CAD surface to ~1e-6 mm" is *not* a constant — it is twenty
+times worse on a 164 mm part than on a 23 mm one, and a part exported 200 mm
+off-origin carries ~10× worse data than one centred. Nothing downstream recovers
+it. Expressed in quanta, committed analytic fits land at 0.3–0.5 (median) across
+a 7× range of quanta, which is a scale-free way to say "as well as the data
+allows".
+
+**A short arc cannot determine a free surface of revolution, by any method.**
+For an arc of half-angle θ on radius r the sagitta is ≈ rθ²/2. Over three
+2.5° strips (7.5° of arc) on r = 0.5 that is ~0.001 mm against a 2e-5 mm
+quantum, so the radius comes out ~2% wrong — 0.01 mm, or 200× vertex tolerance.
+No fitting method repairs this; only more arc does. This is why an initial fit
+taken from a small patch cannot be trusted, and why growth criteria must not
+depend on the fit already being accurate.
+
+**Constraining the axis collapses the problem.** Measured on the three fillet
+cylinders `stepped_block_toroidal` fine fails to find: fixing *only the axis
+direction* and fitting a 2D circle in the perpendicular plane recovers
+**r = 0.99998, 0.99999 and 0.50008** (true 1.0, 1.0, 0.5) from arcs of 65°, 60°
+and 40°, with maximum residuals of 1.0e-5, 1.0e-5 and 5.0e-6 mm — five to ten
+times *under* vertex tolerance. The free 5-DOF fit fails on the **axis**, not the
+radius. An adjacent committed surface supplies exactly that constraint (see
+`locus.rs` and DEVELOPMENT_PLAN, "Rewriting stage 2.3(b)").
+
+**Corollary for identifiability.** Residual cannot police over-parameterised
+fits: the three spurious tori on that model fit their 7–8 faces to 0.52/0.72/0.87
+quanta against genuine surfaces at mean 0.39, max 0.56 — overlapping, because a
+7-DOF torus on 7 faces is essentially exactly determined. Guards must ask whether
+the support *pins* the parameters (angular sweep, conditioning), never how small
+the residual is.
+
+---
+
 ## Algorithm Reference
 
 This section documents key algorithmic techniques drawn from computational geometry research that inform the surface fitting approach. These are referenced by the stage descriptions above.
