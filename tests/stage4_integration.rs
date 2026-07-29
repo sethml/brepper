@@ -468,3 +468,72 @@ fn missing_output_path_error() {
         "expected MissingOutputPath error, got: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// NURBS corpus: end-to-end --compare
+// ---------------------------------------------------------------------------
+//
+// Added 2026-07-28. Before this the NURBS models had stage-2 *selection* tests
+// and nothing end to end, which is how three of the eight came to be silently
+// broken: `bspline_blister` and `bspline_saddle` had collapsed to all-per-facet
+// polyhedra and `hill_with_hole` was being shredded into 47 surfaces against a
+// reference 7, all unnoticed because only stage 1 was checked. Every model has
+// a reference STEP sitting next to it, so there was never a reason not to.
+
+macro_rules! nurbs_compare {
+    ($name:ident, $model:literal) => {
+        #[test]
+        fn $name() {
+            let dir = manifest_dir();
+            let config = config_for_compare(
+                &format!("{dir}/tests/nurbs/{}.stl", $model),
+                &format!("{dir}/tmp/test_nurbs_{}.step", $model),
+                &format!("{dir}/tests/nurbs/{}.step", $model),
+            );
+            run_stage4(&config);
+        }
+    };
+    ($name:ident, $model:literal, ignore = $why:literal) => {
+        #[test]
+        #[ignore = $why]
+        fn $name() {
+            let dir = manifest_dir();
+            let config = config_for_compare(
+                &format!("{dir}/tests/nurbs/{}.stl", $model),
+                &format!("{dir}/tmp/test_nurbs_{}.step", $model),
+                &format!("{dir}/tests/nurbs/{}.step", $model),
+            );
+            run_stage4(&config);
+        }
+    };
+}
+
+nurbs_compare!(nurbs_bspline_hill_stage41_compare, "bspline_hill");
+nurbs_compare!(nurbs_bspline_terrain_stage41_compare, "bspline_terrain");
+nurbs_compare!(nurbs_bspline_wave_stage41_compare, "bspline_wave");
+nurbs_compare!(nurbs_elliptical_arch_stage41_compare, "elliptical_arch");
+nurbs_compare!(nurbs_elliptical_cylinder_stage41_compare, "elliptical_cylinder");
+
+nurbs_compare!(
+    nurbs_hill_with_hole_stage41_compare,
+    "hill_with_hole",
+    ignore = "8 surfaces against a reference 7 (5 planes + 1 cylinder + 1 B-spline); stage 3.1 edge \
+compare 7.67 mm. Was 47 surfaces before 2026-07-28 — removing the self-calibrating acceptance \
+tolerance stopped competition carving the freeform hill into spurious analytic patches, and it \
+briefly reached exactly 7 surfaces (failing then at stage 4.1 on volume, 6.96e-2 relative) before \
+the 2.3 rework steps took it to 8. One surplus surface to find."
+);
+nurbs_compare!(
+    nurbs_bspline_blister_stage41_compare,
+    "bspline_blister",
+    ignore = "7 surfaces against a reference 6 (1 B-spline + 5 planes); stage 3.1 edge compare \
+9.04 mm. Was 968 surfaces (959 of them per-facet) before 2026-07-28. Also builds 4 invalid faces, \
+all single-mesh-face per-facet planes — the micro-sliver family, tracked in stage3_integration."
+);
+nurbs_compare!(
+    nurbs_bspline_saddle_stage41_compare,
+    "bspline_saddle",
+    ignore = "still collapsed to an all-per-facet polyhedron (1605 planar surfaces): three of its \
+freeform components fail the §2.7 pole-bound check ('control points 246.7 / 19378.7 / 573.3 mm \
+outside the data bounding box'), so nothing explains them. Fix the freeform fit first."
+);

@@ -6,8 +6,14 @@
 
 - **NEXT, IN ORDER (set 2026-07-28, after the stage-2.3 rework steps 0/1/3/4).**
 
-  1. **Lock down the NURBS corpus with `--compare` tests.** *Highest leverage,
-     cheapest, lowest risk — do this first.* This session found three silently
+  1. ~~**Lock down the NURBS corpus with `--compare` tests.**~~ **DONE
+     2026-07-28.** `nurbs_*_stage41_compare` in stage4_integration.rs — all
+     eight models, end to end. Five pass (`bspline_hill`, `bspline_terrain`,
+     `bspline_wave`, `elliptical_arch`, `elliptical_cylinder`); three carry
+     precise blockers (`hill_with_hole`, `bspline_blister`, `bspline_saddle`).
+     Before this the NURBS models had stage-2 *selection* tests and nothing end
+     to end, which is exactly how three of the eight came to be silently broken.
+     Suite 513 passing / 9 ignored. *Was:* This session found three silently
      broken models (`bspline_blister`, `bspline_saddle`, `hill_with_hole`) and
      the cause was **missing tests, not missing algorithms**. Every NURBS model
      already has a reference STEP in the repo. Still stage-1-only:
@@ -15,12 +21,30 @@
      good behaviour) and `hill_with_hole` (goes in `#[ignore]`d with the
      blocker in item 2). Everything else built will rot the same way until this
      exists.
-  2. **`hill_with_hole`'s stage-4 volume failure.** The cleanest isolated bug
-     left. It decomposes to **exactly the reference's 7 surfaces** (5 planes +
-     1 cylinder + 1 B-spline) and clears stage 3.1, then fails stage 4.1 on
-     volume at **6.96e-2 relative**. A correct decomposition with a wrong output
-     is the only case in the corpus that isolates stage 3/4 (or freeform surface
-     accuracy) from stage 2 — everything else confounds them.
+  2. **`hill_with_hole`: one surplus surface. — DIAGNOSED 2026-07-28, not yet
+     fixed.** *Note the symptom moved:* it briefly reached exactly 7 surfaces
+     (failing then at stage 4.1 on volume, 6.96e-2) but the 2.3 rework steps
+     took it to **8**, now failing at stage 3.1 with a 7.67 mm edge compare. The
+     correct 7 are all present and exact — 1723-face B-spline (1610.5 mm²),
+     72-face base plane, `cyl r=5.0000`, four 6-face walls — plus **one junk
+     torus: 17 faces, R=3.5101 r=2.3882, area 1.533 mm²**, carved out of the
+     freeform hill.
+     Two facts about it, and a lead:
+     - It is **17 faces against `SMALL_SELECTION_ABSORB_FACES = 16`** — one face
+       over the island-absorption cap, so 2.3(e) never offers it to freeform.
+     - `r/R = 0.680` sits just under `MAX_TORUS_RADIUS_RATIO = 0.7`. Tightening
+       that constant would reject it (the corpus max for a *real* torus is 0.5,
+       per its own doc), but that is parameter tweaking and should be a last
+       resort.
+     - **LEAD — relative AREA, a quantity not yet tried.** Four *count*-based
+       candidacy rules were measured wrong (see the island-candidacy dead ends
+       below), but on a strip mesh face count and area diverge by orders of
+       magnitude. The junk torus is **0.095%** of its freeform patch's area,
+       while `cone_tangent_planes`' real cones — the case every count-based rule
+       broke — are a large fraction of theirs (1081 mm² and 163 mm² of surfaces
+       in that region). Measure that separation across the corpus before
+       implementing, and re-check `cone_tangent_planes` and the elliptical
+       models specifically, since they are what killed the previous four.
   3. **Bound the runtime.** `stepped_block_toroidal` fine went **42 s → 103 s**
      with visited ≠ claimed, and the suite is slower. The interior-skip in
      `compete_region` is a pragmatic bound, not a derived one; tighten it
