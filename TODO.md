@@ -564,8 +564,20 @@
        constrained fit from the seed facet alone, and let largest-validated-area
        choose.** No neighbourhood is ever fitted blind. Candidate sources, best
        first:
-       1. An adjacent committed surface's axis — already implemented as 2.3(d2);
-          generalise it from "leftovers only" to "every seed".
+       1. An adjacent committed surface's axis — implemented as 2.3(d2).
+          **DO NOT simply generalise it from "leftovers only" to "every seed" —
+          measured wrong 2026-07-28, twice.** Offering `grow_with_axis` as a
+          per-seed competitor took `stepped_block_toroidal` fine from **75 to
+          100 surfaces, cylinders fragmenting 38 → 63**; restricting it to seeds
+          where nothing free grew gave the *same* 100. **Why it works in (d2)
+          and not per-seed: (d2) selects the LARGEST validated area over the
+          whole leftover set before committing anything, whereas a per-seed
+          candidate commits whatever grows locally.** A cylinder on a borrowed
+          axis is frequently a locally-valid sub-piece of the real one — it
+          validates at vertex tolerance over 20–30 faces and wins its own local
+          contest, then fragments the surface it belonged to. Any use of a
+          borrowed axis outside (d2) needs to keep that global selection, not
+          just the constrained fit.
        2. The jet's principal direction at the seed (the κ ≈ 0 direction of a
           developable). Free, per-face, no patch. Accurate where tessellation is
           uniform — four of six sampled fillet strips read κ₁ = 2.005 against a
