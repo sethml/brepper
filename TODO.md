@@ -378,7 +378,36 @@
   2026-07-17 pivot was called for; it re-grew on the new architecture within a
   fortnight, so it is worth watching for deliberately.) Ranked candidates, each
   aimed at *replacing* guards rather than adding one:
-  1. **Self-calibrating acceptance tolerance — DONE 2026-07-27**
+  0. **Self-calibrating acceptance tolerance — REMOVED 2026-07-28.** Deleted
+     outright (`acceptance_tol`, `residual_scale`, `GROW_VTOL_FACTOR`,
+     `RESIDUAL_SIGMAS`); the flood bar is `--vertex-tolerance`. Stage-2
+     constant count 36 → 34. Full write-up in DEVELOPMENT_PLAN, "The flood bar
+     is the vertex tolerance". Headlines:
+     - **It was masking a seed-conditioning defect, not doing its stated job.**
+       Its response is non-monotonic (stepped_block fine: 138 / 90 / 134 / 113
+       / 71 surfaces at 1× / 2× / 5× / 12× / 30×), which is a lever, not a
+       bound. And `residual_scale` measured interpolation error over the fit's
+       own support and spent it on extrapolation to faces outside it.
+     - **The 2026-07-21 evidence for it was stale**: "everything returned NO
+       GROWTH" without it is no longer true — 12 of 14 probe models are
+       bit-identical at a bar of exactly `--vertex-tolerance`.
+     - **Won**: `bspline_blister` 968 → 7 surfaces (reference 6),
+       `hill_with_hole` 47 → 8 (reference 7). The spurious analytic patches
+       were what had prevented their freeform fits from taking the region.
+     - **Cost, now blocking 3 disabled tests**: stepped_block fine 71 → 138,
+       via 323 no-growth seeds — including flat seeds failing to grow a plane.
+       `condition_patch` gives up at `MIN_CONDITION_FACES` without checking the
+       seed validates, and stepped_block's flats are narrow strips between
+       fillets that a 32-face BFS patch always straddles.
+     - **DO NOT retune the floor — measured dead end.** Conical floor 2 gives
+       stepped_block 75 with cylinders/tori exactly right (37/18) but hands
+       filleted_pipe a spurious 18-face cone at 6e-7; floor 6 is the reverse;
+       floor 4 breaks both. A per-type `SurfaceType::CONDITION_FLOOR` does not
+       help — the conflict is *within* the conical type. **Fix `seed_patch` so
+       the patch cannot straddle, rather than repairing it afterwards.**
+
+  1. **Self-calibrating acceptance tolerance — SUPERSEDED (was DONE 2026-07-27,
+     removed 2026-07-28; see item 0)**
      (`acceptance_tol`, compete.rs). See the DEVELOPMENT_PLAN section
      "Calibrate acceptance on the fit, not on a constant". Note what it did and
      did not achieve: the operative bar is now scale-free and insensitive to its

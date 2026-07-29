@@ -612,30 +612,65 @@ different justifications and different evidence:
   a comparison, and it is the one that most often gets written as a threshold
   when it should not be.
 
-**Calibrate acceptance on the fit, not on a constant.** Whether a face belongs
-to a surface is decided at a tolerance, and a single absolute tolerance cannot
-be right: it has to be loose enough for the worst-conditioned fit in the corpus,
-which leaves it hundreds of times too loose for a converged one. The quantities
-involved are not comparable. A mesh vertex lies on the true CAD surface to
-~1e-6 mm (measured across the corpus, coarse tessellations included), so a face
-that really belongs misses its fit by the *fit's* error alone, while a face that
-does not belong misses it by a geometric departure — one tessellation row past a
-tangent junction sits ~h²/2r away, which shrinks quadratically as the mesh
-refines. So the flood scales its bar by the fit's own robust residual scale
-(`acceptance_tol`, compete.rs): a fit still bootstrapping off a partial patch
-reports a large scale and keeps the room it needs, and the bar tightens by
-itself as the support fills in. The scale is a *median*, not an RMS, because the
-faces it exists to detect are sitting in the sample and would inflate an RMS.
+**The flood bar is the vertex tolerance — and the self-calibrating one it
+replaced was masking a seeding defect.** From 2026-07-27 the flood scaled its
+acceptance bar by each fit's own median residual, clamped between
+`--vertex-tolerance` and 30× it. The reasoning was sound as far as it went: a
+mesh vertex lies on the true CAD surface to ~1e-6 mm, so a face that belongs
+misses its fit by the *fit's* error while a face that does not belong misses it
+by a geometric departure, and those are different quantities. `acceptance_tol`,
+`residual_scale`, `GROW_VTOL_FACTOR` and `RESIDUAL_SIGMAS` were deleted on
+2026-07-28; the bar is now `--vertex-tolerance` itself.
 
-Two properties are worth keeping: the criterion carries no length, so it needs
-no recalibration per model, feature size or tessellation density; and it is
-insensitive to its own parameter — the corpus gives identical decompositions at
-5, 8 and 15 σ, where the absolute bar it replaces went from correct to total
-collapse over a 3.3× change. Bounds remain: the floor is `--vertex-tolerance`,
-below which no distinction is claimed, and the ceiling is the old fixed bar, so
-the criterion can only ever be *tighter* than the previous behaviour. The
-ceiling is load-bearing — removing it lets a poor fit report a large scale,
-admit more foreign faces and inflate its scale further.
+*Why it went.* Three things, none of which is the theory being wrong.
+
+First, **the statistic measured the wrong thing**. `residual_scale` was computed
+over the faces the fit was built from and then used to judge faces it was not —
+interpolation error spent on extrapolation. A small patch has a *small* residual
+(fewer constraints on the same DOF) and *badly determined parameters*, so the
+criterion is loosest exactly where it should be tightest.
+
+Second, **the empirical case for the 30× ceiling had gone stale**. It rested on
+a 2026-07-21 observation that without it "everything returned NO GROWTH". With
+the bar set to exactly the vertex tolerance, 12 of the 14 probe models are
+bit-identical — `condition_patch`, the seed-patch fallback, the stale-fit refits
+and the area-weighted plane offset had each removed part of the cause.
+
+Third, and decisively, **the response to the constant is non-monotonic**:
+stepped_block fine gives 138 surfaces at 1×, 90 at 2×, 134 at 5×, 113 at 12× and
+the exact 71 at 30×. A bound behaves monotonically with a plateau. A lever does
+this. The constant was not buying tolerance, it was choosing which accidental
+fit won a contested support.
+
+*What removing it bought.* `bspline_blister` goes from 968 surfaces (959 of them
+per-facet) to **7** against a reference of 6 — the spurious analytic patches
+competition was carving out of it were what had prevented the freeform fit from
+taking the region at all. `hill_with_hole` goes from 47 to **8** against a
+reference of 7. Both had been broken and unwatched.
+
+*What it exposed, and what is now blocked on it.* stepped_block fine regresses
+71 → 138, through **323 seeds that produce no growth** — including *flat* seeds
+failing to grow a *plane*, which cannot be a tolerance problem, since a wall's
+vertices sit at ~1e-15. The cause is `condition_patch`: it trims a straddling
+seed patch until the seed validates but gives up at `MIN_CONDITION_FACES`
+*without checking whether it succeeded*, and stepped_block's flat regions are
+narrow strips between fillets, so a 32-face BFS patch always straddles and
+cannot be trimmed to a clean one. The loose bar hid this by validating the
+contaminated fit anyway.
+
+**That floor cannot simply be retuned, and this is measured.** At a conical
+conditioning floor of 2, stepped_block fine recovers to 75 surfaces with its
+cylinders and tori exactly right (37 and 18) — but `filleted_pipe` acquires a
+spurious 18-face 5.6° cone that fits at 6e-7. At 6, filleted_pipe is correct and
+stepped_block is 136. At 4, both are wrong. Making the floor per-type via a
+`SurfaceType::CONDITION_FLOOR` associated constant does not help either, because
+the conflict is within a single type (conical). It is the same pathology as the
+tolerance it was hiding behind: a lever, not a bound.
+
+**So the next step is not a value.** The seed patch must not straddle in the
+first place — `seed_patch` grows a depth-limited BFS neighbourhood and hands
+`condition_patch` the job of repairing it afterwards, which is the wrong shape.
+Three stepped_block tests carry this as their blocker.
 
 **Snap shared boundaries to the junction, not to a residual comparison.**
 Nothing in stage 2 reasoned about where a boundary *should* be — it fell out of

@@ -1450,48 +1450,41 @@ fn onshape_cone_stage36_compare() {
 /// tested at stage 1, so nothing noticed when the stage-2 rewrite stopped
 /// decomposing them: both collapsed to an all-per-facet polyhedron (2137 and
 /// 1605 planar surfaces, zero analytic or freeform), which is a valid solid
-/// carrying no information. Removing the `LEFTOVER_BLOB_MAX` whole-region
-/// discard recovered the decomposition — but exposed that they then build a
-/// handful of invalid faces, so neither is whole yet.
+/// carrying no information.
 ///
-/// This test pins the half that is now true: they must decompose, not collapse.
-/// The validity gap is tracked separately below.
+/// `bspline_blister` is fixed: removing the self-calibrating acceptance
+/// tolerance stopped competition carving spurious analytic patches out of it,
+/// and those patches were what had been preventing the freeform fit from
+/// taking the region. It now decomposes to 7 surfaces against a reference of 6
+/// (1 B-spline + 5 planes). The assertion is "did not collapse", not an exact
+/// count — a per-facet polyhedron has one surface per mesh face, so any small
+/// number with a B-spline in it is decisive.
+///
+/// `bspline_saddle` is still collapsed; it is tracked below.
 #[test]
 fn freeform_models_decompose_rather_than_collapsing() {
-    for (model, min_analytic) in [
-        ("tests/nurbs/bspline_blister.stl", 5),
-        ("tests/nurbs/bspline_saddle.stl", 3),
-    ] {
-        let config = config_for_stl(&format!("{}/{model}", manifest_dir()));
-        let mesh = stage1::stage1(&config).expect("stage1 should pass");
-        let out = stage2::stage2(&config, mesh, None).expect("stage2 should pass");
-        let analytic = out
-            .selected_surfaces
-            .iter()
-            .filter(|s| {
-                !matches!(
-                    s,
-                    stage2::SelectedSurface::Planar(_) | stage2::SelectedSurface::BSpline(_)
-                )
-            })
-            .count();
-        assert!(
-            analytic >= min_analytic,
-            "{model}: {analytic} analytic surfaces, expected at least {min_analytic} \
-             — a collapse back to an all-per-facet polyhedron",
-        );
-    }
+    let model = "tests/nurbs/bspline_blister.stl";
+    let config = config_for_stl(&format!("{}/{model}", manifest_dir()));
+    let mesh = stage1::stage1(&config).expect("stage1 should pass");
+    let out = stage2::stage2(&config, mesh, None).expect("stage2 should pass");
+    let total = out.selected_surfaces.len();
+    let bsplines = out
+        .selected_surfaces
+        .iter()
+        .filter(|s| matches!(s, stage2::SelectedSurface::BSpline(_)))
+        .count();
+    assert!(
+        bsplines >= 1 && total < 50,
+        "{model}: {total} surfaces, {bsplines} of them freeform —          a collapse back to an all-per-facet polyhedron",
+    );
 }
 
 #[test]
-#[ignore = "pre-existing, exposed 2026-07-28 by removing the LEFTOVER_BLOB_MAX whole-region discard: \
-bspline_blister builds 4 invalid faces (and so an invalid solid) and bspline_saddle 3. Every one is a \
-SINGLE-mesh-face per-facet plane, or one 43-face B-spline — i.e. the micro-sliver/degenerate-edge family \
-(cf. the 3DBenchy work), NOT the 'analytic surface islanded in a jagged blob' family the discard claimed \
-to protect against. The discard only avoided them by per-facetting the whole region, which changed the \
-edge structure wholesale. Root cause for blister is upstream anyway: its 926-face freeform component \
-fails the pole-bound check ('control points 2749.5 mm outside the data bounding box'), so nothing can \
-explain it. Fix the freeform fit first, then this."]
+#[ignore = "bspline_saddle still collapses to an all-per-facet polyhedron (1605 planar surfaces): three \
+of its freeform components fail the §2.7 pole-bound check ('control points 246.7 / 19378.7 / 573.3 mm \
+outside the data bounding box'), so nothing explains them. bspline_blister decomposes correctly now but \
+builds 4 invalid faces; every one is a SINGLE-mesh-face per-facet plane, i.e. the micro-sliver/\
+degenerate-edge family (cf. the 3DBenchy work). Fix the freeform fit first, then the slivers."]
 fn freeform_models_build_valid_solids() {
     for model in ["tests/nurbs/bspline_blister.stl", "tests/nurbs/bspline_saddle.stl"] {
         let config = config_for_stl(&format!("{}/{model}", manifest_dir()));
