@@ -21,7 +21,24 @@
      good behaviour) and `hill_with_hole` (goes in `#[ignore]`d with the
      blocker in item 2). Everything else built will rot the same way until this
      exists.
-  2. **`hill_with_hole`: one surplus surface. — DIAGNOSED 2026-07-28, not yet
+  2. **Bound the runtime.** `stepped_block_toroidal` fine went **42 s → 103 s**
+     with visited ≠ claimed, and the suite is slower. The interior-skip in
+     `compete_region` is a pragmatic bound, not a derived one; tighten it
+     deliberately rather than letting it compound. The question to answer is how
+     much of the 26122-face seed sweep does useful work.
+  3. **The last 4 surplus surfaces on `stepped_block_toroidal` fine** (75 vs 71:
+     two extra planes, one extra cylinder, one spurious B-spline). Re-enables
+     three disabled tests, but it is the hardest remaining and well into
+     diminishing returns. **Prefer medium** (~84 vs 71) if returning to this
+     model — further from correct and more representative of coarse meshes.
+
+  **LOW PRIORITY — telling a strip-tessellated analytic patch from a piece of a
+  larger B-spline.** *Deliberately deprioritised 2026-07-28: this is hard, and
+  five formulations have now failed.* It is the residue behind
+  `hill_with_hole`'s one surplus surface and behind the island-candidacy dead
+  ends recorded further down. Do not pick it up as a warm-up task.
+
+  *Case in point —* **`hill_with_hole`: one surplus surface. — DIAGNOSED 2026-07-28, not yet
      fixed.** *Note the symptom moved:* it briefly reached exactly 7 surfaces
      (failing then at stage 4.1 on volume, 6.96e-2) but the 2.3 rework steps
      took it to **8**, now failing at stage 3.1 with a 7.67 mm edge compare. The
@@ -45,16 +62,6 @@
        in that region). Measure that separation across the corpus before
        implementing, and re-check `cone_tangent_planes` and the elliptical
        models specifically, since they are what killed the previous four.
-  3. **Bound the runtime.** `stepped_block_toroidal` fine went **42 s → 103 s**
-     with visited ≠ claimed, and the suite is slower. The interior-skip in
-     `compete_region` is a pragmatic bound, not a derived one; tighten it
-     deliberately rather than letting it compound. The question to answer is how
-     much of the 26122-face seed sweep does useful work.
-  4. **The last 4 surplus surfaces on `stepped_block_toroidal` fine** (75 vs 71:
-     two extra planes, one extra cylinder, one spurious B-spline). Re-enables
-     three disabled tests, but it is the hardest remaining and well into
-     diminishing returns. **Prefer medium** (~84 vs 71) if returning to this
-     model — further from correct and more representative of coarse meshes.
 
   **Explicitly NOT next: step 5** (deleting the blind patch). Measured to need a
   non-blind bootstrap first — a design problem the size of the whole rework. See
