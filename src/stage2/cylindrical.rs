@@ -40,7 +40,7 @@ pub(super) fn vertex_to_cylinder_distance(
 
 /// Given an axis direction, project vertices onto the perpendicular plane
 /// and fit a 2D circle. Returns (axis_origin_3d, radius) or None if degenerate.
-fn fit_circle_for_axis(
+pub(super) fn fit_circle_for_axis(
     axis_dir: &[f64; 3],
     vertex_set: &[usize],
     vertices: &[MeshVertex],

@@ -445,7 +445,18 @@
      0.39, max 0.56 — overlapping, because a 7-DOF torus on 7 faces is exactly
      determined. Use sweep/conditioning; keep the quantum as the *unit* for
      already-pinned fits.
-  3. **Junction-constrained expansion** from committed neighbours (`locus.rs`).
+  3. ~~**Junction-constrained expansion**~~ **DONE 2026-07-28.**
+     `grow_with_axis` (compete.rs) + `rescue_with_neighbour_axes` (2.3(d2),
+     classify.rs): grow a cylinder whose axis DIRECTION is borrowed from an
+     adjacent committed surface, largest validated area first, iterating until
+     nothing more grows. With the axis fixed the fit is a 3-DOF circle in the
+     perpendicular plane — well conditioned on a short arc — so growth starts
+     from the seed facet alone and there is no blind patch to straddle.
+     `stepped_block_toroidal` fine **95 → 75 surfaces**: planes 39 → 18
+     (reference 16), cylinders 36 → 38 (37), **tori 19 → 18, exactly the
+     reference**, B-splines 1. Other 13 probe models bit-identical, suite
+     508/0/6.
+     Was: **Junction-constrained expansion** from committed neighbours (`locus.rs`).
      Measured on the three cylinders this model loses: fixing the axis alone
      recovers r = 0.99998 / 0.99999 / 0.50008 at 5–10× under vertex tolerance.
      The free fit fails on the axis, not the radius.

@@ -191,6 +191,15 @@ pub(super) fn classify_regions(
         // 2.3(e) as before.
         let leftovers = rescue_leftover_components(mesh, &leftovers, &centroids, config, &mut hyps);
 
+        // Stage 2.3(d2): grow cylinders through what is still left, borrowing
+        // the axis direction from an already-committed neighbour. A leftover
+        // blob spanning several fillets validates no single ladder rung, so
+        // 2.3(d) leaves it whole — but it is bounded by surfaces that are
+        // already correct, and their axes are exactly what a free fit gets
+        // wrong. See `grow_with_axis`.
+        let leftovers =
+            rescue_with_neighbour_axes(mesh, &leftovers, &centroids, config, &mut hyps);
+
         // Stage 2.3(e): freeform-fit the leftover components competition
         // could not explain analytically, dissolving any small analytic
         // island enclosed by a validating B-spline patch.
@@ -484,6 +493,94 @@ fn rescue_leftover_components(
             still.extend(comp);
         }
     }
+    still.sort_unstable();
+    still
+}
+
+/// Grow cylinders through the remaining leftovers using axis directions
+/// borrowed from adjacent committed surfaces, largest validated area first.
+fn rescue_with_neighbour_axes(
+    mesh: &ConnectedMesh,
+    leftovers: &[usize],
+    centroids: &[[f64; 3]],
+    config: &Config,
+    hyps: &mut Vec<CompeteHyp>,
+) -> Vec<usize> {
+    let mut open: HashSet<usize> = leftovers.iter().copied().collect();
+    // face -> committed hypothesis index, for finding a component's neighbours
+    let mut owner: Vec<usize> = vec![usize::MAX; mesh.faces.len()];
+    for (hi, h) in hyps.iter().enumerate() {
+        for &fi in h.faces() {
+            owner[fi] = hi;
+        }
+    }
+
+    loop {
+        // Candidate axes: the axis directions of every committed surface
+        // adjacent to something still open.
+        let mut axes: Vec<[f64; 3]> = Vec::new();
+        for &fi in open.iter() {
+            let vc = mesh.faces[fi].vertex_count as usize;
+            for &ni in &mesh.faces[fi].neighbors[..vc] {
+                if ni < 0 {
+                    continue;
+                }
+                let hi = owner[ni as usize];
+                if hi == usize::MAX {
+                    continue;
+                }
+                let ax = match &hyps[hi] {
+                    CompeteHyp::Conical(c) => c.axis_direction,
+                    CompeteHyp::Toroidal(t) => t.axis_direction,
+                    _ => continue,
+                };
+                if !axes.iter().any(|a| {
+                    let d = a[0] * ax[0] + a[1] * ax[1] + a[2] * ax[2];
+                    d.abs() > 0.999_999
+                }) {
+                    axes.push(ax);
+                }
+            }
+        }
+        if axes.is_empty() {
+            break;
+        }
+
+        // The arena for this round is what remains open.
+        let mut in_open = vec![false; mesh.faces.len()];
+        for &fi in open.iter() {
+            in_open[fi] = true;
+        }
+        let mut seeds: Vec<usize> = open.iter().copied().collect();
+        seeds.sort_unstable();
+
+        let mut best: Option<(ConicalHypothesis, f64, Vec<usize>)> = None;
+        for &seed in &seeds {
+            for &axis in &axes {
+                if let Some((h, area, faces)) =
+                    compete::grow_with_axis(mesh, &in_open, seed, axis, centroids, config)
+                {
+                    if best.as_ref().is_none_or(|(_, ba, _)| area > *ba + 1e-12) {
+                        best = Some((h, area, faces));
+                    }
+                }
+            }
+        }
+
+        match best {
+            Some((h, _, faces)) => {
+                let hi = hyps.len();
+                for &fi in &faces {
+                    open.remove(&fi);
+                    owner[fi] = hi;
+                }
+                hyps.push(CompeteHyp::Conical(h));
+            }
+            None => break,
+        }
+    }
+
+    let mut still: Vec<usize> = open.into_iter().collect();
     still.sort_unstable();
     still
 }

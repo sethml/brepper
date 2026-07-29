@@ -49,7 +49,7 @@ use crate::config::Config;
 use crate::stage1::ConnectedMesh;
 
 use super::surface::SurfaceType;
-use super::conical::ConicalSurface;
+use super::conical::{ConeFit, ConicalSurface};
 use super::edges::JetField;
 use super::planar::PlanarSurface;
 use super::regions::Region;
@@ -423,6 +423,65 @@ fn interior_of_claims(mesh: &ConnectedMesh, fi: usize, claimed: &[bool]) -> bool
     face.neighbors[..vc]
         .iter()
         .all(|&ni| ni < 0 || claimed[ni as usize])
+}
+
+/// Grow a cylinder whose axis DIRECTION is supplied by an already-committed
+/// neighbour instead of being estimated from an unvalidated seed neighbourhood.
+///
+/// This is the point of stage 2.3(d2). A free 5-DOF cylinder fit on a leftover
+/// arc fails on the **axis**, not the radius: measured on the three fillet
+/// cylinders `stepped_block_toroidal` fine loses, fixing only the axis
+/// direction recovers r = 0.99998 / 0.99999 / 0.50008 against true 1.0 / 1.0 /
+/// 0.5, with residuals five to ten times *under* vertex tolerance. With the
+/// axis fixed the fit is a 3-DOF circle in the perpendicular plane, which is
+/// well conditioned on a short arc — so growth can start from the seed facet
+/// alone and there is no blind patch to straddle a junction.
+pub(super) fn grow_with_axis(
+    mesh: &ConnectedMesh,
+    in_region: &[bool],
+    seed: usize,
+    axis: [f64; 3],
+    centroids: &[[f64; 3]],
+    config: &Config,
+) -> Option<(ConicalHypothesis, f64, Vec<usize>)> {
+    let vtol = config.vertex_tolerance_mm;
+    let stol = config.surface_tolerance_mm;
+    let mut accepted = vec![seed];
+    let mut fit = None;
+    for _ in 0..MAX_GROW_ROUNDS {
+        let verts = vertices_of(mesh, &accepted);
+        let (center, radius) =
+            super::cylindrical::fit_circle_for_axis(&axis, &verts, &mesh.vertices)?;
+        let mut f = ConeFit {
+            apex: center,
+            axis_direction: axis,
+            half_angle: 0.0,
+            radius,
+            convex: None,
+        };
+        ConicalSurface::determine_convexity(mesh, &accepted, &mut f);
+        let grown = flood::<ConicalSurface>(mesh, in_region, seed, &f, centroids, vtol, stol);
+        if grown.is_empty() {
+            return None; // the seed does not lie on its own constrained fit
+        }
+        let done = grown.len() == accepted.len();
+        accepted = grown;
+        fit = Some(f);
+        if done {
+            break;
+        }
+    }
+    let fit = fit?;
+    if accepted.len() < MIN_CYLINDER_FACES {
+        return None;
+    }
+    let area: f64 = accepted
+        .iter()
+        .map(|&fi| face_area(&mesh.faces[fi], &mesh.vertices))
+        .sum();
+    let verts = vertices_of(mesh, &accepted);
+    let hyp = ConicalSurface::make_hypothesis(mesh, accepted.clone(), verts, &fit);
+    Some((hyp, area, accepted))
 }
 
 fn resolve_claims(
