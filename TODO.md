@@ -4,6 +4,46 @@
 
 # Active
 
+- **NEXT, IN ORDER (set 2026-07-28, after the stage-2.3 rework steps 0/1/3/4).**
+
+  1. **Lock down the NURBS corpus with `--compare` tests.** *Highest leverage,
+     cheapest, lowest risk — do this first.* This session found three silently
+     broken models (`bspline_blister`, `bspline_saddle`, `hill_with_hole`) and
+     the cause was **missing tests, not missing algorithms**. Every NURBS model
+     already has a reference STEP in the repo. Still stage-1-only:
+     `bspline_hill`, `bspline_terrain` (both would pass immediately and pin the
+     good behaviour) and `hill_with_hole` (goes in `#[ignore]`d with the
+     blocker in item 2). Everything else built will rot the same way until this
+     exists.
+  2. **`hill_with_hole`'s stage-4 volume failure.** The cleanest isolated bug
+     left. It decomposes to **exactly the reference's 7 surfaces** (5 planes +
+     1 cylinder + 1 B-spline) and clears stage 3.1, then fails stage 4.1 on
+     volume at **6.96e-2 relative**. A correct decomposition with a wrong output
+     is the only case in the corpus that isolates stage 3/4 (or freeform surface
+     accuracy) from stage 2 — everything else confounds them.
+  3. **Bound the runtime.** `stepped_block_toroidal` fine went **42 s → 103 s**
+     with visited ≠ claimed, and the suite is slower. The interior-skip in
+     `compete_region` is a pragmatic bound, not a derived one; tighten it
+     deliberately rather than letting it compound. The question to answer is how
+     much of the 26122-face seed sweep does useful work.
+  4. **The last 4 surplus surfaces on `stepped_block_toroidal` fine** (75 vs 71:
+     two extra planes, one extra cylinder, one spurious B-spline). Re-enables
+     three disabled tests, but it is the hardest remaining and well into
+     diminishing returns. **Prefer medium** (~84 vs 71) if returning to this
+     model — further from correct and more representative of coarse meshes.
+
+  **Explicitly NOT next: step 5** (deleting the blind patch). Measured to need a
+  non-blind bootstrap first — a design problem the size of the whole rework. See
+  its breadcrumbs below.
+
+  **ASK THE USER: keep or delete `snap_boundaries`?** It has measured inert on
+  the corpus since it landed (2026-07-28) — the suite passes with it ablated. It
+  is kept because item C (variational shape approximation) needs its per-face
+  assignment criterion and the `dump_regions locus` diagnostic depends on the
+  same module, but the project's own "inert ⇒ delete" methodology argues the
+  other way. This is a judgement call about carrying inert code, not a technical
+  question, and should not be decided unilaterally.
+
 - **stage-2 rewrite (partition-then-classify) is COMPLETE.** All 7 roadmap
   steps landed: the old BFS pipeline is deleted, the analytic fitters are
   driven by the whole-region ladder + scoped competition + freeform rung via
@@ -470,10 +510,52 @@
      blind patch is still the only source of initial parameters for the FREE
      fit path, which commits ~63 hypotheses before either rescue runs; (d) and
      (d2) merely clean up after it. **The prerequisite is a bootstrap for the
-     free path that is not a blind neighbourhood** — e.g. making every growth
-     axis-constrained from the outset, which needs a first axis from something
-     other than a patch. That is a design step, not a deletion. Constant count
-     stays at 34.
+     free path that is not a blind neighbourhood.** That is a design step, not
+     a deletion. Constant count stays at 34.
+
+     **Breadcrumbs for a viable seeding approach — everything here is measured
+     this session, so start from it rather than re-deriving:**
+     - **The bootstrap does NOT need to be reliable. It needs to be cheap and
+       DOF-reducing.** Two facts combine to make that true. First, sagitta
+       arithmetic says no local patch can determine a *free* surface of
+       revolution by any method (over a 7.5° arc on r = 0.5 the sagitta is
+       ~0.001 mm against a 2e-5 mm quantum → r ~2% wrong = 200× vtol), so
+       improving the *fit* is hopeless; only removing DOF helps. Second,
+       **visited ≠ claimed (already built) makes a failed seed cost only its own
+       turn**, so a 36-face surface gets 36 independent attempts. An
+       unreliable-but-cheap bootstrap is therefore survivable in a way it was
+       not before.
+     - **The failure is the AXIS, not the radius** — measured. Fix the axis and
+       the fit is a 3-DOF circle in the perpendicular plane
+       (`fit_circle_for_axis`, cylindrical.rs), well conditioned even on a short
+       arc: r = 0.99998 / 0.99999 / 0.50008 from arcs of 65°/60°/40°.
+     - **So: per seed, try a small set of CANDIDATE AXES, each giving a
+       constrained fit from the seed facet alone, and let largest-validated-area
+       choose.** No neighbourhood is ever fitted blind. Candidate sources, best
+       first:
+       1. An adjacent committed surface's axis — already implemented as 2.3(d2);
+          generalise it from "leftovers only" to "every seed".
+       2. The jet's principal direction at the seed (the κ ≈ 0 direction of a
+          developable). Free, per-face, no patch. Accurate where tessellation is
+          uniform — four of six sampled fillet strips read κ₁ = 2.005 against a
+          true 2.0 — and wrong where a face's vertex neighbourhood spans a
+          junction, which is exactly what cheap failures absorb.
+       3. Normal covariance (`smallest_eigenvector_3x3`, already in conical.rs)
+          over the seed's immediate ring.
+       4. The seed facet's long-edge direction. **Corroborating only** — right
+          ~65% of the time on strips, with adjacent strips differing by up to
+          76°. Never load-bearing.
+     - **Planes need no bootstrap at all**: one facet determines a plane
+       exactly, so the planar candidate can fit the seed alone and flood.
+     - **For spheres** the centre lies along the seed facet's normal at distance
+       r, so the jet's κ gives a 1-DOF start. **Tori are the open case** — 7 DOF
+       with no equally cheap constraint; the bent-tube promotion in 2.3(c) is
+       the existing partial answer.
+     - **Validate against `stepped_block_toroidal` medium and
+       `part_rounded_cube` coarse**, not just fine: the coarse-mesh curved
+       bootstrap is where the jet is genuinely unreliable (κ₁ = 0.023 / 0.162 /
+       2.2 across one exact r = 0.5 arc) and is the one place the blind patch is
+       currently irreplaceable.
 
   **The one real risk**, and it is narrower than "no anchor" (seeding stays
   universal, so with nothing committed the design degrades to today's behaviour,
