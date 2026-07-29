@@ -570,6 +570,19 @@ macro_rules! stage41_compare {
             run_stage4(&config);
         }
     };
+    ($name:ident, $stl:literal, $step:literal, ignore = $why:literal) => {
+        #[test]
+        #[ignore = $why]
+        fn $name() {
+            let dir = manifest_dir();
+            let config = config_for_compare(
+                &format!("{dir}/tests/{}.stl", $stl),
+                &format!("{dir}/tmp/test_cover_{}.step", stringify!($name)),
+                &format!("{dir}/tests/{}.step", $step),
+            );
+            run_stage4(&config);
+        }
+    };
 }
 
 // --- tests/ccad/generated/ (previously stage 1 + stage 2 only) ---
@@ -691,4 +704,208 @@ stage41_compare!(
     onshape_cone_tangent_planes_stage41_compare,
     "onshape/cone_tangent_planes_medium",
     "onshape/cone_tangent_planes"
+);
+
+// ---------------------------------------------------------------------------
+// OCCT re-meshes (Phase 0.2, 2026-07-29)
+// ---------------------------------------------------------------------------
+//
+// tests/remesh/ re-tessellates references that already exist elsewhere in
+// tests/, so the ground truth is identical and only the mesh PROVENANCE
+// changes: constrained Delaunay instead of Parasolid strips, and (for the
+// *_offset* variants) coordinates ~1 m from the origin, which raises the STL's
+// f32 quantum from ~3e-6 mm to ~1e-4 mm. See tests/remesh/README.md.
+//
+// 25 of 32 pass. The 7 that fail are findings, not corpus defects — the strip
+// assumption becoming measurable — and are ignored with their numbers below.
+
+stage41_compare!(
+    remesh_cylinder_coarse,
+    "remesh/cylinder_10x30_occt_coarse",
+    "onshape/cylinder_10x30"
+);
+stage41_compare!(
+    remesh_cylinder_medium,
+    "remesh/cylinder_10x30_occt_medium",
+    "onshape/cylinder_10x30"
+);
+stage41_compare!(
+    remesh_cylinder_fine,
+    "remesh/cylinder_10x30_occt_fine",
+    "onshape/cylinder_10x30"
+);
+stage41_compare!(
+    remesh_cylinder_offset,
+    "remesh/cylinder_10x30_offset_occt_medium",
+    "remesh/cylinder_10x30_offset"
+);
+
+stage41_compare!(
+    remesh_sphere_medium,
+    "remesh/sphere_25_occt_medium",
+    "onshape/sphere_25"
+);
+stage41_compare!(remesh_sphere_fine, "remesh/sphere_25_occt_fine", "onshape/sphere_25");
+stage41_compare!(
+    remesh_sphere_offset,
+    "remesh/sphere_25_offset_occt_medium",
+    "remesh/sphere_25_offset"
+);
+stage41_compare!(
+    remesh_sphere_coarse,
+    "remesh/sphere_25_occt_coarse",
+    "onshape/sphere_25",
+    ignore = "304 Delaunay triangles over a whole r=12.5 sphere (deflection 0.5 mm, 4.65e-2 \
+tessellation volume loss): decomposes to 6 planes + 2 spheres instead of 1 sphere, failing stage \
+3.1 with an 8.40 mm edge distance. The medium (1256 tris) and fine (7302 tris) variants are exact. \
+A sphere this coarse has no facet pair whose normals separate enough to be spherical rather than \
+polyhedral, which is an honest identifiability limit, not obviously a bug — measure before fixing."
+);
+
+stage41_compare!(remesh_pill_coarse, "remesh/pill_occt_coarse", "onshape/pill");
+stage41_compare!(remesh_pill_medium, "remesh/pill_occt_medium", "onshape/pill");
+stage41_compare!(remesh_pill_fine, "remesh/pill_occt_fine", "onshape/pill");
+stage41_compare!(
+    remesh_pill_offset,
+    "remesh/pill_offset_occt_medium",
+    "remesh/pill_offset"
+);
+
+stage41_compare!(
+    remesh_plate_coarse,
+    "remesh/plate_with_hole_100x50_occt_coarse",
+    "onshape/plate_with_hole_100x50"
+);
+stage41_compare!(
+    remesh_plate_medium,
+    "remesh/plate_with_hole_100x50_occt_medium",
+    "onshape/plate_with_hole_100x50"
+);
+stage41_compare!(
+    remesh_plate_fine,
+    "remesh/plate_with_hole_100x50_occt_fine",
+    "onshape/plate_with_hole_100x50"
+);
+stage41_compare!(
+    remesh_plate_offset,
+    "remesh/plate_with_hole_100x50_offset_occt_medium",
+    "remesh/plate_with_hole_100x50_offset"
+);
+
+stage41_compare!(
+    remesh_rounded_cube_medium,
+    "remesh/rounded_cube_10_r2_occt_medium",
+    "onshape/rounded_cube_10_r2"
+);
+stage41_compare!(
+    remesh_rounded_cube_fine,
+    "remesh/rounded_cube_10_r2_occt_fine",
+    "onshape/rounded_cube_10_r2"
+);
+stage41_compare!(
+    remesh_rounded_cube_offset,
+    "remesh/rounded_cube_10_r2_offset_occt_medium",
+    "remesh/rounded_cube_10_r2_offset"
+);
+stage41_compare!(
+    remesh_rounded_cube_coarse,
+    "remesh/rounded_cube_10_r2_occt_coarse",
+    "onshape/rounded_cube_10_r2",
+    ignore = "34 surfaces against the reference 26 (8 planes / 8 cylinders / 14 spheres / 4 tori — \
+note the 4 spurious tori and 6 surplus spheres where the reference has 12 cylinders and 8 \
+spheres), failing stage 3.1 with a 0.504 mm edge distance at a sphere|torus interface. 580 \
+triangles for the whole fillet network: each r=2 fillet quadrant gets ~2 rows. Medium (1668) and \
+fine (8676) are exact at 26. The Parasolid coarse mesh of the same body passes, so this is \
+provenance-specific."
+);
+
+stage41_compare!(
+    remesh_cone_tangent_medium,
+    "remesh/cone_tangent_planes_occt_medium",
+    "onshape/cone_tangent_planes"
+);
+stage41_compare!(
+    remesh_cone_tangent_fine,
+    "remesh/cone_tangent_planes_occt_fine",
+    "onshape/cone_tangent_planes"
+);
+stage41_compare!(
+    remesh_cone_tangent_offset,
+    "remesh/cone_tangent_planes_offset_occt_medium",
+    "remesh/cone_tangent_planes_offset"
+);
+stage41_compare!(
+    remesh_cone_tangent_coarse,
+    "remesh/cone_tangent_planes_occt_coarse",
+    "onshape/cone_tangent_planes",
+    ignore = "10 surfaces against a reference 7, failing stage 3.1 with a 3.71 mm edge distance at \
+a cone|plane interface. 202 triangles across three tangent cone-plane junctions. Stage 2.4 also \
+reports 'cone-plane ruling tangency is not implemented' twice (NO LOCUS), so the snap has nothing \
+to work with here. Medium (544 tris) and fine (2392) pass — note they resolve as 4 planes + 1 cone \
++ 2 B-SPLINES, a different decomposition from the Parasolid mesh's 4 planes + 2 cones + 1 sphere, \
+both inside the 1% volume gate. Phase 5c."
+);
+
+stage41_compare!(
+    remesh_pipe_elbow_coarse,
+    "remesh/pipe_elbow_10_occt_coarse",
+    "onshape/pipe_elbow_10"
+);
+stage41_compare!(
+    remesh_pipe_elbow_medium,
+    "remesh/pipe_elbow_10_occt_medium",
+    "onshape/pipe_elbow_10"
+);
+stage41_compare!(
+    remesh_pipe_elbow_fine,
+    "remesh/pipe_elbow_10_occt_fine",
+    "onshape/pipe_elbow_10"
+);
+stage41_compare!(
+    remesh_pipe_elbow_offset,
+    "remesh/pipe_elbow_10_offset_occt_medium",
+    "remesh/pipe_elbow_10_offset"
+);
+
+// stepped_block_toroidal fails at EVERY OCCT density while the Parasolid fine
+// mesh of the same body passes at exactly 71 surfaces. The 18 tori are
+// recovered every time; the planes and cylinders around them fragment. This is
+// the clearest measurement in the re-mesh set of what the strip assumption is
+// worth, and it is a Phase 1 acceptance target.
+stage41_compare!(
+    remesh_stepped_block_coarse,
+    "remesh/stepped_block_toroidal_occt_coarse",
+    "onshape/stepped_block_toroidal_fillets",
+    ignore = "183 surfaces against the reference 71 (149 planes / 16 cylinders / 18 tori), stage \
+3.1 vertex distance 0.783 mm. 1948 triangles. All 18 tori are found; the 149 planes are the \
+fragmentation. Stage 2.4 reports many 'NO LOCUS: surfaces do not share an axis' snaps."
+);
+stage41_compare!(
+    remesh_stepped_block_medium,
+    "remesh/stepped_block_toroidal_occt_medium",
+    "onshape/stepped_block_toroidal_fillets",
+    ignore = "88 surfaces against the reference 71 (34 planes / 33 cylinders / 18 tori / 3 \
+B-splines), stage 3.1 vertex distance 0.131 mm at vertex 92. 6464 triangles — comparable to the \
+Parasolid MEDIUM mesh (2615 faces) which reaches 82, and far from the Parasolid FINE mesh which \
+reaches exactly 71. The tori are all correct; cylinders are 33 against 37 and the surplus is in \
+planes plus 3 spurious B-splines."
+);
+stage41_compare!(
+    remesh_stepped_block_fine,
+    "remesh/stepped_block_toroidal_occt_fine",
+    "onshape/stepped_block_toroidal_fillets",
+    ignore = "97 surfaces against the reference 71 (41 planes / 36 cylinders / 18 tori / 2 \
+B-splines) at 35596 triangles — MORE surfaces than the same body's medium re-mesh, so this is not \
+a resolution problem. Stage 3.1 vertex distance 0.618 mm. The Parasolid fine mesh of this exact \
+reference passes at 71. The single most valuable failing row in tests/remesh/: whatever the strip \
+tessellation was providing, more Delaunay triangles do not supply it."
+);
+stage41_compare!(
+    remesh_stepped_block_offset,
+    "remesh/stepped_block_toroidal_offset_occt_medium",
+    "remesh/stepped_block_toroidal_offset",
+    ignore = "96 surfaces against the reference 71, stage 3.1 vertex distance 0.131 mm — the same \
+failure as the origin-centred medium re-mesh (88 surfaces, 0.131 mm), plus 8 more surfaces. The \
+extra 8 are the only part attributable to the 1 m translation; fix the medium case first, then \
+re-measure this one to isolate the quantum's contribution."
 );

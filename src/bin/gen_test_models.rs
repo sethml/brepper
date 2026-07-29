@@ -63,9 +63,10 @@
 //! - elliptical_cylinder: full elliptical prism — a closed periodic
 //!   freeform wall (stretch case: needs a periodic B-spline face + seam).
 
+use brepper::read_step_file;
 use opencascade_sys::{
     b_rep_algo_api, b_rep_check, b_rep_g_prop, b_rep_mesh, b_rep_prim_api, b_rep_builder_api,
-    g_prop, geom, gp, message, stl_api, n_collection, topo_ds, OwnedPtr,
+    b_rep_tools, g_prop, geom, gp, message, stl_api, n_collection, topo_ds, OwnedPtr,
 };
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -572,6 +573,146 @@ fn lattice_slab_model(
 }
 
 // ---------------------------------------------------------------------------
+// Re-mesh mode (Phase 0.2)
+// ---------------------------------------------------------------------------
+//
+// `gen_test_models remesh [<out_dir>] [<step> ...]` loads existing reference
+// STEPs and re-tessellates them with OCCT's BRepMesh at several densities,
+// writing STLs next to a copy of the reference each `--compare` run needs.
+//
+// Why: the corpus is Parasolid-heavy (Onshape exports), and Parasolid
+// tessellates by sweeping STRIPS — full-length quads with no interior
+// vertices along a ruling. BRepMesh is constrained Delaunay instead, which
+// breaks two properties the pipeline has quietly been able to rely on: a
+// facet no longer spans two rulings of a cylinder (so a facet normal is no
+// longer exactly perpendicular to the axis — the Phase 1.1 initializer
+// caveat), and facets are no longer grid-aligned (so meridian normals on a
+// torus are only approximate). Re-meshing the SAME references keeps the
+// ground truth exact while changing only the provenance.
+//
+// Off-origin variants exist to make the float32 quantum testable. An STL
+// stores coordinates as f32, so vertex precision is a *relative* quantity:
+// max|coordinate| * 1.19e-7. At the origin-centred corpus sizes that is
+// ~1e-6 mm; translated a metre away it is ~1e-4 mm, which is larger than the
+// 5e-5 mm default --vertex-tolerance. Both the STL and a translated copy of
+// the reference STEP are written so --compare still applies.
+
+/// Tessellation settings for the re-mesh variants. These are inputs to the
+/// mesh GENERATOR, not pipeline tolerances: they describe what a CAD exporter
+/// was asked for, exactly as Onshape's coarse/medium/fine presets do.
+/// Deflection is chordal deviation in mm; the angle bounds the turn between
+/// adjacent facets.
+const REMESH_DENSITIES: &[(&str, f64, f64)] = &[
+    ("coarse", 0.5, 30.0),
+    ("medium", 0.1, 15.0),
+    ("fine", 0.02, 6.0),
+];
+
+/// Translation for the off-origin variants, ~1 m in length. Deliberately not
+/// uniform across the axes and deliberately leaving z near the origin: the
+/// f32 quantum of a *distance* is direction-weighted, so a part that is far
+/// away in x and y but not in z is the informative case — and it is also what
+/// a part positioned inside a real assembly looks like.
+const REMESH_OFFSET: [f64; 3] = [600.0, 800.0, 0.0];
+
+/// Reference STEPs re-meshed by default. Chosen for surface-type coverage
+/// (cylinder, cone, sphere, torus, fillet networks, graded plane/hole pairs)
+/// among models whose current STLs are all Parasolid strips.
+const REMESH_MODELS: &[(&str, &str)] = &[
+    ("tests/onshape/cylinder_10x30.step", "cylinder_10x30"),
+    ("tests/onshape/sphere_25.step", "sphere_25"),
+    ("tests/onshape/pill.step", "pill"),
+    ("tests/onshape/plate_with_hole_100x50.step", "plate_with_hole_100x50"),
+    ("tests/onshape/rounded_cube_10_r2.step", "rounded_cube_10_r2"),
+    ("tests/onshape/cone_tangent_planes.step", "cone_tangent_planes"),
+    ("tests/onshape/pipe_elbow_10.step", "pipe_elbow_10"),
+    ("tests/onshape/stepped_block_toroidal_fillets.step", "stepped_block_toroidal"),
+];
+
+/// Tessellate `shape` at (deflection, angle) and write `<dir>/<name>.stl`,
+/// then read it back and report closure, volume error against the B-rep, and
+/// the f32 quantum implied by its coordinates.
+fn write_remesh_variant(
+    shape: &topo_ds::Shape,
+    dir: &str,
+    name: &str,
+    deflection: f64,
+    angle_deg: f64,
+    brep_vol: f64,
+) {
+    // BRepMesh is *incremental*: it reuses any triangulation already cached on
+    // the shape. Clean first or the second density silently returns the first.
+    b_rep_tools::clean(shape, true);
+    write_tessellated_stl(shape, dir, name, deflection, angle_deg);
+
+    let mesh = MeshBuf::from_stl_file(&format!("{dir}/{name}.stl"));
+    mesh.assert_closed_manifold(name);
+    let vol = mesh.volume();
+    let rel = (vol - brep_vol).abs() / brep_vol;
+    let max_coord = mesh
+        .tris
+        .iter()
+        .flatten()
+        .flatten()
+        .fold(0.0f64, |m, c| m.max(c.abs()));
+    println!(
+        "  {name}: {} tris, volume {vol:.4} vs B-rep {brep_vol:.4} (rel {rel:.2e}), \
+         max|coord| {max_coord:.1} mm -> f32 quantum {:.2e} mm",
+        mesh.tris.len(),
+        max_coord * 1.192_092_9e-7,
+    );
+}
+
+/// Re-mesh one reference STEP at every density, plus an off-origin variant.
+fn remesh_model(out_dir: &str, step_path: &str, name: &str) {
+    let shape = read_step_file(step_path)
+        .unwrap_or_else(|e| panic!("failed to read {step_path}: {e}"));
+    let brep_vol = shape_volume(&shape).abs();
+    println!("remeshing {step_path} (B-rep volume {brep_vol:.4} mm³)");
+
+    for (label, deflection, angle) in REMESH_DENSITIES {
+        write_remesh_variant(
+            &shape,
+            out_dir,
+            &format!("{name}_occt_{label}"),
+            *deflection,
+            *angle,
+            brep_vol,
+        );
+    }
+
+    // Off-origin: a translated reference STEP plus one medium tessellation of
+    // it. Copy the geometry (rather than only setting a location) so the
+    // written STEP carries genuinely translated surfaces.
+    let mut trsf = gp::Trsf::new();
+    let offset = gp::Vec::new_real3(REMESH_OFFSET[0], REMESH_OFFSET[1], REMESH_OFFSET[2]);
+    trsf.set_translation_part(&offset);
+    let mut xform = b_rep_builder_api::Transform::new_shape_trsf_bool(&shape, &trsf, true);
+    let moved_name = format!("{name}_offset");
+    {
+        let moved = xform.as_modify_shape_mut().shape();
+        write_step(moved, out_dir, &moved_name);
+    }
+    let moved = xform.as_modify_shape_mut().shape();
+    let (_, deflection, angle) = REMESH_DENSITIES[1];
+    write_remesh_variant(
+        moved,
+        out_dir,
+        &format!("{moved_name}_occt_medium"),
+        deflection,
+        angle,
+        brep_vol,
+    );
+}
+
+fn remesh_corpus(out_dir: &str, models: &[(String, String)]) {
+    std::fs::create_dir_all(out_dir).expect("failed to create remesh output dir");
+    for (step_path, name) in models {
+        remesh_model(out_dir, step_path, name);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Models
 // ---------------------------------------------------------------------------
 
@@ -908,8 +1049,33 @@ fn hill_with_hole(dir: &str, hill: &geom::Handle_Geom_BSplineSurface) {
 }
 
 fn main() {
-    let occt_dir = std::env::args().nth(1).unwrap_or_else(|| "tests/occt".to_string());
-    let nurbs_dir = std::env::args().nth(2).unwrap_or_else(|| "tests/nurbs".to_string());
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("remesh") {
+        let out_dir = args.get(1).cloned().unwrap_or_else(|| "tests/remesh".to_string());
+        let models: Vec<(String, String)> = if args.len() > 2 {
+            args[2..]
+                .iter()
+                .map(|p| {
+                    let stem = std::path::Path::new(p)
+                        .file_stem()
+                        .expect("STEP path has no file name")
+                        .to_string_lossy()
+                        .to_string();
+                    (p.clone(), stem)
+                })
+                .collect()
+        } else {
+            REMESH_MODELS
+                .iter()
+                .map(|(p, n)| (p.to_string(), n.to_string()))
+                .collect()
+        };
+        remesh_corpus(&out_dir, &models);
+        return;
+    }
+
+    let occt_dir = args.first().cloned().unwrap_or_else(|| "tests/occt".to_string());
+    let nurbs_dir = args.get(1).cloned().unwrap_or_else(|| "tests/nurbs".to_string());
     std::fs::create_dir_all(&occt_dir).expect("failed to create occt output dir");
     std::fs::create_dir_all(&nurbs_dir).expect("failed to create nurbs output dir");
 

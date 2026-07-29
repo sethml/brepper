@@ -78,14 +78,27 @@ instrument first; you cannot claim generality you cannot measure.
   gate where every other model is ≤1.7e-7 — the Phase-5c canary, now pinned.
   Orphan `chamfered_cube_10_c1_medium.ascii.stl` pinned by an ASCII-vs-binary
   stage-1 equivalence test instead of a duplicate pipeline run.
-- **0.2 OCCT re-mesh utility.** Extend `src/bin/gen_test_models.rs` (it
-  already drives `BRepMesh` via `write_tessellated_stl(shape, dir, name,
-  deflection, angle_deg)`) with a mode that loads an existing reference STEP
-  and emits STL variants at several (deflection, angle) settings, plus
-  **off-origin variants**: translate the shape ~1 m, write both the STL and a
-  translated reference STEP so `--compare` still works. Wire a handful into
-  the suite. This adds constrained-Delaunay provenance and makes the float32
-  quantum testable.
+- **0.2 OCCT re-mesh utility.** **DONE 2026-07-29** — `gen-test-models remesh
+  [<out_dir>] [<step>...]` re-tessellates any reference STEP at
+  coarse/medium/fine (deflection 0.5/0.1/0.02 mm, 30°/15°/6°) plus a
+  ~1 m off-origin variant with its own translated reference STEP. 8 models ×
+  4 variants committed under `tests/remesh/` (5.4 MB, byte-deterministic), all
+  32 wired into the suite: **558 passed / 16 ignored**, stage-4 target
+  107 s → 117 s. **25 pass, 7 fail, and the failures are the finding**:
+  `stepped_block_toroidal` fails at *every* OCCT density — 183 surfaces coarse,
+  88 medium, **97 fine at 35596 triangles** — while the Parasolid fine mesh of
+  the same body passes at exactly 71. All 18 tori are recovered every time; the
+  planes and cylinders fragment. More Delaunay triangles do not supply what the
+  strip tessellation was providing. Also: coarse `sphere_25` (6 planes + 2
+  spheres), coarse `rounded_cube` (34 vs 26, with 4 spurious tori), coarse
+  `cone_tangent_planes` (10 vs 7, "cone-plane ruling tangency is not
+  implemented"). Off-origin quantum measured 8.8e-5–1.02e-4 mm vs the 5e-5
+  default vtol, yet max vertex distance is only 2.7e-5–4.2e-5 ≈ **0.42×
+  quantum** — the direction-weighting is real and half a quantum is the
+  operative figure, so the default vtol has <20% margin at 800 mm. Phase 5c
+  note: on the Delaunay mesh `cone_tangent_planes` resolves as 4 planes +
+  1 cone + **2 B-splines**, a different decomposition from the strip mesh's
+  4 planes + 2 cones + 1 sphere — both inside the 1% volume gate.
 - **0.3 Sweep harness.** A tracked script (`tools/sweep.sh`; check
   `git ls-files tmp/probe.sh` first — if probe.sh is untracked, move both into
   `tools/` so the methodology is versioned) that runs every corpus + generated
