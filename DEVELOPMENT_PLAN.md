@@ -636,6 +636,11 @@ different justifications and different evidence:
 claim below has a number behind it, and the dead ends are recorded so they are
 not re-derived.*
 
+*(2026-07-29: the missing bootstrap design this section calls for is now
+specified — see **The Robustness Rework**, Phase 1 "earned patches". Steps
+0/1/3/4 below remain landed and correct; the step-5 deletion happens as part
+of that phase.)*
+
 **Root cause.** `grow_from` seeds a hypothesis by fitting to an *unvalidated*
 BFS neighbourhood (`seed_patch` → `condition_patch`, depth 3, up to 32 faces).
 The patch never survives into the hypothesis — after round 0 it is replaced by
@@ -1655,6 +1660,312 @@ Write constructed solid(s) to a STEP file.
     - Re-read the written STEP file via `STEPControl_Reader` to validate the round-trip. Error if unreadable (note this makes `-o /dev/null` incompatible with `--compare`; `run_test_table.sh` writes a real temp file).
     - Compare volumes of the output shape vs reference shape using `BRepGProp::VolumeProperties`. Error on >1% relative difference.
     - Compute maximum distance between output and reference using `BRepExtrema_DistShapeShape`. Error if exceeds `--surface-tolerance`.
+
+---
+
+## The Robustness Rework (2026-07-29)
+
+**This section is the rationale behind the phased plan in TODO.md.** TODO.md
+carries the step-by-step instructions; this section records why each phase is
+shaped the way it is, the design detail for the two new mechanisms (earned
+patches, distance-guided exploration), the corpus strategy, what was considered
+and deliberately not adopted, and the measurements preserved from the TODO
+items the plan retired. It synthesizes two parallel design sessions held
+2026-07-29 (one logged at `agent-logs/2026-07-29_14-59_nothinking.md`) plus the
+measured record above.
+
+### Goal and thesis
+
+The goal changed: **maximum robustness and minimum fragility over all plausible
+CAD-derived meshes**, not score on the current corpus. Fragility is
+operationalized as two headline numbers: the stage-2 tuned-constant count
+(34 at plan time; `grep -h "^const \|^pub(crate) const \|^pub(super) const "
+src/stage2/*.rs | wc -l`) and the **cliff count** — the number of constants
+whose ±2× perturbation collapses any model (four unrelated knobs once each
+flipped stepped_block medium from 83 surfaces to full per-facet collapse).
+
+The measured fragility concentrates in three structural debts, and the plan
+retires them in dependency order:
+
+1. **Evaluation is anecdotal.** 14 hand-watched models, Onshape/Parasolid-heavy;
+   three NURBS models rotted silently because nothing watched them. You cannot
+   claim generality you cannot measure → Phase 0 builds the instrument first.
+2. **Two of three tolerances are guesses.** `--surface-tolerance` defaults to
+   0.4 mm against a measured true sag of ~9e-4 mm (~400× too loose), making
+   centroid validation nearly vacuous; `--angular-tolerance` is a stand-in for
+   a discarded exporter setting. Both are measurable from the mesh itself
+   → Phases 0 (diagnostics) and 3 (regime flip).
+3. **One component — blind-patch seeding — forces most of the guard pile.**
+   `seed_patch`/`condition_patch` fit an unvalidated 32-face BFS neighbourhood;
+   the contamination lives on in the fit parameters, producing both the 323
+   NO-GROWTH seeds and plausible-but-wrong fits. Roughly two-thirds of stage
+   2's constants exist because tangent seams are invisible to it → Phases 1–2
+   replace the mechanism, Phase 4 deletes what that makes inert.
+
+Everything else measured principled — stage 1, sharp-edge regions, the DOF
+ladder, `fit_validate`, `face_validates`, flood, `resolve_claims`,
+relabel+refit, the locus machinery, stage 3 topological assembly, the
+`--compare` gates — **is deliberately not touched**.
+
+### Phase 1 design: earned patches (replaces the blind patch)
+
+Replace grab-then-repair with **grow-under-validation**: BFS from the seed,
+admitting a frontier face only if it validates against the current fit at
+vertex tolerance; when a face fails, attempt **promotion** up the ladder
+(plane → cylinder/cone or sphere → torus), refitting accepted+candidate and
+requiring *every already-accepted face* to still validate; if no type
+validates, the face is across a seam — exclude it and record it as a
+**frontier face** (Phase 2 consumes these). The patch can never straddle a
+junction by construction, which is the exact property the blind patch lacks.
+Commit semantics do not change: the earned (type, params, patch) goes to the
+unchanged `grow_from` flood/refit path, and every existing commit gate
+(`MIN_AXIAL_SWEEP_DEG`, torus ratio, `MIN_*_FACES`, `resolve_claims`) keeps
+its meaning.
+
+What makes promotion workable at tiny support — where a free least-squares fit
+is hopeless (sagitta arithmetic: over a 7.5° arc on r = 0.5 the sag is
+~0.001 mm against a 2e-5 mm quantum, so a free radius is ~2% ≈ 200× vtol
+wrong) — is that **facet normals are exact** and give closed-form,
+DOF-reducing initializers:
+
+- **Cylinder — axis = n₁ × n₂.** A planar facet spanning two rulings of a
+  cylinder has its normal exactly perpendicular to the axis, at any coarseness,
+  so two facets with non-parallel normals give the axis exactly on
+  strip/quad-tessellated surfaces. Radius+origin then come from
+  `fit_circle_for_axis` (cylindrical.rs), measured well-conditioned on short
+  arcs (r = 0.99998 / 0.99999 / 0.50008 from 65°/60°/40° arcs). **Provenance
+  caveat:** a general Delaunay triangle's normal is *not* exactly
+  perpendicular to the axis; measure axis error per provenance (Phase 0's OCCT
+  meshes), and degrade to the normal-covariance axis over the earned patch
+  where needed — still clean, still not blind.
+- **Sphere — concurrent normal lines.** For any planar facet inscribed in a
+  sphere, the line through the facet's **circumcenter** along its normal
+  passes exactly through the sphere centre (equidistance). Two facets → centre
+  at the near-intersection (common-perpendicular midpoint), radius = distance.
+- **Cone** — the existing normal-covariance axis (`smallest_eigenvector_3x3`)
+  over the earned patch, guarded by `axis_normals_consistent`, both existing.
+- **Torus — meridian coplanarity, the "open case" closed.** Every torus
+  normal line lies in the meridian plane through its point, which contains
+  the axis — so each facet contributes one coplanarity constraint
+  `(pᵢ − a) · (nᵢ × d) = 0` on the axis (point a, direction d; 4 DOF; the
+  system is bilinear — solve by alternation or pairwise elimination). Four
+  facets pin the axis; then (R, r) is a 2-D circle fit in (ρ, z) profile
+  coordinates — `fit_circle_2d` already exists (toroidal.rs). **Caveats:**
+  rank-deficient by construction on sphere data (any axis through the centre
+  satisfies it) and consistent-but-degenerate on cylinder data, so ladder
+  order and a conditioning floor must precede it; grid-aligned quads give
+  near-exact meridian normals, Delaunay triangles do not. **Time-boxed**: unit
+  test to ~1e-9 on synthetic tori before integrating; if conditioning does not
+  pan out, skip it — direct torus seeding stays as today and Phase 1 is not
+  blocked.
+
+Two behaviours need more than validation failure:
+
+- **Ambiguity → branch, don't choose.** Two same-height faces of a cylinder
+  validate as a sphere centred on the axis (the hole→sphere trap at patch
+  scale). Grow both branches; the false one should die within a face or two
+  (the next face at a different height is off the sphere by ≈ Δ²/2R ≫ vtol).
+  Instrument branch lifetime; persistent branches mean validation is less
+  sharp than believed — stop and ask.
+- **Bent tube → drift-triggered promotion.** A bend is locally a valid
+  cylinder (sag of the bend over a 2 mm patch at R = 14 is ~3.6e-5 mm), so
+  admission never fails and promotion never triggers on residual. The signal
+  is **systematic fit drift**: along a straight tube successive refits are
+  stationary; along a bend the fitted axis precesses with a consistent sign as
+  support accumulates. Test drift as sign-consistency of successive axis
+  deltas, *not* magnitude (a magnitude bar would be a new tuned constant —
+  stop and ask if one seems needed). Success retires `promote_bend` and the
+  `BEND_*` constants; failure keeps them, and that is fine.
+
+**Deleted when this lands (after ablation evidence):** `condition_patch`
+entirely, `seed_patch`'s jet filtering, `SEED_PATCH_CAP`, `MAX_PATCH_DEPTH`,
+`PATCH_RADII`, `PATCH_TRIM_ROUNDS`, `MIN_CONDITION_FACES`, likely
+`MAX_TORUS_STARTS` (multiple flood starts exist because the fit patch was
+unreliable).
+
+### Phase 2 design: distance-guided exploration
+
+The 26122-face seed sweep costs 103 s on stepped_block fine and its
+useful-work fraction is unknown (profile first — do not build this phase's
+machinery if the profile says the cost is in fits or floods rather than the
+sweep). The principled orderings and bounds, all derived rather than tuned:
+
+- **Distance field**: per-face geodesic distance to the region boundary
+  (multi-source Dijkstra over the dual graph, **centroid-gap weights in
+  millimetres, not hops** — hop counts lie on graded meshes, which is what
+  `PATCH_RADII` existed to patch). Seed **farthest-first** (Gonzalez maximin),
+  replacing `neighbor_jet_mismatch` — the jet-based proxy for exactly this
+  quantity.
+- **Feedback, not detection**: tangent junctions cannot be *detected* (the
+  measured-dead pivot; a tangent junction is locally the *smoothest* place on
+  the mesh — an anti-edge), but they are *discovered exactly* by Phase 1's
+  excluded frontier faces. Add discovered frontiers as new distance sources
+  incrementally. The only trustworthy edge map is the one the fits produce.
+- **Duplicate abort**: a seed whose reachable ball lies entirely inside one
+  committed surface can only refit that surface — skip it. Topological, a
+  strict generalization of `interior_of_claims`, no numeric tolerance.
+- **Acceptance discipline**: ordering must not change results. Bit-identical
+  probe output, or every diff explained; order-dependence is itself the
+  fragility being removed — stop and surface it.
+
+### Phase 0 design: the corpus and the instrument
+
+Three provenance sources, cheapest first, all scored against reference STEPs:
+
+1. **OCCT re-mesh of existing references** (automated, free ground truth).
+   `gen_test_models` already drives `BRepMesh` with deflection/angle settings
+   (`write_tessellated_stl`); add a mode that loads any reference STEP and
+   emits STL variants at several settings, plus **off-origin variants**
+   (translate the shape ~1 m before both STL and STEP output) so the float32
+   quantum question becomes testable. This adds constrained-Delaunay
+   provenance to a strip-heavy corpus.
+2. **Fusion 360 re-export** (user batch job): import reference STEPs, export
+   STL at low/medium/high. Different tessellator, same ground truth.
+3. **Wild STEP+STL pairs** (most representative, most care): harvest models
+   published with both a STEP/F3D and an STL (Thingiverse API / Printables /
+   GrabCAD, scripted or via a browser session). **Pair-verification gate**:
+   run stage 1 `--compare`; a pair counts as ground truth only if mesh
+   vertices lie on the STEP surfaces to within a few quanta — otherwise
+   quarantine as crash-test-only (the STL may be a different revision,
+   decimated, or repaired). Record the verification *rate*: it is itself the
+   first field measurement of the provenance premise ("vertices lie on the
+   true surface") in the wild. Keep licensing clean: store source URL,
+   author, license, and hash in a manifest; do not commit files whose license
+   does not permit redistribution (gitignore the external corpus, commit the
+   manifest).
+
+The instrument: a one-command sweep harness (per-model rows: per-type surface
+breakdown, `--compare` distances, volume error, runtime, exit status;
+machine-readable; saved baselines + diff mode) and a **fragility meter** that
+perturbs/ablates each stage-2 constant and reports which models change.
+
+### Tolerance sequencing (Phases 0 and 3)
+
+Estimators are built and *reported* in Phase 0 (they double as the
+provenance-violation detector: estimator disagreement or a missing dihedral
+gap means a decimated/remeshed/faceted-by-construction input — warn now,
+degrade gracefully in Phase 6). The **default flip is deferred to Phase 3**,
+after the seeding rework stabilizes: a 400× change to `stol` moves behaviour
+everywhere (`REFIT_GIVE_UP` is 8×stol; merge gates and `face_validates` use
+it), and debugging it concurrently with new seeding would confound both. The
+earn loop admits on *vertex* tolerance, so Phase 1 is essentially independent
+of the stol regime. Ablation (Phase 4) runs after the flip so deletions are
+judged under the final regime.
+
+### Considered and not adopted (with reasons)
+
+- **Recursive subdivision / split-and-merge as the architecture.** Strong
+  asymptotics (the tree visits only boundary-containing paths) and its merge
+  half already exists (`fit_validate` as union-revalidation), but: fixed
+  geometric cuts do not respect seams (boundaries are mesh-edge chains;
+  strip-shaped surfaces stay contaminated at every level until cells are
+  smaller than the strip), and identifiability *inverts* — a sub-node of a
+  real torus legitimately sweeps 5° and fits garbage parameters that validate
+  locally, so every sweep guard would need to become "defer, don't reject"
+  until merge time, a rework of commit semantics. Phases 1–2 deliver most of
+  its benefit at a fraction of the risk. **Held in reserve**; do not start
+  without Phase 1–4 measurements in hand and user sign-off.
+- **Precomputed junction-evidence field for seeding** (dihedral
+  second-difference, diffused; or any jet/dihedral edge map). Any field
+  computed *before* fitting is a detector prior — the refuted detector
+  returning in a hat. Superseded by the exact, threshold-free fit-derived
+  frontier field of Phase 2. (For the record, the raw idea also had a real
+  basis: within a tessellated surface the dihedral field is locally
+  consistent and *steps* at junctions — but the OCCT-Delaunay and
+  coarse-mesh cases erode it, and nothing needs it once frontiers exist.)
+- **The "bridge" formulation of type promotion** (grow under an
+  exactly-determined uncommittable fit until the new DOF identify). Correct
+  shape, but its fragile middle regime — junction faces soaking into
+  exactly-determined fits — is mostly obviated by the closed-form
+  initializers, which pin the new DOF geometrically at 2–4 faces instead of
+  waiting for least-squares identifiability. The earn loop keeps the bridge's
+  two sound rules: full-support revalidation on every accretion, and
+  identifiability-gated *commits*.
+- **VSA (the old item C)** as a planned phase. Earned patches + the existing
+  relabel/refit fixpoint already implement the alternation locally, and the
+  known-working machinery it would replace (`resolve_claims`, relabel, merge)
+  is exactly what a big rewrite puts at risk. Reserve, same gate as
+  subdivision. The pending `snap_boundaries` keep/delete decision folds into
+  Phase 4 with fresh ablation data (it is the per-face assignment criterion a
+  future VSA would need, and the locus diagnostic depends on the module).
+- **Retuning anything to close the last corpus gaps first** (stepped fine's 4
+  surplus surfaces, medium's ~13). Deliberately deferred: they are boundary-
+  and identifiability-residue that Phases 1–4 either fix or isolate, and
+  chasing them now re-enters the one-model-at-a-time loop that produced the
+  fragility.
+
+### Preserved measurements from retired TODO items
+
+(Everything here is measured; do not re-derive. Sources: 2026-07-26..29
+sessions.)
+
+- **Sagitta bound**: no local patch determines a free surface of revolution —
+  7.5° arc on r = 0.5 → sag ~0.001 mm vs 2e-5 mm quantum → r ~2% (≈200×
+  vtol) wrong. Only DOF reduction helps at small support.
+- **Blind-patch facts**: `SEED_PATCH_CAP = 1` collapses stepped_block fine to
+  24872 surfaces (the blind patch was the free path's only bootstrap);
+  0 of 200 sampled flat seeds produced a patch that stayed on the flat
+  (median 50% fillet contamination); 72 of 75 flat components are under the
+  32-face cap; a 3232 mm² plane is 12 faces.
+- **Borrowed axes**: per-seed borrowed-axis candidates fragment surfaces
+  (75 → 100, cylinders 38 → 63, measured twice); (d2) works *only* because it
+  selects largest validated area globally before committing. Any borrowed-axis
+  use outside (d2) must keep that global selection.
+- **Jet reliability**: fine meshes good (κ₁ = 2.005 vs true 2.0); coarse
+  garbage (κ₁ = 0.023 / 0.162 / 2.2 across one exact r = 0.5 arc on medium).
+  Facet long-edge direction is right ~65% on strips (up to 76° off) —
+  corroborating only, never load-bearing.
+- **Identifiability, not residual**: impostor cylinders/tori sweep 2.8–6.7°
+  vs real surfaces ≥ 64.8°; spurious exactly-determined tori fit at
+  0.52/0.72/0.87 quanta vs genuine mean 0.39 / max 0.56 — overlapping, so no
+  residual or coverage test rejects them. `candidate_sweep` is vacuous for
+  spheres and true cones — a normal-spread identifiability test for those is
+  still missing (Phase 5c territory).
+- **Exact-normal component exploration** (partial, superseded as a detection
+  path): connected components over near-zero-dihedral edges give 342
+  components ≥ 10 mm² where the reference has 16 planes, threshold-insensitive
+  from 0.001° to 0.2°; top ~16 sum to 14301 mm² vs expected 13783. The
+  unexplained tail was suspected large-radius fillets with sub-threshold
+  steps. Do not resume as detection; frontier feedback replaces it.
+- **hill_with_hole residue**: one junk torus — 17 faces (one over
+  `SMALL_SELECTION_ABSORB_FACES = 16`), R = 3.5101 r = 2.3882 (r/R = 0.680,
+  just under the 0.7 cap), area 1.533 mm² = **0.095%** of its freeform patch —
+  vs `cone_tangent_planes`' real cones at large fractions (1081/163 mm²).
+  Relative area is the one untried candidacy quantity. With the decomposition
+  forced correct to 7 surfaces it then fails stage 4.1 volume at 6.96e-2
+  relative — a separate freeform-accuracy/export issue.
+- **Freeform fit failures**: `bspline_blister`'s 926-face component rejected
+  by the §2.7 pole-bound check ("control points 2749.5 mm outside the data
+  bounding box"), saddle's three components likewise; the check is right, the
+  fit conditioning is the bug; nothing recovers, regions fall to per-facet.
+  When they do decompose, 4 and 3 invalid micro-sliver faces remain (ignored
+  test).
+- **Sag truth values** for estimator validation: stage-1 `--compare` centroid
+  max ≈ 8.9e-4 mm (stepped fine), 9.5e-4 mm (rounded_cube fine); Onshape
+  angular settings 12.5°/6.25°/2.5°; Onshape-coarse worst sag 0.026 mm,
+  Fusion-low 0.038 mm.
+- **cone_15x20**: its reference STEP is itself faceted (59 planes, not
+  analytic) — a corpus-data defect, not a pipeline bug; regenerate or mark
+  unusable in Phase 0.
+
+### Map from the retired TODO to the new plan
+
+- Runtime bound (old item 2) → Phase 2 (profile first).
+- stepped fine surplus / medium gap (old item 3) → Phase 1 acceptance targets,
+  then Phase 4/5 residue.
+- NURBS corpus blockers → Phase 5a (blister/saddle fit), Phase 5c
+  (hill_with_hole selection).
+- B-prime (quantum) → Phase 0 clamp+report, Phase 5b unit-of-quality.
+- B (tolerance estimation) → Phase 0 diagnostics + Phase 3 flip.
+- C (VSA) and recursive subdivision → Reserve.
+- Step 5 (delete the blind patch) → Phase 1 (earned patches are the missing
+  bootstrap design).
+- snap_boundaries decision → Phase 4 with fresh ablation data.
+- Faceted-by-construction / OpenSCAD → Phase 6.
+- 3DBenchy, nosecone coverage, stage-1-only audit → Phase 0.
+- Radius-refinement (old "robust rather than tuned" item 3) → Phase 4
+  diagnostic (radius clouds should collapse with clean supports; if not,
+  investigate support disagreement — never clustering, never snapping).
 
 ---
 
