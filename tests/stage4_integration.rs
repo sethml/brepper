@@ -537,3 +537,158 @@ nurbs_compare!(
 freeform components fail the §2.7 pole-bound check ('control points 246.7 / 19378.7 / 573.3 mm \
 outside the data bounding box'), so nothing explains them. Fix the freeform fit first."
 );
+
+// ---------------------------------------------------------------------------
+// Coverage lock (Phase 0.1, 2026-07-29)
+// ---------------------------------------------------------------------------
+//
+// Every .stl under tests/ (excluding tests/bad/) was audited for coverage past
+// stage 1. Nineteen models had a reference STEP sitting next to them and no
+// end-to-end test — the same hole that let three NURBS models rot silently.
+// All nineteen pass today; measured relative volume errors are recorded per
+// case below, so a future change that breaks one is visible rather than silent.
+//
+// Not covered here, deliberately:
+//   * tests/downloaded/ (3DBenchy, OrcaCube, xyz-cube-test) — real-world
+//     meshes with no verified provenance; Phase 0.8 baselines them as harness
+//     rows, not as suite gates.
+//   * tests/onshape/chamfered_cube_10_c1_medium.ascii.stl — the same geometry
+//     as the binary variant, which is covered through stage 4. Its purpose is
+//     the ASCII reader; pinned by `chamfered_cube_ascii_matches_binary` in
+//     stage1_integration.rs rather than by a duplicate pipeline run.
+
+macro_rules! stage41_compare {
+    ($name:ident, $stl:literal, $step:literal) => {
+        #[test]
+        fn $name() {
+            let dir = manifest_dir();
+            let config = config_for_compare(
+                &format!("{dir}/tests/{}.stl", $stl),
+                &format!("{dir}/tmp/test_cover_{}.step", stringify!($name)),
+                &format!("{dir}/tests/{}.step", $step),
+            );
+            run_stage4(&config);
+        }
+    };
+}
+
+// --- tests/ccad/generated/ (previously stage 1 + stage 2 only) ---
+// staircase 12 planes, volume rel diff 1.8e-16; t_shape 10 planes, exact.
+stage41_compare!(
+    ccad_staircase_stage41_compare,
+    "ccad/generated/staircase",
+    "ccad/generated/staircase"
+);
+stage41_compare!(
+    ccad_t_shape_stage41_compare,
+    "ccad/generated/t_shape",
+    "ccad/generated/t_shape"
+);
+stage41_compare!(
+    ccad_stepped_cylinder_stage41_compare,
+    "ccad/generated/stepped_cylinder",
+    "ccad/generated/stepped_cylinder"
+);
+stage41_compare!(
+    ccad_two_holes_stage41_compare,
+    "ccad/generated/two_holes",
+    "ccad/generated/two_holes"
+);
+// block_corner_hole had NO test at any stage before this.
+stage41_compare!(
+    ccad_block_corner_hole_stage41_compare,
+    "ccad/generated/block_corner_hole",
+    "ccad/generated/block_corner_hole"
+);
+
+// --- plate_with_hole across two exporters and four densities ---
+// The only model in the corpus with both Fusion and Onshape tessellations of
+// one reference; all four decompose to 6 planes + 1 cylinder (rel diff
+// 2.8e-10 low / 2.9e-10 medium / 6.3e-10 high / 1.6e-9 Onshape coarse).
+stage41_compare!(
+    fusion_plate_low_stage41_compare,
+    "fusion/plate_with_hole_100x50_low",
+    "fusion/plate_with_hole_100x50"
+);
+stage41_compare!(
+    fusion_plate_medium_stage41_compare,
+    "fusion/plate_with_hole_100x50_medium",
+    "fusion/plate_with_hole_100x50"
+);
+stage41_compare!(
+    fusion_plate_high_stage41_compare,
+    "fusion/plate_with_hole_100x50_high",
+    "fusion/plate_with_hole_100x50"
+);
+stage41_compare!(
+    onshape_plate_coarse_stage41_compare,
+    "onshape/plate_with_hole_100x50_coarse",
+    "onshape/plate_with_hole_100x50"
+);
+
+// --- tests/onshape/ analytic primitives (previously stage 1 + stage 2 only) ---
+stage41_compare!(
+    onshape_cylinder_10x30_stage41_compare,
+    "onshape/cylinder_10x30_medium",
+    "onshape/cylinder_10x30"
+);
+stage41_compare!(
+    onshape_cylinder_10_r2_stage41_compare,
+    "onshape/cylinder_10_r2_fine",
+    "onshape/cylinder_10_r2"
+);
+stage41_compare!(
+    onshape_sphere_25_stage41_compare,
+    "onshape/sphere_25_fine",
+    "onshape/sphere_25"
+);
+stage41_compare!(
+    onshape_l_bracket_stage41_compare,
+    "onshape/l_bracket_simple_medium",
+    "onshape/l_bracket_simple"
+);
+stage41_compare!(
+    onshape_stepped_block_coarse_stage41_compare,
+    "onshape/stepped_block_coarse",
+    "onshape/stepped_block"
+);
+
+// --- rounded_cube: the 6-plane/12-cylinder/8-sphere fillet network ---
+// Both densities reach exactly 26 surfaces (rel diff 9.4e-8 fine, 1.2e-7
+// medium). The fine variant costs ~27 s, the heaviest non-ignored test here;
+// it is worth it — this is the model the sphere/cylinder-fillet machinery was
+// built against, and it had no end-to-end gate.
+stage41_compare!(
+    onshape_rounded_cube_fine_stage41_compare,
+    "onshape/rounded_cube_10_r2_fine",
+    "onshape/rounded_cube_10_r2"
+);
+stage41_compare!(
+    onshape_rounded_cube_medium_stage41_compare,
+    "onshape/rounded_cube_10_r2_medium",
+    "onshape/rounded_cube_10_r2"
+);
+stage41_compare!(
+    onshape_part_rounded_cube_fine_stage41_compare,
+    "onshape/part_rounded_cube_10_r2_fine",
+    "onshape/part_rounded_cube_10_r2"
+);
+
+// nosecone_truncated: an older measurement had this missing 1.4e-2 of the
+// reference volume. Re-measured 2026-07-29 at 1.08e-7 (2 planes + 1 cone +
+// 1 sphere) — the old number is stale, whatever fixed it went unrecorded.
+stage41_compare!(
+    onshape_nosecone_truncated_stage41_compare,
+    "onshape/nosecone_truncated_medium",
+    "onshape/nosecone_truncated"
+);
+
+// cone_tangent_planes: passes at rel diff 5.2e-3 against a 1% gate — three
+// decimals of margin where every other model here has six or more. Its
+// freeform rung fails as ill-conditioned, so the analytic decomposition wins
+// by accident (DEVELOPMENT_PLAN, Phase 5c); this test is the canary for that.
+stage41_compare!(
+    onshape_cone_tangent_planes_stage41_compare,
+    "onshape/cone_tangent_planes_medium",
+    "onshape/cone_tangent_planes"
+);

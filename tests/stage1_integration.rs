@@ -236,6 +236,14 @@ test_stl_step_compare!(
     "tests/onshape/chamfered_cube_10_c1_medium.stl",
     "tests/onshape/chamfered_cube_10_c1.step"
 );
+// NOTE (Phase 0.1 audit, 2026-07-29): cone_15x20.step is a CORPUS DEFECT — the
+// reference is itself faceted, 59 planar faces rather than a cone plus a base
+// plane, and its volume (1175.794 mm³) is the inscribed polyhedron's, 1.96e-3
+// below the true πr²h/3 = 1178.097 mm³. brepper fits the cone exactly (2
+// surfaces, 1178.097251 mm³) and therefore "loses" against it by that 1.96e-3.
+// Never tune the pipeline toward this reference; use it only as a stage-1
+// vertices-on-surface check, which is valid because the STL was tessellated
+// from the same faceted body.
 test_stl_step_compare!(
     onshape_cone_compare,
     "tests/onshape/cone_15x20_medium.stl",
@@ -430,6 +438,51 @@ fn bad_inconsistent_winding_strict() {
         msg.contains("flipped orientation"),
         "error should mention flipped orientation, got: {msg}"
     );
+}
+
+#[test]
+fn chamfered_cube_ascii_matches_binary() {
+    // tests/onshape/chamfered_cube_10_c1_medium.ascii.stl is the ASCII export of
+    // the same body as the binary variant, and the Phase 0.1 coverage audit
+    // found it referenced by no test at all. Its purpose is the ASCII reader, so
+    // pin exactly that: identical topology and the same geometry, rather than a
+    // duplicate run of the whole pipeline.
+    //
+    // The bar is 1e-4 mm because that is the ASCII file's own resolution — it
+    // carries 6 significant digits ("48.0012"), coarser than the binary file's
+    // float32 (~6.7e-6 mm at these coordinates). It is a file-format precision,
+    // not a tolerance to tune.
+    let dir = manifest_dir();
+    let ascii = stage1::stage1(&config_for_stl(&format!(
+        "{dir}/tests/onshape/chamfered_cube_10_c1_medium.ascii.stl"
+    )))
+    .expect("ASCII stage1 should pass");
+    let binary = stage1::stage1(&config_for_stl(&format!(
+        "{dir}/tests/onshape/chamfered_cube_10_c1_medium.stl"
+    )))
+    .expect("binary stage1 should pass");
+
+    assert_eq!(ascii.vertices.len(), binary.vertices.len(), "vertex count");
+    assert_eq!(ascii.faces.len(), binary.faces.len(), "face count");
+    assert_eq!(ascii.stats.mesh_quads, binary.stats.mesh_quads, "quad count");
+    assert_eq!(ascii.stats.solids, binary.stats.solids, "solid count");
+    assert_eq!(ascii.stats.mesh_edges_open, binary.stats.mesh_edges_open, "open edges");
+
+    // Order-independent: every ASCII vertex has a binary counterpart nearby.
+    for (i, a) in ascii.vertices.iter().enumerate() {
+        let best = binary
+            .vertices
+            .iter()
+            .map(|b| ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)).sqrt())
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            best < 1.0e-4,
+            "ASCII vertex {i} at ({}, {}, {}) is {best:.3e} mm from the nearest binary vertex",
+            a.x,
+            a.y,
+            a.z
+        );
+    }
 }
 
 // ===========================================================================

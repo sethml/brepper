@@ -66,14 +66,18 @@ Report both in every commit message that moves either.
 No behavioral changes in this phase (except the tiny 0.6). Build the
 instrument first; you cannot claim generality you cannot measure.
 
-- **0.1 Coverage lock.** Audit every model under `tests/` for coverage past
-  stage 1 (the NURBS corpus rotted precisely where only stage-1 tests
-  existed). Add full-pipeline `--compare` tests (or `#[ignore]` + blocker) for
-  `nosecone_truncated` (old measurement: ~1.4e-2 relative volume miss —
-  re-measure first) and anything else found. Note `cone_15x20`'s reference
-  STEP is itself faceted (59 planes, not analytic) — regenerate it from a
-  proper CAD source or mark it unusable in a comment; do not "fix" the
-  pipeline against it.
+- **0.1 Coverage lock.** **DONE 2026-07-29** — audited all 65 STLs under
+  `tests/` (excluding `bad/`); 19 had a reference STEP and no coverage past
+  stage 1 or 2. All 19 pass end-to-end `--compare` today, so all 19 are now
+  non-ignored stage-4 tests (suite 513/9 → 533/9). `nosecone_truncated`
+  re-measured at **1.08e-7** relative volume, not the recorded 1.4e-2 — that
+  number was stale. Two data defects recorded in comments, not chased:
+  `cone_15x20.step` is a faceted reference (59 planes; its volume is the
+  inscribed polyhedron's, 1.96e-3 under true πr²h/3, which brepper hits
+  exactly) and `cone_tangent_planes_medium` passes at 5.2e-3 against the 1%
+  gate where every other model is ≤1.7e-7 — the Phase-5c canary, now pinned.
+  Orphan `chamfered_cube_10_c1_medium.ascii.stl` pinned by an ASCII-vs-binary
+  stage-1 equivalence test instead of a duplicate pipeline run.
 - **0.2 OCCT re-mesh utility.** Extend `src/bin/gen_test_models.rs` (it
   already drives `BRepMesh` via `write_tessellated_stl(shape, dir, name,
   deflection, angle_deg)`) with a mode that loads an existing reference STEP
