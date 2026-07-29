@@ -379,30 +379,27 @@ pub(super) fn compete_region(
             );
         }
 
-        match best {
-            Some((hyp, area, dof)) => {
-                if debug {
-                    eprintln!(
-                        "    compete: seed {seed} → {} ({} faces, area {area:.2}, dof {dof}, sweep {:.1}\u{00b0})",
-                        hyp.kind_name(),
-                        hyp.faces().len(),
-                        match &hyp {
-                            CompeteHyp::Toroidal(t) => torus_sweep(mesh, t).to_degrees(),
-                            CompeteHyp::Conical(c) => conical_sweep(mesh, c).to_degrees(),
-                            _ => 0.0,
-                        }
-                    );
-                }
-                let idx = committed.len();
-                for &f in hyp.faces() {
-                    claim_lists[f].push(idx);
-                    claimed[f] = true;
-                }
-                committed.push(hyp);
+        if let Some((hyp, area, dof)) = best {
+            if debug {
+                eprintln!(
+                    "    compete: seed {seed} → {} ({} faces, area {area:.2}, dof {dof}, sweep {:.1}\u{00b0})",
+                    hyp.kind_name(),
+                    hyp.faces().len(),
+                    match &hyp {
+                        CompeteHyp::Toroidal(t) => torus_sweep(mesh, t).to_degrees(),
+                        CompeteHyp::Conical(c) => conical_sweep(mesh, c).to_degrees(),
+                        _ => 0.0,
+                    }
+                );
             }
-            // A seed that grows nothing analytic costs only its own turn.
-            None => {}
+            let idx = committed.len();
+            for &f in hyp.faces() {
+                claim_lists[f].push(idx);
+                claimed[f] = true;
+            }
+            committed.push(hyp);
         }
+        // A seed that grows nothing analytic costs only its own turn.
     }
 
     resolve_claims(
