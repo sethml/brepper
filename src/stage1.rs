@@ -1350,9 +1350,27 @@ fn compare_mesh_to_step(mesh: &ConnectedMesh, config: &Config) -> Result<(), Com
     let faces = crate::compare::face_compound(config.compare_shape.as_ref().unwrap());
     let compare_shape = faces.as_shape();
 
-    // Check all vertices
+    // Check all vertices. The distribution is kept, not just the max: a single
+    // vertex off the surface is a repaired or decimated mesh, while a whole
+    // population sitting at the same small offset is the exporter's own
+    // fidelity. The two want different responses and the max alone cannot tell
+    // them apart — measured on wild pairs in Phase 0.5b, where three SolidWorks
+    // exports read 4e-4 mm at the max and 1e-5 at the median.
     let vertex_points: Vec<[f64; 3]> = mesh.vertices.iter().map(|v| [v.x, v.y, v.z]).collect();
-    let (vtx_max_dist, vtx_max_idx) = max_distance_to_shape(&vertex_points, compare_shape);
+    let vtx_dists = distances_to_shape(&vertex_points, compare_shape);
+    let (mut vtx_max_dist, mut vtx_max_idx) = (0.0_f64, 0_usize);
+    for (i, &d) in vtx_dists.iter().enumerate() {
+        if d > vtx_max_dist {
+            vtx_max_dist = d;
+            vtx_max_idx = i;
+        }
+    }
+    let vtx_quantiles = {
+        let mut sorted = vtx_dists.clone();
+        sorted.sort_by(f64::total_cmp);
+        let at = |q: f64| sorted[(((sorted.len().max(1) - 1) as f64) * q).round() as usize];
+        (at(0.50), at(0.95))
+    };
 
     // Check all face centroids
     let centroid_points: Vec<[f64; 3]> = mesh
@@ -1375,8 +1393,9 @@ fn compare_mesh_to_step(mesh: &ConnectedMesh, config: &Config) -> Result<(), Com
 
     if !config.quiet {
         eprintln!(
-            "  Compare: vertex max dist {:.6e} mm, centroid max dist {:.6e} mm",
-            vtx_max_dist, ctr_max_dist
+            "  Compare: vertex dist p50 {:.6e} / p95 {:.6e} / max {:.6e} mm, \
+             centroid max dist {:.6e} mm",
+            vtx_quantiles.0, vtx_quantiles.1, vtx_max_dist, ctr_max_dist
         );
     }
 

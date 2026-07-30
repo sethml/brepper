@@ -65,7 +65,8 @@
 
 use brepper::read_step_file;
 use opencascade_sys::{
-    b_rep_algo_api, b_rep_check, b_rep_fillet_api, b_rep_g_prop, b_rep_mesh, b_rep_prim_api,
+    b_rep_algo_api, b_rep_bnd_lib, b_rep_check, b_rep_fillet_api, b_rep_g_prop, b_rep_mesh,
+    b_rep_prim_api, bnd,
     b_rep_builder_api, b_rep_tools, ch_fi3d, g_prop, geom, gp, message, stl_api,
     n_collection, top_abs, top_exp, topo_ds, OwnedPtr,
 };
@@ -728,6 +729,187 @@ fn remesh_corpus(out_dir: &str, models: &[(String, String)]) {
 }
 
 // ---------------------------------------------------------------------------
+// Reference alignment (Phase 0.5b)
+// ---------------------------------------------------------------------------
+//
+// `gen_test_models align <dir>` writes `<stem>_aligned.step` beside any
+// `<stem>.stl` + `<stem>.step` pair whose two files describe the same part in
+// different coordinate frames.
+//
+// Wild pairs need this. Measured over 18 STEP+STL pairs harvested from
+// open-source hardware repos, half were published in different frames: the STL
+// positioned for printing, the STEP left in design coordinates. Nine differ by a
+// pure translation (up to 112 mm) and three by a 90 degree axis swap, which is
+// Z-up versus Y-up. Those are the same object, and refusing to compare them
+// measures the exporter's habits rather than the geometry.
+//
+// THE TRANSFORM IS DERIVED, NEVER FITTED. Translation comes from bounding-box
+// centres and rotation is chosen from the 24 axis-aligned rotations by which one
+// makes the *unsorted* extents match. Nothing here minimizes the vertex distance
+// that the verification gate then measures, so the gate keeps its power to fail:
+// a genuine pair collapses to ~1e-7 mm (measured: a NucDeck button went from
+// 6.52 mm to 4.58e-7 after a (-0.5, 0, -6.5) translation), and a mismatched pair
+// does not collapse under any of the 24. A free six-degree-of-freedom best fit
+// would instead quietly minimize the very number being used as evidence.
+//
+// A pair whose extents match under no rotation is left alone: those are revision
+// drift or genuinely different parts, and that is a finding to report rather
+// than a transform to search for.
+
+/// Bounding box of a shape as (min, max).
+fn shape_bounds(shape: &topo_ds::Shape) -> ([f64; 3], [f64; 3]) {
+    let mut bbox = bnd::Box::new();
+    b_rep_bnd_lib::add_shape_box_bool(shape, &mut bbox, true);
+    (
+        [bbox.get_x_min(), bbox.get_y_min(), bbox.get_z_min()],
+        [bbox.get_x_max(), bbox.get_y_max(), bbox.get_z_max()],
+    )
+}
+
+/// The 24 axis-aligned rotations: signed permutations of the axes with
+/// determinant +1 (the proper rotations of a cube).
+fn axis_rotations() -> Vec<[[f64; 3]; 3]> {
+    let mut out = Vec::new();
+    for perm in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+        for signs in 0..8 {
+            let s = [
+                if signs & 1 != 0 { -1.0 } else { 1.0 },
+                if signs & 2 != 0 { -1.0 } else { 1.0 },
+                if signs & 4 != 0 { -1.0 } else { 1.0 },
+            ];
+            let mut m = [[0.0_f64; 3]; 3];
+            for r in 0..3 {
+                m[r][perm[r]] = s[r];
+            }
+            let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+            if det > 0.5 {
+                out.push(m);
+            }
+        }
+    }
+    out
+}
+
+fn align_corpus(dir: &str) {
+    let mut aligned = 0;
+    let mut untouched = Vec::new();
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .expect("cannot read alignment directory")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("stl")))
+        .collect();
+    entries.sort();
+
+    for stl_path in entries {
+        let stem = stl_path.file_stem().unwrap().to_string_lossy().to_string();
+        let step_path = format!("{dir}/{stem}.step");
+        if !std::path::Path::new(&step_path).exists() {
+            continue;
+        }
+        // brepper's reader, so ASCII and binary are both handled -- several of
+        // these files begin with the text "solid" yet are binary.
+        let mesh = match brepper::stage1::read_connected_mesh_from_stl(
+            &stl_path.to_string_lossy(),
+            brepper::stage1::VertexWeldOptions::default(),
+        ) {
+            Ok(m) => m,
+            Err(e) => {
+                untouched.push(format!("{stem}: STL unreadable ({e})"));
+                continue;
+            }
+        };
+        if mesh.vertices.is_empty() {
+            continue;
+        }
+        let mut lo = [f64::MAX; 3];
+        let mut hi = [f64::MIN; 3];
+        for v in &mesh.vertices {
+            for (i, c) in [v.x, v.y, v.z].into_iter().enumerate() {
+                lo[i] = lo[i].min(c);
+                hi[i] = hi[i].max(c);
+            }
+        }
+        let mesh_size = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+        let mesh_centre = [
+            (hi[0] + lo[0]) / 2.0,
+            (hi[1] + lo[1]) / 2.0,
+            (hi[2] + lo[2]) / 2.0,
+        ];
+
+        let shape = match read_step_file(&step_path) {
+            Ok(s) => s,
+            Err(e) => {
+                untouched.push(format!("{stem}: STEP unreadable ({e})"));
+                continue;
+            }
+        };
+        let (slo, shi) = shape_bounds(&shape);
+        let step_size = [shi[0] - slo[0], shi[1] - slo[1], shi[2] - slo[2]];
+        let step_centre = [
+            (shi[0] + slo[0]) / 2.0,
+            (shi[1] + slo[1]) / 2.0,
+            (shi[2] + slo[2]) / 2.0,
+        ];
+        let scale = mesh_size.iter().fold(0.0_f64, |a, &b| a.max(b)).max(1e-9);
+
+        // The first rotation whose permuted extents match; extents alone decide,
+        // never the distance the gate will measure.
+        let chosen = axis_rotations().into_iter().find(|m| {
+            (0..3).all(|r| {
+                let rotated: f64 = (0..3).map(|c| m[r][c] * step_size[c]).sum::<f64>().abs();
+                (rotated - mesh_size[r]).abs() / scale < 0.02
+            })
+        });
+        let Some(m) = chosen else {
+            untouched.push(format!(
+                "{stem}: extents {:.1}x{:.1}x{:.1} vs {:.1}x{:.1}x{:.1} match under no rotation",
+                mesh_size[0], mesh_size[1], mesh_size[2],
+                step_size[0], step_size[1], step_size[2]
+            ));
+            continue;
+        };
+        let rotated_centre: Vec<f64> = (0..3)
+            .map(|r| (0..3).map(|c| m[r][c] * step_centre[c]).sum())
+            .collect();
+        let t = [
+            mesh_centre[0] - rotated_centre[0],
+            mesh_centre[1] - rotated_centre[1],
+            mesh_centre[2] - rotated_centre[2],
+        ];
+        let identity = m[0][0] == 1.0 && m[1][1] == 1.0 && m[2][2] == 1.0;
+        let shift = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+        if identity && shift < 1.0e-6 {
+            println!("  {stem}: already aligned");
+            continue;
+        }
+
+        let mut trsf = gp::Trsf::new();
+        trsf.set_values(
+            m[0][0], m[0][1], m[0][2], t[0],
+            m[1][0], m[1][1], m[1][2], t[1],
+            m[2][0], m[2][1], m[2][2], t[2],
+        );
+        let mut xform = b_rep_builder_api::Transform::new_shape_trsf_bool(&shape, &trsf, true);
+        let moved = xform.as_modify_shape_mut().shape();
+        write_step(moved, dir, &format!("{stem}_aligned"));
+        println!(
+            "  {stem}: {} translate ({:.3}, {:.3}, {:.3})",
+            if identity { "aligned by".to_string() } else { format!("rotation {m:?} +") },
+            t[0], t[1], t[2]
+        );
+        aligned += 1;
+    }
+
+    println!("\naligned {aligned}; left alone {}:", untouched.len());
+    for u in &untouched {
+        println!("  {u}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Randomized variants (Phase 0.3)
 // ---------------------------------------------------------------------------
 //
@@ -1366,6 +1548,11 @@ fn main() {
                 .collect()
         };
         remesh_corpus(&out_dir, &models);
+        return;
+    }
+    if args.first().map(String::as_str) == Some("align") {
+        let dir = args.get(1).cloned().unwrap_or_else(|| "tests/external".to_string());
+        align_corpus(&dir);
         return;
     }
     if args.first().map(String::as_str) == Some("random") {

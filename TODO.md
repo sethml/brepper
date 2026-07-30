@@ -293,34 +293,53 @@ instrument first; you cannot claim generality you cannot measure.
     (GPL-3.0 / MIT / CERN-OHL-S-2.0). Models gitignored; `manifest.tsv` records
     URL, repo, author, licence, path, size, sha256 and the pairing rule. The
     Thingiverse token is no longer needed — `gh` supplies auth.
-    **RAW VERIFICATION RATE: 4 of 18 (22%).** But that number mostly measures
-    COORDINATE FRAMES, not the provenance premise:
-    | category | n | what it is |
+    **RAW VERIFICATION RATE: 4 of 18 (22%)** — but that number mostly measured
+    COORDINATE FRAMES. Alignment was added (user-approved) and the corpus
+    resolved; the raw rate is kept above because the gap between it and the final
+    one is the finding.
+
+    **Alignment is discrete and never fitted.** `gen-test-models align` derives a
+    transform from bounding-box centres plus the first of the **24 proper
+    rotations of a cube** whose *unsorted* extents match, writing
+    `<stem>_aligned.step`. It never sees the distance it is helping to pass, so
+    it cannot make a wrong pair look right — the failure mode the question
+    flagged. 10 of 18 were re-framed (8 translation-only, 2 with a rotation).
+
+    **FINAL: 6 of 11 verify; 9 of 11 correspond; 7 of the original 18 were
+    different objects and are deleted** (reasons recorded in `manifest.tsv`).
+    | outcome | n | what it is |
     |---|---|---|
-    | same part, aligned | 3 | verified as-is |
-    | same part, displaced | 9 | extents match, frame differs |
-    | different extents | 6 | 2 are 1.7 mm revision drift, 1 is a part vs an assembly STEP |
-    **Proven, not inferred**: translating `NucDeck__+_volume_button` by
-    (−0.5, 0, −6.5) mm — round numbers, a deliberate placement — drops its vertex
-    distance from **6.52 mm to 4.58e-7 mm**. That pair was always ground truth;
-    the STL was positioned for printing and the STEP left in design coordinates.
-    Four genuine findings, none of which is "the premise fails":
-    1. **Published STL and STEP disagree on coordinate frame about half the
-       time.** A wild-pair gate must align before it can measure anything.
-    2. **Real-world STLs are not always valid**: `OpenBot__100deg_joint` has 2
-       non-manifold edges and fails stage-1 validation outright.
-    3. **Revision drift is real but small**: the ToolChanger ducts differ by
-       1.7 mm in one axis while their mesh sits 4.3e-4 mm off the STEP surface —
-       CAD updated, STL not re-exported.
-    4. **Some STEPs are assemblies** where the STL is one part; the gate handles
-       that correctly (`Open-Task-Light__counterweight` verifies at 1.9e-7 mm
-       despite covering a fraction of the STEP's extent).
-    **THE QUESTION**: add a rigid-alignment step to `verify_pairs.sh` before the
-    distance test, so the rate measures the premise instead of placement? The
-    risk is that a fitted transform can make a genuinely wrong pair look right,
-    so alignment would need to be reported (and bounded) rather than silent.
-    Without it the rate is 4/18; with translation-only alignment it plausibly
-    reaches ~13/18, but that is a projection, not a measurement.
+    | VERIFIED at `vtol` 5e-5 | 6 | **4 of them at or below one float32 quantum** |
+    | corresponds, stray-vertex tail | 2 | ToolChanger ducts: p95 6.9e-6 **below** their 9.3e-6 f32 bound, max 4.3e-4 |
+    | corresponds, alignment residual | 1 | `holder_arm`: p50 8.0e-5 spread to max 5.0e-4 — 10% of its own sag |
+    | mesh invalid | 2 | `OpenBot__100deg_joint` ±mirror: 2 non-manifold edges, fails stage 1 before compare |
+    | different object | 7 | **deleted** — see below |
+    **The premise holds where the pairs are real.** On files we did not export,
+    the median vertex sits on the CAD surface at the float32 quantum. Findings:
+    1. **Half of published STEP+STL pairs are not the same object** (7 of 18,
+       plus 10 more needing re-framing). Coordinate frame is the single largest
+       cause, and a wild-pair gate must align before it can measure anything.
+       Proven, not inferred: translating `NucDeck__+_volume_button` by
+       (−0.5, 0, −6.5) mm — round numbers, a deliberate placement — drops its
+       vertex distance from **6.52 mm to 4.58e-7 mm**.
+    2. **A max-based vertex gate is the wrong shape for wild meshes.** Both
+       ToolChanger ducts are exact to float32 at p95 and fail only on a thin
+       tail. Stage 1's compare now prints **p50 / p95 / max** so a local mesh
+       defect can be told from a systematic offset; Phase 3 should decide whether
+       the gate itself becomes a quantile. See §3.2.
+    3. **Bounding-box alignment cannot beat the mesh's own sag.** A tessellated
+       mesh's bbox is inset from the true solid asymmetrically, so the recovered
+       translation carries a sag-scale error — visible as a *distributed*
+       residual (`holder_arm`) rather than a tail. It recovers exact round-number
+       placements perfectly (NucDeck, 4.58e-7 mm) and nothing finer. Sub-sag
+       alignment would require fitting, which is why it is not done.
+    4. **Text precision is not a factor either way** — the SolidWorks STEPs carry
+       20 significant digits, the ST-Developer ones 15. Checked because the
+       residuals were near ASCII-STL resolution; they are not that.
+    5. **Real-world STLs are not always valid**, and **some STEPs are assemblies**
+       where the STL is one part — the gate handles the latter correctly
+       (`Open-Task-Light__counterweight` verifies at 1.9e-7 mm while covering a
+       fraction of the STEP's extent).
   - (c) **Pair-verification gate**: **DONE 2026-07-29** — `tools/verify_pairs.sh`,
     versioned rather than an ad-hoc loop, because the ad-hoc loop **reported
     15/15 on a corpus that was entirely unusable**. Its hole: stage 1's vertex

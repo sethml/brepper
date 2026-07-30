@@ -1999,6 +1999,38 @@ safe to treat as ground truth — which matters for 0.5b, where wild pairs are
 expected to fail the same gate for unrelated reasons (different revision,
 decimated, repaired).
 
+**The provenance premise survives contact with the wild — but only about half of
+published pairs are pairs.** Of 18 STEP+STL pairs harvested from open-source
+hardware repos (0.5b), 7 turned out to describe different objects and were
+deleted, 2 have meshes too broken to validate, and 9 correspond. Where they
+correspond the premise holds hard: the *median* vertex sits on the CAD surface at
+the float32 quantum, and 4 of the 6 that pass outright do so at or below one
+quantum, on files we did not export. Three durable lessons:
+
+*A max is the wrong statistic for a wild mesh.* Both ToolChanger ducts are exact
+to float32 at p95 (6.9e-6 mm against a 9.3e-6 bound) and fail only on a thin tail
+reaching 4.3e-4. A single stray vertex — from repair, decimation or a
+simplified small feature — is a different fact about a mesh than a systematic
+offset, and the max cannot distinguish them. Stage 1's compare therefore reports
+**p50 / p95 / max**; the shape of the distribution names the cause on sight.
+
+*Rigid alignment cannot be more precise than the mesh's own sag.* A tessellated
+mesh's bounding box is inset from the true solid, and asymmetrically, so a
+transform recovered from bbox centres carries a sag-scale error. It recovers
+exact round-number placements perfectly (`NucDeck`, 6.52 mm → 4.58e-7 mm) and
+nothing finer — the one model re-aligned among the three near-misses is also the
+only one whose residual is *distributed* (p50 8.0e-5, 10% of its sag) rather than
+a tail. Going below that would mean fitting the transform to the distance being
+tested, which is why alignment here is discrete: bbox centres plus the first of
+the 24 proper rotations of a cube whose unsorted extents match. It never sees the
+distance it helps to pass, so it cannot make a wrong pair look right.
+
+*Check the file's text precision before theorizing about geometry.* An ASCII STL
+at 6 significant digits has ~1e-4 mm resolution on a 50 mm part, which is exactly
+the scale of these residuals — a coincidence worth ruling out rather than
+assuming. Here it was ruled out: the STEPs carry 15–20 significant digits and the
+STLs are binary.
+
 **The cliff count is 9 of 32, and four of the nine are the blind patch.** The
 fragility meter (`tools/fragility.sh`) perturbs one constant at a time by ±2×
 and reports which models change and which *collapse* — a passing model that

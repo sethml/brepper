@@ -66,26 +66,29 @@ done
 verify_one() {
     local stl="$1" dir
     dir=$(dirname "$stl")
-    local stem ref out rc dist bound
+    local stem ref out rc dist p95 bound
     stem=$(basename "$stl" .stl)
     ref=$(awk -F'\t' -v m="$stem" '$1 == m { print $2; exit }' "$dir/sources.tsv")
     if [ -z "$ref" ]; then
-        printf 'NO-REFERENCE\t%s\t-\t-\t-\n' "$stem"
+        printf 'NO-REFERENCE\t%s\t-\t-\t-\t-\n' "$stem"
         return
     fi
     # --surface-tolerance 1e6 disables the centroid gate; see the header. The
     # vertex tolerance stays at its default, which is what this gate is about.
     out=$("$BREPPER" "$stl" --stage=1 --compare "$ref" --surface-tolerance 1e6 2>&1)
     rc=$?
-    dist=$(printf '%s' "$out" | grep -oE 'vertex max dist [0-9.e+-]+' | head -1 | awk '{print $4}')
+    dist=$(printf '%s' "$out" | grep -oE 'vertex dist p50 [0-9.e+-]+ / p95 [0-9.e+-]+ / max [0-9.e+-]+' \
+        | head -1 | awk '{print $10}')
+    p95=$(printf '%s' "$out" | grep -oE 'vertex dist p50 [0-9.e+-]+ / p95 [0-9.e+-]+' \
+        | head -1 | awk '{print $7}')
     sag=$(printf '%s' "$out" | grep -oE 'centroid max dist [0-9.e+-]+' | head -1 | awk '{print $4}')
     bound=$(printf '%s' "$out" | grep -oE 'position bound [0-9.e+-]+' | head -1 | awk '{print $3}')
     if [ $rc -ne 0 ]; then
         local why
         why=$(printf '%s' "$out" | grep -oE 'comparison failed.*' | head -1 | cut -c1-90)
-        printf 'QUARANTINE\t%s\t%s\t%s\t%s\t%s\n' "$stem" "${dist:--}" "${sag:--}" "${bound:--}" "$why"
+        printf 'QUARANTINE\t%s\t%s\t%s\t%s\t%s\t%s\n' "$stem" "${dist:--}" "${p95:--}" "${sag:--}" "${bound:--}" "$why"
     else
-        printf 'VERIFIED\t%s\t%s\t%s\t%s\n' "$stem" "${dist:--}" "${sag:--}" "${bound:--}"
+        printf 'VERIFIED\t%s\t%s\t%s\t%s\t%s\n' "$stem" "${dist:--}" "${p95:--}" "${sag:--}" "${bound:--}"
     fi
 }
 export -f verify_one
@@ -93,9 +96,11 @@ export BREPPER
 
 results=$(find "$DIR" -name '*.stl' | sort | xargs -P "$JOBS" -I{} bash -c 'verify_one "$@"' _ {})
 
-printf '%-12s %-46s %-14s %-12s %-12s %s\n' STATUS MODEL VERTEX_MAX_MM SAG_MM F32_BOUND_MM NOTE
+printf '%-12s %-46s %-14s %-13s %-12s %-12s %s\n' \
+    STATUS MODEL VERTEX_MAX_MM VERTEX_P95_MM SAG_MM F32_BOUND_MM NOTE
 printf '%s\n' "$results" | sort | awk -F'\t' \
-    '{ printf "%-12s %-46s %-14s %-12s %-12s %s\n", $1, $2, $3, $4, $5, ($6 == "" ? "" : $6) }'
+    '{ printf "%-12s %-46s %-14s %-13s %-12s %-12s %s\n", \
+        $1, $2, $3, $4, $5, $6, ($7 == "" ? "" : $7) }'
 
 echo
 total=$(printf '%s\n' "$results" | grep -c .)
