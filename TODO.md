@@ -323,16 +323,55 @@ instrument first; you cannot claim generality you cannot measure.
   the bound roughly doubles; pinned by a synthetic 5 m mesh in
   `float32_position_bound_scales_with_distance_from_origin`. Sweep diff after
   landing: no model changed.
-- **0.7 Tolerance estimators as diagnostics** (no behavior change): implement
-  the fit-free sag estimator (`sag ≈ dihedral × facet size / 8`, computable in
-  stage 2.1) and the dihedral-distribution angular-gap estimator
-  (Otsu-style). Print both next to the stage-1 summary. Cross-check the sag
-  estimator against the true sag stage-1 `--compare` already reports
-  (8.9e-4 mm stepped fine, 9.5e-4 rounded_cube fine; Onshape angular settings
-  are 12.5°/6.25°/2.5° for coarse/medium/fine). Wire a **provenance-violation
-  warning** for estimator disagreement or a missing dihedral gap.
-  **Stop and ask** if the sag estimator misses the reference truth by >5× on
-  any corpus model.
+- **0.7 Tolerance estimators as diagnostics.** **IMPLEMENTED AND MEASURED
+  2026-07-30 — BLOCKED ON THE USER, per this step's own stop-and-ask.**
+  `src/estimate.rs`, printed in the stage-1 summary, no behaviour change:
+  dihedral p50/p95/max and the fit-free sagitta `dihedral × facet size / 8` as
+  p50/p95/max over every interior edge.
+  **The angular estimate works.** On the fused-quad mesh the dihedral p95 reads
+  the exporter's setting directly: **2.50° on `rounded_cube_10_r2_fine`, against
+  Onshape's documented fine setting of 2.5°**, and 2.52° on stepped_block fine.
+  A polyhedron is self-evident too — `chamfered_cube_10_c1`'s p50 is 45°.
+  **The sag estimate misses by >5× on 3 of 16 corpus models**, which is exactly
+  the "stop and ask" this step defines. Cross-check against the true sag stage-1
+  `--compare` reports (all ratios est_p95 / truth):
+  | within 5× (13) | ratio | | over 5× (3) | ratio |
+  |---|---|---|---|---|
+  | stepped_block fine | 0.93× | | **stepped_block medium** | **22.6×** |
+  | pipe_elbow medium | 1.26× | | **plate_with_hole coarse** | **151×** |
+  | rounded_cube coarse | 1.61× | | **remesh sphere medium** | **0.20×** |
+  | fusion rounded_cube fine | 1.78× | | | |
+  | pill coarse | 1.96× | | | |
+  | remesh rounded_cube medium | 2.11× | | | |
+  | rounded_cube medium | 2.53× | | | |
+  | nosecone medium | 4.89× | | | |
+  | hemisphere / filleted_pipe | 0.43× / 0.49× | | | |
+  | rounded_cube fine, sphere fine, pill fine | **0.50× each** | | | |
+  **Two effects, cleanly separated once the dihedral quantiles are read
+  correctly** (an earlier note here said `plate_with_hole coarse` had a p95 of
+  0.00° — that was a broken shell parse on my side; it is 90.00°, which tells
+  the opposite story):
+  1. **Where smooth edges dominate, the estimate is systematically 2× LOW on
+     doubly-curved geometry.** `sphere_25_fine` 0.50×, `hemisphere` 0.43×,
+     `simple_sphere` 0.42×, `rounded_cube_fine` 0.50× (its worst sag is on the
+     spherical corners), `filleted_pipe` 0.49× (tori). The reason is geometric,
+     not a coding slip: `hθ/8` is the sagitta of a curve bending ONE way, and a
+     sphere bends two ways at once, so both principal curvatures push the facet
+     centre off the surface. Adding the second term is an exact fix, not a tune.
+  2. **Where sharp edges are a large fraction of all edges, the p95 IS a sharp
+     edge and the estimate is meaningless.** `simple_cylinder` has a dihedral
+     **p50 of 90°** — the median edge of a coarse cylinder is a cap-to-wall rim,
+     not a curvature step — giving 62×; `cylinder_10x30_medium` p95 90° gives
+     404×; `plate_with_hole coarse` p95 90° gives 151×. A flat plate or a short
+     cylinder is mostly rim.
+  **The dihedral quantiles already announce which case a mesh is in**, at no
+  extra cost: 2.49/2.50/2.50 on rounded_cube fine says every edge is a curvature
+  step, while 12.41/90.00/90.00 on the plate says the p95 is a rim and no sag
+  statistic from it means anything.
+  **THE QUESTION FOR THE USER**: fix the estimator (chase the 0.50× factor, and
+  gate the formula on curvature so flat regions contribute nothing), or accept it
+  as-is and let Phase 3.2 use the p95 with a safety margin on the models where it
+  holds? The angular half is ready either way.
 - **0.8 Baseline runs of real meshes**: run 3DBenchy, OrcaCube, and
   xyz-cube-test end to end once each; record the diagnoses as harness rows.
   Fix nothing here; just know the starting point.

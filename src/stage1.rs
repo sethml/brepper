@@ -1520,6 +1520,28 @@ pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
         }
     }
 
+    // Tolerance estimators (Phase 0.7). Diagnostics only: nothing downstream
+    // reads them. They recover the exporter's angular and chordal settings from
+    // the mesh, which Phase 3 needs before it can replace two guessed defaults
+    // with measured ones. Read the p95s; see `crate::estimate` for why there is
+    // no smooth/sharp classification here.
+    if !config.quiet {
+        let est = crate::estimate::estimate(&mesh);
+        if est.interior_edges > 0 {
+            eprintln!(
+                "  Estimated from the mesh: dihedral p50 {:.2}° p95 {:.2}° max {:.2}°, \
+                 sag p50 {:.3e} p95 {:.3e} max {:.3e} mm ({} interior edges)",
+                est.dihedral_p50_deg,
+                est.dihedral_p95_deg,
+                est.dihedral_max_deg,
+                est.sag_p50,
+                est.sag_p95,
+                est.sag_max,
+                est.interior_edges,
+            );
+        }
+    }
+
     // Compare against STEP file if --compare was specified.
     if config.compare_shape.is_some() {
         compare_mesh_to_step(&mesh, config)?;
