@@ -15,8 +15,21 @@
 # the same manifest tools/sweep.sh reads.
 #
 # Two outcomes per file:
-#   VERIFIED   stage 1 --compare passes
-#   QUARANTINE stage 1 --compare fails. Keep for crash-testing, never as truth.
+#   VERIFIED   the mesh's VERTICES lie on the reference surfaces
+#   QUARANTINE they do not. Keep for crash-testing, never as truth.
+#
+# The gate is defined on vertices, per the plan: "the pair counts as ground truth
+# only if mesh vertices lie on the STEP surfaces within a few quanta". Stage 1
+# also gates facet CENTROID distance against --surface-tolerance, which measures
+# something else entirely — the tessellation's sag — and a legitimately coarse
+# mesh fails it while being perfect ground truth. Measured: four Fusion exports
+# requested at 0.5 mm chordal deviation have centroid sags of 0.51-0.83 mm, over
+# the 0.4 mm default, with vertex distances of 1.8e-7 to 5.4e-6 mm. Those are
+# impeccable pairs from a coarse tessellation, not bad provenance.
+#
+# So the centroid gate is disabled here and the sag REPORTED instead. Note what
+# it implies for Phase 3: brepper's default --surface-tolerance rejects any mesh
+# exported at a chordal deviation above ~0.4 mm, which is an ordinary setting.
 #
 # This script briefly carried a third state, CONTAINED, for a pass reporting a
 # distance of exactly zero — the signature of a mesh lying wholly inside its
@@ -41,7 +54,7 @@ DIR=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --jobs) JOBS="$2"; shift 2 ;;
-        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,44p' "$0"; exit 0 ;;
         *) DIR="${1%/}"; shift ;;
     esac
 done
@@ -57,19 +70,22 @@ verify_one() {
     stem=$(basename "$stl" .stl)
     ref=$(awk -F'\t' -v m="$stem" '$1 == m { print $2; exit }' "$dir/sources.tsv")
     if [ -z "$ref" ]; then
-        printf 'NO-REFERENCE\t%s\t-\t-\n' "$stem"
+        printf 'NO-REFERENCE\t%s\t-\t-\t-\n' "$stem"
         return
     fi
-    out=$("$BREPPER" "$stl" --stage=1 --compare "$ref" 2>&1)
+    # --surface-tolerance 1e6 disables the centroid gate; see the header. The
+    # vertex tolerance stays at its default, which is what this gate is about.
+    out=$("$BREPPER" "$stl" --stage=1 --compare "$ref" --surface-tolerance 1e6 2>&1)
     rc=$?
     dist=$(printf '%s' "$out" | grep -oE 'vertex max dist [0-9.e+-]+' | head -1 | awk '{print $4}')
+    sag=$(printf '%s' "$out" | grep -oE 'centroid max dist [0-9.e+-]+' | head -1 | awk '{print $4}')
     bound=$(printf '%s' "$out" | grep -oE 'position bound [0-9.e+-]+' | head -1 | awk '{print $3}')
     if [ $rc -ne 0 ]; then
         local why
         why=$(printf '%s' "$out" | grep -oE 'comparison failed.*' | head -1 | cut -c1-90)
-        printf 'QUARANTINE\t%s\t%s\t%s\t%s\n' "$stem" "${dist:--}" "${bound:--}" "$why"
+        printf 'QUARANTINE\t%s\t%s\t%s\t%s\t%s\n' "$stem" "${dist:--}" "${sag:--}" "${bound:--}" "$why"
     else
-        printf 'VERIFIED\t%s\t%s\t%s\n' "$stem" "${dist:--}" "${bound:--}"
+        printf 'VERIFIED\t%s\t%s\t%s\t%s\n' "$stem" "${dist:--}" "${sag:--}" "${bound:--}"
     fi
 }
 export -f verify_one
@@ -77,9 +93,9 @@ export BREPPER
 
 results=$(find "$DIR" -name '*.stl' | sort | xargs -P "$JOBS" -I{} bash -c 'verify_one "$@"' _ {})
 
-printf '%-12s %-46s %-14s %-12s %s\n' STATUS MODEL VERTEX_MAX_MM F32_BOUND_MM NOTE
+printf '%-12s %-46s %-14s %-12s %-12s %s\n' STATUS MODEL VERTEX_MAX_MM SAG_MM F32_BOUND_MM NOTE
 printf '%s\n' "$results" | sort | awk -F'\t' \
-    '{ printf "%-12s %-46s %-14s %-12s %s\n", $1, $2, $3, $4, ($5 == "" ? "" : $5) }'
+    '{ printf "%-12s %-46s %-14s %-12s %-12s %s\n", $1, $2, $3, $4, $5, ($6 == "" ? "" : $6) }'
 
 echo
 total=$(printf '%s\n' "$results" | grep -c .)

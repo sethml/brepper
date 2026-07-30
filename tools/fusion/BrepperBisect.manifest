@@ -1,0 +1,10 @@
+{
+    "autodeskProduct": "Fusion360",
+    "type": "script",
+    "author": "brepper",
+    "description": {
+        "": "Bisect which line of the batch export block reset the mesh refinement (Phase 0.5a)"
+    },
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}

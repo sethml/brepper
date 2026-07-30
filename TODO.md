@@ -90,10 +90,12 @@ instrument first; you cannot claim generality you cannot measure.
   32 wired into the suite: **558 passed / 16 ignored**, stage-4 target
   107 s → 117 s. **25 pass, 7 fail, and the failures are the finding**:
   `stepped_block_toroidal` fails at *every* OCCT density — 183 surfaces coarse,
-  88 medium, **97 fine at 35596 triangles** — while the Parasolid fine mesh of
-  the same body passes at exactly 71. All 18 tori are recovered every time; the
-  planes and cylinders fragment. More Delaunay triangles do not supply what the
-  strip tessellation was providing. Also: coarse `sphere_25` (6 planes + 2
+  88 medium, **97 fine at 35596 triangles** — where the Parasolid fine mesh
+  reaches 75 against a reference 71. All 18 tori are recovered every time; the
+  planes fragment. (Read at the time as the price of the strip assumption;
+  **0.5a's Fusion re-export refuted that** — all three tessellators fail and
+  triangle count does not order the results. The shared quantity is narrow flat
+  regions. See 0.5a.) Also: coarse `sphere_25` (6 planes + 2
   spheres), coarse `rounded_cube` (34 vs 26, with 4 spurious tori), coarse
   `cone_tangent_planes` (10 vs 7, "cone-plane ruling tangency is not
   implemented"). Off-origin quantum measured 8.8e-5–1.02e-4 mm vs the 5e-5
@@ -201,21 +203,107 @@ instrument first; you cannot claim generality you cannot measure.
   the ceiling. Validated by reproducing the serial run's counts *and*
   collapsed-model lists on 4 constants / 8 perturbations.
 - **0.5 Real-pair corpus. [parallel-ok, user-involved]**
-  - (a) **Fusion re-export**: ask the user to batch-import reference STEPs
-    into Fusion 360 and export STLs at low/medium/high; drop under
-    `tests/fusion_reexport/`.
+  - (a) **Fusion re-export**: **DONE 2026-07-29** — `tools/fusion/BrepperReexport.py`
+    (a Fusion Python script, one click, installed by symlink) imported 13
+    reference STEPs and re-exported 31 STLs; user ran it on Fusion 2704.1.36.
+    **Verification rate 15/15** (0.5c gate applied): every mesh's vertices lie on
+    the ORIGINAL reference surfaces at 4.1e-7–7.9e-6 mm, so Fusion's STEP import
+    neither healed nor reparameterized the geometry. Committed as
+    `tests/fusion_reexport/` (1.8 MB, 15 distinct meshes) and wired into the
+    suite: **suite 559/16 → 570/20**, stage-4 target 117 s → 119 s.
+    **THE KEY EXPERIMENT CAME BACK NEGATIVE — AND MORE USEFUL FOR IT.** The
+    framing was "if Fusion also fails `stepped_block_toroidal`, the problem is
+    anything-but-strips; if it passes, it is Delaunay-specific". Neither:
+    | provenance | triangles | surfaces | plane/cyl/cone/sph/torus/bspl |
+    |---|---|---|---|
+    | Parasolid fine | 50962 | **75** | 18/38/0/0/18/1 |
+    | Parasolid medium | 4576 | 84 | 33/31/0/0/19/1 |
+    | OCCT fine | 35596 | 97 | 41/36/0/0/18/2 |
+    | OCCT medium | 6464 | 88 | 34/33/0/0/18/3 |
+    | OCCT coarse | 1948 | 183 | 149/16/0/0/18/0 |
+    | Fusion fine (0.02 mm / 6°) | 17598 | **82** | 27/36/0/0/18/1 |
+    | Fusion medium (0.1 mm / 15°) | 2948 | 129 | 82/29/0/0/18/0 |
+    | Fusion coarse (0.5 mm / 30°) | 866 | — | rejected at stage 1: 0.51 mm sag > 0.4 mm |
+
+    (OCCT and Fusion rows are at IDENTICAL requested deviations. Fusion yields
+    about half the triangles for the same request, so a nominal tolerance is not
+    comparable across tessellators — and at fine it reaches 82 against OCCT's 97
+    with half the triangles.)
+    All three tessellators fail (best is Parasolid fine at 75 vs the reference
+    71), so it is not Delaunay-specific. **And it is not triangle count either**:
+    OCCT fine has 7.8× Parasolid medium's triangles and does worse (97 vs 84);
+    two Delaunay-family meshes at ~6.5K triangles land at 88 and 109 while
+    Parasolid at 4.6K lands at 84. **The surplus is almost entirely PLANES** —
+    18 at best, 232 at worst — while the 18 tori survive every provenance above
+    ~3.7K triangles. Narrow flat regions between fillets are the failure, which
+    is exactly what the blind patch straddles and what Phase 1's earned patch
+    targets. Stop attributing this to Delaunay.
+    Two more findings: **`cone_tangent_planes` agrees with Parasolid** (4 planes
+    + 2 cones + 1 sphere), so OCCT's B-spline reading is provenance-specific, not
+    the model's nature — Phase 5c should read it that way; and **`nosecone` is a
+    NEW failure**, 10 surfaces vs 3, from ~3000 mm² of its flat base being
+    absorbed into the cone *plus* the remainder fragmenting into six planes with
+    byte-identical parameters (connectivity, not fitting — the
+    'absorbing bridge facets' family in LEARNINGS.md, now a hard failure).
+    **DONE 2026-07-30 after six runs.** `tests/fusion_reexport/`, 13 models × 31
+    exports, 1.8 MB, all **31/31 verified** by the 0.5c gate (mesh vertices on
+    the original reference surfaces, 1.8e-7–7.3e-6 mm). Wired into the suite:
+    15 pass, 16 ignored with numbers. Densities are **numeric and identical to
+    what `tests/remesh` asks of OCCT** — 0.5/0.1/0.02 mm surface deviation at
+    30/15/6° — so Fusion-vs-OCCT is a controlled comparison, not a comparison of
+    two vendors' preset names.
+    **THE HEADLINE, at matched requested tolerances**: Fusion produces roughly
+    HALF the triangles OCCT does for the same requested deviation (2948 vs 6464
+    at medium; 17598 vs 35596 at fine) — so nominal tolerance settings are not
+    comparable across tessellators even when numerically identical. And at fine,
+    Fusion's 82 surfaces beat OCCT's 97 with half the triangles, while Parasolid
+    fine still leads at 75 with 3× more.
+    **`rounded_cube_10_r2` reproduces the random-corpus collapse on a CORPUS
+    model.** At Fusion medium (684 triangles) it gives **9 surfaces — 0 planes,
+    0 cylinders, 8 spheres, 1 B-spline** — failing volume by 1.94e-2, which is
+    the exact signature the seeded `rand_filleted_box` models showed in 0.3
+    (0/0/8/1 against a reference 6/12/8). `part_rounded_cube` medium collapses
+    the same way to 3 surfaces. Fine is exact at 26. This is no longer a
+    property of generated geometry: the corpus's canonical fillet model does it
+    too, at an ordinary export density.
+    **Four models are rejected at STAGE 1, not by the decomposition**: a mesh
+    exported at 0.5 mm chordal deviation has facet-centroid sag of 0.51–0.83 mm,
+    over the 0.4 mm default `--surface-tolerance`. That is the tolerance regime
+    refusing an ordinary coarse export, and it is a **Phase 3 datum** — the
+    default rejects any mesh coarser than ~0.4 mm deviation. It only became
+    visible once the centroid check stopped measuring against a solid.
+    **Six runs to get here, and every failure was the same mistake**: trusting a
+    stated interface over evidence already in hand. Presets that silently did
+    nothing; `unitType` defaulting to the Design's units (metres) so 31 files
+    came out 1000× too small; and `normalDeviation` documented as radians when
+    Fusion's own preset readback in my probe log said 30/15/10 — degrees.
+    `STLExportOptions` inherits ambient state, so every property is now pinned.
+    The structural fix is a **canary**: the script exports `sphere_25` alone,
+    checks scale and strict monotonicity, and aborts in seconds before touching
+    `tests/` — sharing `configure_export()` with the batch, since a pre-flight
+    that configures differently proves nothing. `BrepperProbe.py` and
+    `BrepperBisect.py` are kept as the record of what was ruled out.
   - (b) **Wild pairs**: harvest 10–20 models published with BOTH a
     STEP (or F3D the user can convert) and an STL — Thingiverse API (token
     from user), Printables, GrabCAD (browser session if no API). Keep files
     in `tests/external/` (gitignored); commit a manifest (URL, author,
     license, sha256). Do not commit model files unless the license permits
     redistribution.
-  - (c) **Pair-verification gate**: for each pair, run stage 1 `--compare`;
-    the pair counts as ground truth only if mesh vertices lie on the STEP
-    surfaces within a few quanta. Otherwise quarantine as crash-test-only
-    (different revision / decimated / repaired). **Record the verification
-    rate** — it is the first field measurement of the provenance premise in
-    the wild. **Stop and ask** if most wild pairs fail it.
+  - (c) **Pair-verification gate**: **DONE 2026-07-29** — `tools/verify_pairs.sh`,
+    versioned rather than an ad-hoc loop, because the ad-hoc loop **reported
+    15/15 on a corpus that was entirely unusable**. Its hole: stage 1's vertex
+    compare returns distance **exactly 0** for a vertex strictly *inside* the
+    reference solid, so a mesh at the wrong scale or position passes trivially —
+    measured on 3 metres-scale exports, where a 25 mm sphere spanning 0.025 mm
+    reported 0.0 while a correct mesh of the same reference reports 1.1e-6. The
+    gate now classifies **VERIFIED** (passes with a nonzero distance),
+    **CONTAINED** (passes with exactly zero — suspect scale or placement), and
+    **QUARANTINE** (fails), and reports the f32 position bound, which reveals
+    coordinate scale directly (5.7e-10 mm for the metres sphere against 7.2e-7 mm
+    for the correct one). Verified against the known-bad corpus: 0/31, catching
+    all 28 failures *and* the 3 that the old loop passed. Apply to (b)'s wild
+    pairs, where the rate is the actual measurement. **Stop and ask** if most
+    wild pairs fail it.
 - **0.6 Quantum clamp + report** **DONE 2026-07-29** — stage 1 reports
   `float32 precision: position bound B mm (quantum Q mm), vertex tolerance T`
   and warns when T < B; the CLI driver then raises the tolerance to B

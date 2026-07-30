@@ -1,0 +1,92 @@
+brepper Fusion re-export
+Fusion version: 2704.1.36
+densities (surfaceDeviation mm / normalDeviation deg): coarse=0.5/30, medium=0.1/15, fine=0.02/6
+13 models, 31 exports
+
+canary coarse: refinement=3 surfDev=0.5mm normDev=30 maxEdge=1e+06mm aspect=21.5
+canary coarse: 120 triangles, span 25 mm (ratio 1)
+canary medium: refinement=3 surfDev=0.1mm normDev=15 maxEdge=1e+06mm aspect=21.5
+canary medium: 528 triangles, span 25 mm (ratio 1)
+canary fine  : refinement=3 surfDev=0.02mm normDev=6 maxEdge=1e+06mm aspect=21.5
+canary fine  : 3480 triangles, span 25 mm (ratio 1)
+canary OK: [120, 528, 3480] triangles across coarse/medium/fine
+
+stepped_block_toroidal_fillets_coarse: requested surfDev=0.5mm normDev=30deg -> refinement=3 surfDev=0.5mm normDev=30 maxEdge=1e+06mm aspect=21.5
+stepped_block_toroidal_fillets_coarse: 866 triangles, span 100 mm vs design 100 mm (ratio 0.9998)
+stepped_block_toroidal_fillets_medium: requested surfDev=0.1mm normDev=15deg -> refinement=3 surfDev=0.1mm normDev=15 maxEdge=1e+06mm aspect=21.5
+stepped_block_toroidal_fillets_medium: 2948 triangles, span 100 mm vs design 100 mm (ratio 0.9998)
+stepped_block_toroidal_fillets_fine: requested surfDev=0.02mm normDev=6deg -> refinement=3 surfDev=0.02mm normDev=6 maxEdge=1e+06mm aspect=21.5
+stepped_block_toroidal_fillets_fine: 17598 triangles, span 100 mm vs design 100 mm (ratio 0.9998)
+
+rounded_cube_10_r2_coarse: requested surfDev=0.5mm normDev=30deg -> refinement=3 surfDev=0.5mm normDev=30 maxEdge=1e+06mm aspect=21.5
+rounded_cube_10_r2_coarse: 204 triangles, span 10 mm vs design 10.02 mm (ratio 0.998)
+rounded_cube_10_r2_medium: requested surfDev=0.1mm normDev=15deg -> refinement=3 surfDev=0.1mm normDev=15 maxEdge=1e+06mm aspect=21.5
+rounded_cube_10_r2_medium: 684 triangles, span 10 mm vs design 10.02 mm (ratio 0.998)
+rounded_cube_10_r2_fine: requested surfDev=0.02mm normDev=6deg -> refinement=3 surfDev=0.02mm normDev=6 maxEdge=1e+06mm aspect=21.5
+rounded_cube_10_r2_fine: 4188 triangles, span 10 mm vs design 10.02 mm (ratio 0.998)
+
+cone_tangent_planes_coarse: requested surfDev=0.5mm normDev=30deg -> refinement=3 surfDev=0.5mm normDev=30 maxEdge=1e+06mm aspect=21.5
+cone_tangent_planes_coarse: 56 triangles, span 47.82 mm vs design 48.12 mm (ratio 0.9938)
+cone_tangent_planes_medium: requested surfDev=0.1mm normDev=15deg -> refinement=3 surfDev=0.1mm normDev=15 maxEdge=1e+06mm aspect=21.5
+cone_tangent_planes_medium: 104 triangles, span 48.04 mm vs design 48.12 mm (ratio 0.9983)
+cone_tangent_planes_fine: requested surfDev=0.02mm normDev=6deg -> refinement=3 surfDev=0.02mm normDev=6 maxEdge=1e+06mm aspect=21.5
+cone_tangent_planes_fine: 318 triangles, span 48.09 mm vs design 48.12 mm (ratio 0.9995)
+
+sphere_25_coarse: requested surfDev=0.5mm normDev=30deg -> refinement=3 surfDev=0.5mm normDev=30 maxEdge=1e+06mm aspect=21.5
+sphere_25_coarse: 120 triangles, span 25 mm vs design 25 mm (ratio 1)
+sphere_25_medium: requested surfDev=0.1mm normDev=15deg -> refinement=3 surfDev=0.1mm normDev=15 maxEdge=1e+06mm aspect=21.5
+sphere_25_medium: 528 triangles, span 25 mm vs design 25 mm (ratio 1)
+sphere_25_fine: requested surfDev=0.02mm normDev=6deg -> refinement=3 surfDev=0.02mm normDev=6 maxEdge=1e+06mm aspect=21.5
+sphere_25_fine: 3480 triangles, span 25 mm vs design 25 mm (ratio 1)
+
+chamfered_cube_10_c1_coarse: requested surfDev=0.5mm normDev=30deg -> refinement=3 surfDev=0.5mm normDev=30 maxEdge=1e+06mm aspect=21.5
+chamfered_cube_10_c1_coarse: 44 triangles, span 10 mm vs design 10.02 mm (ratio 0.998)
+chamfered_cube_10_c1_medium: requested surfDev=0.1mm normDev=15deg -> refinement=3 surfDev=0.1mm normDev=15 maxEdge=1e+06mm aspect=21.5
+chamfered_cube_10_c1_medium: 44 triangles, span 10 mm vs design 10.02 mm (ratio 0.998)
+chamfered_cube_10_c1_fine: requested surfDev=0.02mm normDev=6deg -> refinement=3 surfDev=0.02mm normDev=6 maxEdge=1e+06mm aspect=21.5
+chamfered_cube_10_c1_fine: 44 triangles, span 10 mm vs design 10.02 mm (ratio 0.998)
+chamfered_cube_10_c1: all-planar body, density-invariant by construction (44 triangles) — expected
+
+part_rounded_cube_10_r2_coarse: requested surfDev=0.5mm normDev=30deg -> refinement=3 surfDev=0.5mm normDev=30 maxEdge=1e+06mm aspect=21.5
+part_rounded_cube_10_r2_coarse: 60 triangles, span 10 mm vs design 10.02 mm (ratio 0.998)
+part_rounded_cube_10_r2_medium: requested surfDev=0.1mm normDev=15deg -> refinement=3 surfDev=0.1mm normDev=15 maxEdge=1e+06mm aspect=21.5
+part_rounded_cube_10_r2_medium: 108 triangles, span 10 mm vs design 10.02 mm (ratio 0.998)
+part_rounded_cube_10_r2_fine: requested surfDev=0.02mm normDev=6deg -> refinement=3 surfDev=0.02mm normDev=6 maxEdge=1e+06mm aspect=21.5
+part_rounded_cube_10_r2_fine: 476 triangles, span 10 mm vs design 10.02 mm (ratio 0.998)
+
+nosecone_coarse: requested surfDev=0.5mm normDev=30deg -> refinement=3 surfDev=0.5mm normDev=30 maxEdge=1e+06mm aspect=21.5
+nosecone_coarse: 94 triangles, span 92.38 mm vs design 92.4 mm (ratio 0.9998)
+nosecone_medium: requested surfDev=0.1mm normDev=15deg -> refinement=3 surfDev=0.1mm normDev=15 maxEdge=1e+06mm aspect=21.5
+nosecone_medium: 286 triangles, span 92.38 mm vs design 92.4 mm (ratio 0.9998)
+nosecone_fine: requested surfDev=0.02mm normDev=6deg -> refinement=3 surfDev=0.02mm normDev=6 maxEdge=1e+06mm aspect=21.5
+nosecone_fine: 1530 triangles, span 92.38 mm vs design 92.4 mm (ratio 0.9998)
+
+stepped_block_coarse: requested surfDev=0.5mm normDev=30deg -> refinement=3 surfDev=0.5mm normDev=30 maxEdge=1e+06mm aspect=21.5
+stepped_block_coarse: 52 triangles, span 100 mm vs design 100 mm (ratio 0.9998)
+stepped_block_medium: requested surfDev=0.1mm normDev=15deg -> refinement=3 surfDev=0.1mm normDev=15 maxEdge=1e+06mm aspect=21.5
+stepped_block_medium: 52 triangles, span 100 mm vs design 100 mm (ratio 0.9998)
+stepped_block_fine: requested surfDev=0.02mm normDev=6deg -> refinement=3 surfDev=0.02mm normDev=6 maxEdge=1e+06mm aspect=21.5
+stepped_block_fine: 52 triangles, span 100 mm vs design 100 mm (ratio 0.9998)
+stepped_block: all-planar body, density-invariant by construction (52 triangles) — expected
+
+l_bracket_simple_coarse: requested surfDev=0.5mm normDev=30deg -> refinement=3 surfDev=0.5mm normDev=30 maxEdge=1e+06mm aspect=21.5
+l_bracket_simple_coarse: 124 triangles, span 22 mm vs design 22.02 mm (ratio 0.9991)
+l_bracket_simple_medium: requested surfDev=0.1mm normDev=15deg -> refinement=3 surfDev=0.1mm normDev=15 maxEdge=1e+06mm aspect=21.5
+l_bracket_simple_medium: 268 triangles, span 22 mm vs design 22.02 mm (ratio 0.9991)
+l_bracket_simple_fine: requested surfDev=0.02mm normDev=6deg -> refinement=3 surfDev=0.02mm normDev=6 maxEdge=1e+06mm aspect=21.5
+l_bracket_simple_fine: 508 triangles, span 22 mm vs design 22.02 mm (ratio 0.9991)
+
+pipe_elbow_10_coarse: requested surfDev=0.5mm normDev=30deg -> refinement=3 surfDev=0.5mm normDev=30 maxEdge=1e+06mm aspect=21.5
+pipe_elbow_10_coarse: 140 triangles, span 30 mm vs design 30.02 mm (ratio 0.9993)
+
+pill_coarse: requested surfDev=0.5mm normDev=30deg -> refinement=3 surfDev=0.5mm normDev=30 maxEdge=1e+06mm aspect=21.5
+pill_coarse: 144 triangles, span 14 mm vs design 14.02 mm (ratio 0.9986)
+
+cylinder_10x30_coarse: requested surfDev=0.5mm normDev=30deg -> refinement=3 surfDev=0.5mm normDev=30 maxEdge=1e+06mm aspect=21.5
+cylinder_10x30_coarse: 44 triangles, span 30 mm vs design 30.02 mm (ratio 0.9993)
+
+plate_with_hole_100x50_coarse: requested surfDev=0.5mm normDev=30deg -> refinement=3 surfDev=0.5mm normDev=30 maxEdge=1e+06mm aspect=21.5
+plate_with_hole_100x50_coarse: 64 triangles, span 100 mm vs design 100 mm (ratio 0.9998)
+
+exports written: 31, skipped: 0, failed: 0
+all curved models produced strictly increasing densities at the correct scale

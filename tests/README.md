@@ -17,6 +17,10 @@ This directory contains test STL files organized by source:
   (`gen-test-models remesh`). Same ground truth, different mesh provenance:
   constrained Delaunay instead of Parasolid strips, and a float32 quantum
   raised to ~1e-4 mm. See `remesh/README.md`
+- `fusion_reexport/` - Fusion 360 re-tessellations of references from the other
+  directories (`tools/fusion/BrepperReexport.py`), a third tessellator over
+  unchanged ground truth. All 15 verified against their original references. See
+  `fusion_reexport/README.md`
 - `random/` - seeded randomized models (`gen-test-models random`): filleted
   boxes, cone chains, tori across r/R, tubes, ball-on-cylinder, at randomly
   drawn densities. Harness models rather than suite gates — a population that

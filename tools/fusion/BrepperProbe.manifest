@@ -1,0 +1,10 @@
+{
+    "autodeskProduct": "Fusion360",
+    "type": "script",
+    "author": "brepper",
+    "description": {
+        "": "Diagnostic: does STLExportOptions.meshRefinement actually apply? (Phase 0.5a follow-up)"
+    },
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}

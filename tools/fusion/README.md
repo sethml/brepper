@@ -15,9 +15,34 @@ ln -sf "$PWD/tools/fusion/BrepperReexport.py" "$PWD/tools/fusion/BrepperReexport
   "$HOME/Library/Application Support/Autodesk/Autodesk Fusion 360/API/Scripts/BrepperReexport/"
 ```
 
-13 models, 31 exports. It shows a progress dialog with a working Cancel, and it
-skips any STL already on disk, so an interrupted run resumes where it stopped.
-Imported documents are closed without saving — nothing lands in the Fusion hub.
+13 models, 31 exports, named `<model>_fusion_{coarse,medium,fine}.stl`. It shows
+a progress dialog with a working Cancel, skips any STL already on disk so an
+interrupted run resumes, closes imported documents without saving so nothing
+lands in the Fusion hub, and flushes its log line by line so a crash cannot lose
+the record.
+
+**It drives numeric deviations, not the Low/Medium/High presets**, at values
+mirroring `tests/remesh`'s OCCT settings (0.5 / 0.1 / 0.02 mm surface deviation
+at 30 / 15 / 6° normal deviation). And it **self-verifies**: a curved model whose
+triangle counts do not strictly increase across densities is reported as
+VERIFICATION FAILED rather than written to disk as three densities, with
+all-planar bodies exempted by inspecting face geometry. The header comment
+records why — the preset mechanism produced byte-identical meshes in the first
+run and three diagnostic runs could not localise the cause, while presets and
+every variant of the export block work correctly in isolation.
+
+`BrepperProbe.py` and `BrepperBisect.py` are those diagnostics, kept because they
+document what was ruled out: presets work in a shared and a fresh document
+(168 / 528 / 1224 triangles on sphere_25), and filename-assignment order, the
+failing property read, and both together all export correctly.
+
+The root cause turned out to be neither: **`STLExportOptions` inherits ambient
+state.** `unitType` initializes to the Design's default units — metres for an
+imported STEP — so every export from every one of these scripts was written 1000×
+too small until it was pinned. Re-measuring the probe and bisect outputs confirmed
+they were in metres too, so the scale error predated the preset question. Pin every
+property; verify the artifact, not a proxy. Validate a fresh corpus with
+`tools/verify_pairs.sh` before trusting it.
 
 ## Why
 
