@@ -2145,11 +2145,24 @@ Three things follow, all measured rather than argued:
   one model the achieved sag varies by an order of magnitude between a 2 mm
   fillet and a 100 mm face.
 
-The chordal-limited rows reading 1.3–2.1× *over* their bound is not the
-tessellator overshooting. They are all spheres, and the measured quantity is
-centroid distance, which on a doubly-curved surface runs ~2× the one-directional
-sagitta — the same factor that makes the Phase 0.7 estimator read 0.50× on
-spheres. Divided out, they sit just under the bound as they should.
+The chordal-limited rows reading 1.3–1.6× *over* their bound is not the
+tessellator overshooting. They are all spheres, and the two quantities differ by
+a factor that can be derived exactly: the deflection bounds the **edge** sagitta,
+`R θ²/8`, while the gate measures the **facet centroid**. For a triangle whose
+vertices lie on a sphere at angular radius `ρ ≈ θ/√3`, the centroid sits
+`R(1 − cos ρ) ≈ R θ²/6` off the surface, so
+
+    centroid deviation / edge sagitta = (Rθ²/6)/(Rθ²/8) = 4/3
+
+and `sphere_25_occt_coarse` measures **0.667498 mm against 4/3 × 0.5 = 0.666667**,
+a 0.1% match. Medium and fine run 11–20% above 4/3 because OCCT's triangles are
+not perfectly equilateral and the reported figure is a max over facets. Divided
+out, all of them sit just under the bound as they should.
+
+(This 4/3 is *not* the same factor as the Phase 0.7 estimator's 0.50× on spheres.
+That one is 2×, from both principal curvatures displacing a facet centre where
+`hθ/8` accounts for one. Two different comparisons; an earlier version of this
+note conflated them and quoted ~2× here.)
 
 This is also the explanation for the four coarse Fusion models that stage 1
 rejects (0.5a): they are the chordal-limited ones, where the achieved sag really

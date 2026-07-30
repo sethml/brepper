@@ -508,6 +508,21 @@ instrument first; you cannot claim generality you cannot measure.
 **Phase acceptance**: one-command harness with saved baselines; cliff count
 recorded; coverage holes closed; estimator cross-check table produced.
 
+**BASELINE REFRESHED 2026-07-30 at commit 09534ab** — 158 models (was 109; the
+external, fusion_reexport, remesh and random corpora landed during Phase 0):
+**107 ok, 50 fail, 1 timeout**. The old baseline predated the compare fixes, when
+three gates read zero for every input, so it is not comparable row-for-row.
+Exactly **three** models regressed, and all three are the instrument starting to
+work rather than new defects — each is a true deviation that exceeds
+`--surface-tolerance` 0.4 mm and used to be measured as 0.0:
+| model | gate | now reports |
+|---|---|---|
+| `remesh/sphere_25_occt_coarse` | stage 1.2 centroid | 6.675e-1 mm |
+| `random/rand_torus_1` | stage 1.2 centroid | 4.128e-1 mm |
+| `random/rand_filleted_box_0` | stage 3.6 boundary | 4.299e-1 mm |
+The first is predicted to 0.1% by theory — see §3.2's 4/3 derivation — so it is
+the *tolerance* that is wrong, not the mesh. All three are Phase 3.2's business.
+
 ---
 
 ## Phase 1 — Earned patches (the core rework)
