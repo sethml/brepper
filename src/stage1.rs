@@ -1251,6 +1251,10 @@ impl Error for CompareError {}
 
 /// Compute the minimum distance from a point to the bounded compare shape
 /// using BRepExtrema_DistShapeShape, which respects face trimming boundaries.
+///
+/// Pass a compound of FACES, never a solid: `DistShapeShape` reports zero for a
+/// point inside a solid, so a solid target silently turns this into a
+/// containment test. See [`crate::compare`].
 pub fn min_distance_to_shape(
     pt: &gp::Pnt,
     compare_shape: &opencascade_sys::topo_ds::Shape,
@@ -1341,7 +1345,10 @@ pub fn max_distance_to_shape(
 
 /// Check mesh vertices and face centroids against comparison STEP shape.
 fn compare_mesh_to_step(mesh: &ConnectedMesh, config: &Config) -> Result<(), CompareError> {
-    let compare_shape = config.compare_shape.as_ref().unwrap();
+    // Measure against the reference's FACES. Against the solid, every interior
+    // point reads as distance zero — see the `compare` module docs.
+    let faces = crate::compare::face_compound(config.compare_shape.as_ref().unwrap());
+    let compare_shape = faces.as_shape();
 
     // Check all vertices
     let vertex_points: Vec<[f64; 3]> = mesh.vertices.iter().map(|v| [v.x, v.y, v.z]).collect();

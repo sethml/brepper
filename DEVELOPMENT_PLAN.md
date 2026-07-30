@@ -1898,6 +1898,107 @@ the OCCT re-mesh of the Onshape plate against the Fusion reference. The
 generator now writes `tests/remesh/sources.tsv` and the harness reads it.
 Any future generated corpus should do the same.
 
+**"The strip assumption" was the wrong diagnosis; narrow flat regions are the
+right one.** Phase 0.2 read the OCCT re-mesh result — `stepped_block_toroidal`
+failing at every Delaunay density while the Parasolid mesh passed — as the price
+of the strip assumption. Phase 0.5a's Fusion re-export tested that and it does
+not hold. All three tessellators fail the model (best is Parasolid fine at 75
+surfaces against a reference 71), so it is not Delaunay-specific; and triangle
+count does not explain it either, because OCCT fine has 7.8× the triangles of
+Parasolid medium and does *worse* (97 against 84). What the eight measurements
+share is where the surplus lives: **planes, from 18 at best to 232 at worst,
+while all 18 tori survive every provenance above ~3.7K triangles.** The failure
+is narrow flat regions between fillets — precisely what a blind 32-face BFS patch
+straddles, and precisely what Phase 1's earned patch is built to fix. Attributing
+it to Delaunay would have sent Phase 1 after the wrong property.
+
+Two smaller results from the same experiment. `cone_tangent_planes` decomposes
+the same way under Fusion as under Parasolid (4 planes + 2 cones + 1 sphere),
+which makes OCCT's 4 planes + 1 cone + 2 B-splines the outlier — so Phase 5c is
+looking at a provenance-specific freeform reading, not at the model's nature.
+And `nosecone`, which passes on the Onshape mesh at 3 surfaces, fails on the
+Fusion mesh at 10 through two separate defects on one flat circular base: about
+3000 mm² of it is absorbed into the adjacent cone, and what remains fragments
+into six plane surfaces carrying byte-identical parameters. Six coplanar regions
+that never merged is a connectivity failure, not a fitting one — the same family
+as the "absorbing bridge facets" limit in LEARNINGS.md, but here it is fatal.
+
+**Never measure a distance against a solid — three gates read zero for every
+input.** `BRepExtrema_DistShapeShape` returns the **minimum** distance between
+two shapes and reports **zero whenever one lies inside the other**. Point against
+a solid therefore answers "is it inside?"; shape against shape answers "do they
+overlap?". Neither is an accuracy measure, and neither announces itself, because
+a wrong answer and a perfect one both print `0.000000e0`. All three of the
+pipeline's reference comparisons had it, found together on 2026-07-29 and fixed
+in `src/compare.rs`:
+
+- **Stage 1** measured mesh vertices and face centroids against the reference
+  solid. It passed a mesh written 1000× too small — a 25 mm sphere spanning
+  0.025 mm, wholly inside its reference, distance exactly 0 — and its centroid
+  check was vacuous on all convex geometry, since an inscribed tessellation puts
+  every facet centroid inside the solid, which is the sag the check exists to
+  measure. **One of the two sag truth values this plan quotes was 4.3× low as a
+  result**: stepped_block fine measures 3.81e-3 mm, not 8.9e-4. rounded_cube
+  fine is unchanged at 9.5e-4, so the old numbers were not uniformly wrong,
+  which is exactly what made this hard to notice. Phase 0.7 calibrates its sag
+  estimator against these — use the new ones.
+- **Stage 3.4** sampled one point per face against the reference solid.
+- **Stages 3.6 and 4.1** gated on the distance between our solid and the
+  reference solid. Two versions of the same part always overlap, so those gates
+  never fired at all. Measured on a decomposition with 9 surfaces against a
+  reference 26 and *no planes whatsoever*: both printed the same 0 as a perfect
+  model, and only the volume check beside them did any work.
+
+The fix is not simply "use face compounds". For a point that works — a compound
+of faces has no inside. But the minimum distance between two *boundaries* that
+touch anywhere is still zero, so solid-vs-solid agreement needs a two-sided
+quantity: `boundary_deviation` uses `BRepExtrema_ShapeProximity` with an infinite
+tolerance, whose proximity value is the thinnest layer containing both shapes.
+That now separates the cases it could not before — 1.97e-2 mm for a correct
+model against 1.28e-1 mm for the 9-surface one. Its resolution floor is the
+triangulation deflection it meshes at, a tenth of the tolerance being gated, so
+it sharpens automatically if Phase 3 tightens `--surface-tolerance`.
+
+**The general rule, worth applying to any new check: ask what your metric
+returns for a grossly wrong input. If that is indistinguishable from what it
+returns for a right one, the metric is wrong.** Both failures here — these gates
+and the generator self-check that watched triangle counts while every file it
+wrote was unusable — are the same error: verifying a proxy, or verifying nothing,
+and reading the silence as success.
+
+**A corpus gate has to be run before the corpus is trusted, not after.** The
+first pair-verification pass reported 15 of 15 verified on a Fusion corpus that
+was written in metres — every file 1000× too small and useless — because it was
+an ad-hoc loop wrapping the stage-1 check described above. `tools/verify_pairs.sh`
+is that gate, versioned, and it is now a thin wrapper: stage 1 reports the true
+12.4875 mm and fails, so the gate needs no cleverness of its own. It briefly
+carried a heuristic for exactly-zero distances, which is deleted — a workaround
+for a bug is not worth keeping once the bug is fixed. It does still report the
+f32 position bound beside each result, because that reveals coordinate scale for
+free: 5.7e-10 mm for the metres sphere against 7.2e-7 mm for a correct mesh of
+the same model. This matters well beyond one bad export: 0.5b's wild pairs are
+*expected* to include decimated, repaired and rescaled meshes.
+
+The generator side needs the same discipline. Fusion's `STLExportOptions`
+inherits ambient state — `unitType` from the Design's default units, which for an
+imported STEP was metres, and `printUtility` from the last UI setting — so an
+export that does not set *every* property explicitly is not reproducible. That
+single fact explains two separate anomalies that cost four runs to untangle:
+byte-identical meshes across three refinement presets, and a silent 1000× scale
+error. The lesson generalizes past Fusion: when a generator's defaults come from
+the environment, pin them all, and verify the artifact rather than a proxy for it.
+The batch's own self-check confirmed that triangle counts increased while every
+file it wrote was unusable.
+
+**Re-imported STEPs survive as ground truth.** Fusion can heal or reparameterize
+geometry on STEP import, which would quietly destroy the pairing. Measured over
+15 exports: vertices lie on the *original* reference surfaces at 4.1e-7 to
+7.9e-6 mm, so the verification rate for that source is 15/15. That is the first
+field application of the 0.5c gate, and it says a commercial CAD round-trip is
+safe to treat as ground truth — which matters for 0.5b, where wild pairs are
+expected to fail the same gate for unrelated reasons (different revision,
+decimated, repaired).
+
 **The cliff count is 9 of 32, and four of the nine are the blind patch.** The
 fragility meter (`tools/fragility.sh`) perturbs one constant at a time by ±2×
 and reports which models change and which *collapse* — a passing model that

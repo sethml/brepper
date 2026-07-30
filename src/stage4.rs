@@ -5,7 +5,7 @@
 use crate::config::Config;
 use crate::stage3::Stage3Output;
 use opencascade_sys::{
-    b_rep_extrema, b_rep_g_prop, extrema, g_prop, message,
+    b_rep_g_prop, g_prop,
     topo_ds, OwnedPtr,
 };
 use std::error::Error;
@@ -221,19 +221,19 @@ fn compare_output_to_step(
         return Err(Stage4CompareError::Volume { rel_diff });
     }
 
-    // Compute BRepExtrema distance between output and reference
-    let progress = message::ProgressRange::new();
-    let dist_calc = b_rep_extrema::DistShapeShape::new_shape2_extflag_extalgo_progressrange(
+    // Boundary deviation between the written solid and the reference.
+    //
+    // This used DistShapeShape on the two SOLIDS, which reports zero whenever
+    // they overlap. Every model printed 0.000000e0 and the gate never fired,
+    // including a decomposition with 9 surfaces against a reference 26. Only
+    // the volume check above was doing any work here. See `crate::compare`.
+    if let Some(dist) = crate::compare::boundary_deviation(
         output_shape,
         compare_shape,
-        0,
-        extrema::ExtAlgo::Grad,
-        &progress,
-    );
-    if dist_calc.is_done() && dist_calc.nb_solution() > 0 {
-        let dist = dist_calc.value();
+        config.surface_tolerance_mm,
+    ) {
         if !config.quiet {
-            eprintln!("  Compare 4.1: output distance to STEP = {dist:.6e} mm");
+            eprintln!("  Compare 4.1: output boundary deviation from STEP = {dist:.6e} mm");
         }
         if dist > config.surface_tolerance_mm {
             return Err(Stage4CompareError::Distance {

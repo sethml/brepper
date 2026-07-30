@@ -4034,8 +4034,12 @@ fn compare_faces_to_step(
         );
     }
 
-    // For each face, sample a representative point from mesh face centroids
-    // and check distance to the reference STEP shape.
+    // For each face, sample a representative point from mesh face centroids and
+    // check distance to the reference STEP FACES. Against the solid this read
+    // zero for any point inside it, which is most of them — see
+    // `crate::compare`.
+    let ref_faces = crate::compare::face_compound(compare_shape);
+    let ref_faces = ref_faces.as_shape();
     let mut max_dist = 0.0_f64;
     for (fi, fd) in output.face_descriptors.iter().enumerate() {
         let surface = &output.stage2.selected_surfaces[fd.selected_surface_idx];
@@ -4046,7 +4050,7 @@ fn compare_faces_to_step(
         // Use the centroid of the first mesh face as a sample point
         let centroid = compute_mesh_face_centroid(faces[0], &output.stage2.mesh);
         let pt = gp::Pnt::new_real3(centroid[0], centroid[1], centroid[2]);
-        let d_ref = min_distance_to_shape(&pt, compare_shape);
+        let d_ref = min_distance_to_shape(&pt, ref_faces);
         max_dist = max_dist.max(d_ref);
 
         if d_ref > config.surface_tolerance_mm && config.verbose {
@@ -7428,20 +7432,19 @@ fn compare_solids_to_step(
         }
     }
 
-    // Compute BRepExtrema distance between our solids and STEP shape
+    // Boundary deviation between our solids and the reference.
+    //
+    // This used DistShapeShape on the two SOLIDS, which reports zero whenever
+    // they overlap — so it read 0.000000e0 for every model, right or wrong, and
+    // never gated anything. Measured on a 9-surface decomposition of a
+    // 26-surface part with no planes at all: exactly the same 0 as a perfect
+    // model. See `crate::compare`.
     for (si, solid) in solids.iter().enumerate() {
-        let progress = message::ProgressRange::new();
-        let dist_calc = b_rep_extrema::DistShapeShape::new_shape2_extflag_extalgo_progressrange(
-            solid.as_shape(),
-            compare_shape,
-            0,
-            extrema::ExtAlgo::Grad,
-            &progress,
-        );
-        if dist_calc.is_done() && dist_calc.nb_solution() > 0 {
-            let dist = dist_calc.value();
+        if let Some(dist) =
+            crate::compare::boundary_deviation(solid.as_shape(), compare_shape, config.surface_tolerance_mm)
+        {
             if !config.quiet {
-                eprintln!("  Compare 3.6: solid {si} distance to STEP = {dist:.6e} mm");
+                eprintln!("  Compare 3.6: solid {si} boundary deviation from STEP = {dist:.6e} mm");
             }
             if dist > config.surface_tolerance_mm {
                 return Err(Stage3CompareError {
