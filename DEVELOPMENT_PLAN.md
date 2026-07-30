@@ -1999,13 +1999,25 @@ safe to treat as ground truth — which matters for 0.5b, where wild pairs are
 expected to fail the same gate for unrelated reasons (different revision,
 decimated, repaired).
 
-**The provenance premise survives contact with the wild — but only about half of
-published pairs are pairs.** Of 18 STEP+STL pairs harvested from open-source
-hardware repos (0.5b), 7 turned out to describe different objects and were
-deleted, 2 have meshes too broken to validate, and 9 correspond. Where they
+**The provenance premise survives contact with the wild — but a third of
+published pairs are not usable ground truth.** Of 18 STEP+STL pairs harvested
+from open-source hardware repos (0.5b), 11 correspond and 7 verify outright; 5
+describe different objects and 2 have meshes too broken to validate. Where they
 correspond the premise holds hard: the *median* vertex sits on the CAD surface at
-the float32 quantum, and 4 of the 6 that pass outright do so at or below one
-quantum, on files we did not export. Three durable lessons:
+the float32 quantum, and 4 of the 7 that pass do so at or below one quantum, on
+files we did not export.
+
+*The first pass of this reported 6 of 11, and both numbers were wrong.* It
+deleted 7 pairs as "different objects" on the strength of `BRepBndLib::Add(shape,
+box, useTriangulation = true)` — where the flag means "use a triangulation IF THE
+FACE HAS ONE", and a shape straight from STEP has none, so OCCT returned bounds
+enclosing the surface poles. On a 30 mm cube that box reads 34.8 mm on one axis.
+Two compounding errors followed: a padded reference box compared against an exact
+mesh box invented size differences, and the denominator shrank because the
+failures had been deleted. One of the deleted pairs verifies at 4.5e-5 mm. **Mesh
+a shape before you bound it, keep the URLs and hashes of anything you delete, and
+never quote a rate over a corpus you pruned using the same measurement.** Four
+durable lessons:
 
 *A max is the wrong statistic for a wild mesh.* Both ToolChanger ducts are exact
 to float32 at p95 (6.9e-6 mm against a 9.3e-6 bound) and fail only on a thin tail
@@ -2014,16 +2026,22 @@ simplified small feature — is a different fact about a mesh than a systematic
 offset, and the max cannot distinguish them. Stage 1's compare therefore reports
 **p50 / p95 / max**; the shape of the distribution names the cause on sight.
 
-*Rigid alignment cannot be more precise than the mesh's own sag.* A tessellated
-mesh's bounding box is inset from the true solid, and asymmetrically, so a
-transform recovered from bbox centres carries a sag-scale error. It recovers
-exact round-number placements perfectly (`NucDeck`, 6.52 mm → 4.58e-7 mm) and
-nothing finer — the one model re-aligned among the three near-misses is also the
-only one whose residual is *distributed* (p50 8.0e-5, 10% of its sag) rather than
-a tail. Going below that would mean fitting the transform to the distance being
-tested, which is why alignment here is discrete: bbox centres plus the first of
-the 24 proper rotations of a cube whose unsorted extents match. It never sees the
-distance it helps to pass, so it cannot make a wrong pair look right.
+*Rigid alignment cannot be more precise than the mesh's own sag — so below that
+it must not act at all.* A tessellated mesh's bounding box is inset from the true
+solid, and asymmetrically, so a transform recovered from bbox centres carries a
+sag-scale error. Applying such a transform where none was needed makes a good
+pair worse: two ToolChanger ducts went from a vertex p95 of 6.9e-6 mm to 4.4e-4
+under a 4.4e-4 mm "correction". Alignment therefore ignores translations below a
+noise floor, and the floor is a measured gap rather than a tuned constant — the
+corpus's shifts are bimodal with 4000× of empty space between the noise (8e-8 to
+1.6e-3 mm) and the real displacements (6.5 mm and up), so any cut inside it gives
+the same answer. The skipped magnitude is printed, so a corpus that lands in the
+gap announces itself. Above the floor the method recovers exact round-number
+placements perfectly (`NucDeck`, 6.52 mm → 4.58e-7 mm) and nothing finer. Going
+below would mean fitting the transform to the distance being tested, which is why
+alignment stays discrete: bbox centres plus the first of the 24 proper rotations
+of a cube whose unsorted extents match. It never sees the distance it helps to
+pass, so it cannot make a wrong pair look right.
 
 *Check the file's text precision before theorizing about geometry.* An ASCII STL
 at 6 significant digits has ~1e-4 mm resolution on a 50 mm part, which is exactly

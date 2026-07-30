@@ -757,7 +757,24 @@ fn remesh_corpus(out_dir: &str, models: &[(String, String)]) {
 // than a transform to search for.
 
 /// Bounding box of a shape as (min, max).
+///
+/// The shape is meshed first, and that is not optional. `BRepBndLib::Add`'s
+/// `useTriangulation` flag means "use a triangulation IF THE FACE HAS ONE"; a
+/// shape just read from STEP has none, so OCCT falls back to bounds derived from
+/// surface poles, which for B-spline and other curved faces enclose the control
+/// hull rather than the surface. Measured on `OrcaCube v2.step`, a 30 mm cube:
+/// the pole-based box reads 34.8 x 56.0 x 30.9, overestimating one axis by
+/// 4.8 mm. Comparing that against an exact mesh bounding box — which is what
+/// alignment does — turns a padded reference into a phantom size difference and
+/// a wrong translation.
+///
+/// The deflection is far finer than any tolerance this tool reasons about, so
+/// the remaining error is the triangulation's own inset, well below the sag of
+/// the meshes being aligned.
 fn shape_bounds(shape: &topo_ds::Shape) -> ([f64; 3], [f64; 3]) {
+    let _mesh = b_rep_mesh::IncrementalMesh::new_shape_real_bool_real_bool(
+        shape, 1.0e-4, false, 0.1, false,
+    );
     let mut bbox = bnd::Box::new();
     b_rep_bnd_lib::add_shape_box_bool(shape, &mut bbox, true);
     (
@@ -881,8 +898,22 @@ fn align_corpus(dir: &str) {
         ];
         let identity = m[0][0] == 1.0 && m[1][1] == 1.0 && m[2][2] == 1.0;
         let shift = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
-        if identity && shift < 1.0e-6 {
-            println!("  {stem}: already aligned");
+        // A translation this small is not evidence of displacement. Both centres
+        // come from bounding boxes, and a tessellated mesh's box is inset from
+        // the true solid by up to the sag — asymmetrically, so the centre
+        // inherits an error of that order (~1e-2 mm on these meshes). Applying
+        // it makes an already-framed pair WORSE: measured on the ToolChanger
+        // ducts, whose vertex p95 went 6.9e-6 -> 4.4e-4 mm when a ~4e-4 mm
+        // "correction" was applied to a pair that was already exact.
+        //
+        // The cut is safe rather than tuned: across the corpus the shifts are
+        // bimodal with a 3000x empty gap — noise at 5e-4 and 2e-3 mm, real
+        // displacements at 6.5 mm and above — so any cut inside the gap gives
+        // the same answer. The skipped magnitude is printed, so a future corpus
+        // landing IN the gap shows up instead of being silently decided.
+        const NOISE_SHIFT_MM: f64 = 1.0e-2;
+        if identity && shift < NOISE_SHIFT_MM {
+            println!("  {stem}: already aligned (bbox centres differ by {shift:.3e} mm, below the {NOISE_SHIFT_MM:.0e} mm noise floor)");
             continue;
         }
 

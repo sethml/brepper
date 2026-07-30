@@ -305,34 +305,60 @@ instrument first; you cannot claim generality you cannot measure.
     it cannot make a wrong pair look right — the failure mode the question
     flagged. 10 of 18 were re-framed (8 translation-only, 2 with a rotation).
 
-    **FINAL: 6 of 11 verify; 9 of 11 correspond; 7 of the original 18 were
-    different objects and are deleted** (reasons recorded in `manifest.tsv`).
+    **A FIRST PASS OF THIS GOT IT WRONG AND DELETED REAL GROUND TRUTH. Read this
+    before trusting any bounding box.** `shape_bounds` called
+    `BRepBndLib::Add(shape, box, useTriangulation = true)`, and that flag means
+    "use a triangulation IF THE FACE HAS ONE". A shape straight from STEP has
+    none, so OCCT fell back to bounds enclosing the surface POLES — the control
+    hull, not the surface. On `OrcaCube v2.step`, a 30 mm cube, the padded box
+    reads **34.8 x 56.0 x 30.9**: one axis 4.8 mm too large. Alignment compared
+    that against an *exact* mesh box, so both the size test and the
+    centre-derived translation were wrong, and 7 pairs were deleted as "different
+    objects" on the strength of it. **`VoronUsers__10x11...` was one of them and
+    is genuine ground truth: it verifies at 4.49e-5 mm once rotated.** All 7 were
+    restored from the manifest's URLs and sha256 — which is the reason to record
+    those. Two fixes: mesh the shape before bounding it, and do not apply a
+    translation below a noise floor (see finding 3). Nothing is deleted now; the
+    corpus is gitignored, so a failing pair costs nothing and is evidence.
+
+    **FINAL: 7 of 18 verify (39%); 11 of 18 correspond (61%).** The denominator
+    is 18, not 11: deleting the failures and then reporting a rate over what
+    survived is how the first pass talked itself into "6 of 11".
     | outcome | n | what it is |
     |---|---|---|
-    | VERIFIED at `vtol` 5e-5 | 6 | **4 of them at or below one float32 quantum** |
-    | corresponds, stray-vertex tail | 2 | ToolChanger ducts: p95 6.9e-6 **below** their 9.3e-6 f32 bound, max 4.3e-4 |
-    | corresponds, alignment residual | 1 | `holder_arm`: p50 8.0e-5 spread to max 5.0e-4 — 10% of its own sag |
+    | VERIFIED at `vtol` 5e-5 | 7 | **4 at or below one float32 quantum** |
+    | corresponds, stray-vertex tail | 3 | ToolChanger ducts: p95 6.9e-6 **below** their 9.3e-6 f32 bound, max 4.3e-4. `NucDeck__back_cover`: p95 1.3e-4, max 3.5e-1 |
+    | corresponds, alignment residual | 1 | `holder_arm`: p95 4.8e-4 ≈ max — distributed, 10% of its own sag |
+    | does not correspond | 5 | belt clips ×2 at a uniform **exactly 0.2 mm** (an offset/clearance variant); White-Knight ×3 at p95 8–24 mm |
     | mesh invalid | 2 | `OpenBot__100deg_joint` ±mirror: 2 non-manifold edges, fails stage 1 before compare |
-    | different object | 7 | **deleted** — see below |
     **The premise holds where the pairs are real.** On files we did not export,
     the median vertex sits on the CAD surface at the float32 quantum. Findings:
-    1. **Half of published STEP+STL pairs are not the same object** (7 of 18,
-       plus 10 more needing re-framing). Coordinate frame is the single largest
-       cause, and a wild-pair gate must align before it can measure anything.
-       Proven, not inferred: translating `NucDeck__+_volume_button` by
-       (−0.5, 0, −6.5) mm — round numbers, a deliberate placement — drops its
-       vertex distance from **6.52 mm to 4.58e-7 mm**.
+    1. **About a third of published STEP+STL pairs are not usable ground truth**
+       (5 different objects + 2 invalid meshes of 18), and **10 more of the 18
+       needed re-framing first**. Coordinate frame is the single largest cause,
+       and a wild-pair gate must align before it can measure anything. Proven,
+       not inferred: translating `NucDeck__+_volume_button` by (−0.5, 0, −6.5) mm
+       — round numbers, a deliberate placement — drops its vertex distance from
+       **6.52 mm to 4.58e-7 mm**.
     2. **A max-based vertex gate is the wrong shape for wild meshes.** Both
        ToolChanger ducts are exact to float32 at p95 and fail only on a thin
        tail. Stage 1's compare now prints **p50 / p95 / max** so a local mesh
        defect can be told from a systematic offset; Phase 3 should decide whether
        the gate itself becomes a quantile. See §3.2.
-    3. **Bounding-box alignment cannot beat the mesh's own sag.** A tessellated
-       mesh's bbox is inset from the true solid asymmetrically, so the recovered
-       translation carries a sag-scale error — visible as a *distributed*
-       residual (`holder_arm`) rather than a tail. It recovers exact round-number
-       placements perfectly (NucDeck, 4.58e-7 mm) and nothing finer. Sub-sag
-       alignment would require fitting, which is why it is not done.
+    3. **Bounding-box alignment cannot beat the mesh's own sag, so below that it
+       must not act.** A tessellated mesh's bbox is inset from the true solid
+       asymmetrically, so a centre-derived translation carries a sag-scale error.
+       Applying it where none was needed makes a good pair *worse*: the
+       ToolChanger ducts went from p95 6.9e-6 to 4.4e-4 mm under a 4.4e-4 mm
+       "correction". `align` therefore ignores translations below a noise floor.
+       The floor is not tuned — the corpus's shifts are bimodal with a **4000×
+       empty gap** (noise at 8e-8, 4.4e-4, 4.9e-4, 1.6e-3 mm; real displacements
+       at 6.5, 24.2, 101.9, 112.1 mm), so any cut inside it gives the same
+       answer, and the skipped magnitude is printed so a future corpus landing
+       *in* the gap is visible rather than silently decided. Above the floor it
+       recovers exact round-number placements perfectly (NucDeck, 4.58e-7 mm) and
+       nothing finer — what remains is the sag-scale residual on `holder_arm`.
+       Sub-sag alignment would require fitting, which is why it is not done.
     4. **Text precision is not a factor either way** — the SolidWorks STEPs carry
        20 significant digits, the ST-Developer ones 15. Checked because the
        residuals were near ASCII-STL resolution; they are not that.
@@ -448,9 +474,36 @@ instrument first; you cannot claim generality you cannot measure.
   is curvature-dominated (it recovers 2.5° to two digits) and useless elsewhere,
   which is the same condition. Deriving a per-face tolerance from local geometry
   (§3.2) is the route that does not depend on a global quantile at all.
-- **0.8 Baseline runs of real meshes**: run 3DBenchy, OrcaCube, and
-  xyz-cube-test end to end once each; record the diagnoses as harness rows.
-  Fix nothing here; just know the starting point.
+- **0.8 Baseline runs of real meshes** **DONE 2026-07-30 — nothing fixed, as
+  specified.** `tools/sweep.sh` already covers `tests/downloaded/` and already
+  resolves both STEP references, so these are harness rows; the runs below add
+  what a 300 s harness timeout cannot show.
+  | model | tri | outcome |
+  |---|---|---|
+  | `xyz-cube-test-20mm` | 1 128 | **ok** — 58 surfaces, 1 solid, 2.3 s |
+  | `OrcaCube v2` | 44 606 | **PANIC after 40 min** (2407 s wall, 1774 s user) |
+  | `3DBenchy` | 225 706 | harness row is `timeout` at 300 s; longer run pending |
+  1. **OrcaCube is a crash, not a timeout** — the harness row said `fail`, which
+     hid it. `src/stage2/repair.rs:741`, `stage 2.4 invariant: face 1460 covered
+     0 times, expected 1`: a face ends up in no selected surface. It reaches that
+     after 2263 tangency-snap attempts, nearly all reporting `NO LOCUS: surfaces
+     do not share an axis`. Phase 1 should retire this class of surface first.
+  2. **Real meshes need repair before they can be read.** 3DBenchy: dropped 2
+     duplicate-vertex faces, removed 11 slivers, split 11 at T-junctions.
+     OrcaCube: removed 6 coincident faces. Both still report a dihedral **max of
+     180°** afterwards, so folded facet pairs survive repair.
+  3. **Multi-body is normal in the wild** — OrcaCube reads as 3 shells / 3
+     solids. The synthetic corpus is almost entirely single-solid.
+  4. **OrcaCube's `--compare` failure is a corpus fact, not a brepper defect,
+     and the new distribution readout is what settles it**: vertex p50 3.83e-4 /
+     p95 5.69e-3 / max 1.54e-2 mm against an f32 bound of 1.98e-6. The *median*
+     vertex is 193× the bound off the surface — systematic, not a tail — and the
+     p50 nearly equals the mesh's own estimated sag p50 (4.34e-4), i.e. the
+     vertices do not lie on that STEP's surface; the facets straddle it. Its
+     extents match to a 1e-3 mm translation, so this is not a frame difference.
+     Treat that pair as not-ground-truth. **Finding the padded-bbox bug in 0.5b
+     came out of chasing this**, since the first bounds reading claimed the two
+     differed by 4.8 mm.
 
 **Phase acceptance**: one-command harness with saved baselines; cliff count
 recorded; coverage holes closed; estimator cross-check table produced.
