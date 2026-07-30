@@ -1262,7 +1262,7 @@ fn hollow_cube_stage36_compare() {
 /// This historically caught sewing-induced wire corruption; it now guards the
 /// shared-edge assembly's face/wire integrity end-to-end.
 /// Uses --angular-tolerance=20: the coarse tessellation has inter-facet
-/// dihedral angles that exceed the 17.5° default (see tests/RESULTS.md),
+/// dihedral angles that exceed the 17.5° default,
 /// which fragments the fillet fits.
 #[test]
 fn rounded_cube_coarse_brep_check() {

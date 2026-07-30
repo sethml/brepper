@@ -84,7 +84,8 @@ find_step() {
     echo ""
 }
 
-# Per-model CLI flags, mirroring tests/RESULTS.md's "Special flags".
+# Per-model CLI flags. rounded_cube_10_r2_coarse is tessellated past the 17.5°
+# default dihedral limit, so it needs the same flag its suite test uses.
 extra_flags() {
     case "$1" in
         *rounded_cube_10_r2_coarse*) echo "--angular-tolerance 20" ;;

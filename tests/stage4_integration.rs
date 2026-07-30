@@ -58,7 +58,7 @@ fn simple_sphere_step_output() {
 #[test]
 fn rounded_cube_step_output() {
     // --angular-tolerance=20: the coarse tessellation exceeds the 17.5°
-    // default dihedral limit (see tests/RESULTS.md special flags).
+    // default dihedral limit (the same flag tools/sweep.sh applies to this model).
     let dir = manifest_dir();
     let stl = format!("{dir}/tests/onshape/rounded_cube_10_r2_coarse.stl");
     let out = format!("{dir}/tmp/test_rounded_cube_output.step");
