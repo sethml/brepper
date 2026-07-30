@@ -1898,6 +1898,47 @@ the OCCT re-mesh of the Onshape plate against the Fusion reference. The
 generator now writes `tests/remesh/sources.tsv` and the harness reads it.
 Any future generated corpus should do the same.
 
+**The cliff count is 9 of 32, and four of the nine are the blind patch.** The
+fragility meter (`tools/fragility.sh`) perturbs one constant at a time by ±2×
+and reports which models change and which *collapse* — a passing model that
+now fails, or a surface count that at least doubles. `MAX_PATCH_DEPTH`,
+`MIN_CONDITION_FACES`, `PATCH_TRIM_ROUNDS` and `SEED_PATCH_CAP` are cliffs and
+account for most of the collapses; all four are already on Phase 1.5's deletion
+list. The thesis above — "one component, blind-patch seeding, forces most of the
+guard pile" — was inferred from single-model debugging sessions; it is now a
+measurement over 45 models, and Phase 1's success criterion can be stated as
+*those four cliffs disappear without new ones appearing*.
+
+Three things the meter found that were not part of the thesis:
+
+- **`NORMAL_AXIS_TOL` (conical.rs, 0.05) is a cliff nobody had flagged**:
+  halving it collapses all three `rand_cone_chain` models,
+  `block_with_conical_hole` and the OCCT re-mesh of `cone_tangent_planes`. It
+  appears on no deletion list and no watch list. Any future work on cone axes
+  should treat it as both load-bearing and fragile.
+- **`MIN_HALF_ANGLE_DEG` and `PROJ_GAP_RECHECK` are cliffs upward only**
+  (2° → 4° kills the random cone chains, whose half-angles are genuinely small;
+  0.02 → 0.04 collapses a cone chain and a filleted box). Cliffs are not
+  symmetric, so a meter that only tightened or only loosened would have missed
+  both.
+- **16 of 32 constants are completely insensitive to ±2×.** This is *not* a
+  deletion list, and reading it as one would be the same mistake as
+  complexity-pricing: a guard that fires far from its own boundary is exactly
+  what a correct guard looks like. `MIN_AXIAL_SWEEP_DEG` is measured essential
+  (it is what stops a surface of revolution being fitted by support that never
+  observes the revolution) *and* measured ±2×-insensitive. Phase 4.2's
+  ablations must therefore disable, not perturb — the two experiments answer
+  different questions, and the meter answers only "is this value
+  load-bearing".
+
+Cost and cadence, since the full matrix costs ~110 minutes: run it at phase
+boundaries, not per commit, and use `--only` for the constants a change plausibly
+touches. The current implementation is about 3× slower than necessary — it
+parallelizes models within one perturbation's sweep, where wall time is pinned by
+the single 101 s model at 39% core utilization, when it should parallelize across
+perturbations. Phase 2.1's runtime work on that model removes the binding
+constraint either way.
+
 **The f32 "quantum" is the wrong quantity for a distance, as recorded — and
 here is the right one.** The bound on how far f32 storage can move a vertex off
 its true surface is `max over vertices of ‖(ulpₓ, ulp_y, ulp_z)‖ / 2`: each

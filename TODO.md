@@ -57,7 +57,8 @@ Report both in every commit message that moves either.
    (non-monotonic everywhere).
 
 **Diagnostics toolbox**: `tools/sweep.sh` (109-model harness, baselines and
-diffs); `tools/probe.sh` (14-model per-type breakdown);
+diffs); `tools/fragility.sh` (per-constant ±2× perturbation, cliff count);
+`tools/probe.sh` (14-model per-type breakdown);
 `dump_regions <model> jetdump` (per-face k1/k2/area/adjacency/normal);
 `dump_regions <model> locus [a b]` (junction loci); `BREPPER_DEBUG_COMPETE=1`
 (per-seed compete log); `src/bin/step_measure_tolerance.rs`.
@@ -147,11 +148,55 @@ instrument first; you cannot claim generality you cannot measure.
   Also fixed a generator flaw the first sweep exposed: two of three
   ball-on-cylinder draws had the ball CONTAINING the post, so the reference was
   a plain sphere and the row measured nothing.
-- **0.4 Fragility meter.** A script that, one constant at a time (list them
-  via the grep in the header of DEVELOPMENT_PLAN's rework section), perturbs
-  ±2× or disables, rebuilds, runs the sweep, and reports which models changed.
-  Record the baseline **cliff count**. This makes "minimize fragility"
-  a number.
+- **0.4 Fragility meter.** **DONE 2026-07-29** — `tools/fragility.sh` rewrites
+  one constant at a time as `(original expression) × 2` and `÷ 2` (so the form
+  of the expression does not matter), rebuilds, sweeps a 45-model fragility set,
+  and diffs. Restores the source from a byte copy on any exit path. Reports
+  *changed* (sensitivity) and *cliff* (a passing model that now fails, or a
+  surface count that at least doubled — the per-facet-explosion signature).
+  **Constant count is 32, not 34**: the grep counts a `usize::MAX` sentinel
+  (`CUT_OUTSIDE`) and a viz colour (`SHARP_EDGE_COLOR`), both skipped with a
+  recorded reason.
+  **BASELINE CLIFF COUNT: 9 of 32.** Full table in `tmp/fragility-full.tsv`;
+  the headline is that the cliffs cluster on the blind patch, which is the
+  rework's central claim now measured rather than argued:
+  | constant | ÷2 chg/cliff | ×2 chg/cliff |
+  |---|---|---|
+  | `MAX_PATCH_DEPTH` | 12 / **9** | 7 / **3** |
+  | `MIN_CONDITION_FACES` | 8 / **5** | 10 / **7** |
+  | `PATCH_TRIM_ROUNDS` | 7 / **5** | 6 / **3** |
+  | `SEED_PATCH_CAP` | 6 / **3** | 0 / 0 |
+  | `NORMAL_AXIS_TOL` | 6 / **5** | 3 / 0 |
+  | `MAX_TORUS_RADIUS_RATIO` | 5 / **4** | 4 / 0 |
+  | `MIN_HALF_ANGLE_DEG` | 0 / 0 | 3 / **2** |
+  | `PROJ_GAP_RECHECK` | 0 / 0 | 2 / **2** |
+  | `MIN_BSPLINE_FACES` | 3 / **1** | 1 / 0 |
+  Four of the nine (`MAX_PATCH_DEPTH`, `MIN_CONDITION_FACES`,
+  `PATCH_TRIM_ROUNDS`, `SEED_PATCH_CAP`) are blind-patch constants **already on
+  Phase 1.5's deletion list**, and they account for most of the collapses. The
+  collapsing models are overwhelmingly the fillet family — `rounded_cube` at all
+  three provenances, `filleted_pipe`/`_cylinder`/`_hole_block`, all three
+  `rand_filleted_box` — matching 0.3's finding that fillet-to-face ratio is
+  where the corpus was thin.
+  **`NORMAL_AXIS_TOL` (conical.rs, 0.05) is the unexpected one**: halving it
+  collapses 5 models (all three `rand_cone_chain`, `block_with_conical_hole`,
+  `remesh/cone_tangent_planes_medium`) and it is on no deletion list. Cone-axis
+  work should treat it as load-bearing and fragile.
+  **16 of 32 constants are completely insensitive to ±2×**, including
+  `REFIT_GIVE_UP`, `MIN_AXIAL_SWEEP_DEG`, `MAX_TORUS_STARTS`, both `BEND_*`,
+  `COAXIAL_TOL`, `TANGENCY_TOL_RAD`, `MAX_FIT_FACES`, `MAX_REFIT`, `REFIT_ADD`,
+  `DEVELOPABLE_MAX_RATIO`, `MAX_GROW_ROUNDS`, `MAX_SPHERE_RADIUS_FACTOR`.
+  **Read that as "its value is not load-bearing", NOT as a deletion list** — a
+  guard that fires far from its boundary is exactly what a guard should look
+  like; `MIN_AXIAL_SWEEP_DEG` is measured essential and ±2×-insensitive at once.
+  Phase 4.2's ablations still have to disable, not perturb.
+  **Cadence** (measured: ~105 s per perturbation, ~110 min for the full matrix):
+  run the full matrix at *phase boundaries*, not per commit; per change use
+  `--only` on the constants the change touches (~10 min). The run is ~3× slower
+  than necessary because it parallelizes within a sweep, where the wall time is
+  pinned by the single 101 s model at 39% core utilization — parallelizing
+  *across* perturbations instead should reach ~35 min, and Phase 2.1's runtime
+  work on that model removes the binding constraint.
 - **0.5 Real-pair corpus. [parallel-ok, user-involved]**
   - (a) **Fusion re-export**: ask the user to batch-import reference STEPs
     into Fusion 360 and export STLs at low/medium/high; drop under
