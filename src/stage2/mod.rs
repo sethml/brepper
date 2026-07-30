@@ -774,6 +774,35 @@ pub fn stage2(
         }
     }
 
+    // Per-type breakdown of the final selection. Printed because surface
+    // COUNTS hide regressions — a three-torus loss once hid behind an
+    // unchanged total of 71 — and because obtaining this line used to require
+    // a second full stage-2 run via `dump_regions surfaces`.
+    if config.verbosity >= 1 {
+        let (mut planes, mut cyls, mut cones, mut spheres, mut tori, mut bsplines) =
+            (0, 0, 0, 0, 0, 0);
+        for sel in &cls.selected {
+            match sel {
+                SelectedSurface::Planar(_) => planes += 1,
+                SelectedSurface::Conical(i) => {
+                    if cls.conical[*i].is_cylinder() {
+                        cyls += 1;
+                    } else {
+                        cones += 1;
+                    }
+                }
+                SelectedSurface::Spherical(_) => spheres += 1,
+                SelectedSurface::Toroidal(_) => tori += 1,
+                SelectedSurface::BSpline(_) => bsplines += 1,
+            }
+        }
+        eprintln!(
+            "Stage 2 types: {planes} plane, {cyls} cyl, {cones} cone, {spheres} sphere, \
+             {tori} torus, {bsplines} bspline ({} total)",
+            cls.selected.len(),
+        );
+    }
+
     // --- Stage 2.5: selected surfaces ---
     let output = Stage2Output {
         mesh,

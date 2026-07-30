@@ -65,8 +65,9 @@
 
 use brepper::read_step_file;
 use opencascade_sys::{
-    b_rep_algo_api, b_rep_check, b_rep_g_prop, b_rep_mesh, b_rep_prim_api, b_rep_builder_api,
-    b_rep_tools, g_prop, geom, gp, message, stl_api, n_collection, topo_ds, OwnedPtr,
+    b_rep_algo_api, b_rep_check, b_rep_fillet_api, b_rep_g_prop, b_rep_mesh, b_rep_prim_api,
+    b_rep_builder_api, b_rep_tools, ch_fi3d, g_prop, geom, gp, message, stl_api,
+    n_collection, top_abs, top_exp, topo_ds, OwnedPtr,
 };
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -710,6 +711,300 @@ fn remesh_corpus(out_dir: &str, models: &[(String, String)]) {
     for (step_path, name) in models {
         remesh_model(out_dir, step_path, name);
     }
+
+    // Record which reference each model came from. A re-mesh's reference lives
+    // in another directory, and guessing it by searching tests/ for a matching
+    // stem is ambiguous (plate_with_hole_100x50.step exists under both
+    // fusion/ and onshape/) and filesystem-order dependent. tools/sweep.sh
+    // reads this file, so the pairing is recorded rather than inferred.
+    let manifest: String = models
+        .iter()
+        .map(|(step_path, name)| format!("{name}\t{step_path}\n"))
+        .collect();
+    let path = format!("{out_dir}/sources.tsv");
+    std::fs::write(&path, format!("# model\treference STEP it was tessellated from\n{manifest}"))
+        .expect("failed to write remesh sources manifest");
+    println!("wrote {path}");
+}
+
+// ---------------------------------------------------------------------------
+// Randomized variants (Phase 0.3)
+// ---------------------------------------------------------------------------
+//
+// `gen_test_models random [<out_dir>] [<per_family>] [<seed>]` writes a seeded
+// population of parameterized models: STL + STEP pair each, at a tessellation
+// density that is also drawn.
+//
+// Why random: fourteen hand-watched models can be satisfied by machinery that
+// happens to suit their particular radii and fillet sizes. A seeded population
+// cannot be memorized — the parameters land where no constant was ever tuned.
+// The families deliberately sweep the quantities the tuned constants care
+// about: fillet radius against face size, torus r/R across the whole range up
+// to and past `MAX_TORUS_RADIUS_RATIO`, cone half-angles including the
+// near-cylindrical end, and mesh density independently of all of it.
+//
+// The seed and every drawn parameter go into `<out_dir>/params.tsv`, so a
+// surprising row can be reproduced and read without re-deriving it.
+
+/// An owned copy of a shape, so an intermediate boolean result can outlive the
+/// builder that produced it. `Oriented` with the shape's own orientation is
+/// the identity: TopoDS_Shape is a refcounted handle, so this shares the
+/// underlying geometry rather than duplicating it.
+fn own_shape(shape: &topo_ds::Shape) -> OwnedPtr<topo_ds::Shape> {
+    let orientation = shape.orientation();
+    shape.oriented(orientation)
+}
+
+/// SplitMix64. A deterministic generator lives here rather than in a
+/// dependency so the corpus is reproducible from the seed alone, forever.
+struct Rng(u64);
+
+impl Rng {
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform in [0, 1).
+    fn unit(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// Uniform in [lo, hi), rounded to 0.01 mm so the recorded parameters read
+    /// like something a person would have typed.
+    fn range(&mut self, lo: f64, hi: f64) -> f64 {
+        ((lo + (hi - lo) * self.unit()) * 100.0).round() / 100.0
+    }
+
+    fn int(&mut self, lo: i32, hi: i32) -> i32 {
+        lo + (self.next_u64() % ((hi - lo + 1) as u64)) as i32
+    }
+}
+
+/// Round a derived dimension to 0.01 mm, for the same reason `Rng::range`
+/// does: the recorded parameters should read like typed input.
+fn round2(x: f64) -> f64 {
+    (x * 100.0).round() / 100.0
+}
+
+/// One randomized model: write the pair and return its params.tsv line.
+fn emit_random(
+    dir: &str,
+    name: &str,
+    shape: &topo_ds::Shape,
+    deflection: f64,
+    angle: f64,
+    params: &str,
+) -> String {
+    assert_shape_valid(shape, name);
+    let brep_vol = shape_volume(shape).abs();
+    write_tessellated_stl(shape, dir, name, deflection, angle);
+    write_step(shape, dir, name);
+    // A coarse tessellation of a small-radius feature legitimately loses a few
+    // percent of the volume, so this bound only catches a broken mesh.
+    let mesh_vol = validate_written_stl(dir, name, &[brep_vol], 0.1);
+    format!(
+        "{name}\t{params}\tdeflection={deflection:.3}\tangle={angle:.1}\
+         \tbrep_vol={brep_vol:.4}\tmesh_vol={mesh_vol:.4}\n"
+    )
+}
+
+/// A box with every edge filleted: fillet radius against face size is the
+/// ratio the flat-region seeding constants are sensitive to.
+fn random_filleted_box(dir: &str, rng: &mut Rng, i: usize) -> String {
+    let (dx, dy, dz) = (rng.range(8.0, 40.0), rng.range(8.0, 40.0), rng.range(8.0, 40.0));
+    let min_dim = dx.min(dy).min(dz);
+    // Up to a quarter of the smallest dimension: any larger and opposite
+    // fillets on the same face meet, which OCCT rejects.
+    let r = rng.range(0.4, min_dim * 0.24);
+    let mut boxm = b_rep_prim_api::MakeBox::new_real3(dx, dy, dz);
+    let mut fillet = b_rep_fillet_api::MakeFillet::new_shape_filletshape(
+        boxm.shape(),
+        ch_fi3d::FilletShape::Rational,
+    );
+    // A shape MAP, not TopExp_Explorer: the explorer visits an edge once per
+    // adjoining face, so a solid's every edge would be added twice and the
+    // fillet would fail as over-specified.
+    let mut edges = n_collection::IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher::new();
+    top_exp::map_shapes_shape_shapeenum_imap_shape(
+        boxm.shape(),
+        top_abs::ShapeEnum::Edge,
+        &mut edges,
+    );
+    for k in 1..=edges.size() {
+        fillet.add_real_edge(r, topo_ds::edge(edges.find_key(k)));
+    }
+    let name = format!("rand_filleted_box_{i}");
+    // IsDone is only meaningful after the build, which Shape() triggers.
+    let built = own_shape(fillet.shape());
+    assert!(fillet.is_done(), "{name}: fillet failed (r={r})");
+    let (deflection, angle) = (rng.range(0.02, 0.4), rng.range(8.0, 28.0));
+    emit_random(
+        dir,
+        &name,
+        &built,
+        deflection,
+        angle,
+        &format!("box={dx}x{dy}x{dz}\tfillet_r={r}"),
+    )
+}
+
+/// A stack of truncated cones sharing radii at the joins. Consecutive cones
+/// with different half-angles make a sharp ring; equal half-angles make the
+/// join tangent and invisible, which is the case `cone_tangent_planes` covers
+/// by hand at exactly one set of angles.
+fn random_cone_chain(dir: &str, rng: &mut Rng, i: usize) -> String {
+    let n = rng.int(2, 4) as usize;
+    let mut radii = vec![rng.range(4.0, 18.0)];
+    let mut heights = Vec::new();
+    for _ in 0..n {
+        // 0.35..1.0 of the previous radius: keeps every frustum a real cone
+        // (never a cylinder by accident) and the stack monotonically tapering.
+        radii.push(round2((radii[radii.len() - 1] * rng.range(0.35, 1.0)).max(1.0)));
+        heights.push(rng.range(4.0, 20.0));
+    }
+    let mut acc: Option<OwnedPtr<topo_ds::Shape>> = None;
+    let mut z = 0.0;
+    for k in 0..n {
+        let axis = gp::Ax2::new_pnt_dir(
+            &gp::Pnt::new_real3(0.0, 0.0, z),
+            &gp::Dir::new_real3(0.0, 0.0, 1.0),
+        );
+        let mut cone =
+            b_rep_prim_api::MakeCone::new_ax2_real3(&axis, radii[k], radii[k + 1], heights[k]);
+        z += heights[k];
+        acc = Some(match acc {
+            None => own_shape(cone.shape()),
+            Some(prev) => {
+                let progress = message::ProgressRange::new();
+                let mut fuse =
+                    b_rep_algo_api::Fuse::new_shape2_progressrange(&prev, cone.shape(), &progress);
+                assert!(fuse.is_done(), "rand_cone_chain_{i}: fuse failed");
+                own_shape(fuse.shape())
+            }
+        });
+    }
+    let name = format!("rand_cone_chain_{i}");
+    let (deflection, angle) = (rng.range(0.02, 0.4), rng.range(8.0, 28.0));
+    let radii_s = radii.iter().map(|r| format!("{r}")).collect::<Vec<_>>().join(",");
+    let heights_s = heights.iter().map(|h| format!("{h}")).collect::<Vec<_>>().join(",");
+    emit_random(
+        dir,
+        &name,
+        acc.as_ref().unwrap(),
+        deflection,
+        angle,
+        &format!("cones={n}\tradii={radii_s}\theights={heights_s}"),
+    )
+}
+
+/// A full torus with r/R drawn across the whole range, deliberately including
+/// values above `MAX_TORUS_RADIUS_RATIO = 0.7` — a legitimate fat torus must
+/// not be rejected by a guard aimed at spurious fits.
+fn random_torus(dir: &str, rng: &mut Rng, i: usize) -> String {
+    let major = rng.range(6.0, 30.0);
+    let ratio = rng.range(0.08, 0.85);
+    let minor = round2((major * ratio).max(0.5));
+    let mut torus = b_rep_prim_api::MakeTorus::new_real2(major, minor);
+    let name = format!("rand_torus_{i}");
+    let (deflection, angle) = (rng.range(0.02, 0.4), rng.range(8.0, 28.0));
+    emit_random(
+        dir,
+        &name,
+        torus.shape(),
+        deflection,
+        angle,
+        &format!("R={major}\tr={minor}\tratio={:.3}", minor / major),
+    )
+}
+
+/// A tube: two coaxial cylinders and two annular end planes. The wall
+/// thickness sweeps down to values where the two cylinders' supports are
+/// narrow strips.
+fn random_tube(dir: &str, rng: &mut Rng, i: usize) -> String {
+    let outer = rng.range(5.0, 25.0);
+    let inner = round2((outer * rng.range(0.25, 0.9)).max(1.0));
+    let height = rng.range(5.0, 40.0);
+    let mut outer_cyl = b_rep_prim_api::MakeCylinder::new_real2(outer, height);
+    let mut inner_cyl = b_rep_prim_api::MakeCylinder::new_real2(inner, height);
+    let progress = message::ProgressRange::new();
+    let mut cut = b_rep_algo_api::Cut::new_shape2_progressrange(
+        outer_cyl.shape(),
+        inner_cyl.shape(),
+        &progress,
+    );
+    let name = format!("rand_tube_{i}");
+    assert!(cut.is_done(), "{name}: cut failed");
+    let (deflection, angle) = (rng.range(0.02, 0.4), rng.range(8.0, 28.0));
+    emit_random(
+        dir,
+        &name,
+        cut.shape(),
+        deflection,
+        angle,
+        &format!("outer_r={outer}\tinner_r={inner}\th={height}"),
+    )
+}
+
+/// A sphere sitting on a cylinder, fused. Where the sphere radius approaches
+/// the cylinder radius the junction becomes near-tangent, which is the
+/// ambiguity the earn loop's branching is meant to survive.
+fn random_ball_on_cylinder(dir: &str, rng: &mut Rng, i: usize) -> String {
+    let cyl_r = rng.range(3.0, 15.0);
+    let height = rng.range(6.0, 30.0);
+    // 0.6..1.6 of the cylinder radius spans "ball narrower than the post"
+    // through "ball nearly flush with it" to "ball overhanging".
+    let mut ball_r = round2((cyl_r * rng.range(0.6, 1.6)).max(1.0));
+    // Sink the centre so the sphere always intersects the cylinder's top;
+    // centre_z + ball_r > height, so it also always protrudes.
+    let sink = rng.range(0.1, 0.7);
+    let mut centre_z = round2(height - ball_r * sink);
+    // A big ball on a short post can CONTAIN the cylinder, and then the fused
+    // solid is a plain sphere — a wasted harness row (measured: two of the
+    // first three drawn were degenerate this way). The cylinder's bottom rim
+    // is its farthest point from the centre, so keeping the ball clear of that
+    // rim keeps the post visible. Shrink until it is.
+    while centre_z > 0.0 && ball_r > 1.0 && ball_r >= 0.9 * (cyl_r * cyl_r + centre_z * centre_z).sqrt() {
+        ball_r = round2(ball_r * 0.8);
+        centre_z = round2(height - ball_r * sink);
+    }
+    let (ball_r, centre_z) = (ball_r, centre_z);
+    let mut cyl = b_rep_prim_api::MakeCylinder::new_real2(cyl_r, height);
+    let centre = gp::Pnt::new_real3(0.0, 0.0, centre_z);
+    let mut ball = b_rep_prim_api::MakeSphere::new_pnt_real(&centre, ball_r);
+    let progress = message::ProgressRange::new();
+    let mut fuse =
+        b_rep_algo_api::Fuse::new_shape2_progressrange(cyl.shape(), ball.shape(), &progress);
+    let name = format!("rand_ball_on_cylinder_{i}");
+    assert!(fuse.is_done(), "{name}: fuse failed");
+    let (deflection, angle) = (rng.range(0.02, 0.4), rng.range(8.0, 28.0));
+    emit_random(
+        dir,
+        &name,
+        fuse.shape(),
+        deflection,
+        angle,
+        &format!("cyl_r={cyl_r}\th={height}\tball_r={ball_r}\tball_z={centre_z:.2}"),
+    )
+}
+
+fn random_corpus(out_dir: &str, per_family: usize, seed: u64) {
+    std::fs::create_dir_all(out_dir).expect("failed to create random output dir");
+    let mut rng = Rng(seed);
+    let mut manifest = format!("# seeded by `gen-test-models random <dir> {per_family} {seed}`\n");
+    for i in 0..per_family {
+        manifest.push_str(&random_filleted_box(out_dir, &mut rng, i));
+        manifest.push_str(&random_cone_chain(out_dir, &mut rng, i));
+        manifest.push_str(&random_torus(out_dir, &mut rng, i));
+        manifest.push_str(&random_tube(out_dir, &mut rng, i));
+        manifest.push_str(&random_ball_on_cylinder(out_dir, &mut rng, i));
+    }
+    let path = format!("{out_dir}/params.tsv");
+    std::fs::write(&path, manifest).expect("failed to write random params manifest");
+    println!("wrote {path}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1071,6 +1366,13 @@ fn main() {
                 .collect()
         };
         remesh_corpus(&out_dir, &models);
+        return;
+    }
+    if args.first().map(String::as_str) == Some("random") {
+        let out_dir = args.get(1).cloned().unwrap_or_else(|| "tests/random".to_string());
+        let per_family = args.get(2).map_or(3, |s| s.parse().expect("per_family must be a number"));
+        let seed = args.get(3).map_or(20_260_729, |s| s.parse().expect("seed must be a number"));
+        random_corpus(&out_dir, per_family, seed);
         return;
     }
 

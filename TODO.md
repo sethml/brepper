@@ -25,11 +25,13 @@ Report both in every commit message that moves either.
    `vtol`/`stol`, never hand-adjusted; build clean; `cargo clippy` clean;
    suite green (`cargo test --release --no-fail-fast`, ~2.5 min) or newly
    `#[ignore]`d only with a precise blocker string.
-2. **Measurement protocol**: save a `tmp/probe.sh` baseline before each phase;
+2. **Measurement protocol**: save a `tools/sweep.sh --baseline` before each
+   phase (and `tools/probe.sh` for a fast look);
    diff **per-type breakdowns** (plane/cyl/cone/sphere/torus/bspline), never
    surface counts alone (a 3-torus regression once hid behind an unchanged
-   total of 71). The full suite is the decider. Once Phase 0 lands, the sweep
-   harness joins the protocol.
+   total of 71 — and measured again in Phase 0.3, the `--compare` gates pass a
+   9-surface decomposition of a 26-surface part, so counts are the only thing
+   that catches over-segmentation). The full suite is the decider.
 3. **No new tolerance-like or threshold-like constant without user sign-off.**
    Numeric-conditioning floors (determinant floors, minimum |n₁×n₂| before
    normalizing) are not thresholds — say so in their doc comments when adding.
@@ -54,7 +56,8 @@ Report both in every commit message that moves either.
    freeform candidacy rules (four dead); retuning flood/conditioning floors
    (non-monotonic everywhere).
 
-**Diagnostics toolbox**: `tmp/probe.sh` (14-model per-type breakdown);
+**Diagnostics toolbox**: `tools/sweep.sh` (109-model harness, baselines and
+diffs); `tools/probe.sh` (14-model per-type breakdown);
 `dump_regions <model> jetdump` (per-face k1/k2/area/adjacency/normal);
 `dump_regions <model> locus [a b]` (junction loci); `BREPPER_DEBUG_COMPETE=1`
 (per-seed compete log); `src/bin/step_measure_tolerance.rs`.
@@ -99,18 +102,51 @@ instrument first; you cannot claim generality you cannot measure.
   note: on the Delaunay mesh `cone_tangent_planes` resolves as 4 planes +
   1 cone + **2 B-splines**, a different decomposition from the strip mesh's
   4 planes + 2 cones + 1 sphere — both inside the 1% volume gate.
-- **0.3 Sweep harness.** A tracked script (`tools/sweep.sh`; check
-  `git ls-files tmp/probe.sh` first — if probe.sh is untracked, move both into
-  `tools/` so the methodology is versioned) that runs every corpus + generated
-  model through the full pipeline with `--compare` and emits one
-  machine-readable row per model: per-type surface breakdown, stage 3.1 edge
-  distance, stage 4.1 volume error, runtime, exit status. Supports saving a
-  baseline and diffing against it. Extend `gen_test_models` with seeded
-  randomized variants (radii, fillet sizes, tangent cone chains, tori across
-  r/R, densities) so the model population is not memorizable.
-  **Assumption check**: the harness reproduces today's known-good results on
-  the existing models; if not, the harness is wrong — fix it before anything
-  else.
+- **0.3 Sweep harness.** **DONE 2026-07-29** — `tools/sweep.sh` (probe.sh moved
+  to `tools/probe.sh`; both now tracked). One TSV row per model: status, ref,
+  total, per-type breakdown, stage 3.1 edge distance, stage 4.1 volume error,
+  runtime, first error. `--baseline` / `--diff` / `--diff-only` / `--list`;
+  parallel with `--jobs` (runtime column only comparable at `--jobs 1`, and a
+  diff refuses to compare runtimes across job counts). Model/reference pairing
+  is rule-based with the re-mesh sources **recorded** by the generator in
+  `tests/remesh/sources.tsv` — searching `tests/` for a matching stem is
+  ambiguous (two directories hold a `plate_with_hole_100x50.step`) and
+  filesystem-order dependent. Needed one pipeline change: `Stage 2 types:` now
+  prints the per-type breakdown at `-v`, because getting it previously meant a
+  second full stage-2 run via `dump_regions`.
+  `gen-test-models random` adds 5 seeded families × 3 (filleted boxes, cone
+  chains, tori across r/R **including 0.84 > the 0.7 ratio cap**, tubes,
+  ball-on-cylinder) under `tests/random/` with all parameters in `params.tsv`.
+  **Assumption check PASSED**: all 14 `probe.sh` models match the harness
+  exactly, and the harness's failure set over suite models is exactly the
+  suite's 12 ignored stage-4 tests.
+  **Baseline: 109 models, 92 ok, 16 fail, 1 timeout** (`tmp/sweep-baseline.tsv`).
+  Four new findings, none chased — all are Phase 1/4/5 material:
+  - **Filleted boxes collapse.** All three `rand_filleted_box` give
+    **0 planes / 0 cylinders / 8 spheres / 1 B-spline** against a reference
+    6 planes + 12 cylinders + 8 spheres. Fillet-to-face ratios are 0.03–0.10
+    where `rounded_cube_10_r2` (the corpus's only filleted box, which passes
+    exactly) is 0.20 — so the corpus tests a ratio 2–7× larger than typical,
+    and at typical ratios the whole flat structure is swallowed by one
+    freeform patch.
+  - **A fat torus is shredded.** `rand_torus_1` (r/R = 0.84, deliberately over
+    `MAX_TORUS_RADIUS_RATIO = 0.7`) yields **40 surfaces: 17 cones + 20
+    spheres + 2 tori + 1 B-spline** for a single-face reference. The guard
+    aimed at spurious fits rejects a legitimate solid; ratios 0.36 and 0.10
+    are perfect. Phase 4.2 should read this before deciding that guard's fate.
+  - **The compare gates do not catch over-segmentation.** `rand_filleted_box_0`
+    (9 surfaces vs 26, no planes at all) PASSES at 6.7e-3 relative volume, and
+    `rand_cone_chain_1` (a cone became a B-spline) passes at 2.0e-3. Stage
+    3.1's edge compare is one-sided — our edges to the nearest reference edge —
+    so a decomposition with *fewer* edges passes trivially: all these rows read
+    `edge_mm = 0.0`. **Per-type counts are the only thing that catches it**,
+    which is exactly why the protocol demands them.
+  - **A near-tangent sphere/cylinder junction fragments.**
+    `rand_ball_on_cylinder_0` (ball 13.98 on post 12.30) splits the sphere into
+    3 and adds a plane: 6 surfaces vs 3.
+  Also fixed a generator flaw the first sweep exposed: two of three
+  ball-on-cylinder draws had the ball CONTAINING the post, so the reference was
+  a plain sphere and the row measured nothing.
 - **0.4 Fragility meter.** A script that, one constant at a time (list them
   via the grep in the header of DEVELOPMENT_PLAN's rework section), perturbs
   ±2× or disables, rebuilds, runs the sweep, and reports which models changed.

@@ -1,0 +1,9 @@
+# model	reference STEP it was tessellated from
+cylinder_10x30	tests/onshape/cylinder_10x30.step
+sphere_25	tests/onshape/sphere_25.step
+pill	tests/onshape/pill.step
+plate_with_hole_100x50	tests/onshape/plate_with_hole_100x50.step
+rounded_cube_10_r2	tests/onshape/rounded_cube_10_r2.step
+cone_tangent_planes	tests/onshape/cone_tangent_planes.step
+pipe_elbow_10	tests/onshape/pipe_elbow_10.step
+stepped_block_toroidal	tests/onshape/stepped_block_toroidal_fillets.step

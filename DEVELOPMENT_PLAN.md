@@ -1839,6 +1839,65 @@ breakdown, `--compare` distances, volume error, runtime, exit status;
 machine-readable; saved baselines + diff mode) and a **fragility meter** that
 perturbs/ablates each stage-2 constant and reports which models change.
 
+### Phase 0 as built (2026-07-29)
+
+Steps 0.1, 0.2, 0.3 and 0.6 landed; step-by-step results with numbers are
+annotated in TODO.md. What belongs here is the reasoning and the findings that
+outlive the steps.
+
+**The corpus was measuring one tessellator and one distance from the origin.**
+`tests/remesh/` re-tessellates existing reference STEPs with OCCT's BRepMesh
+at three densities plus a ~1 m translation, so ground truth is unchanged and
+only provenance varies. That immediately produced the phase's headline result:
+`stepped_block_toroidal` fails at **every** OCCT density — 183 surfaces coarse,
+88 medium, 97 fine at 35596 triangles — while the Parasolid *fine* mesh of the
+same body passes at exactly 71. Fine yields *more* surfaces than medium, so it
+is not a resolution problem, and all 18 tori are recovered every time: what
+fragments is the planes and cylinders around them. The strip assumption is no
+longer a suspicion about the future; it is a measurement, and Phase 1's
+initializer caveat ("a general Delaunay triangle's normal is not exactly
+perpendicular to the axis") now has a model that demonstrates the cost.
+
+**The seeded random population found what fourteen hand-watched models could
+not.** `tests/random/` draws parameters where no constant was ever tuned, and
+three of its five families fail on the first sweep:
+
+- Filleted boxes collapse to **0 planes / 0 cylinders / 8 spheres / 1
+  B-spline** (reference: 6 + 12 + 8). Their fillet-to-face ratios are
+  0.03–0.10; `rounded_cube_10_r2`, the corpus's only filleted box and a model
+  that passes exactly, is 0.20. The corpus had been exercising a ratio 2–7×
+  larger than a typical part's, and at typical ratios one freeform patch
+  swallows the entire flat structure. This is the single most useful new target
+  for Phase 1: it is the blind patch's failure mode at scale.
+- A torus with r/R = 0.84 becomes **40 surfaces (17 cones + 20 spheres + 2 tori
+  + 1 B-spline)** for a one-face reference, while 0.36 and 0.10 are exact.
+  `MAX_TORUS_RADIUS_RATIO = 0.7` is rejecting a legitimate solid, not just
+  spurious fits. Phase 4.2 lists that guard under "expect these to still fire;
+  firing means keep, not tune" — this row is the counter-case to weigh.
+- A ball only slightly wider than its post (13.98 on 12.30) splits the sphere
+  into three and adds a plane.
+
+**The compare gates cannot see over-segmentation, so per-type counts are not
+optional.** `rand_filleted_box_0` passes stage 4.1 at 6.7e-3 relative volume
+with 9 surfaces against 26 and *no planes at all*; `rand_cone_chain_1` passes
+at 2.0e-3 with a cone replaced by a B-spline. Both report a stage 3.1 edge
+distance of exactly 0: that compare is one-sided — each of our edges to its
+nearest reference edge — so a decomposition with *fewer* edges satisfies it
+trivially, and the 1% volume gate is far too loose to notice. The measurement
+protocol's insistence on per-type breakdowns was already recorded (a 3-torus
+regression once hid behind an unchanged total of 71); this is a second,
+sharper reason. A two-sided edge compare would be a real improvement to the
+instrument, but it changes what "pass" means on every model and so belongs in
+its own step, not smuggled into Phase 0.
+
+**Pairing must be recorded, not inferred.** A re-mesh's reference lives in
+another directory, and searching `tests/` for a matching stem is both ambiguous
+(`plate_with_hole_100x50.step` exists under `fusion/` and `onshape/`) and
+filesystem-order dependent — the first version of the harness silently scored
+the OCCT re-mesh of the Onshape plate against the Fusion reference. The
+generator now writes `tests/remesh/sources.tsv` and the harness reads it.
+Any future generated corpus should do the same.
+
 ### Tolerance sequencing (Phases 0 and 3)
 
 Estimators are built and *reported* in Phase 0 (they double as the
