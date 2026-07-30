@@ -2105,6 +2105,77 @@ This is also the explanation for the four coarse Fusion models that stage 1
 rejects (0.5a): they are the chordal-limited ones, where the achieved sag really
 does reach the requested 0.5 mm and so exceeds the 0.4 mm default.
 
+### Phase 3.2 dependent audit: what `--surface-tolerance` is actually doing
+
+Every one of the 29 uses read on 2026-07-30, before flipping anything. The
+headline is that **one constant is standing in for three different length
+scales**, and per facet they are:
+
+| quantity | value | on `rounded_cube` fine (R = 2 mm, θ = 2.5°) |
+|---|---|---|
+| sag | `R(1 − cos θ/2) ≈ Rθ²/8` | 4.8e-4 mm |
+| facet width `h` | `Rθ` | 8.7e-2 mm |
+| feature scale | radius, wall thickness | ~2 mm |
+
+**`h / sag = 8/θ`** — 183× at θ = 2.5°, 15× at θ = 30°. The ratio between the two
+things `stol` is being asked to bound is itself a function of the angular
+tolerance, which is why no single constant can track both: the gap between them
+swings 12× across the density range.
+
+**1. Disambiguating coincidental vertex agreement** — `face_validates`'s centroid
+half, reached from `fit_validate`, both `grow` paths and `merge_regions`. The
+load-bearing use, and *not* a fit-quality measure: a flat end cap fan-triangulated
+from a boundary vertex has every vertex on the boundary circle, which lies exactly
+on the adjacent cone, so vertex-only validation absorbed the whole cap and
+`simple_cone` collapsed to one surface. It separates **sag** (a facet that
+belongs) from **feature scale** (one that merely coincides). Single threshold:
+**no** — measured sag runs 1e-3 mm on fine meshes to 0.667 mm on `sphere_25`
+coarse, and 0.667 already exceeds the 0.4 default, which is why four coarse Fusion
+models are rejected in stage 1. Derivable exactly from θ and `h`, both per-facet
+measurable.
+
+**2. Boundary-placement slack at tangent junctions** — stage 3.1 substitutes
+`stol` for `vtol` on edges and vertices flagged tangent, because the region
+boundary can land one facet row off the junction. That displacement is **`h`, not
+sag**, so this use wants a quantity 183× larger than use 1 on the same mesh.
+Not derivable from θ alone (needs a length), but `h` is directly measurable.
+
+**3. Acceptance bars for reference comparison** — stage 1's centroid gate,
+stage 3.4 face samples, 3.6 and 4.1 boundary deviation, and the nearest-STEP-face
+lookup. "Is our output as close as the mesh permits", where the ceiling on
+achievable accuracy *is* the sag. A global value is more defensible here than
+anywhere else — a test wants a stable bar — but it still has to scale with the
+mesh, or coarse models fail spuriously. They do today.
+
+**4. Reconstruction plausibility bounds** — vertex snapping capped at `2×stol`,
+and edge-curve-versus-boundary-chain deviation in four places. Already standing in
+for sag by admission; the comment reads "mesh boundary vertices may be slightly
+off the analytical tangent curve due to tessellation sagitta. Use
+surface_tolerance rather than vertex_tolerance since the sagitta of curved
+surfaces can be significant." It cannot say *how much* sagitta, so it uses a
+constant.
+
+**5. Freeform fitting tolerances — LIKELY A LIVE BUG, not a tuning question.**
+The §2.7 approximator fallback is given `stol/8` and `stol/2`, and the
+spline-through-boundary-chain fit `max(stol/10, vtol×10)`. Those points are mesh
+*vertices*, which lie on the true surface to ~1e-6 mm, so the fit should be held
+to `vtol`. `stol/8` = 0.05 mm is about 5×10⁴ times looser than the data warrants.
+Worth checking against Phase 5a's conditioning failures before assuming it is
+harmless. Note the boundary-chain site already derives its tolerance with a `vtol`
+floor, so the pattern exists in the tree — it is just applied inconsistently.
+
+**6. Effectively inert** — the §2.7 pole-bound margin `0.5·diag + stol`, where the
+bounding-box half-diagonal dominates by orders of magnitude. Consistent with the
+fragility meter, which found no B-spline constant to be a cliff.
+
+**Conclusion for 3.2.** The pipeline does not need one derived tolerance; it needs
+**two per-face quantities plus the one it already has**: `sag(f)` for anything
+about a facet's interior (uses 1, 3, 4), `h(f)` for anything about boundary
+placement (use 2), and `vtol` for anything about vertices (use 5). All three are
+measurable from the mesh with no fit involved — `estimate.rs` already computes the
+first two per edge. From θ *alone* neither length is derivable, but `R = h/θ` is
+measurable, so one measured length plus θ determines both scales.
+
 ### Tolerance sequencing (Phases 0 and 3)
 
 Estimators are built and *reported* in Phase 0 (they double as the

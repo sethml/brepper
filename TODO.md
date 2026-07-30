@@ -512,8 +512,12 @@ depend on this).
   (`REFIT_GIVE_UP` is 8×stol, merge's centroid gate, `face_validates`), and
   check against the fragility meter, since four of the nine cliffs are
   seed-conditioning constants that a changed bar could move.
-  Audit every dependent before flipping: `REFIT_GIVE_UP` (8×stol), merge's
-  centroid gate, `face_validates`. Full harness sweep before/after; every
+  **The dependent audit is DONE** (2026-07-30): all 29 uses read and classified
+  in DEVELOPMENT_PLAN "Phase 3.2 dependent audit". Six purposes, three different
+  length scales, and `h/sag = 8/θ` — so one constant provably cannot serve the
+  two dominant uses. One use looks like a live bug rather than a tuning question:
+  the §2.7 freeform fits are held to `stol/8` when their input is mesh vertices
+  accurate to ~1e-6 mm. Full harness sweep before/after; every
   regression explained or the flip reverted. The flag remains a user
   override; effective value = estimator unless overridden.
 - **3.3** Angular tolerance from the dihedral gap where a clean gap exists;
