@@ -61,11 +61,21 @@ find_step() {
     dir=$(dirname "$stl")
     base=$(basename "$stl" .stl)
 
+    # A sources.tsv in the STL's own directory, keyed by full stem, wins over
+    # every rule below. Generated corpora write one (tests/fusion_reexport/), so
+    # a re-tessellation is paired with the reference it actually came from
+    # instead of a stem search, which is ambiguous — plate_with_hole_100x50.step
+    # exists under two directories — and resolves in filesystem order.
+    if [ -f "$dir/sources.tsv" ]; then
+        local recorded
+        recorded=$(awk -F'\t' -v m="$base" '$1 == m { print $2; exit }' "$dir/sources.tsv")
+        [ -n "$recorded" ] && { echo "$recorded"; return; }
+    fi
+
     # tests/remesh: <model>_offset_occt_<density> pairs with the translated
     # reference written next to it; <model>_occt_<density> with the original
     # reference in another directory, which tests/remesh/sources.tsv records
-    # (the generator writes it — do not guess by searching for a matching stem,
-    # plate_with_hole_100x50.step exists under two directories).
+    # (keyed by model rather than by stem, hence its own rule).
     if [[ "$base" == *_offset_occt_* ]]; then
         local off="${base%_occt_*}"
         [ -f "$dir/$off.step" ] && { echo "$dir/$off.step"; return; }

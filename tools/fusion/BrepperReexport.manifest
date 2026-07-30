@@ -1,0 +1,10 @@
+{
+    "autodeskProduct": "Fusion360",
+    "type": "script",
+    "author": "brepper",
+    "description": {
+        "": "Batch re-export brepper reference STEPs as STL at Low/Medium/High refinement (Phase 0.5a: a third tessellator provenance)."
+    },
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}
