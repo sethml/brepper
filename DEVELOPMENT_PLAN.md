@@ -2055,6 +2055,56 @@ floor. **The clamp is inert across the whole corpus**, including at 1 m, and
 first bites past ~1.02 m where the f32 exponent steps. It is a correctness
 floor for a part positioned in a large assembly, not a lever on corpus scores.
 
+### What a tessellator actually bounds (measured 2026-07-30)
+
+`--surface-tolerance` and the exporter's chordal setting are **the same physical
+quantity**, so the tolerance is not merely guessable — it is recoverable. Every
+tessellator driven so far takes *two* bounds, not one: OCCT's
+`IncrementalMesh(shape, deflection, …, angle, …)` and Fusion's `surfaceDeviation`
+plus `normalDeviation`. Both subdivide until both bounds hold, so
+
+    achieved sag = min( chordal bound , R · (1 − cos(θ/2)) )
+
+and **which term wins depends on the surface radius**. Measured over
+`tests/remesh` (OCCT) and `tests/fusion_reexport` (Fusion) at matched requested
+deviations of 0.5 / 0.1 / 0.02 mm and 30° / 15° / 6°, as achieved-sag ÷
+requested-deflection:
+
+| model | curvature radius | coarse / medium / fine | binding |
+|---|---|---|---|
+| `sphere_25` | 12.5 mm | 1.33 / 1.60 / 1.48 | chordal |
+| `pipe_elbow_10` | 5 mm tube | 0.27 / 0.29 / 0.27 | angular |
+| `cylinder_10x30` | 5 mm | 0.09 / 0.11 / 0.09 | angular |
+| `rounded_cube_10_r2` | 2 mm fillets | 0.08 / 0.12 / 0.11 | angular |
+| `plate_with_hole` | 5 mm hole | 0.09 / 0.11 / 0.09 | angular |
+
+Three things follow, all measured rather than argued:
+
+- **The angular bound governs sag as θ², exactly.** `cylinder_10x30`'s achieved
+  sags are 4.278e-2 / 1.071e-2 / 1.714e-3, ratios of **4.00×** and **6.25×**
+  against θ² predictions of (30/15)² = 4.00 and (15/6)² = 6.25.
+- **The crossover sits at R ≈ 12–15 mm** for these settings, from
+  `R = d / (1 − cos(θ/2))`. `sphere_25` at R = 12.5 mm is the one model on the
+  chordal side, and it is the one model that reaches its bound. Fusion shows the
+  same pattern at the same crossover, so this is a property of tessellation, not
+  of one vendor.
+- **A nominal export setting is therefore the wrong number to adopt.** Taking
+  `--surface-tolerance` from the exporter's deflection would be up to ~12× too
+  loose on exactly the features that matter — a 2 mm fillet achieves 0.08 of the
+  requested deflection. Worse, there is no single right value per file: within
+  one model the achieved sag varies by an order of magnitude between a 2 mm
+  fillet and a 100 mm face.
+
+The chordal-limited rows reading 1.3–2.1× *over* their bound is not the
+tessellator overshooting. They are all spheres, and the measured quantity is
+centroid distance, which on a doubly-curved surface runs ~2× the one-directional
+sagitta — the same factor that makes the Phase 0.7 estimator read 0.50× on
+spheres. Divided out, they sit just under the bound as they should.
+
+This is also the explanation for the four coarse Fusion models that stage 1
+rejects (0.5a): they are the chordal-limited ones, where the achieved sag really
+does reach the requested 0.5 mm and so exceeds the 0.4 mm default.
+
 ### Tolerance sequencing (Phases 0 and 3)
 
 Estimators are built and *reported* in Phase 0 (they double as the

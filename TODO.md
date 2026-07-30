@@ -490,6 +490,28 @@ depend on this).
 - **3.2** Flip the `--surface-tolerance` default from 0.4 mm to the estimate
   (high quantile + safety margin — **never a median**; exporters also bind
   angular/min-width constraints, so legitimate facets sit above the median).
+  **Consider a PER-FACE tolerance instead of a global one** (user's proposal,
+  2026-07-30). Measured in DEVELOPMENT_PLAN "What a tessellator actually
+  bounds": achieved sag is `min(chordal bound, R·(1−cos θ/2))`, so it varies by
+  an order of magnitude *within one model* — 0.08 of the requested deflection on
+  a 2 mm fillet against 1.0 on a 12.5 mm sphere. Any single global value is
+  therefore simultaneously too loose on small features and too tight on large
+  ones. The local sag is already computable per face from the mesh alone
+  (`estimate.rs`: `θ·h/8` from the facet's own dihedral and size), so
+  `tol(face) = max(f32 position bound, margin × local sag)` needs no new
+  measurement machinery — 0.6 supplies the floor, 0.7 the estimate.
+  **Note the quantity is sag, not angle**: a 30° turn across a 0.05 mm facet is
+  a tiny sag and across a 5 mm facet a large one, so the tolerance must scale
+  with `θ × h`, not with θ.
+  **This is NOT the 2026-07-27 self-calibrating tolerance that was removed.**
+  That one scaled the bar by *each fit's own median residual* — self-referential,
+  so a degenerate fit on a small patch loosened its own bar, and the recorded
+  post-mortem is "the statistic measured the wrong thing". A mesh-derived local
+  sag is independent of the fit being judged, which is the whole difference.
+  Still needs the full Phase 3 treatment before landing: audit every dependent
+  (`REFIT_GIVE_UP` is 8×stol, merge's centroid gate, `face_validates`), and
+  check against the fragility meter, since four of the nine cliffs are
+  seed-conditioning constants that a changed bar could move.
   Audit every dependent before flipping: `REFIT_GIVE_UP` (8×stol), merge's
   centroid gate, `face_validates`. Full harness sweep before/after; every
   regression explained or the flip reverted. The flag remains a user
