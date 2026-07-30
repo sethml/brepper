@@ -6,7 +6,7 @@ use brepper::viz::{self, VizSender};
 use std::process;
 use std::time::Instant;
 
-fn run(config: &Config, viz: Option<&VizSender>) -> Result<(), Box<dyn std::error::Error>> {
+fn run(config: &mut Config, viz: Option<&VizSender>) -> Result<(), Box<dyn std::error::Error>> {
     let total_start = Instant::now();
 
     // Stage 1: Mesh Input & Preprocessing
@@ -15,6 +15,12 @@ fn run(config: &Config, viz: Option<&VizSender>) -> Result<(), Box<dyn std::erro
     if !config.stage.at_least(2, 1) {
         return Ok(());
     }
+
+    // Raise the vertex tolerance to the mesh's f32 position bound if the
+    // requested value is below it (stage 1 has already reported and warned).
+    // Applied here rather than inside stage 1 because Config is immutable
+    // through the pipeline; see stage1::effective_vertex_tolerance_mm.
+    config.vertex_tolerance_mm = stage1::effective_vertex_tolerance_mm(config, &mesh);
 
     // Stage 2: Surface Fitting
     let surfaces = stage2::stage2(config, mesh, viz)?;
@@ -53,7 +59,7 @@ fn main() {
 
     if config.viz_stages.is_empty() {
         // No visualization: run directly
-        if let Err(e) = run(&config, None) {
+        if let Err(e) = run(&mut config, None) {
             eprintln!("Error: {e}");
             process::exit(1);
         }
@@ -83,6 +89,7 @@ fn main() {
 
         // Move config into the pipeline thread (re-run stage1 there)
         viz::run_viz_window(setup, move |viz_sender| {
+            let mut config = config;
             let total_start = Instant::now();
             let mesh = match stage1::stage1(&config) {
                 Ok(m) => m,
@@ -95,6 +102,9 @@ fn main() {
             if !config.stage.at_least(2, 1) {
                 return;
             }
+
+            // Same f32 position-bound clamp as `run`.
+            config.vertex_tolerance_mm = stage1::effective_vertex_tolerance_mm(&config, &mesh);
 
             let surfaces = match stage2::stage2(&config, mesh, Some(&viz_sender)) {
                 Ok(s) => s,

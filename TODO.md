@@ -97,8 +97,8 @@ instrument first; you cannot claim generality you cannot measure.
   `cone_tangent_planes` (10 vs 7, "cone-plane ruling tangency is not
   implemented"). Off-origin quantum measured 8.8e-5–1.02e-4 mm vs the 5e-5
   default vtol, yet max vertex distance is only 2.7e-5–4.2e-5 ≈ **0.42×
-  quantum** — the direction-weighting is real and half a quantum is the
-  operative figure, so the default vtol has <20% margin at 800 mm. Phase 5c
+  quantum** — so the naive quantum is not the bound on a distance; 0.6 derives
+  the one that is, and the default vtol has ~14% margin at a metre out. Phase 5c
   note: on the Delaunay mesh `cone_tangent_planes` resolves as 4 planes +
   1 cone + **2 B-splines**, a different decomposition from the strip mesh's
   4 planes + 2 cones + 1 sphere — both inside the 1% volume gate.
@@ -168,12 +168,25 @@ instrument first; you cannot claim generality you cannot measure.
     (different revision / decimated / repaired). **Record the verification
     rate** — it is the first field measurement of the provenance premise in
     the wild. **Stop and ask** if most wild pairs fail it.
-- **0.6 Quantum clamp + report** (small, safe): compute the mesh's float32
-  quantum (`max|coordinate| × 1.19e-7`) in stage 1; if `--vertex-tolerance`
-  is below it, clamp and warn; print the quantum in the stage-1 summary.
-  Honor the recorded DO-NOTs: no acceptance-tolerance scaling (measured
-  chaotic); the quantum for a *distance* is direction-weighted, not |p|∞;
-  least squares averages quantization down ~√N.
+- **0.6 Quantum clamp + report** **DONE 2026-07-29** — stage 1 reports
+  `float32 precision: position bound B mm (quantum Q mm), vertex tolerance T`
+  and warns when T < B; the CLI driver then raises the tolerance to B
+  (`stage1::effective_vertex_tolerance_mm`; applied in the driver, not inside
+  stage 1, because `Config` is immutable through the pipeline and ~40 sites
+  read `vertex_tolerance_mm` — threading a derived value belongs with Phase
+  3.2's audit).
+  The bound is **not** `max|coord| × 1.19e-7`, honoring the recorded DO-NOT:
+  it is `max over vertices of ‖(ulpₓ, ulp_y, ulp_z)‖ / 2`, the largest
+  projection of the per-coordinate rounding box onto any direction. Measured on
+  the off-origin corpus: bound 4.32e-5 mm where the true max vertex-to-surface
+  distance is 3.93e-5 (bound holds, 0.91 tight) and the naive quantum says
+  6.10e-5 — so the naive figure is 1.4× too loose here. Both are reported;
+  only the bound is used.
+  **The clamp is inert on the entire corpus, including at 1 m** (4.32e-5 <
+  5e-5 default). It first bites past ~1.02 m, where the f32 exponent steps and
+  the bound roughly doubles; pinned by a synthetic 5 m mesh in
+  `float32_position_bound_scales_with_distance_from_origin`. Sweep diff after
+  landing: no model changed.
 - **0.7 Tolerance estimators as diagnostics** (no behavior change): implement
   the fit-free sag estimator (`sag ≈ dihedral × facet size / 8`, computable in
   stage 2.1) and the dihedral-distribution angular-gap estimator

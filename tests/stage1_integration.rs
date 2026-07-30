@@ -441,6 +441,72 @@ fn bad_inconsistent_winding_strict() {
 }
 
 #[test]
+fn float32_position_bound_scales_with_distance_from_origin() {
+    // The same body, tessellated by the same tessellator at the same settings,
+    // once at the origin and once translated ~1 m (tests/remesh). An STL stores
+    // f32, so the far copy arrives with coarser vertex precision — the point of
+    // the off-origin variants, and the reason the vertex tolerance needs a
+    // floor (Phase 0.6).
+    let dir = manifest_dir();
+    let near = stage1::stage1(&config_for_stl(&format!(
+        "{dir}/tests/remesh/pipe_elbow_10_occt_medium.stl"
+    )))
+    .expect("origin-centred stage1 should pass");
+    let far = stage1::stage1(&config_for_stl(&format!(
+        "{dir}/tests/remesh/pipe_elbow_10_offset_occt_medium.stl"
+    )))
+    .expect("off-origin stage1 should pass");
+
+    let near_bound = stage1::float32_position_bound_mm(&near);
+    let far_bound = stage1::float32_position_bound_mm(&far);
+    // Measured 2026-07-29: 4.5e-6 mm at the origin, 6.0e-5 mm at (600, 800, 0).
+    assert!(
+        near_bound > 1.0e-6 && near_bound < 1.0e-5,
+        "origin-centred position bound {near_bound:.3e} mm outside the expected 1e-6..1e-5"
+    );
+    assert!(
+        far_bound > 10.0 * near_bound,
+        "translating 1 m should coarsen precision by more than 10x: {near_bound:.3e} -> {far_bound:.3e}"
+    );
+
+    // The clamp is INERT ON THE WHOLE CORPUS, including at 1 m: the bound
+    // there is 4.3e-5 mm, still under the 5e-5 mm default vertex tolerance.
+    // That is the measurement, not a target — it says the default has ~14%
+    // margin at a metre out, and none beyond about 1.02 m, where the f32
+    // exponent steps and the bound roughly doubles.
+    let cfg = config_for_stl(&format!("{dir}/tests/remesh/pipe_elbow_10_offset_occt_medium.stl"));
+    for (label, mesh) in [("origin-centred", &near), ("1 m off-origin", &far)] {
+        assert_eq!(
+            stage1::effective_vertex_tolerance_mm(&cfg, mesh),
+            cfg.vertex_tolerance_mm,
+            "clamp should still be inert on the {label} corpus mesh"
+        );
+    }
+
+    // Where it does bite: a part positioned several metres out, as in a large
+    // assembly. Synthetic vertices rather than a corpus file, because the point
+    // is the arithmetic of f32 storage, not any particular model.
+    let far_5m = brepper::stage1::ConnectedMesh {
+        vertices: vec![
+            brepper::stage1::MeshVertex::from_xyz(5000.0, 4000.0, 3000.0),
+            brepper::stage1::MeshVertex::from_xyz(5010.0, 4010.0, 3010.0),
+        ],
+        ..Default::default()
+    };
+    let far_bound_5m = stage1::float32_position_bound_mm(&far_5m);
+    assert!(
+        far_bound_5m > cfg.vertex_tolerance_mm,
+        "at 5 m the f32 position bound {far_bound_5m:.3e} mm should exceed the {:.3e} mm default",
+        cfg.vertex_tolerance_mm
+    );
+    assert_eq!(
+        stage1::effective_vertex_tolerance_mm(&cfg, &far_5m),
+        far_bound_5m,
+        "the clamp must raise the tolerance to the bound once the bound is the larger"
+    );
+}
+
+#[test]
 fn chamfered_cube_ascii_matches_binary() {
     // tests/onshape/chamfered_cube_10_c1_medium.ascii.stl is the ASCII export of
     // the same body as the binary variant, and the Phase 0.1 coverage audit

@@ -1898,6 +1898,21 @@ the OCCT re-mesh of the Onshape plate against the Fusion reference. The
 generator now writes `tests/remesh/sources.tsv` and the harness reads it.
 Any future generated corpus should do the same.
 
+**The f32 "quantum" is the wrong quantity for a distance, as recorded — and
+here is the right one.** The bound on how far f32 storage can move a vertex off
+its true surface is `max over vertices of ‖(ulpₓ, ulp_y, ulp_z)‖ / 2`: each
+coordinate's error is at most half an ulp, and the largest projection of that
+box onto any unit direction is the norm of its half-widths (Cauchy–Schwarz).
+Measured on the 1 m off-origin meshes: the bound is 4.32e-5 mm and the true max
+vertex-to-surface distance is 3.93e-5 mm, so the bound is real and tight (0.91),
+while `max|coordinate| × 1.19e-7` claims 6.10e-5 mm — 1.4× too loose, because
+it ignores that a distance is a projection while also ignoring that all three
+coordinates contribute. Both figures are printed in the stage-1 summary (the
+naive one for continuity with earlier notes); only the bound is used as a
+floor. **The clamp is inert across the whole corpus**, including at 1 m, and
+first bites past ~1.02 m where the f32 exponent steps. It is a correctness
+floor for a part positioned in a large assembly, not a lever on corpus scores.
+
 ### Tolerance sequencing (Phases 0 and 3)
 
 Estimators are built and *reported* in Phase 0 (they double as the

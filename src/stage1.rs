@@ -17,6 +17,81 @@ use std::fmt::{Display, Formatter};
 
 
 // ---------------------------------------------------------------------------
+// Float32 storage precision (Phase 0.6)
+// ---------------------------------------------------------------------------
+//
+// An STL stores coordinates as f32, so vertex precision is RELATIVE: the
+// spacing between representable values at coordinate x is ulp(x) ≈ |x| × 2⁻²³.
+// A part 1 m from the origin therefore arrives with ~1e-4 mm coordinate
+// spacing where the same part at the origin has ~1e-6 mm — measured across
+// tests/remesh's off-origin variants. Nothing in the pipeline can resolve
+// geometry below that, so it is a floor on every distance tolerance.
+//
+// None of this is a tuned threshold: it is the precision of the input format.
+
+/// The f32 spacing at `x` — the smallest coordinate difference the STL could
+/// have represented there.
+fn f32_ulp(x: f64) -> f64 {
+    let a = (x as f32).abs();
+    if a == 0.0 || !a.is_finite() {
+        return 0.0;
+    }
+    (f32::from_bits(a.to_bits() + 1) - a) as f64
+}
+
+/// The largest distance by which f32 rounding can have moved a vertex off the
+/// surface it was sampled from: worst case over vertices of the coordinate
+/// rounding error projected onto the least favourable direction.
+///
+/// Round-to-nearest bounds each coordinate's error by ulp/2, so the error
+/// vector lies in a box with half-widths (uₓ, u_y, u_z)/2, and the largest
+/// projection of that box onto any unit direction is ‖(uₓ, u_y, u_z)‖/2
+/// (Cauchy–Schwarz). This is the DIRECTION-WEIGHTED figure: using
+/// max|coordinate| × 2⁻²³ instead — the "quantum" the project's earlier notes
+/// quote — both over-counts (it ignores that a distance is a projection) and
+/// under-counts (it ignores that all three coordinates contribute), and the
+/// two errors do not cancel. Measured on tests/remesh's off-origin variants:
+/// this bound is 5.96e-5 mm where the true max vertex-to-surface distance is
+/// 4.2e-5 mm, and the naive quantum is 9.5e-5 mm.
+pub fn float32_position_bound_mm(mesh: &ConnectedMesh) -> f64 {
+    mesh.vertices
+        .iter()
+        .map(|v| {
+            let (ux, uy, uz) = (f32_ulp(v.x), f32_ulp(v.y), f32_ulp(v.z));
+            (ux * ux + uy * uy + uz * uz).sqrt() / 2.0
+        })
+        .fold(0.0, f64::max)
+}
+
+/// The f32 quantum at the mesh's largest coordinate: `max|coord| × 2⁻²³`, the
+/// figure quoted in DEVELOPMENT_PLAN and tests/remesh/README.md. Reported for
+/// continuity with those records; [`float32_position_bound_mm`] is the one
+/// that bounds a distance.
+pub fn float32_quantum_mm(mesh: &ConnectedMesh) -> f64 {
+    let max_coord = mesh
+        .vertices
+        .iter()
+        .flat_map(|v| [v.x.abs(), v.y.abs(), v.z.abs()])
+        .fold(0.0, f64::max);
+    f32_ulp(max_coord)
+}
+
+/// `config.vertex_tolerance_mm`, raised to the f32 position bound when the
+/// requested value is below it. A tolerance under the bound asks the fitter to
+/// resolve differences the input file cannot express, which shows up as
+/// genuine surfaces failing to validate rather than as an error.
+///
+/// Stage 1 reports both figures and warns when they cross; the CLI driver
+/// applies this to its `Config` before stage 2 (`src/bin/brepper.rs`). A
+/// library caller that assembles its own `Config` must do the same — the
+/// pipeline reads `config.vertex_tolerance_mm` in about forty places and
+/// threading a derived value through them belongs with Phase 3's tolerance
+/// audit, not here.
+pub fn effective_vertex_tolerance_mm(config: &Config, mesh: &ConnectedMesh) -> f64 {
+    config.vertex_tolerance_mm.max(float32_position_bound_mm(mesh))
+}
+
+// ---------------------------------------------------------------------------
 // Data structures — Stage 1 output
 // ---------------------------------------------------------------------------
 
@@ -1397,6 +1472,31 @@ pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
         if s.mesh_edges_open > 0 {
             eprintln!("  {} open edges", s.mesh_edges_open);
         }
+    }
+
+    // Report the f32 storage precision, and warn if the requested vertex
+    // tolerance is below what the file can express.
+    let bound = float32_position_bound_mm(&mesh);
+    if !config.quiet {
+        eprintln!(
+            "  float32 precision: position bound {bound:.3e} mm (quantum {:.3e} mm), \
+             vertex tolerance {:.3e} mm",
+            float32_quantum_mm(&mesh),
+            config.vertex_tolerance_mm,
+        );
+    }
+    if config.vertex_tolerance_mm < bound {
+        eprintln!(
+            "  Stage 1.2 WARNING: --vertex-tolerance {:.3e} mm is below this mesh's float32 \
+             position bound {bound:.3e} mm, so it asks for precision the STL cannot express; \
+             clamping to {bound:.3e} mm. The mesh sits far from the origin (coordinates up to \
+             {:.1} mm) — re-exporting it recentred would restore the precision.",
+            config.vertex_tolerance_mm,
+            mesh.vertices
+                .iter()
+                .flat_map(|v| [v.x.abs(), v.y.abs(), v.z.abs()])
+                .fold(0.0, f64::max),
+        );
     }
 
     if config.stage.at_least(1, 3) {
