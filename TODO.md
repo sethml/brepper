@@ -419,10 +419,35 @@ instrument first; you cannot claim generality you cannot measure.
   extra cost: 2.49/2.50/2.50 on rounded_cube fine says every edge is a curvature
   step, while 12.41/90.00/90.00 on the plate says the p95 is a rim and no sag
   statistic from it means anything.
-  **THE QUESTION FOR THE USER**: fix the estimator (chase the 0.50× factor, and
-  gate the formula on curvature so flat regions contribute nothing), or accept it
-  as-is and let Phase 3.2 use the p95 with a safety margin on the models where it
-  holds? The angular half is ready either way.
+  **ANSWERED BY 0.8, and the answer is neither option.** The two effects above
+  are real, but 0.8's real print models expose a third that makes the quantile
+  itself the problem. Measured side by side:
+  | corpus | model | dih p50 | dih p95 | sag p50 | sag p95 |
+  |---|---|---|---|---|---|
+  | synthetic | rounded_cube fine | 2.49° | 2.50° | 4.755e-4 | 4.764e-4 |
+  | synthetic | sphere_25 fine | 2.50° | 2.50° | 2.972e-3 | 2.974e-3 |
+  | synthetic | stepped_block_toroidal fine | 2.43° | 2.52° | 2.382e-4 | 3.561e-3 |
+  | **real** | 3DBenchy | **0.79°** | **89.21°** | 1.805e-4 | 2.032e-2 |
+  | **real** | OrcaCube v2 | **1.13°** | **90.00°** | 4.337e-4 | 2.030e-1 |
+  | **real** | xyz-cube-test | **3.00°** | **90.00°** | 1.713e-3 | 6.233e-1 |
+  On the synthetic corpus the dihedral distribution is a SINGLE SPIKE at the
+  exporter's angular setting — p50 and p95 are the same number, because those
+  models are curvature-dominated by construction (spheres, rounded cubes,
+  fillets). That is the only reason a fixed quantile works there. Real print
+  models are mostly flat panels with sharp rims and a modest curved fraction, so
+  the distribution is genuinely trimodal and **p95 lands on a 90° rim in all
+  three**. No fixed quantile lands on the curved mode, because which quantile
+  would depends on each model's flat:curved:sharp proportions — that is the
+  "detector needs just one threshold" trap in rule 5, reached from a new
+  direction. Chasing the 0.50× factor would improve a number that is already
+  measuring the wrong edges on exactly the meshes brepper is meant to handle.
+  **Disposition**: keep the estimator as a diagnostic, unchanged. It is honest —
+  it prints the dihedral quantiles that announce its own failure, and they fire
+  correctly on all three real models. Phase 3.2 must NOT read the sag p95 as an
+  automatic tolerance source. The **angular** half remains sound where the mesh
+  is curvature-dominated (it recovers 2.5° to two digits) and useless elsewhere,
+  which is the same condition. Deriving a per-face tolerance from local geometry
+  (§3.2) is the route that does not depend on a global quantile at all.
 - **0.8 Baseline runs of real meshes**: run 3DBenchy, OrcaCube, and
   xyz-cube-test end to end once each; record the diagnoses as harness rows.
   Fix nothing here; just know the starting point.

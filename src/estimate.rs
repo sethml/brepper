@@ -34,22 +34,36 @@
 //! * Every remaining formulation needed one arbitrary ratio, which is the
 //!   "detector needs just one threshold" case TODO.md rule 5 says to stop on.
 //!
-//! Quantiles sidestep it. Sharp edges are a small minority on a CAD model —
-//! 0.6% on stepped_block fine — so the sag p95 is a smooth-edge statistic
-//! whether or not anything classified it. The dihedral quantiles are reported
-//! beside it so a reader can see when that assumption fails: on a polyhedron
-//! like `chamfered_cube_10_c1` the median dihedral is itself a model edge, and
-//! no sag estimate from this mesh means anything.
+//! Quantiles sidestep it — but only on a curvature-dominated mesh, and Phase 0.8
+//! showed that is a property of our corpus rather than of CAD models. On the
+//! synthetic corpus the dihedral distribution is a SINGLE SPIKE at the
+//! exporter's angular setting (rounded_cube fine reads p50 2.49° / p95 2.50°;
+//! sphere_25 fine 2.50° / 2.50°), because those models are spheres, rounded
+//! cubes and fillets by construction. Real print models are mostly flat panels
+//! with sharp rims: 3DBenchy reads p50 0.79° / p95 89.21°, OrcaCube 1.13° /
+//! 90.00°, xyz-cube 3.00° / 90.00° — **the p95 is a model rim on all three**,
+//! and the sag p95 with it (2.0e-2 to 6.2e-1 mm, implausible on inspection).
+//!
+//! No fixed quantile fixes this: which one lands on the curved mode depends on
+//! each model's flat:curved:sharp proportions, so picking one is the "detector
+//! needs just one threshold" case again. **So this stays a diagnostic and
+//! nothing derives a tolerance from it.** What makes that safe is that the
+//! dihedral quantiles are printed beside the sag and announce the failure
+//! directly — on a polyhedron like `chamfered_cube_10_c1`, or on any of the
+//! three real models above, the median or p95 dihedral is itself a model edge
+//! and no sag estimate from that mesh means anything.
 //!
 //! Measured accuracy against the true sag that stage 1 `--compare` reports, over
-//! 16 corpus models: p95 lands within 5× on 13. The two failure modes are
-//! distinct, and the dihedral quantiles printed beside the sag announce which
-//! one a given mesh is in:
+//! 16 SYNTHETIC corpus models: p95 lands within 5× on 13. The two failure modes
+//! are distinct, and the dihedral quantiles printed beside the sag announce
+//! which one a given mesh is in:
 //!
 //! * **2× low on doubly-curved geometry** — sphere 0.50×, hemisphere 0.43×,
 //!   rounded_cube 0.50×, tori 0.49×. `hθ/8` is the sagitta of a curve bending
 //!   ONE way; a sphere bends two ways and both curvatures displace the facet
-//!   centre. Adding the second term would be an exact correction.
+//!   centre. Adding the second term would be an exact correction — and is
+//!   deliberately NOT done, because it would sharpen a number that is already
+//!   measuring the wrong edges on every real model tested above.
 //! * **Wildly high where sharp edges are a large fraction of all edges**, since
 //!   the p95 is then a model rim rather than a curvature step: `simple_cylinder`
 //!   has a dihedral p50 of 90° (a short cylinder is mostly cap-to-wall rim) and
