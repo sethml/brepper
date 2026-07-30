@@ -19,3 +19,9 @@ out.step
 *.log
 .gitignore
 claude-conversations/
+
+# Wild-harvested models (Phase 0.5b): licences vary, sizes are large.
+# tests/external/manifest.tsv records provenance and is committed.
+tests/external/*.step
+tests/external/*.stl
+tests/external/*.stp

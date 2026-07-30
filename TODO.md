@@ -283,12 +283,44 @@ instrument first; you cannot claim generality you cannot measure.
     `tests/` — sharing `configure_export()` with the batch, since a pre-flight
     that configures differently proves nothing. `BrepperProbe.py` and
     `BrepperBisect.py` are kept as the record of what was ruled out.
-  - (b) **Wild pairs**: harvest 10–20 models published with BOTH a
-    STEP (or F3D the user can convert) and an STL — Thingiverse API (token
-    from user), Printables, GrabCAD (browser session if no API). Keep files
-    in `tests/external/` (gitignored); commit a manifest (URL, author,
-    license, sha256). Do not commit model files unless the license permits
-    redistribution.
+  - (b) **Wild pairs**: **HARVESTED AND MEASURED 2026-07-30 — STOP AND ASK, per
+    this step's own criterion (most wild pairs fail).** `tools/harvest_github.py`
+    takes STEP+STL pairs from open-source hardware repos on GitHub rather than a
+    model-sharing site, because those repos commit both files from one author and
+    one revision under an explicit, machine-readable licence. 18 pairs from **6
+    unrelated projects** (Voron printer mods, E3D ToolChanger, OpenBot robotics,
+    White-Knight, NucDeck, Open-Task-Light), 16 MB, **all redistributable**
+    (GPL-3.0 / MIT / CERN-OHL-S-2.0). Models gitignored; `manifest.tsv` records
+    URL, repo, author, licence, path, size, sha256 and the pairing rule. The
+    Thingiverse token is no longer needed — `gh` supplies auth.
+    **RAW VERIFICATION RATE: 4 of 18 (22%).** But that number mostly measures
+    COORDINATE FRAMES, not the provenance premise:
+    | category | n | what it is |
+    |---|---|---|
+    | same part, aligned | 3 | verified as-is |
+    | same part, displaced | 9 | extents match, frame differs |
+    | different extents | 6 | 2 are 1.7 mm revision drift, 1 is a part vs an assembly STEP |
+    **Proven, not inferred**: translating `NucDeck__+_volume_button` by
+    (−0.5, 0, −6.5) mm — round numbers, a deliberate placement — drops its vertex
+    distance from **6.52 mm to 4.58e-7 mm**. That pair was always ground truth;
+    the STL was positioned for printing and the STEP left in design coordinates.
+    Four genuine findings, none of which is "the premise fails":
+    1. **Published STL and STEP disagree on coordinate frame about half the
+       time.** A wild-pair gate must align before it can measure anything.
+    2. **Real-world STLs are not always valid**: `OpenBot__100deg_joint` has 2
+       non-manifold edges and fails stage-1 validation outright.
+    3. **Revision drift is real but small**: the ToolChanger ducts differ by
+       1.7 mm in one axis while their mesh sits 4.3e-4 mm off the STEP surface —
+       CAD updated, STL not re-exported.
+    4. **Some STEPs are assemblies** where the STL is one part; the gate handles
+       that correctly (`Open-Task-Light__counterweight` verifies at 1.9e-7 mm
+       despite covering a fraction of the STEP's extent).
+    **THE QUESTION**: add a rigid-alignment step to `verify_pairs.sh` before the
+    distance test, so the rate measures the premise instead of placement? The
+    risk is that a fitted transform can make a genuinely wrong pair look right,
+    so alignment would need to be reported (and bounded) rather than silent.
+    Without it the rate is 4/18; with translation-only alignment it plausibly
+    reaches ~13/18, but that is a projection, not a measurement.
   - (c) **Pair-verification gate**: **DONE 2026-07-29** — `tools/verify_pairs.sh`,
     versioned rather than an ad-hoc loop, because the ad-hoc loop **reported
     15/15 on a corpus that was entirely unusable**. Its hole: stage 1's vertex
