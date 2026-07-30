@@ -34,7 +34,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-BREPPER=./target/release/brepper
+# Overridable so tools/fragility.sh can sweep a stashed perturbed binary.
+BREPPER=${BREPPER:-./target/release/brepper}
 OUT=tmp/sweep.tsv
 JOBS=8
 FILTER=""

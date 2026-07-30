@@ -190,13 +190,16 @@ instrument first; you cannot claim generality you cannot measure.
   guard that fires far from its boundary is exactly what a guard should look
   like; `MIN_AXIAL_SWEEP_DEG` is measured essential and ±2×-insensitive at once.
   Phase 4.2's ablations still have to disable, not perturb.
-  **Cadence** (measured: ~105 s per perturbation, ~110 min for the full matrix):
-  run the full matrix at *phase boundaries*, not per commit; per change use
-  `--only` on the constants the change touches (~10 min). The run is ~3× slower
-  than necessary because it parallelizes within a sweep, where the wall time is
-  pinned by the single 101 s model at 39% core utilization — parallelizing
-  *across* perturbations instead should reach ~35 min, and Phase 2.1's runtime
-  work on that model removes the binding constraint.
+  **Cadence**: run the full matrix at *phase boundaries*, not per commit; per
+  change use `--only` on the constants the change touches (minutes). The meter
+  now parallelizes *across* perturbations — waves of `--wave` stashed binaries
+  swept concurrently at `--jobs` each — measured **61 s per perturbation vs
+  105 s**, so the full matrix is **~39 min, down from ~110** (utilization 39% →
+  63%). 5×2 is optimal at 10 cores: a sweep's wall is
+  `max(101 s longest model, 315 s serial / jobs)`, so J=4 would idle the wave on
+  one model. Phase 2.1's runtime work on `stepped_block_medium` is what lifts
+  the ceiling. Validated by reproducing the serial run's counts *and*
+  collapsed-model lists on 4 constants / 8 perturbations.
 - **0.5 Real-pair corpus. [parallel-ok, user-involved]**
   - (a) **Fusion re-export**: ask the user to batch-import reference STEPs
     into Fusion 360 and export STLs at low/medium/high; drop under

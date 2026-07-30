@@ -7,6 +7,11 @@
 # sweep of the fragility model set is diffed against a baseline of the same set.
 # The source is always restored, including on interrupt.
 #
+# Builds are serial — only one perturbation can be in the source at a time — but
+# the sweeps are not, and that is where the time goes. Each wave builds --wave
+# perturbed binaries, stashes them, then runs their sweeps CONCURRENTLY. Waves
+# rather than all-at-once because sixty release binaries are over a gigabyte.
+#
 # Two numbers come out:
 #   CHANGED   models whose result moved at all — sensitivity
 #   CLIFF     models that COLLAPSED: a passing model that now fails, or a
@@ -15,17 +20,34 @@
 #             stepped_block medium from 83 surfaces to a per-facet explosion).
 #
 # Usage:
-#   tools/fragility.sh --baseline            build the fragility-set baseline
-#   tools/fragility.sh [--only REGEX] [--jobs N] [--out FILE]
+#   tools/fragility.sh --baseline                     build the fragility baseline
+#   tools/fragility.sh [--only REGEX] [--wave W] [--jobs J] [--out FILE]
 #
-# Cost: one rebuild (~8 s) plus one fragility sweep per perturbation, two
-# perturbations per constant. Measure before launching the full run; --only is
-# there to make a partial run cheap.
+# --wave W concurrent sweeps, each with --jobs J models in parallel: W x J is the
+# core count to aim for. Defaults 5 x 2 on a 10-core machine.
+#
+# Cost, measured 2026-07-29: 61 s per perturbation at 5x2 against 105 s when each
+# perturbation swept alone at --jobs 8, so the 60-perturbation full matrix is
+# ~39 min (12 waves x ~157 s plus 8 s per build) against ~110 min. Core
+# utilisation went from 39% to 63%.
+#
+# Why 5x2 and not another split: a sweep's wall time is
+# max(longest single model, serial cost / jobs) = max(101 s, 315 s / J), and
+# throughput is W/that with W*J fixed at the core count. J=2 and J=1 tie at
+# ~0.032 perturbations/s; J=4 drops to 0.020 because the wave then waits on one
+# 101 s model. Phase 2.1's runtime work on that model is what lifts the ceiling.
+#
+# RUN THE FULL MATRIX AT PHASE BOUNDARIES, not per commit; --only makes a
+# targeted run minutes. Validated against the serial implementation on
+# MAX_PATCH_DEPTH, NORMAL_AXIS_TOL, MIN_AXIAL_SWEEP_DEG and MIN_HALF_ANGLE_DEG:
+# all eight perturbations reproduced the same changed/cliff counts and the same
+# collapsed-model lists.
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-JOBS=8
+JOBS=2
+WAVE=5
 OUT=tmp/fragility.tsv
 BASELINE=tmp/fragility-baseline.tsv
 ONLY=""
@@ -105,17 +127,35 @@ PY
 }
 
 # ---------------------------------------------------------------------------
-# One perturbation: build, sweep, classify
+# Build one perturbed binary and stash it
 # ---------------------------------------------------------------------------
+#
+# Builds must be serial — only one perturbation can be in the source at a time —
+# but the SWEEPS do not have to be, and that is where the time goes. Each
+# perturbed binary is copied aside so its sweep can run later, concurrently with
+# other perturbations' sweeps.
 
-measure() {
-    local name="$1" dir="$2" out="tmp/frag/${name}_${dir}.tsv"
-    if ! cargo build --release --bin brepper >/dev/null 2>&1; then
-        echo -e "build-failed\t-\t-"
-        return
-    fi
-    ./tools/sweep.sh --filter "$FRAG_SET" --jobs "$JOBS" --out "$out" >/dev/null 2>&1
-    # changed / collapsed, against the same-set baseline
+build_perturbed() {
+    local file="$1" line="$2" ty="$3" expr="$4" dir="$5" bin="$6"
+    perturb "$file" "$line" "$ty" "$expr" "$dir"
+    local rc=0
+    cargo build --release --bin brepper >/dev/null 2>&1 || rc=1
+    [ $rc -eq 0 ] && cp target/release/brepper "$bin"
+    restore
+    return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Classify one perturbation's sweep against the baseline
+# ---------------------------------------------------------------------------
+#
+# Only fields 2..10 (status and the per-type counts) are compared, never the
+# runtime — which is what makes it safe to run these sweeps at a different
+# parallelism from the baseline's. brepper is single-threaded and deterministic,
+# so concurrency changes timing and nothing else.
+
+classify() {
+    local out="$1"
     awk -F'\t' -v OLD="$BASELINE" '
         BEGIN {
             while ((getline l < OLD) > 0) {
@@ -149,9 +189,10 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --baseline) MODE=baseline; shift ;;
         --jobs) JOBS="$2"; shift 2 ;;
+        --wave) WAVE="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
         --only) ONLY="$2"; shift 2 ;;
-        -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -166,7 +207,7 @@ mkdir -p tmp/frag
 
 if [ "$MODE" = baseline ]; then
     cargo build --release --bin brepper >/dev/null 2>&1 || { echo "build failed" >&2; exit 1; }
-    ./tools/sweep.sh --filter "$FRAG_SET" --jobs "$JOBS" --out "$BASELINE" 2>&1 | tail -4
+    ./tools/sweep.sh --filter "$FRAG_SET" --jobs $((WAVE * JOBS)) --out "$BASELINE" 2>&1 | tail -4
     echo "fragility baseline: $(grep -vc '^#' "$BASELINE") models -> $BASELINE" >&2
     exit 0
 fi
@@ -179,33 +220,89 @@ fi
     printf '#constant\tfile\tvalue\tdown_changed\tdown_cliff\tup_changed\tup_cliff\tcollapsed_models\n'
 } > "$OUT"
 
-cliffs=0
-total=0
+# Work list (one line per perturbation) and metadata (one line per constant).
+# Plain files and indexed arrays only: /bin/bash on macOS is 3.2, with no
+# associative arrays and no mapfile.
+WORK=$(mktemp)
+METAF=$(mktemp)
 while IFS=$'\t' read -r file line name ty expr; do
     reason=$(skip_reason "$name")
     if [ -n "$reason" ]; then
-        printf '%s\t%s\t%s\tskipped\tskipped\tskipped\tskipped\t%s\n' \
-            "$name" "${file#src/stage2/}" "$expr" "$reason" >> "$OUT"
+        printf '%s\tskip\t%s\t%s\t%s\n' "$name" "${file#src/stage2/}" "$expr" "$reason" >> "$METAF"
         continue
     fi
-    total=$((total + 1))
-    line_out=""
-    collapsed_all=""
+    printf '%s\tdo\t%s\t%s\t\n' "$name" "${file#src/stage2/}" "$expr" >> "$METAF"
     for dir in down up; do
-        perturb "$file" "$line" "$ty" "$expr" "$dir"
-        IFS=$'\t' read -r changed collapse which <<< "$(measure "$name" "$dir")"
-        restore
-        line_out="$line_out\t$changed\t$collapse"
-        [ "$which" != "-" ] && for m in $which; do collapsed_all="$collapsed_all ${dir}:$m"; done
-        printf '  %-32s %-5s changed=%-3s cliff=%-3s %s\n' "$name" "$dir" "$changed" "$collapse" "$which" >&2
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$dir" "$file" "$line" "$ty" "$expr" >> "$WORK"
     done
-    [ -n "$collapsed_all" ] && cliffs=$((cliffs + 1))
-    printf '%s\t%s\t%s%b\t%s\n' "$name" "${file#src/stage2/}" "$expr" "$line_out" \
-        "$([ -n "$collapsed_all" ] && echo "${collapsed_all# }" || echo -)" >> "$OUT"
 done < <(constants)
+
+WL=()
+while IFS= read -r l; do WL[${#WL[@]}]="$l"; done < "$WORK"
+count=${#WL[@]}
+echo "$count perturbations: builds serial, sweeps $WAVE at a time x $JOBS jobs" >&2
+
+mkdir -p tmp/frag/bin
+i=0
+while [ $i -lt $count ]; do
+    bins=(); names=(); j=$i
+    while [ $j -lt $count ] && [ $((j - i)) -lt "$WAVE" ]; do
+        IFS=$'\t' read -r pname pdir pfile pline pty pexpr <<< "${WL[$j]}"
+        bin="tmp/frag/bin/${pname}_${pdir}"
+        if build_perturbed "$pfile" "$pline" "$pty" "$pexpr" "$pdir" "$bin"; then
+            bins[${#bins[@]}]="$bin"
+            names[${#names[@]}]="${pname}_${pdir}"
+        else
+            echo "  BUILD FAILED $pname $pdir" >&2
+            printf 'build-failed\t-\t-\n' > "tmp/frag/${pname}_${pdir}.class"
+        fi
+        j=$((j + 1))
+    done
+    k=0
+    while [ $k -lt ${#bins[@]} ]; do
+        ( BREPPER="${bins[$k]}" ./tools/sweep.sh --filter "$FRAG_SET" --jobs "$JOBS" \
+              --out "tmp/frag/${names[$k]}.tsv" >/dev/null 2>&1
+          classify "tmp/frag/${names[$k]}.tsv" > "tmp/frag/${names[$k]}.class" ) &
+        k=$((k + 1))
+    done
+    wait
+    [ ${#bins[@]} -gt 0 ] && rm -f "${bins[@]}"
+    k=0
+    while [ $k -lt ${#names[@]} ]; do
+        IFS=$'\t' read -r c cl w < "tmp/frag/${names[$k]}.class"
+        printf '  %-40s changed=%-3s cliff=%-3s %s\n' "${names[$k]}" "$c" "$cl" "$w" >&2
+        k=$((k + 1))
+    done
+    i=$j
+done
+rm -f "$WORK"
 
 # Rebuild the unperturbed binary so the tree is left usable.
 cargo build --release --bin brepper >/dev/null 2>&1
+
+# Assemble the table in constant order.
+cliffs=0
+total=0
+while IFS=$'\t' read -r name kind file expr reason; do
+    if [ "$kind" = skip ]; then
+        printf '%s\t%s\t%s\tskipped\tskipped\tskipped\tskipped\t%s\n' \
+            "$name" "$file" "$expr" "$reason" >> "$OUT"
+        continue
+    fi
+    total=$((total + 1))
+    row=""; collapsed_all=""
+    for dir in down up; do
+        IFS=$'\t' read -r c cl w < "tmp/frag/${name}_${dir}.class"
+        row="$row	$c	$cl"
+        if [ -n "$w" ] && [ "$w" != "-" ]; then
+            for m in $w; do collapsed_all="$collapsed_all ${dir}:$m"; done
+        fi
+    done
+    [ -n "$collapsed_all" ] && cliffs=$((cliffs + 1))
+    printf '%s\t%s\t%s%s\t%s\n' "$name" "$file" "$expr" "$row" \
+        "$([ -n "$collapsed_all" ] && echo "${collapsed_all# }" || echo -)" >> "$OUT"
+done < "$METAF"
+rm -f "$METAF"
 
 echo "# cliff count: $cliffs of $total constants perturbed" >> "$OUT"
 echo "wrote $OUT" >&2
