@@ -139,6 +139,13 @@ struct CliArgs {
     #[arg(long = "compare")]
     pub compare_step: Option<String>,
 
+    /// Score the mesh and our segmentation against the --compare reference:
+    /// facet-normal exactness, closed-form initializer error, the seam
+    /// assumption, and over/under-segmentation. Diagnostics only — see
+    /// [`crate::reference`]. Requires --compare.
+    #[arg(long = "reference-report")]
+    pub reference_report: bool,
+
     /// Fitting tolerance for vertex-to-surface distance, in STL units.
     #[arg(long, default_value = "5e-5")]
     pub vertex_tolerance: f64,
@@ -217,6 +224,8 @@ pub struct Config {
     pub compare_shape: Option<opencascade_sys::OwnedPtr<opencascade_sys::topo_ds::Shape>>,
     /// Number of faces in the compare shape (for status output).
     pub compare_face_count: usize,
+    /// Print the reference-scoring diagnostics (see [`crate::reference`]).
+    pub reference_report: bool,
     /// Fitting tolerance for vertex-to-surface distance, in mm.
     pub vertex_tolerance_mm: f64,
     /// Tolerance for surface-to-triangle-face offset, in mm.
@@ -276,6 +285,7 @@ impl Config {
             compare_step: args.compare_step,
             compare_shape: None,
             compare_face_count: 0,
+            reference_report: args.reference_report,
             vertex_tolerance_mm: args.vertex_tolerance * scale,
             surface_tolerance_mm: args.surface_tolerance * scale,
             angular_tolerance_rad: args.angular_tolerance.to_radians(),

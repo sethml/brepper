@@ -242,6 +242,23 @@ pub struct Stage2Output {
     pub segmentation: Segmentation,
 }
 
+impl Stage2Output {
+    /// The mesh faces owned by each selected surface, in `selected_surfaces`
+    /// order — our partition of the mesh.
+    pub fn selected_face_sets(&self) -> Vec<Vec<usize>> {
+        self.selected_surfaces
+            .iter()
+            .map(|s| match s {
+                SelectedSurface::Planar(i) => self.planar_hypotheses[*i].faces.clone(),
+                SelectedSurface::Conical(i) => self.conical_hypotheses[*i].faces.clone(),
+                SelectedSurface::Spherical(i) => self.spherical_hypotheses[*i].faces.clone(),
+                SelectedSurface::Toroidal(i) => self.toroidal_hypotheses[*i].faces.clone(),
+                SelectedSurface::BSpline(i) => self.bspline_hypotheses[*i].faces.clone(),
+            })
+            .collect()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -814,6 +831,26 @@ pub fn stage2(
         selected_surfaces: cls.selected,
         segmentation,
     };
+
+    // Segmentation scoring against the reference (--reference-report).
+    // Diagnostics only. This is the half that needs our fits; the mesh-side half
+    // runs in stage 1. It re-labels rather than carrying labels forward, because
+    // `Config` is immutable through the pipeline — the same reason the Phase 0.6
+    // quantum clamp is applied in the driver.
+    if config.reference_report {
+        if let Some(shape) = config.compare_shape.as_ref() {
+            let model = crate::reference::ReferenceModel::load(shape);
+            let labels = crate::reference::label_faces(&output.mesh, &model);
+            crate::reference::score_segmentation(
+                &output.mesh,
+                &model,
+                &labels,
+                &output.selected_face_sets(),
+            )
+            .print();
+        }
+    }
+
     Ok(output)
 }
 

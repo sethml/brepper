@@ -1783,6 +1783,111 @@ entirely, `seed_patch`'s jet filtering, `SEED_PATCH_CAP`, `MAX_PATCH_DEPTH`,
 `MAX_TORUS_STARTS` (multiple flood starts exist because the fit patch was
 unreliable).
 
+### Reference labeling, and what it settled (Phase 1.0, 2026-07-30)
+
+`src/reference.rs` (`--reference-report`) labels every mesh face with the
+reference face it came from and scores the mesh against that ground truth.
+Step-by-step numbers are in TODO.md 1.0; what belongs here is why it exists,
+why it is nearly free, and the four results that change later phases.
+
+**It is a read-back, not a new computation.** Stage 1's `--compare` already runs
+`BRepExtrema_DistShapeShape` from every mesh face centroid to a compound of the
+reference's faces. That call already determines which reference face won and at
+what (u,v); `min_distance_to_shape` was returning only the distance and dropping
+both. `SupportOnShape2` hands the winner back, so ground-truth labeling of the
+entire mesh costs one accessor call per face that was already being computed.
+The alternative that was on the table — a standalone probe — would have cost far
+more than that and measured the wrong object: it reads raw STL triangles, where
+the pipeline's mesh has been repaired and quad-fused, which is why
+`step_measure_tolerance` needed a `--quad` flag bolted on. **The general lesson
+is that a measurement belongs where the computation already happens**, and the
+same investigation found the cost of ignoring it: `step_measure_tolerance` still
+measures against the reference *solid*, so it silently reports exactly 0 for any
+deviation over OCCT's hard-coded 1 µm classifier tolerance (`aTolerance = 0.001`
+in `BRepExtrema_DistShapeShape`'s `SolidTreatment`) and is correct below it —
+exact where the answer does not matter, zero where it does. That is the same
+"never measure a distance against a solid" defect fixed in the pipeline on
+2026-07-29, in the one place the fix did not reach. It also refines that entry:
+the old stage-1 centroid check was not vacuous on all convex geometry, only
+above 1 µm, which is exactly why correct models looked right and nobody noticed.
+
+**1. The closed-form axis error is `perpendicularity error / |n₁ × n₂|`.**
+Verified to 0.1% on `pipe_elbow_10` Parasolid medium: a perpendicularity max of
+0.0280° over a conditioning p50 of 0.0271 predicts 1.033°, and the measured
+error is 1.0342°, identical across all 348 pairs. One relation explains every
+cylinder outlier in the sweep, and it separates two causes that a raw error
+number confounds — normals that are not perpendicular, and perfect normals
+amplified by an ill-conditioned cross product.
+
+**2. The Delaunay caveat did not reproduce, and the reason is architectural.**
+The Phase 1 design warned that "a general Delaunay triangle's normal is not
+exactly perpendicular to the axis" and told 1.4 to degrade that provenance to a
+covariance axis. Measured, OCCT's re-meshes read perpendicularity p50 = p95 =
+**0.0000°** and axis error **0.0000°** at every density on five of six models.
+The reason is already recorded under "Mesh provenance and the seam assumption":
+OCCT's Delaunay is *constrained* by the pre-discretized face boundaries, so a
+cylinder's triangles still span two rulings and their normals are still exactly
+perpendicular. The provenance fallback is not needed. The single genuine
+non-perpendicular case corpus-wide is `l_bracket_simple` Fusion medium
+(perpendicularity p50 0.2740°), a small hole carrying 96 facets over 75 mm².
+
+**3. Adjacent facets are the worst possible pairing, and finer meshes are
+worse.** `|n₁ × n₂|` for an adjacent pair is `sin(angular step)` — measured p50
+0.0432 on stepped_block fine, which is sin(2.48°) and independently recovers
+Onshape's 2.5° setting. So the amplification in (1) is ~23× on a fine mesh and
+grows as the mesh refines. This inverts the natural assumption that a denser
+mesh gives a better closed-form fit, and it is a design constraint on Phase 1.2
+rather than a property of any exporter: **pair the seed with the angularly most
+distant admitted facet**, where the factor is 1 and the axis error falls to the
+perpendicularity error itself (under 0.032° everywhere in the corpus). A 90°
+reading, which is the max on three rows, is the fully degenerate pair of two
+facets on one ruling strip — no information rather than a wrong answer.
+
+**4. The torus initializer should not be skipped.** Phase 1.1 time-boxes it on
+the suspicion that the meridian-coplanarity system is too ill-conditioned to
+solve. Its residual — the quantity the solve drives to zero — measures p50
+**2.354e-5 mm** over 23 863 torus facets on stepped_block fine, which is the
+mesh's own float32 quantum. The constraint is satisfied to the limit of what the
+mesh can express.
+
+**The seam assumption now has a direct measurement, and it holds.** Phase 0.5b
+measured only half of Design Principle #2 — that mesh *vertices* lie on the
+reference surfaces. The other half, that a *facet* never straddles a face
+boundary, is what the earned patch depends on and had never been measured.
+Labeling gives it for free: 51 of 157 483 facets across 79 meshes disagree about
+their own label across their own interior, **0.032%**. The number is an estimate
+rather than a bound in either direction — it over-reports where a neighbouring
+face curves back within reach of a sample point, and under-reports a straddle
+confined to a facet's rim, since the samples cover the middle of a facet — but
+both error terms are bounded by something this small, so the conclusion survives
+the imprecision even though the count does not. The only recurring cluster is
+exactly 12 facets on `stepped_block_toroidal` under OCCT coarse/medium and
+Fusion medium/fine, absent under Parasolid and under OCCT fine; consistent with
+coarse facets spanning that model's known narrow flat regions, and not chased.
+
+**Segmentation scoring closes the over-segmentation hole**, which this document
+recorded as needing its own step. Two area-weighted, threshold-free numbers from
+the same labels: `ref coverage` = `Σ_R max_S area(R,S) / Σ area` is 1.0 when no
+reference face was split across several of our surfaces, and `surf purity` =
+`Σ_S max_R area(S,R) / Σ area` is 1.0 when none of our surfaces spans several
+reference faces. They separate the two failure directions that "over-segmented"
+was being used for loosely. On the case that motivated it — `rand_filleted_box_0`,
+9 surfaces against a reference 26, passing every existing gate at 6.7e-3
+relative volume — they read **1.0000 and 0.2201**, correctly diagnosing merging
+rather than splitting, where a correct model reads 1.0000/1.0000. This satisfies
+the standing rule about metrics: asked what it returns for a grossly wrong
+input, it returns something unmistakably different from a right one.
+
+**A numerical fact worth not rediscovering.** An angle assertion near 0° cannot
+be tightened past about 1e-6°, because it goes through `acos`, which near an
+argument of 1 turns a 1e-16 rounding error into ~1.5e-8 rad. Assert on
+`|â × b̂|` instead, which is linear in the error and resolves to machine epsilon.
+Measured, not theorized: an exactly-constructed strip cylinder failed a 1e-9°
+perpendicularity assertion at one sample out of sixteen, and the same property
+passes at 1e-15 in cross-product form. The reported angles in `reference.rs` are
+printed to four decimals of a degree, far above that floor, so the report is
+unaffected — but do not read exactness below ~1e-6° out of a number from `acos`.
+
 ### Phase 2 design: distance-guided exploration
 
 The 26122-face seed sweep costs 103 s on stepped_block fine and its

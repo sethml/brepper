@@ -585,6 +585,64 @@ the *tolerance* that is wrong, not the mesh. All three are Phase 3.2's business.
 
 ## Phase 1 — Earned patches (the core rework)
 
+- **1.0 Reference labeling — ground truth per mesh face.** **DONE 2026-07-30.**
+  Added after Phase 0 closed, because 1.4 requires "measure cylinder-axis error
+  vs references across Parasolid strips AND the Phase-0 OCCT Delaunay meshes"
+  and there was no instrument for it, and because the over-segmentation hole
+  recorded in DEVELOPMENT_PLAN ("belongs in its own step, not smuggled into
+  Phase 0") could now have that step. `src/reference.rs`, `--reference-report`
+  (requires `--compare`), diagnostics only — nothing downstream reads it.
+  **It costs no extra geometric work**: stage 1's compare already runs
+  `DistShapeShape` from every face centroid to the reference face compound, and
+  that call already decides which reference face won —
+  `min_distance_to_shape` was discarding it. `SupportOnShape2` hands it back.
+  Mesh-side scoring runs at stage 1 (so it still works where stage 2 crashes or
+  times out); segmentation scoring runs at the end of stage 2.
+  **Measured over 79 meshes in three provenances (157 483 facets):**
+  1. **The closed-form axis error is `perpendicularity error / |n₁ × n₂|`** —
+     verified to 0.1% on `pipe_elbow_10` Parasolid medium (max 0.0280° over p50
+     0.0271 predicts 1.033°; measured 1.0342°, constant across all 348 pairs).
+     This one relation explains every cylinder outlier in the sweep.
+  2. **The Delaunay caveat did not reproduce, so 1.1 needs no provenance
+     fallback.** OCCT re-meshes read perpendicularity p50 = p95 = **0.0000°**
+     and axis error **0.0000°** at every density on 5 of 6 models: OCCT's
+     Delaunay is *constrained* by the pre-discretized face boundaries, so a
+     cylinder's triangles still span two rulings. Fusion agrees. The single
+     genuine non-perpendicular case corpus-wide is `l_bracket_simple` Fusion
+     medium (perpendicularity p50 0.2740°) on a small hole with 96 facets.
+  3. **Adjacent facets are the WORST pairing, and finer meshes are worse.**
+     `|n₁ × n₂| ≈ sin(angular step)` — p50 0.0432 on stepped_block fine, which
+     is sin(2.48°) and recovers Onshape's 2.5° setting — so amplification is
+     ~23× at fine. **1.2 should pair the seed with the angularly most distant
+     admitted facet**: at 90° separation the factor is 1 and the axis error
+     falls to the perpendicularity error itself, under 0.032° on every corpus
+     mesh. (A 90° max reading is the degenerate two-facets-on-one-ruling pair —
+     no information, not a wrong answer.)
+  4. **The torus initializer should NOT be skipped.** Its meridian-coplanarity
+     residual — the constraint 1.1 time-boxes — reads p50 **2.354e-5 mm** over
+     23 863 torus facets on stepped_block fine, i.e. at the mesh quantum.
+  5. **The seam assumption holds**, and this is its first measurement (0.5b
+     measured only that *vertices* lie on the surface). 51 of 157 483 facets
+     disagree across their own interior — **0.032%** — and the only recurring
+     cluster is exactly 12 facets on `stepped_block_toroidal` under OCCT
+     coarse/medium and Fusion medium/fine, absent under Parasolid and OCCT fine.
+     Consistent with coarse facets spanning that model's known narrow flat
+     regions; not chased. The rate is an *estimate, not a bound* — it
+     over-reports near concave junctions and under-reports a straddle confined
+     to a facet's rim; what makes it usable is that both error terms are
+     bounded by a number this small.
+  6. **Segmentation scoring separates the two failure directions**, which the
+     existing gates cannot see at all: `rand_filleted_box_0` (9 surfaces
+     against a reference 26, passes every gate at 6.7e-3 relative volume)
+     scores ref coverage **1.0000** and surface purity **0.2201** — correctly
+     diagnosed as merging, not splitting. A correct model scores 1.0000/1.0000.
+  Suite 584 passed / 0 failed / 32 ignored; 10 new unit tests assert the
+  initializer identities to machine precision. One precision fact worth
+  keeping: **an angle assertion near 0° cannot be tightened past ~1e-6°**
+  because `acos` amplifies a 1e-16 rounding error into ~1.5e-8 rad; assert on
+  `|â × b̂|` instead, which is linear in the error (measured — an exact strip
+  cylinder failed a 1e-9° assertion at 1 sample in 16).
+
 Replace the blind seed patch with a patch **grown face-by-face under
 validation**, promoting the surface type as the accumulated support allows.
 Full design + math in DEVELOPMENT_PLAN ("The Robustness Rework", Phase 1
@@ -606,8 +664,10 @@ commit gate (`MIN_AXIAL_SWEEP_DEG`, torus ratio, `MIN_*_FACES`,
     of two lines; radius = mean distance.
   - Cone: existing normal-covariance axis over the earned patch
     (`smallest_eigenvector_3x3`) + `axis_normals_consistent`.
-  - Torus (**time-boxed — skip without blocking the phase if conditioning
-    fails**): axis from the meridian-coplanarity system
+  - Torus (**1.0 measured the constraint's residual at 2.354e-5 mm over 23 863
+    facets — at the mesh quantum — so this is no longer expected to fail;
+    keep the time-box, but the prior is now that it works**): axis from the
+    meridian-coplanarity system
     `(pᵢ − a)·(nᵢ × d) = 0` over ≥4 faces (bilinear; solve by alternation or
     pairwise elimination; rank-deficient on sphere/cylinder data by
     construction — ladder order and a conditioning floor must precede it);
@@ -624,6 +684,11 @@ commit gate (`MIN_AXIAL_SWEEP_DEG`, torus ratio, `MIN_*_FACES`,
   within ~2 faces. Hand each surviving (type, patch, params) to the unchanged
   `grow_from`. Add counters (behind verbosity/env): NO-GROWTH count, branches
   spawned / died-within-2, promotions attempted/accepted, frontier faces.
+  **From 1.0: re-initialize from the angularly MOST DISTANT admitted facet, not
+  the newest neighbour.** The axis error is `perpendicularity / |n₁ × n₂|`, and
+  adjacent facets put `|n₁ × n₂|` at sin(angular step) — 0.043 on a fine mesh,
+  a ~23× amplification, worse the finer the mesh. This costs nothing: the patch
+  already knows its own facets' normals.
 - **1.3 Drift-triggered cylinder→torus promotion** (time-boxed). A bend is
   locally a valid cylinder, so admission never fails; the signal is
   **sign-consistent precession** of the fitted axis across successive refits
@@ -631,11 +696,15 @@ commit gate (`MIN_AXIAL_SWEEP_DEG`, torus ratio, `MIN_*_FACES`,
   seems needed, stop and ask). If it works, `promote_bend` + `BEND_*` become
   Phase-4 deletion candidates; if not, keep them and move on.
 - **1.4 Validate.**
-  - *Initializer accuracy per provenance*: measure cylinder-axis error vs
-    references across Parasolid strips AND the Phase-0 OCCT Delaunay meshes.
-    If median error exceeds ~1° on a provenance, degrade that provenance to
-    the covariance axis over the earned patch (still clean, still not blind).
-    **Stop and ask** if even that underperforms the blind patch anywhere.
+  - *Initializer accuracy per provenance*: **the instrument is 1.0's
+    `--reference-report`, and the baseline it already produced is above.**
+    Re-run it on the earned patches and compare against those numbers. The
+    provenance fallback this step was written to trigger is **not needed** —
+    OCCT Delaunay reads 0.0000° — so what to watch instead is the
+    *conditioning* of the pairs the earn loop actually chooses: the error is
+    `perpendicularity / |n₁ × n₂|`, so a loop that pairs neighbours inherits a
+    ~23× amplification that has nothing to do with provenance. **Stop and ask**
+    if the earned initializer underperforms the blind patch anywhere.
   - *Branch lifetime*: if branches persist past ~2 faces, validation is less
     sharp than believed — stop and ask before the cost model changes.
   - *NO-GROWTH count* (baseline 323 on stepped_block fine) should collapse

@@ -18,6 +18,10 @@ GENERAL OPTIONS:
     --stl-units=<units>      Units used by the STL file (mm, cm, m, in, ft, um; default: mm)
     --step-units=<units>     Units to use in exported STEP file (default: mm)
     --compare=<step>         STEP file to compare to at each step
+    --reference-report       Score the mesh and our segmentation against the --compare
+                             reference: facet-normal exactness per surface type, closed-form
+                             initializer error, the seam assumption, and over/under-segmentation.
+                             Diagnostics only. Requires --compare.
     --vertex-tolerance=<value>  Fitting tolerance in STL units (default: 5e-5)
     --surface-tolerance=<value> Surface-to-face offset tolerance in STL units (default: 0.4)
     --angular-tolerance=<deg>   Max dihedral angle between adjacent triangles on the same surface (default: 25)
@@ -47,7 +51,40 @@ GENERAL OPTIONS:
 
 # Compare mesh against reference STEP at each stage
 ./target/debug/brepper input.stl --compare reference.step --stage 1 -v
+
+# Score the mesh against ground truth read from the reference (see src/reference.rs)
+./target/debug/brepper input.stl --compare reference.step --stage 1 --reference-report -v
 ```
+
+### Reference scoring (`--reference-report`)
+
+With a `--compare` reference, brepper can label every mesh face with the
+reference face it came from — recovered from the distance computation the
+compare already performs — and then score three things against that ground
+truth. All of it is diagnostics: nothing downstream reads it.
+
+At **stage 1**, properties of the mesh alone (so they are still measurable on
+models where stage 2 fails):
+
+- **Facet-normal exactness** per reference surface type: the angle between the
+  mesh facet normal and the exact analytic surface normal.
+- **Closed-form initializer error**: the cylinder axis from `n₁ × n₂`, the
+  sphere centre from circumcenter normal lines, and the torus
+  meridian-coplanarity residual, each against the reference's own parameters,
+  reported with the conditioning that governs them.
+- **The seam assumption**: how often a facet's own interior disagrees about
+  which reference face it belongs to.
+
+At the end of **stage 2**, our decomposition against the reference's:
+
+- **`ref coverage`** — 1.0 when no reference face was split across several of
+  our surfaces (no over-segmentation).
+- **`surface purity`** — 1.0 when none of our surfaces spans several reference
+  faces (no merging).
+
+Both are area-weighted and threshold-free. They catch what the distance and
+volume gates cannot: a 9-surface decomposition of a 26-surface part passes every
+existing gate but scores `surface purity 0.2201`.
 
 See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for full documentation.
 

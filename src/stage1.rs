@@ -1566,6 +1566,21 @@ pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
         compare_mesh_to_step(&mesh, config)?;
     }
 
+    // Reference scoring (--reference-report). Diagnostics only, and deliberately
+    // here rather than after stage 2: every quantity in this half is a property
+    // of the MESH against ground truth, so it is measurable on models where
+    // stage 2 crashes or times out — which are the interesting ones. The
+    // segmentation half needs our fits and runs at the end of stage 2.
+    if config.reference_report {
+        if let Some(shape) = config.compare_shape.as_ref() {
+            let model = crate::reference::ReferenceModel::load(shape);
+            let labels = crate::reference::label_faces(&mesh, &model);
+            crate::reference::report(&mesh, &model, &labels).print();
+        } else {
+            eprintln!("  Reference: --reference-report needs --compare; skipped");
+        }
+    }
+
     Ok(mesh)
 }
 
