@@ -647,6 +647,19 @@ the *tolerance* that is wrong, not the mesh. All three are Phase 3.2's business.
      against a reference 26, passes every gate at 6.7e-3 relative volume)
      scores ref coverage **1.0000** and surface purity **0.2201** — correctly
      diagnosed as merging, not splitting. A correct model scores 1.0000/1.0000.
+  **Corrected 2026-07-30 (user observation, then measured): ruledness is
+  necessary but NOT sufficient — the tessellation must be ruling-ALIGNED.**
+  A facet's normal is perpendicular to the axis iff two of its vertices share a
+  ruling (three points on a circle are collinear only if two coincide), so
+  triangles laid *across* the ruling family skew their normals on a perfect
+  cylinder. Over 12 275 cylinder facets: aligned facets are perpendicular to a
+  worst case of **0.0006°**, the **25.6%** that straddle reach **1.0528°**, and
+  every non-zero perpendicularity in the corpus comes from a straddling facet.
+  Quad fusion is a 23× discriminator, not a guarantee (2.7% of quads straddle
+  vs 62.3% of triangles). This sharpens finding 2: OCCT's plain cylinders read
+  0.0000° because they are 100% aligned quads, not because Delaunay preserves
+  rulings in general — and `stepped_block_toroidal` straddles 49–53% at every
+  OCCT density, in the same narrow flat regions that are its known pathology.
   **Extended 2026-07-30 to freeform reference faces** once `GeomLProp_SLProps`
   was bound (the normal report previously skipped them, covering only 32–66% of
   a NURBS model's area). Over the 8-model NURBS corpus every freeform facet
@@ -659,7 +672,7 @@ the *tolerance* that is wrong, not the mesh. All three are Phase 3.2's business.
   closed-form initializers' exactness is a property of ruledness, and Phase 5's
   freeform work should not expect facet normals to be reliable on
   doubly-curved patches.
-  Suite 585 passed / 0 failed / 32 ignored; 11 new unit tests assert the
+  Suite 586 passed / 0 failed / 32 ignored; 12 new unit tests assert the
   initializer identities to machine precision. One precision fact worth
   keeping: **an angle assertion near 0° cannot be tightened past ~1e-6°**
   because `acos` amplifies a 1e-16 rounding error into ~1.5e-8 rad; assert on
@@ -707,11 +720,19 @@ commit gate (`MIN_AXIAL_SWEEP_DEG`, torus ratio, `MIN_*_FACES`,
   within ~2 faces. Hand each surviving (type, patch, params) to the unchanged
   `grow_from`. Add counters (behind verbosity/env): NO-GROWTH count, branches
   spawned / died-within-2, promotions attempted/accepted, frontier faces.
-  **From 1.0: re-initialize from the angularly MOST DISTANT admitted facet, not
-  the newest neighbour.** The axis error is `perpendicularity / |n₁ × n₂|`, and
-  adjacent facets put `|n₁ × n₂|` at sin(angular step) — 0.043 on a fine mesh,
-  a ~23× amplification, worse the finer the mesh. This costs nothing: the patch
-  already knows its own facets' normals.
+  **From 1.0, two selection rules for the initializer, both free:**
+  (a) *Pair the angularly MOST DISTANT admitted facets, not the newest
+  neighbour.* The axis error is `perpendicularity / |n₁ × n₂|`, and adjacent
+  facets put `|n₁ × n₂|` at sin(angular step) — 0.043 on a fine mesh, a ~23×
+  amplification, worse the finer the mesh.
+  (b) *Initialize only from RULING-ALIGNED facets.* A facet's normal is
+  perpendicular to the axis iff two of its vertices share a ruling; **25.6% of
+  corpus cylinder facets straddle three or more** and carry all of the
+  perpendicularity error (aligned worst 0.0006°, straddling worst 1.0528°).
+  The test needs no ground truth — given the candidate axis, compute the minimum
+  angular gap between a facet's vertices — so the loop can *select* rather than
+  hope. Quads are a 23× proxy (2.7% straddle vs 62.3% of triangles) but not a
+  guarantee, so use the real test.
 - **1.3 Drift-triggered cylinder→torus promotion** (time-boxed). A bend is
   locally a valid cylinder, so admission never fails; the signal is
   **sign-consistent precession** of the fitted axis across successive refits

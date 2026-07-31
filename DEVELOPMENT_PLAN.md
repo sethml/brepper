@@ -1894,16 +1894,50 @@ The result is not the obvious one. Freeform facet normals are 2–3 orders of
 magnitude less exact than analytic ones — `bspline_terrain` p50 0.9396°,
 `hill_with_hole` 0.9014°, against 0.0000° for planes — but that comparison is
 confounded, because the corpus's freeform models are ~100× coarser per facet.
-The unconfounded comparison runs the other way and is decisive: **`bspline_wave`'s
-*extrusion* faces read p50 0.0507° at 16.7 mm² per facet, while
-`bspline_terrain`'s B-spline faces read 0.9396° at 0.53 mm² per facet — the 30×
-coarser surface is 19× more exact.** An extrusion is *ruled*, so a facet spanning
-two of its rulings has an exactly perpendicular normal for the same reason it
-does on a cylinder. **Ruledness, not density and not analytic-vs-freeform, is
-what makes a facet normal exact**, which is the same property underneath result
-(2) above: OCCT's constrained Delaunay preserves it because the rulings survive
-as face boundaries. The consequence for Phase 5's freeform work is that facet
-normals cannot be assumed reliable on a doubly-curved patch, at any density.
+Ruledness separates them better: **`bspline_wave`'s *extrusion* faces read p50
+0.0507° at 16.7 mm² per facet, while `bspline_terrain`'s B-spline faces read
+0.9396° at 0.53 mm² per facet — the 30× coarser surface is 19× more exact.**
+
+**But ruledness is necessary, not sufficient — the real condition is that the
+tessellation be ruling-ALIGNED.** (Raised by the user, then measured; an earlier
+version of this section claimed ruledness governs, which is wrong.) The exact
+statement: a facet on a cylinder has its normal perpendicular to the axis **iff
+two of its vertices share a ruling**. Parametrize the cylinder and project the
+vertices along the axis; they land on a circle, the facet's plane is parallel to
+the axis iff those projections are collinear, and three points on a circle are
+collinear only when two coincide. A tessellator that lays triangles *across* the
+ruling family therefore produces skewed normals on a geometrically perfect
+cylinder.
+
+Measured over the 12 cylinder-bearing models, 12 275 cylinder facets: facets
+with an edge on a ruling are perpendicular to a worst case of **0.0006°**, while
+the **25.6%** that straddle three or more rulings reach **1.0528°**. Every
+non-zero perpendicularity in the corpus comes from a straddling facet, so
+alignment is the whole story — though straddling is necessary rather than
+sufficient for a *large* error, since the tilt grows with a facet's angular
+spread and shrinks with its axial one. That also explains the extrusion number
+above: 0.0507° rather than 0.0000° is itself evidence that those facets are not
+aligned, because alignment would force exactness.
+
+Where alignment comes from: quad fusion is a **23× discriminator but not a
+guarantee** — 2.7% of fused quads straddle against 62.3% of triangles (a
+coplanar quad on a cylinder *usually* spans two rulings, but four points on an
+elliptical section are coplanar too). Simple geometry gets alignment for free —
+a plain cylinder under OCCT is 120 quads / 0 triangles, 100% aligned, which is
+the real reason result (2)'s OCCT re-meshes read 0.0000°, sharper than "the
+rulings survive as face boundaries". Straddling concentrates where a tessellator
+cannot lay a clean strip: `stepped_block_toroidal` straddles 49–53% at every
+OCCT density, and its narrow flat regions between fillets are exactly its known
+pathology.
+
+This is *better* news for Phase 1.2 than the aggregate suggested, because the
+test needs no ground truth. Given a candidate axis, the minimum angular gap
+between a facet's vertices says whether that facet's normal can be trusted, so
+the earn loop can **select** the facets it initializes from rather than hoping.
+With the amplification law, the rule becomes: pair two **ruling-aligned** facets
+that are **angularly distant**. For Phase 5's freeform work the consequence is
+unchanged — facet normals cannot be assumed reliable on a doubly-curved patch at
+any density, since there are no rulings to align to.
 
 **A numerical fact worth not rediscovering.** An angle assertion near 0° cannot
 be tightened past about 1e-6°, because it goes through `acos`, which near an

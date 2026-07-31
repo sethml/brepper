@@ -129,14 +129,52 @@
 //! corpus every freeform facet evaluated and **none** landed on a pole or seam.
 //! Facet normals there are 2–3 orders of magnitude less exact than on analytic
 //! faces — `bspline_terrain` p50 0.9396°, `hill_with_hole` 0.9014° against
-//! 0.0000° for planes — but the decisive comparison is not freeform-vs-analytic,
-//! which is confounded by density (the freeform models are ~100× coarser per
-//! facet). It is **ruled vs doubly-curved**: `bspline_wave`'s *extrusion* faces
-//! read p50 0.0507° at 16.7 mm² per facet, while `bspline_terrain`'s B-spline
-//! faces read 0.9396° at 0.53 mm² per facet — the 30× coarser surface is 19×
-//! more exact, because a facet spanning two rulings of an extrusion has an
-//! exactly perpendicular normal for the same reason it does on a cylinder.
-//! Ruledness, not density, governs facet-normal exactness.
+//! 0.0000° for planes — but the freeform-vs-analytic comparison is confounded by
+//! density, since the freeform models are ~100× coarser per facet. Ruledness
+//! separates them better: `bspline_wave`'s *extrusion* faces read p50 0.0507° at
+//! 16.7 mm² per facet against `bspline_terrain`'s 0.9396° at 0.53 mm², so the
+//! 30× coarser surface is 19× more exact.
+//!
+//! # Ruledness is necessary but NOT sufficient — alignment is the real condition
+//!
+//! An earlier version of this note said "ruledness governs facet-normal
+//! exactness". That is too strong, and [`min_ruling_gap_rad`] carries the exact
+//! statement: a facet's normal is perpendicular to the axis **iff two of its
+//! vertices share a ruling**. A tessellator that lays triangles across the
+//! ruling family produces skewed normals on a geometrically perfect cylinder.
+//!
+//! Measured over the corpus's 12 cylinder-bearing models, 12 275 cylinder
+//! facets:
+//!
+//! | group | count | worst perpendicularity |
+//! |---|---|---|
+//! | edge on a ruling | 9 127 | **0.0006°** |
+//! | straddling 3+ rulings | 3 148 (**25.6%**) | **1.0528°** |
+//!
+//! So alignment is not a rare nicety — a quarter of cylinder facets lack it —
+//! and it is the *whole* story: every non-zero perpendicularity in the corpus
+//! comes from a straddling facet. Straddling is necessary for error but not
+//! sufficient for *large* error, because the tilt grows with a facet's angular
+//! spread and shrinks with its axial one; straddling facets run from ~0° to
+//! 1.05°. That also explains the extrusion reading above: 0.0507° rather than
+//! 0.0000° is itself evidence those facets are not ruling-aligned, since
+//! alignment would force exactness.
+//!
+//! Where alignment comes from, measured: **quad fusion is a 23× discriminator
+//! but not a guarantee** — 2.7% of fused quads straddle against 62.3% of
+//! triangles. Simple geometry gets it for free (a plain cylinder under OCCT is
+//! 120 quads / 0 triangles, 100% aligned, which is the real reason the OCCT
+//! re-meshes read 0.0000°); the straddling concentrates where a tessellator
+//! cannot lay a clean strip — `stepped_block_toroidal`, whose narrow flat
+//! regions between fillets are its known pathology, straddles 49–53% at every
+//! OCCT density.
+//!
+//! **For Phase 1.2 this is better news than the aggregate suggested**, because
+//! the test needs no ground truth: given a candidate axis, the minimum angular
+//! gap between a facet's vertices says whether that facet's normal can be
+//! trusted, so the earn loop can *select* the facets it initializes from rather
+//! than hoping. Combined with the amplification law, the rule is: pair two
+//! **ruling-aligned** facets that are **angularly distant**.
 
 use crate::stage1::ConnectedMesh;
 use opencascade_sys::{
@@ -717,6 +755,17 @@ pub fn label_faces(mesh: &ConnectedMesh, model: &ReferenceModel) -> Vec<FaceLabe
     out
 }
 
+/// Below this angular gap (radians) two of a facet's vertices are taken to lie
+/// on the same ruling.
+///
+/// Not a tuned threshold: the corpus is bimodal with five orders of magnitude
+/// of empty space between the two modes — vertices on one ruling differ only by
+/// float32 mesh noise (~1e-7 rad), while distinct rulings are separated by the
+/// exporter's angular step (≥1e-2 rad). Any cut in that gap gives the same
+/// split. The gap is reported beside the split so a mesh that lands inside it
+/// announces itself.
+const RULING_SAME_RAD: f64 = 1.0e-6;
+
 // ---------------------------------------------------------------------------
 // Distributions
 // ---------------------------------------------------------------------------
@@ -881,6 +930,22 @@ pub struct CylinderScore {
     pub pair_axis_deg: Dist,
     /// `|n₁ × n₂|` for those pairs — the conditioning of the cross product.
     pub conditioning: Dist,
+    /// Smallest angular gap between any two of a facet's vertices around the
+    /// axis. Zero means the facet has an edge along a ruling.
+    pub ruling_gap_rad: Dist,
+    /// Perpendicularity for facets **with** an edge along a ruling, where the
+    /// normal is perpendicular to the axis exactly.
+    pub perp_ruling_aligned: Dist,
+    /// Perpendicularity for facets straddling three or more rulings, where it
+    /// is not — see [`min_ruling_gap_rad`].
+    pub perp_ruling_skew: Dist,
+    /// Quad/triangle split of the two groups above. A stage-1 fused quad is a
+    /// coplanar triangle pair, and on a cylinder that all but forces a
+    /// two-ruling span; whether it forces it is what these count.
+    pub aligned_quads: usize,
+    pub aligned_tris: usize,
+    pub skew_quads: usize,
+    pub skew_tris: usize,
     /// Median pair-axis error binned by conditioning, worst-conditioned first:
     /// (bin label, count, median error in degrees).
     pub by_conditioning: Vec<(&'static str, usize, f64)>,
@@ -1077,21 +1142,95 @@ fn same_label_pairs(mesh: &ConnectedMesh, labels: &[FaceLabel]) -> Vec<(usize, u
     pairs
 }
 
+/// The smallest angular gap, in radians, between any two of a facet's vertices
+/// measured around `axis` — zero exactly when two vertices share a ruling.
+///
+/// This is the quantity that decides whether a facet normal on a ruled surface
+/// is perpendicular to the axis at all. Parametrize the cylinder as
+/// `p(θ, z) = a + r(cos θ · u + sin θ · v) + z · d`. The facet's plane contains
+/// the direction `d` — equivalently `n ⟂ d` — iff the vertices, projected along
+/// `d` onto the plane perpendicular to it, are collinear. They land on a circle
+/// of radius `r`, and three points on a circle are collinear only when two of
+/// them coincide. **So `n ⟂ d` exactly when two vertices share a ruling**, and a
+/// triangle straddling three distinct rulings tilts its normal off
+/// perpendicular however perfect the underlying cylinder is.
+fn min_ruling_gap_rad(mesh: &ConnectedMesh, fi: usize, axis_pos: [f64; 3], axis: [f64; 3]) -> Option<f64> {
+    let d = unit(axis)?;
+    let seed = if d[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let u = unit(cross(d, seed))?;
+    let v = cross(d, u);
+
+    let face = &mesh.faces[fi];
+    let n = face.vertex_count as usize;
+    let mut thetas = Vec::with_capacity(n);
+    for k in 0..n {
+        let vtx = &mesh.vertices[face.vertex_indices[k]];
+        let w = sub([vtx.x, vtx.y, vtx.z], axis_pos);
+        let w = sub(w, scale(d, dot(w, d)));
+        thetas.push(dot(w, v).atan2(dot(w, u)));
+    }
+
+    let mut min_gap = f64::MAX;
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let mut delta = (thetas[i] - thetas[j]).abs();
+            if delta > std::f64::consts::PI {
+                delta = std::f64::consts::TAU - delta;
+            }
+            min_gap = min_gap.min(delta);
+        }
+    }
+    Some(min_gap)
+}
+
 fn score_cylinders(
     mesh: &ConnectedMesh,
     model: &ReferenceModel,
     labels: &[FaceLabel],
 ) -> Option<CylinderScore> {
     let mut perp = Vec::new();
+    let mut gaps = Vec::new();
+    let (mut perp_aligned, mut perp_skew) = (Vec::new(), Vec::new());
+    let (mut aligned_quads, mut aligned_tris) = (0_usize, 0_usize);
+    let (mut skew_quads, mut skew_tris) = (0_usize, 0_usize);
     for (fi, label) in labels.iter().enumerate() {
         let Some(ri) = label.face() else { continue };
-        let RefSurface::Cylinder { axis_dir, .. } = model.surfaces[ri] else {
+        let RefSurface::Cylinder {
+            axis_pos, axis_dir, ..
+        } = model.surfaces[ri]
+        else {
             continue;
         };
         let Some(n) = mesh.faces[fi].normal else {
             continue;
         };
-        perp.push((90.0 - acute_angle_deg(n, axis_dir)).abs());
+        let err = (90.0 - acute_angle_deg(n, axis_dir)).abs();
+        perp.push(err);
+        // Split on whether the facet has an edge along a ruling. The cut sits
+        // in a measured gap, not on a tuned value: two vertices on one ruling
+        // differ in θ only by float32 mesh noise, ~1e-7 rad at these radii,
+        // while two rulings are separated by the exporter's angular step,
+        // ≥ 1e-2 rad. Any cut between those gives the same split, and the gap
+        // itself is reported beside it so a corpus that lands inside it says so.
+        if let Some(gap) = min_ruling_gap_rad(mesh, fi, axis_pos, axis_dir) {
+            gaps.push(gap);
+            let quad = mesh.faces[fi].vertex_count == 4;
+            if gap < RULING_SAME_RAD {
+                perp_aligned.push(err);
+                if quad {
+                    aligned_quads += 1;
+                } else {
+                    aligned_tris += 1;
+                }
+            } else {
+                perp_skew.push(err);
+                if quad {
+                    skew_quads += 1;
+                } else {
+                    skew_tris += 1;
+                }
+            }
+        }
     }
     if perp.is_empty() {
         return None;
@@ -1135,6 +1274,13 @@ fn score_cylinders(
 
     Some(CylinderScore {
         perpendicularity_deg: Dist::of(perp),
+        ruling_gap_rad: Dist::of(gaps),
+        perp_ruling_aligned: Dist::of(perp_aligned),
+        perp_ruling_skew: Dist::of(perp_skew),
+        aligned_quads,
+        aligned_tris,
+        skew_quads,
+        skew_tris,
         pair_axis_deg: Dist::of(pair_err),
         conditioning: Dist::of(cond),
         by_conditioning: binned
@@ -1345,6 +1491,22 @@ impl Report {
             eprintln!(
                 "              n1xn2 axis error {}",
                 fmt_dist_deg(&c.pair_axis_deg)
+            );
+            eprintln!(
+                "              ruling-aligned   {} facets with an edge on a ruling {}, \
+                 {} straddling 3+ rulings {}",
+                c.perp_ruling_aligned.n,
+                fmt_dist_deg(&c.perp_ruling_aligned),
+                c.perp_ruling_skew.n,
+                fmt_dist_deg(&c.perp_ruling_skew),
+            );
+            eprintln!(
+                "              aligned {} quad / {} tri, straddling {} quad / {} tri",
+                c.aligned_quads, c.aligned_tris, c.skew_quads, c.skew_tris
+            );
+            eprintln!(
+                "              min ruling gap   p50 {:.3e} p95 {:.3e} rad",
+                c.ruling_gap_rad.p50, c.ruling_gap_rad.p95
             );
             eprintln!(
                 "              |n1xn2|          p50 {:.4} p95 {:.4} max {:.4}  \
@@ -1604,6 +1766,71 @@ mod tests {
                 parallel_miss(occt, ours)
             );
         }
+    }
+
+    /// The ruling theorem, in both directions: a facet on a cylinder has a
+    /// normal exactly perpendicular to the axis **iff** two of its vertices
+    /// share a ruling. Ruledness alone is not enough — a triangle straddling
+    /// three rulings tilts its normal off perpendicular on a perfect cylinder.
+    #[test]
+    fn perpendicularity_needs_an_edge_on_a_ruling_not_just_a_ruled_surface() {
+        let d = oblique_axis();
+        let (u, v) = frame(d);
+        let origin = [1.0, -2.0, 3.0];
+        let r = 7.0;
+        let on = |theta: f64, z: f64| {
+            let radial = add(scale(u, theta.cos()), scale(v, theta.sin()));
+            add(add(origin, scale(d, z)), scale(radial, r))
+        };
+        let normal_of = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+            unit(cross(sub(b, a), sub(c, a))).unwrap()
+        };
+
+        // Two vertices on one ruling (same θ, different z): exactly perpendicular.
+        for k in 0..8 {
+            let t0 = k as f64 * 0.4;
+            let n = normal_of(on(t0, 0.0), on(t0, 5.0), on(t0 + 0.3, 2.0));
+            assert!(
+                dot(n, d).abs() < 1.0e-15,
+                "aligned facet {k} is not perpendicular: {:.3e}",
+                dot(n, d).abs()
+            );
+        }
+
+        // Three distinct rulings: NOT perpendicular, and measurably so. The
+        // tilt grows with the angular spread and shrinks with the axial one,
+        // which is why a straddling facet's error ranges from ~0 upward rather
+        // than being large by default.
+        let n = normal_of(on(0.0, 0.0), on(0.3, 5.0), on(0.6, 2.0));
+        let tilt = (90.0 - acute_angle_deg(n, d)).abs();
+        assert!(tilt > 0.5, "straddling facet should tilt measurably, got {tilt}°");
+
+        // And the detector agrees with the geometry on both.
+        let mesh = ConnectedMesh {
+            vertices: vec![
+                MeshVertex::from_xyz(on(0.0, 0.0)[0], on(0.0, 0.0)[1], on(0.0, 0.0)[2]),
+                MeshVertex::from_xyz(on(0.0, 5.0)[0], on(0.0, 5.0)[1], on(0.0, 5.0)[2]),
+                MeshVertex::from_xyz(on(0.3, 2.0)[0], on(0.3, 2.0)[1], on(0.3, 2.0)[2]),
+                MeshVertex::from_xyz(on(0.6, 2.0)[0], on(0.6, 2.0)[1], on(0.6, 2.0)[2]),
+            ],
+            faces: vec![
+                MeshFace {
+                    vertex_count: 3,
+                    vertex_indices: [0, 1, 2, 0],
+                    neighbors: [-1; 4],
+                    normal: None,
+                },
+                MeshFace {
+                    vertex_count: 3,
+                    vertex_indices: [0, 2, 3, 0],
+                    neighbors: [-1; 4],
+                    normal: None,
+                },
+            ],
+            stats: Default::default(),
+        };
+        assert!(min_ruling_gap_rad(&mesh, 0, origin, d).unwrap() < RULING_SAME_RAD);
+        assert!(min_ruling_gap_rad(&mesh, 1, origin, d).unwrap() > RULING_SAME_RAD);
     }
 
     #[test]
