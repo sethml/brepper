@@ -116,8 +116,8 @@
 
 use crate::stage1::ConnectedMesh;
 use opencascade_sys::{
-    b_rep_adaptor, b_rep_builder_api, b_rep_extrema, extrema, geom_abs, gp, message, top_abs,
-    top_exp, topo_ds, OwnedPtr,
+    b_rep_adaptor, b_rep_builder_api, b_rep_extrema, extrema, geom_abs, gp, message, n_collection,
+    top_abs, top_exp, topo_ds, OwnedPtr,
 };
 
 // ---------------------------------------------------------------------------
@@ -366,6 +366,15 @@ fn read_surface(face: &topo_ds::Face) -> RefSurface {
 /// the same by construction rather than by assumption.
 pub struct ReferenceModel {
     compound: OwnedPtr<topo_ds::Compound>,
+    /// Face → index, for turning a `SupportOnShape2` result back into a
+    /// [`Self::surfaces`] subscript in O(1).
+    ///
+    /// This is OCCT's `TopTools_IndexedMapOfShape`. That name is a *deprecated
+    /// typedef* in OCCT 8.0 and does not appear in the bindings; the canonical
+    /// type does, spelled out as its template instantiation. `ShapeMapHasher`
+    /// is the variant whose equality is `TopoDS_Shape::IsSame`, which is the
+    /// comparison this needs.
+    face_index: OwnedPtr<n_collection::IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher>,
     pub surfaces: Vec<RefSurface>,
 }
 
@@ -374,6 +383,8 @@ impl ReferenceModel {
     pub fn load(shape: &topo_ds::Shape) -> Self {
         let compound = crate::compare::face_compound(shape);
         let mut surfaces = Vec::new();
+        let mut face_index =
+            n_collection::IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher::new();
         let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
             compound.as_shape(),
             top_abs::ShapeEnum::Face,
@@ -381,10 +392,12 @@ impl ReferenceModel {
         );
         while explorer.more() {
             surfaces.push(read_surface(topo_ds::face_shape(explorer.value())));
+            face_index.add(explorer.value());
             explorer.next();
         }
         Self {
             compound,
+            face_index,
             surfaces,
         }
     }
@@ -405,24 +418,14 @@ impl ReferenceModel {
 
     /// Map a `SupportOnShape2` result back to an index into [`Self::surfaces`].
     ///
-    /// Walks the compound and compares with `IsSame`, which is a TShape pointer
-    /// comparison — no geometry, so this is cheap next to the distance query it
-    /// follows.
+    /// `FindIndex` is a const hash lookup returning OCCT's 1-based index, or 0
+    /// when the shape is absent. The map is built in the same explorer order as
+    /// `surfaces`, so the two agree by construction rather than by assumption.
     fn support_index(&self, support: &topo_ds::Shape) -> Option<usize> {
-        let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
-            self.compound.as_shape(),
-            top_abs::ShapeEnum::Face,
-            top_abs::ShapeEnum::Shape,
-        );
-        let mut i = 0_usize;
-        while explorer.more() {
-            if explorer.value().is_same(support) {
-                return Some(i);
-            }
-            explorer.next();
-            i += 1;
+        match self.face_index.find_index(support) {
+            0 => None,
+            i => Some((i - 1) as usize),
         }
-        None
     }
 }
 
