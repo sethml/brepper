@@ -539,13 +539,24 @@ instrument first; you cannot claim generality you cannot measure.
   | model | tri | outcome |
   |---|---|---|
   | `xyz-cube-test-20mm` | 1 128 | **ok** — 58 surfaces, 1 solid, 2.3 s |
-  | `OrcaCube v2` | 44 606 | **PANIC after 40 min** (2407 s wall, 1774 s user) |
-  | `3DBenchy` | 225 706 | harness row is `timeout` at 300 s; longer run pending |
-  1. **OrcaCube is a crash, not a timeout** — the harness row said `fail`, which
-     hid it. `src/stage2/repair.rs:741`, `stage 2.4 invariant: face 1460 covered
-     0 times, expected 1`: a face ends up in no selected surface. It reaches that
-     after 2263 tangency-snap attempts, nearly all reporting `NO LOCUS: surfaces
-     do not share an axis`. Phase 1 should retire this class of surface first.
+  | `OrcaCube v2` | 44 606 | **PANIC after 40 min** (2407 s wall) |
+  | `3DBenchy` | 225 706 | **PANIC after 8 h 21 min** (30 089 s wall, 28 592 s user) |
+  1. **Both real models crash in stage 2.4's `assert_invariants`, and between
+     them they violate BOTH invariants it checks.** These are crashes, not
+     timeouts; the harness rows said `fail` and `timeout`, which hid that.
+     | model | assertion | meaning |
+     |---|---|---|
+     | OrcaCube | `repair.rs:741` — face 1460 covered 0 times | a face ends up in **no** selected surface |
+     | 3DBenchy | `repair.rs:751` — surface 5 has 7 disconnected components | a surface's faces are **not mesh-connected** |
+     The assertion is the symptom; the defect is upstream, in how surfaces claim
+     faces. OrcaCube reaches it after 2263 tangency-snap attempts, nearly all
+     reporting `NO LOCUS: surfaces do not share an axis`. **This is Phase 1's
+     first concrete target** — the whole corpus of synthetic models never
+     produces either violation.
+  1b. **Runtime is superlinear**: 5.06× the triangles costs 12.5× the time
+     (44 606 → 225 706 tri, 2407 → 30 089 s), about O(n^1.6). A Phase 6.2
+     datapoint, and the reason the 300 s harness timeout hides these as
+     `timeout` rather than reporting the crash.
   2. **Real meshes need repair before they can be read.** 3DBenchy: dropped 2
      duplicate-vertex faces, removed 11 slivers, split 11 at T-junctions.
      OrcaCube: removed 6 coincident faces. Both still report a dihedral **max of
