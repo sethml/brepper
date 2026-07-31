@@ -366,6 +366,64 @@ instrument first; you cannot claim generality you cannot measure.
        where the STL is one part — the gate handles the latter correctly
        (`Open-Task-Light__counterweight` verifies at 1.9e-7 mm while covering a
        fraction of the STEP's extent).
+    6. **Verifying and being worth testing are different properties, and the
+       first 18 were selected for neither.** The harvester took the first three
+       pairs per repo alphabetically, so what passed was what had least to get
+       wrong: of the models that verified, one was a 52-triangle part with **no
+       curved surface at all**, one was tessellated at 18° (5 facets per 90° of
+       arc), and the best was 17. The three densest meshes in the corpus were all
+       in quarantine. Two numbers now grade every mesh, in `manifest.tsv` as
+       columns — `facets_per_90` (how many facets span a quarter turn, which
+       decides whether a cylinder or torus is recoverable) and `smooth_pct` (how
+       much of the mesh is on curved surface at all). **Never quote a pass rate
+       over the coarse rows.**
+    7. **The vertex verdict is taken on p95, not max** (`verify_pairs.sh`), with
+       both reported plus their ratio. A wild mesh can be exact to the file
+       format across almost all vertices and carry a thin tail of strays from
+       repair or decimation; the max throws the whole pair away for those few.
+       The ToolChanger ducts — the densest meshes here at 64–71 facets/90° — have
+       p95 6.9e-6 mm, **below their own 9.3e-6 float32 bound**, with a max of
+       4.3e-4. That took the corpus from 7 verified to **9 of 18**, and those two
+       were the *only* GOOD-density models in the verified set. The ratio is a
+       description, not a verdict: ≈1 means a uniform offset (wrong frame, wrong
+       revision, an offset variant), in the tens or hundreds means a few bad
+       vertices on an otherwise exact mesh. `holder_arm` is correctly NOT
+       rescued — ratio 1, and its bbox centres match its reference to 4.1e-12 mm,
+       so the uniform 4.8e-4 offset is a mesh that is not a tessellation of that
+       STEP (decimated, optimized, or a near-identical revision).
+    8. **Corpus expanded on density 2026-07-30**: `harvest_github.py` now grades
+       each STL and downloads the STL *first*, so a reject costs one file instead
+       of two. 266 pairs were available across the six usable repos; selecting
+       for ≥20 facets/90° and ≥10% smooth took the corpus from 18 pairs to **53**,
+       and the grade mix from 4 GOOD / 18 to **39 GOOD, 7 MODERATE, 6 WEAK, 1
+       TRIVIAL**. The rejection log is itself a finding: **29 of 30 OpenBot
+       candidates were rejected**, that whole project exporting at 5–10
+       facets/90°, while every ToolChanger and Voron candidate passed. Mesh
+       density is a property of the publisher, not of the part.
+       **Result: 26 of 53 verify (49%), and 19 of those are GOOD-density —
+       against 2 before.** That is the number that matters; the rate barely
+       moved, the usable dense ground truth went up 10×.
+       | grade | verified | quarantined | rate |
+       |---|---|---|---|
+       | GOOD | 19 | 20 | 49% |
+       | MODERATE | 4 | 3 | 57% |
+       | WEAK | 2 | 4 | 33% |
+       **Verification rate is independent of mesh grade**, so pair correctness
+       and mesh density are independent properties — density selection buys
+       better tests, not a better pass rate. The 27 quarantined split into:
+       | cause | n | |
+       |---|---|---|
+       | gross mismatch, p95 > 1 mm | 11 | 4 of them are **an STL print-plate against a single-part STEP** (`10x11_chain_top`: STL 41.8×20.2×10.0 vs STEP 20.0×20.2×20.1) — a new category, correctly refused by the aligner with extents reported |
+       | near miss, p95 < 1e-2 mm | 8 | **5 are NucDeck clustering at 1.3–1.7e-4 mm**, ~16× their f32 bound — systematic to that publisher, so likely an export setting rather than five independent revision drifts |
+       | large offset | 4 | includes both belt clips at a uniform **exactly 0.2 mm** |
+       | mesh invalid (non-manifold) | 4 | 2 are GOOD-density Voron ziptie mounts — real crash-test material Phase 6.1 has none of |
+    9. **`shape_bounds` meshes at a deflection that scales with the part.** A
+       fixed 1e-4 mm was wasted precision on a 10 mm button and did not finish a
+       4.8 MB, 200 mm enclosure — it stalled the corpus run. It now sizes the
+       part from the (over-estimating, so safe-direction) pole box and meshes at
+       `diag × 5e-6` clamped to [1e-4, 5e-3], an order of magnitude tighter than
+       the noise floor it feeds. Whole 53-model corpus in 246 s, with transforms
+       byte-identical to the slow version on every shared model.
   - (c) **Pair-verification gate**: **DONE 2026-07-29** — `tools/verify_pairs.sh`,
     versioned rather than an ad-hoc loop, because the ad-hoc loop **reported
     15/15 on a corpus that was entirely unusable**. Its hole: stage 1's vertex

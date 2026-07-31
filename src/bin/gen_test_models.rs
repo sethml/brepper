@@ -768,12 +768,31 @@ fn remesh_corpus(out_dir: &str, models: &[(String, String)]) {
 /// alignment does — turns a padded reference into a phantom size difference and
 /// a wrong translation.
 ///
-/// The deflection is far finer than any tolerance this tool reasons about, so
-/// the remaining error is the triangulation's own inset, well below the sag of
-/// the meshes being aligned.
+/// The deflection scales with the part, because a fixed absolute one does not
+/// work: 1e-4 mm is wasted precision on a 10 mm button and takes minutes on a
+/// 4.8 MB, 200 mm enclosure. The pole-based box is used only to size the part —
+/// it is an overestimate, which is exactly the safe direction for choosing a
+/// deflection — and the real box is then taken from the triangulation. The
+/// target is a bounding box an order of magnitude tighter than the noise floor
+/// this feeds (`NOISE_SHIFT_MM`), which is all the accuracy a centre-derived
+/// translation can use.
 fn shape_bounds(shape: &topo_ds::Shape) -> ([f64; 3], [f64; 3]) {
+    let mut rough = bnd::Box::new();
+    b_rep_bnd_lib::add_shape_box_bool(shape, &mut rough, true);
+    let diag = if rough.is_void() {
+        1.0
+    } else {
+        let d = [
+            rough.get_x_max() - rough.get_x_min(),
+            rough.get_y_max() - rough.get_y_min(),
+            rough.get_z_max() - rough.get_z_min(),
+        ];
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+    };
+    let deflection = (diag * 5.0e-6).clamp(1.0e-4, 5.0e-3);
+
     let _mesh = b_rep_mesh::IncrementalMesh::new_shape_real_bool_real_bool(
-        shape, 1.0e-4, false, 0.1, false,
+        shape, deflection, false, 0.1, false,
     );
     let mut bbox = bnd::Box::new();
     b_rep_bnd_lib::add_shape_box_bool(shape, &mut bbox, true);
