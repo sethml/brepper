@@ -67,7 +67,10 @@ At **stage 1**, properties of the mesh alone (so they are still measurable on
 models where stage 2 fails):
 
 - **Facet-normal exactness** per reference surface type: the angle between the
-  mesh facet normal and the exact analytic surface normal.
+  mesh facet normal and the true surface normal. Analytic faces use a closed
+  form; B-spline, Bezier, revolution, extrusion and offset faces are evaluated
+  through OCCT at the footpoint, and facets at a pole or seam — where the normal
+  does not exist — are excluded rather than scored.
 - **Closed-form initializer error**: the cylinder axis from `n₁ × n₂`, the
   sphere centre from circumcenter normal lines, and the torus
   meridian-coplanarity residual, each against the reference's own parameters,

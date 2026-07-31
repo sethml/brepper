@@ -647,7 +647,19 @@ the *tolerance* that is wrong, not the mesh. All three are Phase 3.2's business.
      against a reference 26, passes every gate at 6.7e-3 relative volume)
      scores ref coverage **1.0000** and surface purity **0.2201** — correctly
      diagnosed as merging, not splitting. A correct model scores 1.0000/1.0000.
-  Suite 584 passed / 0 failed / 32 ignored; 10 new unit tests assert the
+  **Extended 2026-07-30 to freeform reference faces** once `GeomLProp_SLProps`
+  was bound (the normal report previously skipped them, covering only 32–66% of
+  a NURBS model's area). Over the 8-model NURBS corpus every freeform facet
+  evaluated and none landed on a pole or seam. The result that matters is
+  **ruled vs doubly-curved, not freeform vs analytic**: `bspline_wave`'s
+  extrusion faces read p50 0.0507° at 16.7 mm²/facet while `bspline_terrain`'s
+  B-spline faces read 0.9396° at 0.53 mm²/facet — the 30× coarser surface is
+  19× more exact, because a facet spanning two rulings of an extrusion has an
+  exactly perpendicular normal for the same reason it does on a cylinder. So the
+  closed-form initializers' exactness is a property of ruledness, and Phase 5's
+  freeform work should not expect facet normals to be reliable on
+  doubly-curved patches.
+  Suite 585 passed / 0 failed / 32 ignored; 11 new unit tests assert the
   initializer identities to machine precision. One precision fact worth
   keeping: **an angle assertion near 0° cannot be tightened past ~1e-6°**
   because `acos` amplifies a 1e-16 rounding error into ~1.5e-8 rad; assert on

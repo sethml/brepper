@@ -1878,6 +1878,33 @@ rather than splitting, where a correct model reads 1.0000/1.0000. This satisfies
 the standing rule about metrics: asked what it returns for a grossly wrong
 input, it returns something unmistakably different from a right one.
 
+**Freeform reference faces, and the property that actually governs facet-normal
+exactness.** The normal report initially covered only analytic reference faces,
+which is 32–66% of a NURBS model's area — the rest was announced as unmeasured
+by the `analytic area` figure but not scored. Extending it needed only the
+footpoint (u,v) that `ParOnFaceS2` already reports from the same distance query,
+plus `GeomLProp_SLProps` (which arrived in the bindings on 2026-07-30).
+`SLProps` is used rather than a raw `D1U × D1V` because it answers
+`IsNormalDefined`, and a B-spline face has poles and seams where the normal
+genuinely does not exist; those facets are excluded rather than scored as an
+error of some size. Over the 8-model NURBS corpus every freeform facet evaluated
+and none landed on a pole.
+
+The result is not the obvious one. Freeform facet normals are 2–3 orders of
+magnitude less exact than analytic ones — `bspline_terrain` p50 0.9396°,
+`hill_with_hole` 0.9014°, against 0.0000° for planes — but that comparison is
+confounded, because the corpus's freeform models are ~100× coarser per facet.
+The unconfounded comparison runs the other way and is decisive: **`bspline_wave`'s
+*extrusion* faces read p50 0.0507° at 16.7 mm² per facet, while
+`bspline_terrain`'s B-spline faces read 0.9396° at 0.53 mm² per facet — the 30×
+coarser surface is 19× more exact.** An extrusion is *ruled*, so a facet spanning
+two of its rulings has an exactly perpendicular normal for the same reason it
+does on a cylinder. **Ruledness, not density and not analytic-vs-freeform, is
+what makes a facet normal exact**, which is the same property underneath result
+(2) above: OCCT's constrained Delaunay preserves it because the rulings survive
+as face boundaries. The consequence for Phase 5's freeform work is that facet
+normals cannot be assumed reliable on a doubly-curved patch, at any density.
+
 **A numerical fact worth not rediscovering.** An angle assertion near 0° cannot
 be tightened past about 1e-6°, because it goes through `acos`, which near an
 argument of 1 turns a 1e-16 rounding error into ~1.5e-8 rad. Assert on

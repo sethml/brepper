@@ -107,17 +107,41 @@
 //! OCCT's Delaunay is *constrained* by the pre-discretized face boundaries, so
 //! a cylinder's triangles still span two rulings. Fusion's ShapeManager agrees.
 //!
-//! One convenience worth recording: for all five analytic types the surface
-//! normal at a sample point equals the normal at that point's footpoint on the
-//! surface, because projecting onto the surface moves along the normal and
-//! leaves the meridian plane (or the plane's constant normal) unchanged. So the
-//! (u,v) of the footpoint is never needed, and no surface evaluation is done at
-//! all — the normal comes in closed form from the extracted parameters.
+//! # Two ways to get the true normal, and why both are here
+//!
+//! For all five analytic types the surface normal at a sample point equals the
+//! normal at that point's footpoint, because projecting onto the surface moves
+//! along the normal and leaves the meridian plane (or the plane's constant
+//! normal) unchanged. So those need no parameters and no evaluation: the normal
+//! comes in closed form from the extracted parameters, exactly.
+//!
+//! That identity does **not** hold for a freeform surface, so B-spline, Bezier,
+//! revolution, extrusion and offset faces are evaluated through OCCT at the
+//! footpoint's (u,v), which `ParOnFaceS2` reports from the same distance query
+//! that produced the label. `GeomLProp_SLProps` is used rather than a raw
+//! `D1U × D1V` because it answers `IsNormalDefined`: a B-spline face has poles
+//! and seams where the normal genuinely does not exist, and those facets must be
+//! dropped from the statistics rather than counted as an error of some size.
+//! The two paths are cross-validated against each other in the tests, on a
+//! cylinder where both apply — they agree to under 1e-14.
+//!
+//! **What freeform coverage showed (2026-07-30).** Over the 8-model NURBS
+//! corpus every freeform facet evaluated and **none** landed on a pole or seam.
+//! Facet normals there are 2–3 orders of magnitude less exact than on analytic
+//! faces — `bspline_terrain` p50 0.9396°, `hill_with_hole` 0.9014° against
+//! 0.0000° for planes — but the decisive comparison is not freeform-vs-analytic,
+//! which is confounded by density (the freeform models are ~100× coarser per
+//! facet). It is **ruled vs doubly-curved**: `bspline_wave`'s *extrusion* faces
+//! read p50 0.0507° at 16.7 mm² per facet, while `bspline_terrain`'s B-spline
+//! faces read 0.9396° at 0.53 mm² per facet — the 30× coarser surface is 19×
+//! more exact, because a facet spanning two rulings of an extrusion has an
+//! exactly perpendicular normal for the same reason it does on a cylinder.
+//! Ruledness, not density, governs facet-normal exactness.
 
 use crate::stage1::ConnectedMesh;
 use opencascade_sys::{
-    b_rep_adaptor, b_rep_builder_api, b_rep_extrema, extrema, geom_abs, gp, message, n_collection,
-    top_abs, top_exp, topo_ds, OwnedPtr,
+    b_rep, b_rep_adaptor, b_rep_builder_api, b_rep_extrema, extrema, geom, geom_abs, geom_l_prop,
+    gp, message, n_collection, top_abs, top_exp, topo_ds, OwnedPtr,
 };
 
 // ---------------------------------------------------------------------------
@@ -209,11 +233,13 @@ pub enum RefSurface {
         major: f64,
         minor: f64,
     },
-    /// A B-spline, Bezier, revolution, extrusion or offset surface. Carried so
-    /// coverage can be reported honestly — a corpus where half the area is
-    /// freeform should not look like a corpus where the initializers were
-    /// measured on everything.
-    Other,
+    /// A B-spline, Bezier, revolution, extrusion or offset surface — anything
+    /// with no closed-form normal. The kind is carried so the report can name
+    /// it, and so coverage can be reported honestly: a corpus where half the
+    /// area is freeform should not look like one where the *initializers* were
+    /// measured on everything. Normals on these are evaluated through OCCT
+    /// rather than in closed form — see [`ReferenceModel::normal_at_uv`].
+    Other { kind: &'static str },
 }
 
 impl RefSurface {
@@ -225,7 +251,7 @@ impl RefSurface {
             RefSurface::Cone { .. } => "cone",
             RefSurface::Sphere { .. } => "sphere",
             RefSurface::Torus { .. } => "torus",
-            RefSurface::Other => "other",
+            RefSurface::Other { kind } => kind,
         }
     }
 
@@ -236,7 +262,8 @@ impl RefSurface {
     ///
     /// Returns `None` on the surface's own degeneracies (a point on a
     /// cylinder's axis, a sphere's centre, a cone's apex), where the normal is
-    /// genuinely undefined, and for [`RefSurface::Other`].
+    /// genuinely undefined, and for [`RefSurface::Other`], which has no closed
+    /// form — use [`ReferenceModel::normal_at_uv`] for those.
     pub fn normal_at(&self, p: [f64; 3]) -> Option<[f64; 3]> {
         match *self {
             RefSurface::Plane { normal, .. } => unit(normal),
@@ -277,7 +304,7 @@ impl RefSurface {
                 let tube_centre = add(centre, scale(meridian, major));
                 unit(sub(p, tube_centre))
             }
-            RefSurface::Other => None,
+            RefSurface::Other { .. } => None,
         }
     }
 
@@ -354,7 +381,16 @@ fn read_surface(face: &topo_ds::Face) -> RefSurface {
                 minor: tor.minor_radius(),
             }
         }
-        _ => RefSurface::Other,
+        other => RefSurface::Other {
+            kind: match other {
+                geom_abs::SurfaceType::Bsplinesurface => "bspline",
+                geom_abs::SurfaceType::Beziersurface => "bezier",
+                geom_abs::SurfaceType::Surfaceofrevolution => "revolution",
+                geom_abs::SurfaceType::Surfaceofextrusion => "extrusion",
+                geom_abs::SurfaceType::Offsetsurface => "offset",
+                _ => "other",
+            },
+        },
     }
 }
 
@@ -375,6 +411,15 @@ pub struct ReferenceModel {
     /// is the variant whose equality is `TopoDS_Shape::IsSame`, which is the
     /// comparison this needs.
     face_index: OwnedPtr<n_collection::IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher>,
+    /// The underlying geometry of each face, for the freeform types that have
+    /// no closed-form normal. `BRep_Tool::Surface(F)` applies the face's
+    /// location, so these are in world coordinates and share the (u,v)
+    /// parameterization that `ParOnFaceS2` reports.
+    ///
+    /// Only read by [`Self::normal_at_uv`], which runs single-threaded in
+    /// [`report`]; labeling never touches these, which is what keeps the
+    /// `unsafe impl Sync` on the sharing wrapper in [`label_faces`] honest.
+    geometry: Vec<OwnedPtr<geom::Handle_Geom_Surface>>,
     pub surfaces: Vec<RefSurface>,
 }
 
@@ -390,16 +435,46 @@ impl ReferenceModel {
             top_abs::ShapeEnum::Face,
             top_abs::ShapeEnum::Shape,
         );
+        let mut geometry = Vec::new();
         while explorer.more() {
-            surfaces.push(read_surface(topo_ds::face_shape(explorer.value())));
+            let face = topo_ds::face_shape(explorer.value());
+            surfaces.push(read_surface(face));
+            geometry.push(b_rep::Tool::surface_face(face));
             face_index.add(explorer.value());
             explorer.next();
         }
         Self {
             compound,
             face_index,
+            geometry,
             surfaces,
         }
+    }
+
+    /// The exact unit surface normal of reference face `i` at parameters
+    /// `(u, v)`, unoriented — the freeform counterpart of
+    /// [`RefSurface::normal_at`].
+    ///
+    /// Uses `GeomLProp_SLProps`, which reports `IsNormalDefined` rather than
+    /// silently returning a zero-length `D1U × D1V`. That matters here: a
+    /// B-spline reference face has poles and seams where the normal genuinely
+    /// does not exist, and those must be dropped from the statistics rather
+    /// than counted as an error of some size.
+    ///
+    /// `RESOLUTION` is the linear tolerance below which SLProps calls a
+    /// derivative vector null. It is a numeric-conditioning floor, not a
+    /// threshold: it decides only whether a quantity exists, never whether a
+    /// fit is good.
+    pub fn normal_at_uv(&self, i: usize, u: f64, v: f64) -> Option<[f64; 3]> {
+        const RESOLUTION: f64 = 1.0e-12;
+        let surface = self.geometry.get(i)?;
+        let mut props =
+            geom_l_prop::SLProps::new_handlegeomsurface_real2_int_real(surface, u, v, 1, RESOLUTION);
+        if !props.is_normal_defined() {
+            return None;
+        }
+        let n = props.normal();
+        unit([n.x(), n.y(), n.z()])
     }
 
     /// The compound of reference faces — the correct distance target. Never
@@ -452,6 +527,10 @@ pub struct FaceLabel {
     pub support: Support,
     /// Distance from the centroid to the reference surface, mm.
     pub distance: f64,
+    /// The centroid's footpoint parameters on that reference face, when it
+    /// landed in one. Needed only for freeform normals; the analytic types are
+    /// evaluated from the sample point directly.
+    pub uv: Option<(f64, f64)>,
     /// True when the facet's interior sample points do not all agree with the
     /// centroid's label. An estimate of straddling a seam, not a bound: it both
     /// over- and under-reports, for different reasons — see the module docs.
@@ -472,7 +551,7 @@ impl FaceLabel {
 ///
 /// This is [`crate::stage1::min_distance_to_shape`] with the support read back
 /// instead of discarded — the whole reason this module is cheap.
-fn nearest(pt: [f64; 3], model: &ReferenceModel) -> (f64, Support) {
+fn nearest(pt: [f64; 3], model: &ReferenceModel) -> (f64, Support, Option<(f64, f64)>) {
     let p = gp::Pnt::new_real3(pt[0], pt[1], pt[2]);
     let mut vertex = b_rep_builder_api::MakeVertex::new_pnt(&p);
     let vtx_shape = vertex.vertex();
@@ -485,7 +564,7 @@ fn nearest(pt: [f64; 3], model: &ReferenceModel) -> (f64, Support) {
         &progress,
     );
     if !dist.is_done() || dist.nb_solution() < 1 {
-        return (f64::MAX, Support::None);
+        return (f64::MAX, Support::None, None);
     }
     let support = match dist.support_type_shape2(1) {
         b_rep_extrema::SupportType::Isinface => {
@@ -499,7 +578,18 @@ fn nearest(pt: [f64; 3], model: &ReferenceModel) -> (f64, Support) {
         // so the sample is off the end of any single face's trimmed domain.
         _ => Support::Seam,
     };
-    (dist.value(), support)
+    // The footpoint's parameters on the winning face, for the freeform normals
+    // that cannot be evaluated from the sample point. Only meaningful when the
+    // support is a face.
+    let uv = match support {
+        Support::Face(_) => {
+            let (mut u, mut v) = (0.0_f64, 0.0_f64);
+            dist.par_on_face_s2(1, &mut u, &mut v);
+            Some((u, v))
+        }
+        _ => None,
+    };
+    (dist.value(), support, uv)
 }
 
 /// The interior sample points used to test a facet's label for agreement.
@@ -548,6 +638,7 @@ pub fn label_faces(mesh: &ConnectedMesh, model: &ReferenceModel) -> Vec<FaceLabe
     let unlabeled = FaceLabel {
         support: Support::None,
         distance: f64::MAX,
+        uv: None,
         ambiguous: false,
     };
     if n == 0 || model.is_empty() {
@@ -559,10 +650,10 @@ pub fn label_faces(mesh: &ConnectedMesh, model: &ReferenceModel) -> Vec<FaceLabe
             return unlabeled;
         }
         let pts = sample_points(mesh, fi);
-        let (distance, support) = nearest(pts[0], model);
+        let (distance, support, uv) = nearest(pts[0], model);
         let mut ambiguous = false;
         for &p in &pts[1..] {
-            let (_, s) = nearest(p, model);
+            let (_, s, _) = nearest(p, model);
             if s != support {
                 ambiguous = true;
                 break;
@@ -571,6 +662,7 @@ pub fn label_faces(mesh: &ConnectedMesh, model: &ReferenceModel) -> Vec<FaceLabe
         FaceLabel {
             support,
             distance,
+            uv,
             ambiguous,
         }
     };
@@ -603,10 +695,10 @@ pub fn label_faces(mesh: &ConnectedMesh, model: &ReferenceModel) -> Vec<FaceLabe
                         continue;
                     }
                     let pts = sample_points(mesh, fi);
-                    let (distance, support) = nearest(pts[0], model);
+                    let (distance, support, uv) = nearest(pts[0], model);
                     let mut ambiguous = false;
                     for &p in &pts[1..] {
-                        let (_, s) = nearest(p, model);
+                        let (_, s, _) = nearest(p, model);
                         if s != support {
                             ambiguous = true;
                             break;
@@ -615,6 +707,7 @@ pub fn label_faces(mesh: &ConnectedMesh, model: &ReferenceModel) -> Vec<FaceLabe
                     *slot = FaceLabel {
                         support,
                         distance,
+                        uv,
                         ambiguous,
                     };
                 }
@@ -850,8 +943,14 @@ pub struct Report {
     pub seam: usize,
     pub unlabeled: usize,
     /// Fraction of mesh area whose reference face is an analytic type. The
-    /// initializer scores below say nothing about the rest.
+    /// **initializer** scores below say nothing about the rest — but the normal
+    /// scores now cover freeform faces too.
     pub analytic_area_fraction: f64,
+    /// Facets on a freeform reference face whose normal OCCT could evaluate.
+    pub freeform_evaluated: usize,
+    /// Facets on a freeform reference face at a pole or seam, where the surface
+    /// normal does not exist and the facet is excluded rather than scored.
+    pub freeform_undefined: usize,
     pub normals: NormalScore,
     pub cylinder: Option<CylinderScore>,
     pub sphere: Option<SphereScore>,
@@ -872,6 +971,8 @@ pub fn report(mesh: &ConnectedMesh, model: &ReferenceModel, labels: &[FaceLabel]
     let mut area_analytic = 0.0_f64;
     let mut area_by_type: Vec<(&'static str, f64)> = Vec::new();
     let mut normals_by_type: Vec<(&'static str, Vec<f64>)> = Vec::new();
+    let mut freeform_evaluated = 0_usize;
+    let mut freeform_undefined = 0_usize;
 
     for (fi, label) in labels.iter().enumerate() {
         if mesh.faces[fi].vertex_count == 0 {
@@ -893,16 +994,30 @@ pub fn report(mesh: &ConnectedMesh, model: &ReferenceModel, labels: &[FaceLabel]
             Some(slot) => slot.1 += area,
             None => area_by_type.push((name, area)),
         }
-        if matches!(surf, RefSurface::Other) {
-            continue;
+        if !matches!(surf, RefSurface::Other { .. }) {
+            area_analytic += area;
         }
-        area_analytic += area;
 
-        // Facet normal against the exact surface normal at its centroid.
-        let (Some(fn_), Some(sn)) = (
-            mesh.faces[fi].normal,
-            surf.normal_at(face_centroid(mesh, fi)),
-        ) else {
+        // The true surface normal under this facet. Analytic types are
+        // evaluated in closed form at the facet's own centroid, which is exact
+        // and needs no parameters (see the module docs); freeform types have no
+        // closed form, so they are evaluated through OCCT at the centroid's
+        // footpoint, where `None` means the normal is genuinely undefined —
+        // a pole or a seam — and the facet is dropped rather than scored.
+        let true_normal = match surf {
+            RefSurface::Other { .. } => label
+                .uv
+                .and_then(|(u, v)| model.normal_at_uv(ri, u, v))
+                .inspect(|_| freeform_evaluated += 1)
+                .or_else(|| {
+                    freeform_undefined += 1;
+                    None
+                }),
+            _ => surf.normal_at(face_centroid(mesh, fi)),
+        };
+
+        // Facet normal against the exact surface normal.
+        let (Some(fn_), Some(sn)) = (mesh.faces[fi].normal, true_normal) else {
             continue;
         };
         let err = acute_angle_deg(fn_, sn);
@@ -916,6 +1031,8 @@ pub fn report(mesh: &ConnectedMesh, model: &ReferenceModel, labels: &[FaceLabel]
     } else {
         0.0
     };
+    rep.freeform_evaluated = freeform_evaluated;
+    rep.freeform_undefined = freeform_undefined;
     rep.normals.by_type = normals_by_type
         .into_iter()
         .map(|(name, errs)| {
@@ -1200,9 +1317,17 @@ impl Report {
         if self.mesh_faces > 0 {
             eprintln!(
                 "    seam assumption: {:.4}% of facets disagree across their own interior \
-                 (estimate, not a bound; {:.1}% of labeled area is analytic)",
+                 (estimate, not a bound; initializer scores cover the {:.1}% of \
+                 labeled area that is analytic)",
                 100.0 * straddle as f64 / self.mesh_faces as f64,
                 100.0 * self.analytic_area_fraction,
+            );
+        }
+        if self.freeform_evaluated + self.freeform_undefined > 0 {
+            eprintln!(
+                "    freeform normals: {} evaluated, {} at a pole or seam where the normal \
+                 does not exist (excluded)",
+                self.freeform_evaluated, self.freeform_undefined
             );
         }
         for (name, dist, area) in &self.normals.by_type {
@@ -1434,6 +1559,50 @@ mod tests {
             // line-line distance is zero.
             let miss = line_line_distance(p, n, centre, d).unwrap_or(0.0);
             assert!(miss < 1.0e-9, "meridian residual {miss} at k={k}");
+        }
+    }
+
+    /// Cross-validate the two normal paths against each other: the closed form
+    /// used for analytic reference faces, and the `GeomLProp_SLProps`
+    /// evaluation used for freeform ones. They must agree on a surface where
+    /// both apply, or the freeform half is measuring something else.
+    #[test]
+    fn slprops_normal_agrees_with_the_closed_form() {
+        use opencascade_sys::geom;
+        let d = oblique_axis();
+        let origin = [4.0, -1.0, 2.0];
+        let radius = 3.0;
+
+        let dir = gp::Dir::new_real3(d[0], d[1], d[2]);
+        let loc = gp::Pnt::new_real3(origin[0], origin[1], origin[2]);
+        let ax3 = gp::Ax3::new_pnt_dir(&loc, &dir);
+        let cyl = geom::CylindricalSurface::new_ax3_real(&ax3, radius);
+        let handle = geom::CylindricalSurface::to_handle(cyl).to_handle_surface();
+
+        let closed_form = RefSurface::Cylinder {
+            axis_pos: origin,
+            axis_dir: d,
+            radius,
+        };
+
+        for k in 0..12 {
+            let (u, v) = (k as f64 * 0.5, k as f64 * 0.9 - 2.0);
+            // The 3D point at those parameters, from OCCT itself.
+            let mut props = geom_l_prop::SLProps::new_handlegeomsurface_real2_int_real(
+                &handle, u, v, 1, 1.0e-12,
+            );
+            let p = props.value();
+            let p = [p.x(), p.y(), p.z()];
+            assert!(props.is_normal_defined(), "normal undefined at k={k}");
+            let n = props.normal();
+            let occt = [n.x(), n.y(), n.z()];
+
+            let ours = closed_form.normal_at(p).unwrap();
+            assert!(
+                parallel_miss(occt, ours) < 1.0e-14,
+                "closed form and SLProps disagree at k={k}: {:.3e}",
+                parallel_miss(occt, ours)
+            );
         }
     }
 
