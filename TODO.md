@@ -766,7 +766,43 @@ commit gate (`MIN_AXIAL_SWEEP_DEG`, torus ratio, `MIN_*_FACES`,
     pairwise elimination; rank-deficient on sphere/cylinder data by
     construction — ladder order and a conditioning floor must precede it);
     then (R, r) via the existing `fit_circle_2d` profile fit (toroidal.rs).
-- **1.2 The earn loop.** Replace `seed_patch` + `condition_patch` inside
+- **1.2 The earn loop.** **ATTEMPTED 2026-07-31, NOT LANDED — the step's core
+  assumption does not hold for cones.** The implementation is kept as a patch
+  (see DEVELOPMENT_PLAN "Phase 1.2 as attempted"); what landed from the attempt
+  is the cone-initializer fix in commit e931ea9.
+  **What worked.** `earn_patch::<S>` grows a patch face-by-face under
+  validation at vtol, climbing a per-type DOF ladder (plane `[0]`, sphere
+  `[0,2]`, cone `[0,1,3]`, torus `[0,1,4]` — the step's own
+  "plane → cylinder/cone or sphere → torus"), excluding and counting the faces
+  that validate under no rung. For **plane, cylinder, sphere and torus it
+  reproduces the existing decomposition exactly** — `rounded_cube_10_r2_fine`
+  26 = 6/12/0/8/0/0 and `filleted_pipe` 8 = 2/2/0/0/4/0, both byte-identical.
+  **What does not.** A cone cannot be fitted from the sliver an earn loop has
+  when it must first decide. Three adjacent facets span a narrow arc, and within
+  that arc the **axis direction and the half-angle trade off against each other
+  inside the meridian plane** — separating them needs angular spread the sliver
+  does not have. Two parameterizations were measured:
+  | form | result on a 3-facet patch of an 18.4° cone |
+  |---|---|
+  | (apex, axis, half-angle) | half-angle **87°**, apex mid-model, validates **0** of its own 3 facets |
+  | taper (landed) | bounded and converging, but still **3.6e-3 mm** = 70× vtol |
+  Neither reaches the bar the loop validates at, so the cone starves at 2 faces
+  and `cone_cylinder` collapses from 4 surfaces to 132. A hybrid (cone keeps the
+  blind patch, the other three earn) fixes the pure-cone models but still leaves
+  freeform and tangent-cone models failing, so it was not landed either.
+  **The finding.** The phase thesis is that closed-form initializers make a
+  validated patch viable. They do — but only where the closed form is *exact at
+  minimal support*. The cylinder is, because `n₁ × n₂` needs no angular spread
+  at all; the cone is not. The blind patch was solving a real chicken-and-egg —
+  a fit needs support, and in this design support needs a fit — and that is not
+  removed by better formulas alone. **1.5's deletion list is premature for
+  `seed_patch` on this evidence.**
+  **Open, for whoever takes this next**: either the earn loop admits a small
+  unvalidated bootstrap (bounded at ~1 ring rather than 32 faces), or the cone
+  is grown by a route that does not need its axis up front, or the phase accepts
+  a per-type hybrid. All three are measurable; none is decided.
+
+- **1.2 (original text)** Replace `seed_patch` + `condition_patch` inside
   `grow` (compete.rs): BFS from the seed; admit a frontier face iff it
   validates the current fit at vtol (`face_validates`); on failure attempt
   **promotion** in ladder order (plane → cylinder/cone or sphere → torus),
