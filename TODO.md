@@ -54,7 +54,10 @@ Report both in every commit message that moves either.
    commits without global selection (fragments surfaces, measured twice);
    face-size-ratio boundary tests (anti-correlated); count/fraction-based
    freeform candidacy rules (four dead); retuning flood/conditioning floors
-   (non-monotonic everywhere).
+   (non-monotonic everywhere); **collecting a fit patch by normal spread**
+   (straddles tangent junctions — fillets split 12→24, spurious spheres) and
+   **validated-only patch growth** (starves cones: a fit needs support and
+   support needs a fit) — both measured in 1.2, both look obviously right.
 
 **Diagnostics toolbox**: `tools/sweep.sh` (109-model harness, baselines and
 diffs); `tools/fragility.sh` (per-constant ±2× perturbation, cliff count);
@@ -577,8 +580,11 @@ instrument first; you cannot claim generality you cannot measure.
 **Phase acceptance**: one-command harness with saved baselines; cliff count
 recorded; coverage holes closed; estimator cross-check table produced.
 
-**BASELINE REFRESHED 2026-07-30 at commit 09534ab** — 158 models (was 109; the
-external, fusion_reexport, remesh and random corpora landed during Phase 0):
+**BASELINE REFRESHED 2026-08-01** — **193 models: 113 ok, 78 fail, 2 timeout**
+(`tmp/sweep-baseline.tsv`, taken at the Phase 1.1 commit, before any 1.2 work).
+The corpus grew again after the figure below was recorded, so compare against
+this one. *Prior figure, 2026-07-30 at commit 09534ab* — 158 models (was 109;
+the external, fusion_reexport, remesh and random corpora landed during Phase 0):
 **107 ok, 50 fail, 1 timeout**. The old baseline predated the compare fixes, when
 three gates read zero for every input, so it is not comparable row-for-row.
 Exactly **three** models regressed, and all three are the instrument starting to
@@ -595,6 +601,15 @@ the *tolerance* that is wrong, not the mesh. All three are Phase 3.2's business.
 ---
 
 ## Phase 1 — Earned patches (the core rework)
+
+> **STATUS 2026-08-01: 1.0 and 1.1 landed; 1.2 attempted and NOT landed, and
+> its result revises the phase.** The earned patch converged back onto
+> `seed_patch` + `condition_patch`, so the premise that the blind patch can be
+> removed is not supported — see 1.2 below and DEVELOPMENT_PLAN, "Phase 1.2 as
+> attempted". **1.3, 1.4 and 1.5 all depend on 1.2 and should not be started as
+> written**; 1.5's deletion list in particular is contradicted by the
+> measurements. A hard pivot is expected instead.
+
 
 - **1.0 Reference labeling — ground truth per mesh face.** **DONE 2026-07-30.**
   Added after Phase 0 closed, because 1.4 requires "measure cylinder-axis error
@@ -766,41 +781,47 @@ commit gate (`MIN_AXIAL_SWEEP_DEG`, torus ratio, `MIN_*_FACES`,
     pairwise elimination; rank-deficient on sphere/cylinder data by
     construction — ladder order and a conditioning floor must precede it);
     then (R, r) via the existing `fit_circle_2d` profile fit (toroidal.rs).
-- **1.2 The earn loop.** **ATTEMPTED 2026-07-31, NOT LANDED — the step's core
-  assumption does not hold for cones.** The implementation is kept as a patch
-  (see DEVELOPMENT_PLAN "Phase 1.2 as attempted"); what landed from the attempt
-  is the cone-initializer fix in commit e931ea9.
-  **What worked.** `earn_patch::<S>` grows a patch face-by-face under
-  validation at vtol, climbing a per-type DOF ladder (plane `[0]`, sphere
-  `[0,2]`, cone `[0,1,3]`, torus `[0,1,4]` — the step's own
-  "plane → cylinder/cone or sphere → torus"), excluding and counting the faces
-  that validate under no rung. For **plane, cylinder, sphere and torus it
-  reproduces the existing decomposition exactly** — `rounded_cube_10_r2_fine`
-  26 = 6/12/0/8/0/0 and `filleted_pipe` 8 = 2/2/0/0/4/0, both byte-identical.
-  **What does not.** A cone cannot be fitted from the sliver an earn loop has
-  when it must first decide. Three adjacent facets span a narrow arc, and within
-  that arc the **axis direction and the half-angle trade off against each other
-  inside the meridian plane** — separating them needs angular spread the sliver
-  does not have. Two parameterizations were measured:
-  | form | result on a 3-facet patch of an 18.4° cone |
+- **1.2 The earn loop.** **ATTEMPTED AND NOT LANDED, 2026-07-31/08-01. The
+  step's premise does not survive the corpus, and that is the result.**
+  Code preserved on branch `phase-1.2-earn-loop-attempt` (commit 2b098d8), 5
+  tests short of green. Reasoning in DEVELOPMENT_PLAN, "Phase 1.2 as
+  attempted". What landed on this branch is the cone-initializer work it
+  forced (e931ea9 and the rank guards after it).
+  **The headline: every attempt to remove a piece of the blind machinery
+  reintroduced a failure that piece was preventing.** Five rounds, each
+  measured, each surfacing a mechanism the previous round had not predicted:
+  | remove / change | what broke |
   |---|---|
-  | (apex, axis, half-angle) | half-angle **87°**, apex mid-model, validates **0** of its own 3 facets |
-  | taper (landed) | bounded and converging, but still **3.6e-3 mm** = 70× vtol |
-  Neither reaches the bar the loop validates at, so the cone starves at 2 faces
-  and `cone_cylinder` collapses from 4 surfaces to 132. A hybrid (cone keeps the
-  blind patch, the other three earn) fixes the pure-cone models but still leaves
-  freeform and tangent-cone models failing, so it was not landed either.
-  **The finding.** The phase thesis is that closed-form initializers make a
-  validated patch viable. They do — but only where the closed form is *exact at
-  minimal support*. The cylinder is, because `n₁ × n₂` needs no angular spread
-  at all; the cone is not. The blind patch was solving a real chicken-and-egg —
-  a fit needs support, and in this design support needs a fit — and that is not
-  removed by better formulas alone. **1.5's deletion list is premature for
-  `seed_patch` on this evidence.**
-  **Open, for whoever takes this next**: either the earn loop admits a small
-  unvalidated bootstrap (bounded at ~1 ring rather than 32 faces), or the cone
-  is grown by a route that does not need its axis up front, or the phase accepts
-  a per-type hybrid. All three are measurable; none is decided.
+  | blind collection → validated-only growth | cones starve: a fit needs support, support needs a fit |
+  | collect breadth-first | walks the *ruling*, where a developable's tangent plane is constant, and builds a flat strip with rank-0 normals — no curved surface can ever be initialized from it |
+  | collect by normal spread | straddles tangent junctions: fillets split 12 → 24 on `rounded_cube_offset_occt_medium`, and two spurious spheres appeared on `cone_tangent_planes_occt_medium` |
+  | collect by curvature only | contaminated where curvature does not separate surfaces — a rounded cube's fillet radius **equals** its corner-sphere radius |
+  | validate in one pass instead of trimming | **747 of 762** earn calls returned a bare seed |
+  The final shape that works best — collect jet-similar, walk the ladder, keep
+  the connected component the fit explains, **trim the farthest face and refit
+  when the seed fails** — is `seed_patch` + `condition_patch` with a ladder
+  choice bolted on. It converged back to what it set out to replace.
+  **Consequences for the plan, both of which outlive this step:**
+  1. **1.5's deletion list is wrong.** `seed_patch`, `condition_patch`,
+     `PATCH_TRIM_ROUNDS`, `MIN_CONDITION_FACES` are load-bearing, and the four
+     fragility cliffs attributed to them are the price of a real problem — the
+     chicken-and-egg between fit and support — not of arbitrary tuning. Do not
+     delete them on the strength of Phase 1 alone.
+  2. **Closed-form initializers do not replace least squares; they make it
+     seedable.** `sin α = mean|n·d|` is read from facet normals, which are
+     *chord*-plane normals carrying an `O(Δθ²/8)` bias — 0.93% at a 15.65°
+     tessellation step, some 200× the tolerance the loop validates at. Only
+     quantities read from **vertices**, which lie on the surface exactly, reach
+     that bar. The cone only worked once the closed form seeded
+     `ConicalSurface::fit_surface` rather than standing in for it.
+  **What did work, and is worth keeping in any redesign:** for plane, cylinder,
+  sphere and torus the earned patch reproduced the existing decomposition
+  byte-identically (`rounded_cube_10_r2_fine` 26 = 6/12/0/8/0/0,
+  `filleted_pipe` 8 = 2/2/0/0/4/0, `cone_cylinder` 4, `nosecone_medium` 3), and
+  planes must keep the blind patch outright — an earned plane patch is by
+  construction "the faces that validate a plane", so a one-facet plane always
+  succeeds and starves the 2.3(e) B-spline fallback (the NURBS models collapsed
+  to 94/51/83 per-facet planes).
 
 - **1.2 (original text)** Replace `seed_patch` + `condition_patch` inside
   `grow` (compete.rs): BFS from the seed; admit a frontier face iff it

@@ -649,6 +649,18 @@ fn cone_axis_from_centred_normals(faces: &[usize], mesh: &ConnectedMesh) -> Opti
         cov[4] += c[1] * c[2];
         cov[5] += c[2] * c[2];
     }
+    // The centred normals must span TWO directions, not one. On a developable
+    // surface every facet along a ruling shares a tangent plane, so a patch
+    // grown along one ruling has identical normals: the covariance is rank 0,
+    // and a patch spanning one arc-step is rank 1. In both cases the axis is
+    // pinned only to a plane (or not at all) and any answer would be arbitrary.
+    // Declining here is what lets the earn loop keep collecting instead of
+    // committing to a surface its support cannot determine.
+    let mut ev = super::eigenvalues_3x3_symmetric(&cov);
+    ev.sort_by(f64::total_cmp);
+    if !(ev[2] > 0.0 && ev[1] > ev[2] * MIN_NULLSPACE_SEPARATION) {
+        return None;
+    }
     let mut axis = super::smallest_eigenvector_3x3(&cov);
     if normalize3(&mut axis) < MIN_CROSS_NORM {
         return None;
@@ -692,7 +704,14 @@ pub(crate) fn cone(faces: &[usize], mesh: &ConnectedMesh, vtol: f64) -> Option<I
             Some(if rt < rc { t } else { c })
         }
         (Some(t), None) => Some(t),
-        (None, c) => c,
+        // `cone_tapered` returning None means the AXIS was undeterminable — the
+        // centred normals span one direction or none — not that the surface is
+        // a cylinder. Falling back to a cylinder here would hand the earn loop
+        // a confident answer built on support that determines nothing, which is
+        // exactly the commitment it must defer. A genuine near-cylinder is a
+        // different state: `cone_tapered` resolves it and returns the cylinder
+        // itself, above.
+        (None, _) => None,
     }
 }
 

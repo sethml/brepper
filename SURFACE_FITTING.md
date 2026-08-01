@@ -12,6 +12,14 @@ This document describes the surface fitting math and validation algorithms used 
 > exists** (removed in Rewrite Roadmap step 7); read those mentions as
 > historical. See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) §2 for the
 > current partition-then-classify architecture.
+>
+> **Closed-form initialization (Phase 1.1/1.2, 2026-07-31).** A newer module,
+> `src/stage2/initialize.rs`, fits each analytic type from a handful of facets
+> in closed form — see "Closed-form initialization from facet normals" below.
+> It is **not wired into the pipeline**: the earn loop that was to consume it
+> (Phase 1.2) was measured and not landed, so today the module is exercised only
+> by its unit tests. Its math and its measured failure modes are recorded here
+> because they are properties of the geometry, not of that attempt.
 
 ---
 
@@ -299,6 +307,138 @@ the residual is.
 
 ---
 
+## Closed-form initialization from facet normals (measured 2026-07-31)
+
+`src/stage2/initialize.rs`. Each analytic type fitted from a handful of facets
+with no iteration, exploiting the fact that **facet normals carry exact
+information** where a free least-squares fit on tiny support does not (see
+"A short arc cannot determine a free surface of revolution" above). Unit-tested
+to machine precision on synthetic strips. Not currently called by the pipeline.
+
+### The constructions
+
+- **Cylinder** — axis $= n_1 \times n_2$, exact from two facets and needing no
+  angular spread at all; then radius and position from the existing
+  `fit_circle_for_axis` over the patch's vertices.
+- **Sphere** — the line through a facet's **circumcenter** along its normal
+  passes exactly through the centre (the circumcenter is equidistant from three
+  points of the sphere, so it lies on the axis of their circle). Two facets give
+  the centre as the common-perpendicular midpoint; the radius is the mean vertex
+  distance. The *centroid* does not have this property — only the circumcenter.
+- **Cone** — see below; this one is not a single construction.
+- **Torus** — the "bilinear" meridian-coplanarity system is **linear in Plücker
+  coordinates**. With the axis line's moment $m = a \times d$ and
+  $q_i = p_i \times n_i$, the constraint $(p_i - a)\cdot(n_i \times d) = 0$
+  becomes $q_i \cdot d + n_i \cdot m = 0$ — one linear equation per facet in six
+  unknowns, solved as a null space with no alternation and no starting guess.
+  Geometrically it is just "every normal line of a surface of revolution meets
+  the axis". The system must be normalized to the patch centroid and extent
+  first: the $q$ block carries length units and the $n$ block does not, so on a
+  patch far from the origin the null space drowns in the scale mismatch. Then
+  $(R, r)$ from the existing `fit_circle_2d` on the $(\rho, z)$ profile.
+
+### Why the cone needs a different parameterization
+
+$(\text{apex}, \text{axis}, \text{half-angle})$ puts a point that runs off to
+**infinity** as a patch flattens toward a cylinder at the centre of the estimate,
+and any estimator for an unbounded quantity explodes near its degenerate case.
+Measured on three adjacent facets of an 18.4° cone it returned a half-angle of
+**87°** with the apex halfway up the model, and then validated **none** of the
+three facets it had been built from.
+
+Parameterize by the **taper** $dρ/dz = \tan\alpha$ instead — the cone's analogue
+of curvature. `taper = 0` is a *cylinder*: a finite value in the middle of the
+range rather than `apex = ∞` at its edge, exactly the reason circle fitters use
+$\kappa = 1/r$ rather than $r$. Both shape parameters then come from bounded
+local quantities — axis from the centred normal covariance, $\sin\alpha =
+\overline{|n\cdot d|}$ — and only the *position* is solved, as a linear least
+squares in $(u_1, u_2, z_A, m)$ from
+$|r|^2 - \tan^2\!\alpha\,z^2 = 2r\cdot u - 2\tan^2\!\alpha\,z\,z_A - m$.
+
+Two routes that do **not** work for a cone, both measured:
+
+- **Normal-line concurrence** (the torus construction) is rank-deficient on a
+  cone, and the degenerate case is what a real cone tessellation *is*: a cone is
+  ruled, so one row of quads spans its whole height, every facet centroid sits at
+  the same axial position, and their normal lines then all meet the axis at the
+  **same point**. Any line through that point solves the system. On a torus the
+  meeting point slides with the tube angle, which is why the identical solve is
+  well posed there. "Surface of revolution" is not the enabling property —
+  *variation in where the normal lines cross the axis* is.
+- **Uncentred normal covariance** flips above 35.26° — see the Gaussian-map
+  section.
+
+### The limit of all of it: normals are chord planes
+
+A facet's plane is a **chord** plane, not the tangent plane. For a strip quad
+spanning two rulings the lean works out to
+$n\cdot d = \sin\alpha\,\cos(\Delta\theta/2)/\sqrt{1 - \sin^2\!\alpha\sin^2(\Delta\theta/2)}$,
+an $O(\Delta\theta^2/8)$ bias — predicted 1.5e-3 relative at
+$\Delta\theta = 0.11$ rad and measured as 9.985° against a true 10.000°.
+
+That bias is small against a *wrong answer* but large against a *tolerance*: at a
+15.65° tessellation step it is 0.93%, roughly **200× the vertex tolerance**
+fits are validated at. So a closed form built on facet normals cannot reach the
+validation bar on a real mesh. Only quantities read from **vertices** — which lie
+on the surface exactly — can. The practical rule:
+
+> Take directions from normals, magnitudes from vertices, and treat a
+> normal-derived shape parameter as a **seed for least squares**, never as the
+> answer.
+
+### Ruling alignment: when a facet normal is exact at all
+
+A facet normal on a ruled surface is perpendicular to the axis **iff two of its
+vertices share a ruling**. Project the vertices along the axis: they land on a
+circle, the facet's plane is parallel to the axis iff those projections are
+collinear, and three points on a circle are collinear only when two coincide.
+So a triangle straddling three rulings tilts its normal off perpendicular
+however perfect the underlying surface is.
+
+Measured over the corpus's 12 cylinder-bearing models, 12 275 cylinder facets:
+facets with an edge on a ruling are perpendicular to a worst case of
+**0.0006°**, while the **25.6%** that straddle reach **1.0528°** — and every
+non-zero perpendicularity in the corpus comes from a straddling facet. Quad
+fusion is a 23× discriminator but not a guarantee (2.7% of fused quads straddle
+against 62.3% of triangles).
+
+**Tapering surfaces make alignment impossible in places.** A mesher holding
+chord length roughly constant drops circumferential divisions as the radius
+shrinks: `cone_cylinder` runs 32 divisions at its base ring, 23 through the
+middle, 29 where the cylinder starts. Where consecutive rings disagree, *no*
+facet can be ruling-aligned — no two vertices share a $\theta$ — and the strip
+cannot fuse into quads. Where they agree, the facets fuse and their normals
+agree to 7 digits.
+
+### Conditioning: the amplification law
+
+The axis error from a two-facet construction is
+**$\text{perpendicularity error} / |n_1 \times n_2|$**, verified to 0.1% on
+`pipe_elbow_10` Parasolid medium (a perpendicularity max of 0.0280° over a
+conditioning p50 of 0.0271 predicts 1.033°; measured 1.0342°, constant across
+all 348 pairs).
+
+Adjacent facets differ in normal by the exporter's angular step, so
+$|n_1 \times n_2| \approx \sin(\text{step})$ — p50 0.0432 on a fine mesh, which
+is $\sin(2.48°)$ and independently recovers Onshape's 2.5° setting. **The
+amplification is therefore ~23× on a fine mesh and gets worse as the mesh
+refines**, which inverts the natural assumption that denser meshes fit better.
+Pair the angularly *most distant* facets, never neighbours. A 90° reading is the
+fully degenerate pair of two facets on one ruling strip: no information, rather
+than a wrong answer.
+
+**Selection is not collection.** Spread is the right rule for choosing which
+facets to *initialize from*; it is the wrong rule for choosing which faces to
+*collect*, because "most different normal" also describes a face on the
+neighbouring surface. Collecting by spread split every fillet of
+`rounded_cube_offset_occt_medium` (12 cylinders → 24) and invented two spheres on
+`cone_tangent_planes_occt_medium`. Curvature distinguishes surfaces; normal
+direction does not — but curvature is not sufficient either, since a rounded
+cube's fillet radius equals its corner-sphere radius. See DEVELOPMENT_PLAN,
+"Phase 1.2 as attempted".
+
+---
+
 ## Algorithm Reference
 
 This section documents key algorithmic techniques drawn from computational geometry research that inform the surface fitting approach. These are referenced by the stage descriptions above.
@@ -335,6 +475,24 @@ where $w_i$ is face area and $\bar{n}$ is the weighted mean normal. The eigenval
 - **Torus**: $\lambda_1 > \lambda_2 \gg \lambda_3$ — normals form a band pattern.
 
 The cylinder axis estimation already uses this: the axis is the eigenvector of the uncentered normal covariance $M = \sum w_i n_i n_i^T$ corresponding to the smallest eigenvalue (the direction perpendicular to all normals). Extending this to pre-classify surface type before fitting would improve seeding efficiency.
+
+**Centring matters, and its absence has a hard failure point (measured
+2026-07-31).** For a *cone* the uncentred covariance is not safe. A cone's
+normals satisfy $n = \cos\alpha\,\hat r - \sin\alpha\,d$, so over a full
+revolution $M$ has eigenvalues $\cos^2\!\alpha/2$ (twice, perpendicular to the
+axis) and $\sin^2\!\alpha$ (once, along it). The axis is the *smallest*
+eigenvector only while $\sin^2\!\alpha < \cos^2\!\alpha/2$, i.e.
+**$\alpha < 35.26°$** — above that it becomes the *largest* and the estimate
+silently flips. This is not exotic: a 90° countersink is $\alpha = 45°$, and the
+corpus's own `cone_15x20` is 36.87°.
+
+**Centring removes the regime entirely.** Subtracting the mean normal cancels
+the $\sin\alpha\,d$ term and leaves $\cos\alpha(\hat r_i - \bar{\hat r})$,
+which lies in the plane perpendicular to the axis **for every half-angle**, so
+the smallest eigenvector of the centred covariance is the axis exactly. Over a
+*partial* arc the perpendicular spread is also anisotropic, which degrades the
+uncentred estimate well before 35.26°; centring is unaffected. Use the centred
+form.
 
 ### Medial Axis / Tube Center Method
 

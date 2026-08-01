@@ -2016,6 +2016,86 @@ is what the design meant by "ladder order and a conditioning floor must precede
 it" — type discrimination belongs to the ladder and to validation, never to a
 conditioning guard.
 
+### Phase 1.2 as attempted: why the blind patch is load-bearing
+
+Phase 1.2 was to replace `seed_patch` + `condition_patch` with a patch grown
+under validation. It was implemented, measured over five rounds, and **not
+landed** (branch `phase-1.2-earn-loop-attempt`). Step-by-step numbers are in
+TODO.md 1.2. What belongs here is the shape of the result, because it revises
+the phase thesis rather than merely reporting a bug.
+
+**The thesis.** "Replace grab-then-repair with grow-under-validation … The patch
+can never straddle a junction by construction, which is the exact property the
+blind patch lacks." The closed-form initializers were what made this look
+possible: fit exactly from a handful of facets, so validation can gate growth
+from the first face.
+
+**What happened.** Each round removed one piece of the blind machinery and
+measured the consequence; each consequence was a mechanism the previous round
+had not predicted.
+
+1. *Validated-only growth starves.* A cone cannot be fitted from the two facets
+   a validated loop has when it must first decide, so it never grows. The blind
+   patch was solving a real chicken-and-egg: a fit needs support, and support
+   needs a fit.
+2. *Breadth-first collection is actively wrong on a developable.* A cone's
+   tangent plane is **constant along a ruling**, so a plane fitted to one facet
+   explains its neighbours up that ruling to ~5e-7 mm — well inside `vtol`. BFS
+   therefore walks the ruling, accepting coplanar facet after coplanar facet,
+   and produces a flat strip whose centred normal covariance is rank 0. No
+   curved surface can be initialized from it, ever. The loop was systematically
+   collecting the faces carrying no curvature information and rejecting the ones
+   that carried it.
+3. *Spread-first collection straddles junctions.* Fixing (2) by preferring the
+   candidate that most increases `|n₁ × n₂|` inverts the failure: "most
+   different normal" is a fair description of *a face on the neighbouring
+   surface*. Measured, it split every fillet of `rounded_cube_offset_occt_medium`
+   (12 cylinders → 24) and invented two spheres on
+   `cone_tangent_planes_occt_medium`. **Two different questions had been
+   conflated**: which faces to *collect* wants similarity, which faces to
+   *initialize from* wants spread. The blind patch had the first right and the
+   second wrong; the earn loop had the second right and the first backwards.
+4. *Curvature similarity is not sufficient either.* It is the right signal —
+   curvature distinguishes surfaces, normal direction does not — but on a
+   rounded cube the fillet radius **equals** the corner-sphere radius, so it
+   does not separate them.
+5. *Validation must trim, not filter.* Clearing a patch when the seed fails its
+   own fit cost everything: **747 of 762** earn calls returned a bare seed.
+   Dropping the farthest face and refitting — `condition_patch`'s reasoning,
+   that an unfittable collection is unfittable *because* its far end is on
+   another surface — recovered it.
+
+**The result.** The best-performing form is: collect jet-similar, walk the DOF
+ladder, keep the connected component the fit explains, trimming toward the seed
+when the seed fails. That is `seed_patch` + `condition_patch` with a ladder
+choice added. **The design converged back onto what it set out to replace**, and
+the honest reading is that the blind patch and its conditioning are doing
+necessary work rather than papering over a defect.
+
+Two consequences outlive the step:
+
+- **Phase 1.5's deletion list is not supported.** `seed_patch`,
+  `condition_patch`, `PATCH_TRIM_ROUNDS` and `MIN_CONDITION_FACES` are
+  load-bearing. The four fragility cliffs among them are the price of the
+  fit/support chicken-and-egg, not of arbitrary tuning, and deleting them on
+  Phase 1's authority alone would regress the corpus.
+- **Closed-form initializers seed least squares; they do not replace it.** The
+  half-angle read from facet normals inherits the `O(Δθ²/8)` chord-plane bias —
+  0.93% at a 15.65° step, ~200× `vtol`. Only quantities read from *vertices*
+  reach the validation bar, because vertices lie on the surface exactly and
+  facet planes do not. The cone worked only once the closed form was used to
+  seed `ConicalSurface::fit_surface` rather than to stand in for it. This is the
+  same lesson as Phase 1.1's "take angles from vertices, not normals", arriving
+  with a price attached.
+
+**What did work**, and is worth carrying into any redesign: for plane, cylinder,
+sphere and torus the earned patch reproduced the existing decomposition
+byte-identically; and **planes must keep the blind patch outright**, because an
+earned plane patch is by construction "the faces that validate a plane", so a
+single-facet plane always succeeds, is committed, and starves the 2.3(e)
+B-spline fallback of the coherent leftover region it needs (the NURBS models
+collapsed to 94/51/83 per-facet planes with no B-spline at all).
+
 ### Phase 2 design: distance-guided exploration
 
 The 26122-face seed sweep costs 103 s on stepped_block fine and its
