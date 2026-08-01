@@ -177,6 +177,9 @@
 //! **ruling-aligned** facets that are **angularly distant**.
 
 use crate::stage1::ConnectedMesh;
+// Shared with the initializers, so the instrument and the code acting on its
+// findings cannot drift apart in what "ruling-aligned" means.
+use crate::stage2::initialize::{min_ruling_gap_rad, RULING_SAME_RAD};
 use opencascade_sys::{
     b_rep, b_rep_adaptor, b_rep_builder_api, b_rep_extrema, extrema, geom, geom_abs, geom_l_prop,
     gp, message, n_collection, top_abs, top_exp, topo_ds, OwnedPtr,
@@ -755,17 +758,6 @@ pub fn label_faces(mesh: &ConnectedMesh, model: &ReferenceModel) -> Vec<FaceLabe
     out
 }
 
-/// Below this angular gap (radians) two of a facet's vertices are taken to lie
-/// on the same ruling.
-///
-/// Not a tuned threshold: the corpus is bimodal with five orders of magnitude
-/// of empty space between the two modes — vertices on one ruling differ only by
-/// float32 mesh noise (~1e-7 rad), while distinct rulings are separated by the
-/// exporter's angular step (≥1e-2 rad). Any cut in that gap gives the same
-/// split. The gap is reported beside the split so a mesh that lands inside it
-/// announces itself.
-const RULING_SAME_RAD: f64 = 1.0e-6;
-
 // ---------------------------------------------------------------------------
 // Distributions
 // ---------------------------------------------------------------------------
@@ -1140,47 +1132,6 @@ fn same_label_pairs(mesh: &ConnectedMesh, labels: &[FaceLabel]) -> Vec<(usize, u
         }
     }
     pairs
-}
-
-/// The smallest angular gap, in radians, between any two of a facet's vertices
-/// measured around `axis` — zero exactly when two vertices share a ruling.
-///
-/// This is the quantity that decides whether a facet normal on a ruled surface
-/// is perpendicular to the axis at all. Parametrize the cylinder as
-/// `p(θ, z) = a + r(cos θ · u + sin θ · v) + z · d`. The facet's plane contains
-/// the direction `d` — equivalently `n ⟂ d` — iff the vertices, projected along
-/// `d` onto the plane perpendicular to it, are collinear. They land on a circle
-/// of radius `r`, and three points on a circle are collinear only when two of
-/// them coincide. **So `n ⟂ d` exactly when two vertices share a ruling**, and a
-/// triangle straddling three distinct rulings tilts its normal off
-/// perpendicular however perfect the underlying cylinder is.
-fn min_ruling_gap_rad(mesh: &ConnectedMesh, fi: usize, axis_pos: [f64; 3], axis: [f64; 3]) -> Option<f64> {
-    let d = unit(axis)?;
-    let seed = if d[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
-    let u = unit(cross(d, seed))?;
-    let v = cross(d, u);
-
-    let face = &mesh.faces[fi];
-    let n = face.vertex_count as usize;
-    let mut thetas = Vec::with_capacity(n);
-    for k in 0..n {
-        let vtx = &mesh.vertices[face.vertex_indices[k]];
-        let w = sub([vtx.x, vtx.y, vtx.z], axis_pos);
-        let w = sub(w, scale(d, dot(w, d)));
-        thetas.push(dot(w, v).atan2(dot(w, u)));
-    }
-
-    let mut min_gap = f64::MAX;
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let mut delta = (thetas[i] - thetas[j]).abs();
-            if delta > std::f64::consts::PI {
-                delta = std::f64::consts::TAU - delta;
-            }
-            min_gap = min_gap.min(delta);
-        }
-    }
-    Some(min_gap)
 }
 
 fn score_cylinders(

@@ -366,7 +366,7 @@ type TorusFitTuple = ([f64; 3], [f64; 3], f64, f64);
 
 /// Algebraic (Kasa) circle fit to 2D points. Coordinates are mean-centered
 /// internally for conditioning. Returns ((cx, cy), radius).
-fn fit_circle_2d(coords: &[(f64, f64)]) -> Option<((f64, f64), f64)> {
+pub(super) fn fit_circle_2d(coords: &[(f64, f64)]) -> Option<((f64, f64), f64)> {
     let n = coords.len();
     if n < 3 {
         return None;

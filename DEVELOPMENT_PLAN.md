@@ -1949,6 +1949,73 @@ passes at 1e-15 in cross-product form. The reported angles in `reference.rs` are
 printed to four decimals of a degree, far above that floor, so the report is
 unaffected — but do not read exactness below ~1e-6° out of a number from `acos`.
 
+### Phase 1.1 as built: what the closed-form initializers actually needed
+
+All four initializers are exact on synthetic data (numbers in TODO.md 1.1), but
+three of the four constructions the Phase 1 design named turned out to be wrong,
+and the reasons generalize past this step.
+
+**The bilinear system was an artefact of the coordinates.** The design records
+the torus axis constraint `(pᵢ − a)·(nᵢ × d) = 0` as bilinear in the axis point
+and direction, to be solved "by alternation or pairwise elimination". Writing the
+axis as a *line* rather than a point-plus-direction removes the bilinearity
+outright: with the moment `m = a × d`, the constraint becomes `qᵢ·d + nᵢ·m = 0`
+where `qᵢ = pᵢ × nᵢ` — one linear equation per facet in six unknowns, solved as a
+null space with no iteration and no starting guess. The identity underneath is
+"every normal line of a surface of revolution meets the axis". The one caveat is
+scaling: the `q` block carries length units and the `n` block does not, so the
+system must be normalized to the patch's own centroid and extent first or the
+null space is lost in the scale mismatch rather than in the data.
+
+**A cone is not a surface of revolution as far as this solve is concerned.** The
+same normal-line construction is *rank-deficient on a single ring of cone
+facets*, and a single ring is exactly what a real cone tessellation is: a cone is
+ruled, so one row of quads spans its entire height, every facet centroid sits at
+the same axial position, and their normal lines then all meet the axis at the
+same point. Any line through that point satisfies the system. On a torus the
+meeting point slides with the tube angle, which is why the identical solve is
+well posed there. The lesson is that "surface of revolution" is not the property
+that makes the solve work — *variation in where the normal lines cross the axis*
+is.
+
+**The normal-covariance cone axis has a regime the plan did not account for.**
+A cone's normals lie on a cone of the same half-angle about the axis, so over a
+full revolution the covariance has eigenvalues `cos²α/2` (twice) and `sin²α`
+(once), and the axis is the smallest eigenvector only while **α < 35.26°**. That
+is not exotic: a 90° countersink is 45°, and the corpus's own `cone_15x20` is
+36.87°. Over the partial arc an earned patch actually has, the perpendicular
+spread is not isotropic either and it degrades before that. What replaces it is
+both exact and arc-free: **every facet plane of a cone contains the apex**,
+because a tangent plane along a ruling contains that ruling and all rulings meet
+at the apex — and this holds for the chord plane of a strip quad too, since two
+rulings still meet there. So `nᵢ·A = nᵢ·pᵢ` pins the apex from three independent
+normals, whatever the tessellation, and direction and half-angle follow from the
+vertex directions about it.
+
+**Facet normals are exact for directions and biased for angles.** The
+perpendicularity result from Phase 1.0 says a ruling-aligned facet normal is
+*exactly* perpendicular to the axis. It does not say the normal equals the
+tangent-plane normal: a strip quad's chord plane leans off it by
+`n·d = sin α·cos(Δθ/2)/√(1 − sin²α sin²(Δθ/2))`, an `O(Δθ²/8)` bias. Predicted
+1.5e-3 relative at Δθ = 0.11 rad, and the half-angle measured 9.985° against a
+true 10.000° — the same 1.5e-3. Vertices carry no such bias because they lie on
+the surface exactly, so wherever a quantity can be taken from vertices rather
+than from normals, it should be.
+
+**The conditioning floor is not a model selector, and the attempt to make it one
+was the familiar trap.** The meridian system is rank-deficient by construction on
+sphere data, so it was tempting to threshold the spectrum tightly enough to
+reject a sphere. Measured, the separation is not available: the degenerate sphere
+patch reads `l1/l5` = 2.06e-6 and the hardest genuine torus (R = 4, r = 3) reads
+9.2e-4, a factor of 450 with nothing but data-dependence between them — TODO
+rule 5's "detector needs just one threshold" reached from yet another direction.
+The floor stayed purely numerical, and *structure* does the discrimination for
+free: a sphere's (ρ, z) profile is a circle centred on the axis, so its fitted
+major radius comes out ~0 and the `minor < major` check rejects it outright. This
+is what the design meant by "ladder order and a conditioning floor must precede
+it" — type discrimination belongs to the ladder and to validation, never to a
+conditioning guard.
+
 ### Phase 2 design: distance-guided exploration
 
 The 26122-face seed sweep costs 103 s on stepped_block fine and its

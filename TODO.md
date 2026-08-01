@@ -687,7 +687,65 @@ patch) hands off to the existing `grow_from` flood/refit path, and every
 commit gate (`MIN_AXIAL_SWEEP_DEG`, torus ratio, `MIN_*_FACES`,
 `resolve_claims`) keeps its exact meaning.
 
-- **1.1 Closed-form initializers, unit-tested first** (synthetic strips/tori;
+- **1.1 Closed-form initializers, unit-tested first** **DONE 2026-07-31** —
+  `src/stage2/initialize.rs`, 8 unit tests, not yet wired in (1.2 consumes it).
+  All four are **exact on synthetic data**, far inside this step's ~1e-9 bar:
+  cylinder axis 1e-14 / radius 1e-9 / position 1e-9 at r = 0.5, 7 and 40;
+  sphere centre and radius 1e-9; cone axis 2.8e-14–1.9e-12, half-angle
+  1.5e-12°–1.0e-10°, apex 3e-14–5e-13 mm across 10°–75°; torus axis 1e-9,
+  centre 1e-6, radii 1e-6 at r/R = 0.25, 0.033 and 0.75.
+  **Four things the step's own design had wrong, each measured:**
+  1. **The bilinear meridian system is LINEAR in Plücker coordinates**, so no
+     alternation or pairwise elimination is needed. With the line's moment
+     `m = a × d`, `(pᵢ − a)·(nᵢ × d) = qᵢ·d + nᵢ·m` where `qᵢ = pᵢ × nᵢ` — one
+     linear equation per facet in six unknowns. Geometrically it is just "every
+     normal line of a surface of revolution meets the axis". It does need
+     normalizing first (shift to the patch centroid, divide by its extent), or
+     the length-carrying `q` block and the dimensionless `n` block differ by
+     orders of magnitude and the null space drowns in the scale mismatch.
+  2. **The cone cannot use that solve at all**, because a real cone
+     tessellation is a *single ring*: a cone is ruled, one row of quads spans
+     its whole height, every facet centroid sits at the same axial position,
+     and their normal lines then all meet the axis at the **same point** — so
+     any line through that point solves the system. Pinned by a test.
+  3. **The cone cannot use the normal-covariance axis this step named either.**
+     Over a full revolution the normal covariance has eigenvalues `cos²α/2`
+     twice and `sin²α` once, so the axis is the smallest eigenvector only while
+     **α < 35.26°** — a 90° countersink is 45° and the corpus's own
+     `cone_15x20` is 36.87°. Over a partial arc it degrades further; measured,
+     it fails most of a 5 half-angle × 3 arc grid. What works is exact and
+     needs no arc: **every facet plane of a cone contains the apex** (a tangent
+     plane along a ruling contains that ruling, and rulings meet at the apex —
+     including the chord plane of a strip quad), so `nᵢ·A = nᵢ·pᵢ` pins the
+     apex from three independent normals, and the direction and half-angle then
+     come from the vertex directions about it.
+  4. **A facet normal does not give the half-angle exactly.** A strip quad's
+     chord plane leans off the tangent plane by
+     `n·d = sin α·cos(Δθ/2)/√(1 − sin²α sin²(Δθ/2))`, an `O(Δθ²/8)` bias —
+     predicted 1.5e-3 relative at Δθ = 0.11 rad and measured 9.985° against
+     10.000°, the same 1.5e-3. Taking the angle from **vertices**, which lie
+     exactly on the surface, is exact instead.
+  **The rank test cannot do model selection, and does not try.** It was
+  tempting to make it sharp enough to tell a torus from a sphere, since the
+  meridian system is rank-deficient by construction on sphere data. Measured,
+  that separation is not there: the degenerate sphere patch reads `l1/l5` =
+  2.06e-6 against 9.2e-4 for the hardest genuine torus (R = 4, r = 3) — a
+  factor of 450 with only data-dependence in between, which is rule 5's
+  "detector needs just one threshold" trap. The floor is therefore purely
+  numerical (1e-12 relative) and **structure does the discriminating for free**:
+  a sphere's (ρ, z) profile is a circle centred on the axis, so its fitted major
+  radius is ~0 and the `minor < major` check rejects it. That is what the step
+  meant by "ladder order and a conditioning floor must precede it".
+  **Selection is part of the algorithm**, per 1.0: `select_axis_pair` takes the
+  widest normal pair, then re-picks among the facets that are ruling-aligned
+  with respect to that provisional axis. A test mixes aligned quads with a
+  straddling triangle and requires the exact axis anyway. `min_ruling_gap_rad`
+  and `RULING_SAME_RAD` now live here and `crate::reference` imports them, so
+  the instrument and the code acting on its findings cannot drift apart.
+  Diagnostics: `BREPPER_DEBUG_RANK=1` prints the null-space spectrum.
+  Suite 594 passed / 0 failed / 32 ignored; clippy clean.
+
+- **1.1 (original text)** (synthetic strips/tori;
   the corpus's exactness precedents — r = 0.99998-style — make ~1e-9
   assertions appropriate):
   - Cylinder: axis = n₁ × n₂ from two admitted faces with non-parallel

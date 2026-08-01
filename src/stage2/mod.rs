@@ -21,6 +21,7 @@
 //! that predated this rewrite was removed (Rewrite Roadmap step 7).
 
 pub mod edges;
+pub(crate) mod initialize;
 pub mod regions;
 
 mod surface;
