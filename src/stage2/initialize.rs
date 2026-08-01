@@ -69,6 +69,24 @@ pub(crate) enum Initial {
     },
 }
 
+
+// Local vector helpers (stage 2 shares only cross3/dot3/normalize3).
+fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn scale(a: [f64; 3], s: f64) -> [f64; 3] {
+    [a[0] * s, a[1] * s, a[2] * s]
+}
+
+fn norm(a: [f64; 3]) -> f64 {
+    dot3(&a, &a).sqrt()
+}
+
 // ---------------------------------------------------------------------------
 // Conditioning floors
 // ---------------------------------------------------------------------------
@@ -550,140 +568,277 @@ fn profile_coords(
 // Cone
 // ---------------------------------------------------------------------------
 
-/// Axis direction (**unoriented**) and half-angle from directions that lie
-/// exactly on the surface.
-///
-/// Every point `p` of a cone satisfies `(p − A)/|p − A| · d = cos α` — one
-/// linear equation per point in the four unknowns `(d, cos α)` — so the answer
-/// is the null space of the stacked `[ûᵢ | 1]`. It uses **vertices, not facet
-/// normals**, and that is the whole point:
-///
-/// * Vertices lie exactly on the surface at any coarseness, so this is exact.
-/// * A facet normal does *not* give the half-angle exactly. A strip quad
-///   spanning two rulings is planar — two rulings meet at the apex, so they
-///   span a plane — but that chord plane leans away from the tangent plane, and
-///   working the geometry through gives
-///   `n·d = sin α · cos(Δθ/2) / √(1 − sin²α sin²(Δθ/2))`, an `O(Δθ²/8)` bias.
-///   Measured on a 10-step, 1.1 rad strip at α = 10°: Δθ = 0.11 rad predicts
-///   1.5e-3 relative, and the half-angle came out 9.985° against 10.000° — the
-///   same 1.5e-3. Exactly the kind of "nearly right" an initializer must not
-///   inherit.
-///
-/// The sign is deliberately not resolved here; [`cone`] orients the axis
-/// geometrically from the apex, so it does not become a property of the mesh's
-/// winding.
-fn cone_direction_and_angle(
-    apex: [f64; 3],
-    faces: &[usize],
-    mesh: &ConnectedMesh,
-) -> Option<([f64; 3], f64)> {
-    let mut m = nalgebra::Matrix4::<f64>::zeros();
-    let mut rows = 0_usize;
-    for vi in patch_vertices(faces, mesh) {
-        let v = &mesh.vertices[vi];
-        let mut u = [v.x - apex[0], v.y - apex[1], v.z - apex[2]];
-        if normalize3(&mut u) < MIN_CROSS_NORM {
-            continue; // a vertex at the apex says nothing about the axis
-        }
-        let row = nalgebra::Vector4::new(u[0], u[1], u[2], 1.0);
-        m += row * row.transpose();
-        rows += 1;
-    }
-    if rows < 3 {
-        return None;
-    }
-    let eigen = nalgebra::SymmetricEigen::new(m);
-    let mut order: Vec<usize> = (0..4).collect();
-    order.sort_by(|&a, &b| eigen.eigenvalues[a].total_cmp(&eigen.eigenvalues[b]));
-    let (l1, l3) = (eigen.eigenvalues[order[1]], eigen.eigenvalues[order[3]]);
-    if !(l3 > 0.0 && l1 > l3 * MIN_NULLSPACE_SEPARATION) {
-        return None; // the null space is not one-dimensional
-    }
 
-    let v = eigen.eigenvectors.column(order[0]);
-    let mut d = [v[0], v[1], v[2]];
-    let dnorm = normalize3(&mut d);
-    if dnorm < MIN_CROSS_NORM {
-        return None;
-    }
-    let cos_alpha = (v[3] / dnorm).abs();
-    if !(cos_alpha > 0.0 && cos_alpha < 1.0) {
-        return None; // a plane (α = 90°) or a degenerate solve
-    }
-    Some((d, cos_alpha.acos()))
+/// Largest distance from any of `verts` to `fit` — how well a candidate
+/// explains its own support.
+fn max_residual(fit: &Initial, verts: &[usize], mesh: &ConnectedMesh) -> f64 {
+    verts
+        .iter()
+        .map(|&vi| {
+            let v = &mesh.vertices[vi];
+            let p = [v.x, v.y, v.z];
+            match *fit {
+                Initial::Cylinder {
+                    axis_pos,
+                    axis_dir,
+                    radius,
+                } => {
+                    let w = sub(p, axis_pos);
+                    let z = dot3(&w, &axis_dir);
+                    (norm(sub(w, scale(axis_dir, z))) - radius).abs()
+                }
+                Initial::Cone {
+                    apex,
+                    axis_dir,
+                    half_angle,
+                } => {
+                    let w = sub(p, apex);
+                    let z = dot3(&w, &axis_dir);
+                    let r = norm(sub(w, scale(axis_dir, z)));
+                    (r * half_angle.cos() - z * half_angle.sin()).abs()
+                }
+                _ => f64::MAX,
+            }
+        })
+        .fold(0.0_f64, f64::max)
 }
 
-/// A cone from its facets: the apex from where their planes concur, then the
-/// direction and half-angle from the vertex directions about it.
+/// The cone axis, **exactly**, from the *centred* normal covariance.
 ///
-/// **Neither of the two routes the plan and the module's own torus solve use
-/// would work here**, and the reasons are worth recording:
+/// Phase 1.1 rejected a normal-covariance axis because the uncentred covariance
+/// `Σ nnᵀ` has eigenvalues `cos²α/2` (twice) and `sin²α` (once), so the axis is
+/// its smallest eigenvector only while α < 35.26°. **Centring removes that
+/// regime entirely**, and the reason is short: on a cone
+/// `nᵢ = cos α · r̂ᵢ − sin α · d`, so subtracting the mean normal cancels the
+/// `sin α · d` term and leaves `cos α (r̂ᵢ − r̄)`, which lies in the plane
+/// perpendicular to the axis **for every α**. The smallest eigenvector of the
+/// centred covariance is therefore the axis exactly, at any half-angle, and the
+/// 35.26° flip was an artefact of not centring.
 ///
-/// * The *normal-covariance* axis the plan named is not the axis in general.
-///   A cone's normals lie on a cone of the same half-angle about the axis, and
-///   over a full revolution the covariance has eigenvalues `cos²α/2` twice and
-///   `sin²α` once, so the axis is the smallest eigenvector only while
-///   **α < 35.26°** — a 90° countersink is 45°, and the corpus's `cone_15x20`
-///   is 36.87°. Over the partial arc an earned patch actually has, the
-///   perpendicular spread is not even isotropic and it degrades further. The
-///   test measures both regimes.
-/// * The *normal-line concurrence* solve used for the torus is
-///   **rank-deficient on a single ring of cone facets**, which is exactly what
-///   a real cone tessellation is: a cone is ruled, so one row of quads spans its
-///   whole height, every facet centroid sits at the same axial position, and
-///   their normal lines then all meet the axis at the *same* point. Any line
-///   through that point satisfies the system. (On a torus the meeting point
-///   slides with the tube angle, which is why the same solve is well posed
-///   there.)
-///
-/// What does work is exact and needs no arc at all: **a cone's tangent plane
-/// along a ruling contains that ruling, and every ruling passes through the
-/// apex, so every facet plane contains the apex** — including the chord planes
-/// of strip quads, since two rulings meet at the apex. That is one linear
-/// equation per facet, `nᵢ·A = nᵢ·pᵢ`, and three independent normals pin `A`
-/// exactly, whatever the tessellation.
-pub(crate) fn cone(faces: &[usize], mesh: &ConnectedMesh) -> Option<Initial> {
-    // The apex is the common point of the facet planes.
-    let mut m = nalgebra::Matrix3::<f64>::zeros();
-    let mut b = nalgebra::Vector3::<f64>::zeros();
+/// What it does *not* fix is conditioning on a sliver: over a short arc the
+/// `r̂ᵢ` are nearly collinear, so the centred normals span one direction rather
+/// than two and the axis is pinned only to a plane — the meridian plane. The
+/// remaining freedom within that plane is precisely the half-angle, which is
+/// why [`cone`] resolves it by fitting a profile rather than by asking this for
+/// more than it knows.
+fn cone_axis_from_centred_normals(faces: &[usize], mesh: &ConnectedMesh) -> Option<[f64; 3]> {
+    let mut normals = Vec::with_capacity(faces.len());
     for &fi in faces {
-        let Some(n) = mesh.faces[fi].normal else {
-            continue;
-        };
-        let p = face_centroid(&mesh.faces[fi], &mesh.vertices);
-        let row = nalgebra::Vector3::new(n[0], n[1], n[2]);
-        m += row * row.transpose();
-        b += row * dot3(&n, &p);
-    }
-    let eigen = nalgebra::SymmetricEigen::new(m);
-    let mut evs: Vec<f64> = eigen.eigenvalues.iter().copied().collect();
-    evs.sort_by(f64::total_cmp);
-    // The planes must span all three directions, or their intersection is a
-    // line or a plane rather than a point.
-    if !(evs[2] > 0.0 && evs[0] > evs[2] * MIN_NULLSPACE_SEPARATION) {
-        return None;
-    }
-    let apex_v = m.lu().solve(&b)?;
-    let apex = [apex_v[0], apex_v[1], apex_v[2]];
-
-    let (mut axis_dir, half_angle) = cone_direction_and_angle(apex, faces, mesh)?;
-
-    // Orient the axis from the apex toward the support — geometric, so it does
-    // not inherit the mesh's normal convention.
-    let mut toward = [0.0_f64; 3];
-    for &fi in faces {
-        let p = face_centroid(&mesh.faces[fi], &mesh.vertices);
-        for k in 0..3 {
-            toward[k] += p[k] - apex[k];
+        if let Some(n) = mesh.faces[fi].normal {
+            normals.push(n);
         }
     }
-    if dot3(&toward, &axis_dir) < 0.0 {
-        axis_dir = [-axis_dir[0], -axis_dir[1], -axis_dir[2]];
+    if normals.len() < 2 {
+        return None;
+    }
+    let inv = 1.0 / normals.len() as f64;
+    let mut mean = [0.0_f64; 3];
+    for n in &normals {
+        for k in 0..3 {
+            mean[k] += n[k] * inv;
+        }
+    }
+    // Packing matches `build_normal_covariance`: [xx, xy, xz, yy, yz, zz].
+    let mut cov = [0.0_f64; 6];
+    for n in &normals {
+        let c = [n[0] - mean[0], n[1] - mean[1], n[2] - mean[2]];
+        cov[0] += c[0] * c[0];
+        cov[1] += c[0] * c[1];
+        cov[2] += c[0] * c[2];
+        cov[3] += c[1] * c[1];
+        cov[4] += c[1] * c[2];
+        cov[5] += c[2] * c[2];
+    }
+    let mut axis = super::smallest_eigenvector_3x3(&cov);
+    if normalize3(&mut axis) < MIN_CROSS_NORM {
+        return None;
+    }
+    Some(axis)
+}
+
+
+/// A cone or a cylinder — whichever **explains the support better**.
+///
+/// The taper solve below needs the axis *direction*, and on a sliver that
+/// direction is not determined: the centred normals span one direction rather
+/// than two, so the axis is pinned only to the meridian plane and the remaining
+/// freedom within it is exactly the half-angle. Measured, a 3-facet patch of an
+/// 18.4° cone yields a taper fit that misses its own vertices by 3.6e-3 mm —
+/// far better than the 87° the apex form produced, but still well above `vtol`,
+/// so an earn loop would still starve on it.
+///
+/// The resolution needs no threshold on the ambiguity. Compute the cylinder
+/// too — that construction is exact from two facets, and on a cone `n₁ × n₂`
+/// gives the *ruling* direction, which is the minimum-taper member of exactly
+/// the ambiguous family — then keep whichever candidate explains the patch
+/// better. On a sliver the cylinder wins because the cone fit is numerically
+/// adrift; once the patch spans enough arc for the axis to be determined, the
+/// cone's extra freedom earns its place and it wins on residual. Ties go to the
+/// cylinder, which has fewer parameters.
+///
+/// This is the same criterion the surrounding competition already uses —
+/// explain the data — applied one level down, so it introduces no new kind of
+/// decision.
+pub(crate) fn cone(faces: &[usize], mesh: &ConnectedMesh, vtol: f64) -> Option<Initial> {
+    let verts = patch_vertices(faces, mesh);
+    let tapered = cone_tapered(faces, mesh, vtol);
+    let straight = cylinder(faces, mesh);
+    match (tapered, straight) {
+        (Some(t), Some(c)) => {
+            let (rt, rc) = (
+                max_residual(&t, &verts, mesh),
+                max_residual(&c, &verts, mesh),
+            );
+            Some(if rt < rc { t } else { c })
+        }
+        (Some(t), None) => Some(t),
+        (None, c) => c,
+    }
+}
+
+/// The taper solve itself: axis from the centred normals, half-angle from the
+/// normals, and only the position from a linear least squares.
+///
+/// # Why not (apex, axis, half-angle)
+///
+/// Phase 1.2 measured the cost of estimating the apex directly: on three
+/// adjacent facets of an 18.4° cone the plane-concurrence solve returned a
+/// half-angle of 87° with the apex halfway up the model, and the fit then
+/// validated none of the three facets it was built from. The apex runs off to
+/// **infinity** as a patch flattens toward a cylinder, and an estimator for an
+/// unbounded quantity explodes near its degenerate case.
+///
+/// So both shape parameters come from quantities that stay bounded and local,
+/// and neither is derived from the apex:
+///
+/// * the **axis direction**, exactly, from the centred normal covariance;
+/// * the **taper** `sin α = |n·d|`, averaged over the facets — a nearly
+///   constant quantity on a cone, so averaging it is well conditioned however
+///   short the patch is. (It carries the `O(Δθ²/8)` chord-plane bias Phase 1.1
+///   measured — 1.5e-3 relative at Δθ = 0.11 rad — which is a rounding error
+///   beside the failure it replaces, and shrinks as the mesh refines.)
+///
+/// Only the *position* then needs solving, and it is a plain linear least
+/// squares. Writing `u` for the axis offset from the patch centroid within the
+/// plane perpendicular to `d`, `z_A` for the apex's axial coordinate, and
+/// `m = |u|² − tan²α · z_A²`, the surface condition
+/// `|r − u|² = tan²α (z − z_A)²` rearranges to
+///
+/// ```text
+///   |r|² − tan²α z² = 2 r·u − 2 tan²α z · z_A − m
+/// ```
+///
+/// which is linear in `(u₁, u₂, z_A, m)`. Least squares then returns whatever
+/// best explains the support, so the fit **interpolates its own facets** rather
+/// than extrapolating to a far-off point — that is what makes it degrade
+/// gracefully. On a short patch `z_A` is uncertain, but the residuals on the
+/// data stay small, so validation passes and the patch keeps growing; as the
+/// patch lengthens `z_A` sharpens and the cone emerges on its own.
+///
+/// `taper = 0` is a **cylinder**, a finite value in the middle of the parameter
+/// range rather than `apex = ∞` at its edge — the same reason circle fitters
+/// use `κ = 1/r`. A patch whose whole radius change hides inside `vtol` cannot
+/// distinguish the two, and this returns the cylinder in that case. That test
+/// is derived from the tolerance and the patch's own extent; it adds no
+/// constant.
+fn cone_tapered(faces: &[usize], mesh: &ConnectedMesh, vtol: f64) -> Option<Initial> {
+    let mut axis = cone_axis_from_centred_normals(faces, mesh)?;
+
+    // sin α from the normals: constant on a cone, so an average is stable at
+    // any patch size, and it never touches a position.
+    let mut sin_sum = 0.0;
+    let mut count = 0_usize;
+    for &fi in faces {
+        if let Some(n) = mesh.faces[fi].normal {
+            sin_sum += dot3(&n, &axis).abs();
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return None;
+    }
+    let sin_alpha = (sin_sum / count as f64).clamp(0.0, 1.0);
+    let cos_alpha = (1.0 - sin_alpha * sin_alpha).max(0.0).sqrt();
+    if cos_alpha <= MIN_CROSS_NORM {
+        return None; // a plane, not a cone
+    }
+    let tan_alpha = sin_alpha / cos_alpha;
+
+    let verts = patch_vertices(faces, mesh);
+    if verts.len() < 4 {
+        return None;
+    }
+    let inv = 1.0 / verts.len() as f64;
+    let mut origin = [0.0_f64; 3];
+    for &vi in &verts {
+        let v = &mesh.vertices[vi];
+        origin = add(origin, scale([v.x, v.y, v.z], inv));
+    }
+    let (e1, e2) = perpendicular_basis(&axis);
+
+    // Axial extent decides whether the taper is resolvable at all.
+    let mut zmin = f64::MAX;
+    let mut zmax = f64::MIN;
+    let mut mean_radius = 0.0;
+    let local: Vec<(f64, f64, f64)> = verts
+        .iter()
+        .map(|&vi| {
+            let v = &mesh.vertices[vi];
+            let w = sub([v.x, v.y, v.z], origin);
+            let z = dot3(&w, &axis);
+            let r = sub(w, scale(axis, z));
+            zmin = zmin.min(z);
+            zmax = zmax.max(z);
+            let (r1, r2) = (dot3(&r, &e1), dot3(&r, &e2));
+            mean_radius += (r1 * r1 + r2 * r2).sqrt() * inv;
+            (z, r1, r2)
+        })
+        .collect();
+
+    // Below this the whole radius change across the support hides inside the
+    // tolerance the fit is judged at: the patch cannot tell cone from cylinder,
+    // and the cylinder is the honest answer.
+    if tan_alpha * (zmax - zmin) <= vtol {
+        let (axis_pos, radius) =
+            super::cylindrical::fit_circle_for_axis(&axis, &verts, &mesh.vertices)?;
+        return Some(Initial::Cylinder {
+            axis_pos,
+            axis_dir: axis,
+            radius,
+        });
     }
 
+    // Linear least squares for (u1, u2, z_A, m).
+    let t2 = tan_alpha * tan_alpha;
+    let mut ata = nalgebra::Matrix4::<f64>::zeros();
+    let mut atb = nalgebra::Vector4::<f64>::zeros();
+    for &(z, r1, r2) in &local {
+        let row = nalgebra::Vector4::new(2.0 * r1, 2.0 * r2, -2.0 * t2 * z, -1.0);
+        let rhs = r1 * r1 + r2 * r2 - t2 * z * z;
+        ata += row * row.transpose();
+        atb += row * rhs;
+    }
+    let sol = ata.lu().solve(&atb)?;
+    if !sol.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let (u1, u2, z_apex) = (sol[0], sol[1], sol[2]);
+
+    let axis_point = add(origin, add(scale(e1, u1), scale(e2, u2)));
+    let apex = add(axis_point, scale(axis, z_apex));
+
+    // Orient the axis from the apex toward the support.
+    let mid = 0.5 * (zmin + zmax);
+    if mid < z_apex {
+        axis = [-axis[0], -axis[1], -axis[2]];
+    }
+    let half_angle = tan_alpha.atan();
+    if !(half_angle > 0.0 && half_angle < std::f64::consts::FRAC_PI_2 && mean_radius > 0.0) {
+        return None;
+    }
     Some(Initial::Cone {
         apex,
-        axis_dir,
+        axis_dir: axis,
         half_angle,
     })
 }
@@ -731,6 +886,10 @@ pub(crate) fn torus(faces: &[usize], mesh: &ConnectedMesh) -> Option<Initial> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The corpus's default `--vertex-tolerance`, in mm — the bar the taper
+    /// resolvability test is measured against.
+    const TEST_VTOL: f64 = 5.0e-5;
 
     /// An oblique unit axis: an axis-aligned one would let a sign or an index
     /// slip through every assertion here.
@@ -1028,7 +1187,7 @@ mod tests {
                 apex: a,
                 axis_dir,
                 half_angle,
-            }) = cone(&faces, &mesh)
+            }) = cone(&faces, &mesh, TEST_VTOL)
             else {
                 panic!("no cone at {deg}°");
             };
@@ -1042,14 +1201,29 @@ mod tests {
                 parallel_miss(axis_dir, d)
             );
             assert!(dot3(&axis_dir, &d) > 0.0, "axis points backwards at {deg}°");
+            // The half-angle comes from the facet normals, so it carries the
+            // chord-plane bias Phase 1.1 derived: a strip quad's plane leans
+            // off the tangent plane, giving
+            // `n·d = sin α cos(Δθ/2)/√(1 − sin²α sin²(Δθ/2))`, an O(Δθ²/8)
+            // shortfall. That is deliberate — see `cone`. Here Δθ = 1.1/10, so
+            // the prediction is 1.5e-3 relative, and the measurement matches it
+            // (9.985° against 10.000°). Assert the bias is no worse than
+            // predicted rather than pretending it is absent.
+            let d_theta = 1.1_f64 / 10.0;
+            let predicted = alpha * d_theta * d_theta / 8.0;
+            let err = (alpha - half_angle).abs();
             assert!(
-                (half_angle - alpha).to_degrees().abs() < 1.0e-9,
-                "half-angle {:.9} vs {:.9} at {deg}°",
+                err <= predicted * 1.2 && half_angle < alpha,
+                "half-angle {:.6}° vs {deg}°: error {:.3e} rad, predicted bias {:.3e}",
                 half_angle.to_degrees(),
-                deg
+                err,
+                predicted
             );
+            // The apex inherits that bias over the patch's own distance from
+            // it, which is the honest bound: it is not an independent error.
+            let apex_scale = vnorm(vsub(apex, a)).max(1.0);
             assert!(
-                vnorm(vsub(a, apex)) < 1.0e-11,
+                vnorm(vsub(a, apex)) < 0.05 * apex_scale,
                 "apex off by {:.3e} at {deg}°",
                 vnorm(vsub(a, apex))
             );
@@ -1091,7 +1265,7 @@ mod tests {
                 }
 
                 // The construction actually used is exact in every one of these.
-                let Some(Initial::Cone { axis_dir, .. }) = cone(&faces, &mesh) else {
+                let Some(Initial::Cone { axis_dir, .. }) = cone(&faces, &mesh, TEST_VTOL) else {
                     panic!("no cone at {deg}° over {arc} rad");
                 };
                 // 1e-9 rather than 1e-12 because this grid includes the
@@ -1124,7 +1298,7 @@ mod tests {
             "the normal-line solve should decline a single cone ring"
         );
         // ...and the construction that replaces it does not care.
-        assert!(matches!(cone(&faces, &mesh), Some(Initial::Cone { .. })));
+        assert!(matches!(cone(&faces, &mesh, TEST_VTOL), Some(Initial::Cone { .. })));
     }
 
     /// A torus patch of quads spanning two meridians and two tube angles. Each
@@ -1254,5 +1428,85 @@ mod tests {
         );
         // ...while the sphere initializer handles the same patch.
         assert!(matches!(sphere(&all, &mesh), Some(Initial::Sphere { .. })));
+    }
+
+    /// The property the taper parameterization exists for: on a patch too small
+    /// to determine a cone, the fit must still **explain its own facets** — and
+    /// converge as the patch grows — instead of returning a wild answer that
+    /// validates nothing.
+    ///
+    /// This is exactly what the (apex, axis, half-angle) form could not do.
+    /// Measured in Phase 1.2 on three adjacent facets of an 18.4° cone it
+    /// returned 87° with the apex halfway up the model, and validated 0 of its
+    /// own 3 facets — which starved the earn loop.
+    #[test]
+    fn cone_fit_explains_its_own_support_at_every_patch_size() {
+        let apex = [2.0, 1.0, -3.0];
+        let d = oblique_axis();
+        let alpha = 18.4_f64.to_radians();
+        let mesh = cone_strip(apex, d, alpha, 16, 1.6);
+
+        let mut prev_err = f64::MAX;
+        let mut saw_cone = false;
+        for k in [3_usize, 4, 6, 10, 16] {
+            let faces: Vec<usize> = (0..k).collect();
+            let Some(fit) = cone(&faces, &mesh, TEST_VTOL) else {
+                panic!("no fit at all on {k} facets");
+            };
+            let worst = patch_vertices(&faces, &mesh)
+                .into_iter()
+                .map(|vi| {
+                    let v = &mesh.vertices[vi];
+                    surface_distance(&fit, [v.x, v.y, v.z])
+                })
+                .fold(0.0_f64, f64::max);
+            // 3.6e-3 mm is the measured worst, on the 3-facet wedge. That is
+            // NOT good enough for an earn loop validating at 5e-5 — see the
+            // note on `cone` — but it is bounded and shrinks with support,
+            // where the apex form validated *nothing* at any size. The bound
+            // here pins that improvement so it cannot regress.
+            assert!(
+                worst < 5.0e-3,
+                "{k} facets: the fit misses its own support by {worst:.3e}"
+            );
+            if let Initial::Cone { half_angle, .. } = fit {
+                saw_cone = true;
+                let err = (half_angle - alpha).abs();
+                assert!(
+                    err <= prev_err * 1.05,
+                    "{k} facets: half-angle error {err:.3e} grew from {prev_err:.3e}"
+                );
+                prev_err = err;
+            }
+        }
+        assert!(saw_cone, "never resolved a cone at any patch size");
+        assert!(prev_err < 1.0e-3, "did not converge: {prev_err:.3e} rad");
+    }
+
+    /// Distance from a point to a fitted surface, for the assertion above.
+    fn surface_distance(fit: &Initial, p: [f64; 3]) -> f64 {
+        let perp = |w: [f64; 3], axis: [f64; 3]| {
+            let z = dot3(&w, &axis);
+            (z, vnorm(vsub(w, [axis[0] * z, axis[1] * z, axis[2] * z])))
+        };
+        match *fit {
+            Initial::Cylinder {
+                axis_pos,
+                axis_dir,
+                radius,
+            } => {
+                let (_, r) = perp(vsub(p, axis_pos), axis_dir);
+                (r - radius).abs()
+            }
+            Initial::Cone {
+                apex,
+                axis_dir,
+                half_angle,
+            } => {
+                let (z, r) = perp(vsub(p, apex), axis_dir);
+                (r * half_angle.cos() - z * half_angle.sin()).abs()
+            }
+            _ => f64::MAX,
+        }
     }
 }
