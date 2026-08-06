@@ -10,6 +10,27 @@ Completed work is recorded in DONE.md. When you finish a step, annotate it
 here in place (`**DONE <date>**` plus a one-line result with the key numbers),
 matching the project's existing convention.
 
+> **READ FIRST — 2026-08-06: this plan has been overtaken, and is kept for its
+> measurements rather than its ordering.** Work has moved to the user-driven
+> **invariants rework**: rather than repairing stage 2's seeding step by step,
+> state the invariants a decomposition must satisfy, measure them, and rebuild
+> against them. Its record lives in DEVELOPMENT_PLAN under **"Invariants"** —
+> which now carries a measured status for every clause — and its instrument is
+> `--invariant-report` / `--viz-seeds` (`src/stage2/invariants.rs`,
+> `tools/invariants.sh`, `tools/inv_analyze.py`).
+>
+> Consequences for this file:
+> - **Phase 1 is superseded** (see its own status block). Phases 2–6 are not
+>   started and their premises should be re-read against the Invariants section
+>   before any of them is.
+> - **The suite is no longer green by design.** `remesh_cone_tangent_fine` fails
+>   from the torus-fitter change described in Phase 1.1 below. Execution rule 1's
+>   "suite green" and the per-commit corpus protocol are **suspended for
+>   invariants work** — those numbers pin the design being replaced. They still
+>   apply to any change made *to* the existing pipeline.
+> - Rule 6's dead-end list has grown; four of the new entries are cone- and
+>   torus-seeding ideas that look obviously right.
+
 **Goal.** Maximum robustness and minimum fragility over all plausible
 CAD-derived meshes — not score on the current corpus. Fragility is
 operationalized: the stage-2 tuned-constant count (**34** at plan time) and
@@ -58,6 +79,22 @@ Report both in every commit message that moves either.
    (straddles tangent junctions — fillets split 12→24, spurious spheres) and
    **validated-only patch growth** (starves cones: a fit needs support and
    support needs a fit) — both measured in 1.2, both look obviously right.
+   Added 2026-08-06 from the invariants rework, all measured, all obvious-looking:
+   **cylinder-then-cone promotion** (a cylinder fitted to cone data grows by
+   *nothing* — 0 promotions on 36 cone anchors — because a cone has no straight
+   stretch, unlike the bend `promote_bend` exploits); **plane-then-cone promotion**
+   (the plane rung reached 0 facets on every round); **undirected support
+   enlargement** (takes `simple_cone` to 12/12 and regresses `cone_cylinder` 7→6
+   and `nosecone` 10→8 by growing 3.5× past the true face across a tangency);
+   **the dual plane-rank identifiability test** (σ₃ catches 12% of bad seeds while
+   rejecting 83% of good ones — anti-correlated); **reordering
+   `compute_truncated_cone_axis`** to put its exact normal-difference method before
+   the apex-to-centroid guess (looks like a plain bug fix; takes cone seed coverage
+   4/12→1/12, 7/12→1/12, 10/12→6/12, because differencing near-identical normals
+   destroys the signal — a DO-NOT note sits on the function); and **residual
+   comparison as a seed-quality signal** (a strictly better-conditioned candidate
+   selected on residual made `stepped_block` fine 75→127 surfaces: residual on the
+   current support does not predict how a fit will grow).
 
 **Diagnostics toolbox**: `tools/sweep.sh` (109-model harness, baselines and
 diffs); `tools/fragility.sh` (per-constant ±2× perturbation, cliff count);
@@ -65,6 +102,15 @@ diffs); `tools/fragility.sh` (per-constant ±2× perturbation, cliff count);
 `dump_regions <model> jetdump` (per-face k1/k2/area/adjacency/normal);
 `dump_regions <model> locus [a b]` (junction loci); `BREPPER_DEBUG_COMPETE=1`
 (per-seed compete log); `src/bin/step_measure_tolerance.rs`.
+**Added 2026-08-06**: `--invariant-report` + `tools/invariants.sh` +
+`tools/inv_analyze.py` (the Invariants section's clauses scored against
+`--compare` ground truth, per reference face; runs after stage 2.2 so it survives
+a 2.3 crash); `--viz-seeds` (walk anchor facets, stop where every conforming seed
+set fails, name the refusing validation clause; `BREPPER_VIZ_SEEDS_TEXT=1` for the
+headless catalogue); `BREPPER_INV_FITDUMP=1` (reference parameters beside the
+fitted ones, with a non-identifiability-vs-non-convergence verdict);
+`BREPPER_INV_BASIN=1` (basin of attraction of grow-with-refit);
+`BREPPER_INV_PATCHSIZE=1` (fit accuracy against support size).
 
 ---
 
@@ -602,13 +648,23 @@ the *tolerance* that is wrong, not the mesh. All three are Phase 3.2's business.
 
 ## Phase 1 — Earned patches (the core rework)
 
-> **STATUS 2026-08-01: 1.0 and 1.1 landed; 1.2 attempted and NOT landed, and
-> its result revises the phase.** The earned patch converged back onto
-> `seed_patch` + `condition_patch`, so the premise that the blind patch can be
-> removed is not supported — see 1.2 below and DEVELOPMENT_PLAN, "Phase 1.2 as
-> attempted". **1.3, 1.4 and 1.5 all depend on 1.2 and should not be started as
-> written**; 1.5's deletion list in particular is contradicted by the
-> measurements. A hard pivot is expected instead.
+> **STATUS 2026-08-06: SUPERSEDED by the invariants rework.** The pivot this
+> block predicted happened, and it was not another attempt at the earned patch.
+>
+> The 2026-08-01 state, which still stands: 1.0 and 1.1 landed; **1.2 attempted
+> and NOT landed** — the earned patch converged back onto `seed_patch` +
+> `condition_patch`, so the premise that the blind patch can be removed is not
+> supported (see 1.2 below and DEVELOPMENT_PLAN, "Phase 1.2 as attempted"), and
+> 1.5's deletion list is contradicted by the measurements. **1.3, 1.4 and 1.5
+> should not be started as written.**
+>
+> What replaced it: state the invariants a decomposition must satisfy, measure
+> them, rebuild against them. DEVELOPMENT_PLAN's **"Invariants"** section is the
+> live document. Two results from it bear directly on this phase — the blind
+> patch's replacement is now specified as a *seed set* whose own fit validates
+> its own facets (admissible: 84.6% success against 0.4% for the rest), and the
+> growth target is *covers the surface*, not *equals it*, because overshoot into
+> a better-explaining neighbour is unavoidable and benign.
 
 
 - **1.0 Reference labeling — ground truth per mesh face.** **DONE 2026-07-30.**
@@ -703,7 +759,25 @@ commit gate (`MIN_AXIAL_SWEEP_DEG`, torus ratio, `MIN_*_FACES`,
 `resolve_claims`) keeps its exact meaning.
 
 - **1.1 Closed-form initializers, unit-tested first** **DONE 2026-07-31** —
-  `src/stage2/initialize.rs`, 8 unit tests, not yet wired in (1.2 consumes it).
+  `src/stage2/initialize.rs`, 8 unit tests. **Wiring update 2026-08-06: the TORUS
+  initializer is now consumed**, as a second candidate inside
+  `ToroidalSurface::fit_surface`, LM-refined and selected against the geometric
+  fit on residual. The cylinder, sphere and cone ones remain unconsumed.
+  What forced it was a separate defect in `fit_torus_inner`: it picked the **25th
+  percentile** of adjacent-pair normal-line radius estimates to separate tube from
+  azimuthal readings, which is a statistic on a sample of four and on a small
+  vertex star lands in the wrong population — producing an axis a quarter-turn off
+  with the data on the fitted torus's inner equator (`filleted_hole_block`:
+  R 20.7 / r 18.7 against a true 9 / 2, 193× vtol, where the reference's own
+  parameters fit the same 16 vertices to 2.1 float32 quanta and the sum-squared
+  residual at the truth was 1.4e7× smaller). Replaced by a candidate sweep selected
+  on residual; no tolerance added. Together the two changes take the fraction of
+  torus facets with a workable seed set from 25/54/90% to **100/100/100%** on
+  `filleted_hole_block`, `filleted_cylinder`, `filleted_pipe`. **Cost:**
+  `stepped_block` fine 75 → 127 surfaces, medium loses a torus, and
+  `remesh_cone_tangent_fine` fails — the canary DEVELOPMENT_PLAN nominated for
+  this class of change. Full account in DEVELOPMENT_PLAN, "The torus fitter's
+  percentile, and what wiring the closed form in cost".
   All four are **exact on synthetic data**, far inside this step's ~1e-9 bar:
   cylinder axis 1e-14 / radius 1e-9 / position 1e-9 at r = 0.5, 7 and 40;
   sphere centre and radius 1e-9; cone axis 2.8e-14–1.9e-12, half-angle

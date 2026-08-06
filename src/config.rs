@@ -226,15 +226,11 @@ struct CliArgs {
     #[arg(long = "viz-seed-show", default_value = "failing")]
     pub viz_seed_show: String,
 
-    /// Seed-set sizes to sample, in facets (default "2,3,4" — the sizes the
-    /// DEVELOPMENT_PLAN Invariants section specifies).
+    /// Facet counts the seed-set generators may use. Only the maximum is read,
+    /// as the bound on chain length, so "2,3,4" means "chains of up to 4
+    /// facets" — the sizes the DEVELOPMENT_PLAN Invariants section specifies.
     #[arg(long = "viz-seed-sizes", default_value = "2,3,4", value_delimiter = ',')]
     pub viz_seed_sizes: Vec<usize>,
-
-    /// Seed-set shapes to sample: `ball`, `split`, `strip`, `random`.
-    #[arg(long = "viz-seed-shapes", default_value = "ball,split,strip,random",
-          value_delimiter = ',')]
-    pub viz_seed_shapes: Vec<String>,
 
     /// How many anchor facets to sample per reference face.
     #[arg(long = "viz-seed-samples", default_value = "12")]
@@ -295,10 +291,8 @@ pub struct Config {
     pub viz_seeds: bool,
     /// Which seed sets to stop on in `--viz-seeds`.
     pub viz_seed_show: String,
-    /// Seed-set sizes to sample in `--viz-seeds`.
+    /// Bound on seed-set facet count in `--viz-seeds` (max is what is read).
     pub viz_seed_sizes: Vec<usize>,
-    /// Seed-set shapes to sample in `--viz-seeds`.
-    pub viz_seed_shapes: Vec<String>,
     /// Anchor facets sampled per reference face in `--viz-seeds`.
     pub viz_seed_samples: usize,
     /// Max conforming seed sets tried per anchor facet.
@@ -373,7 +367,6 @@ impl Config {
             viz_seeds: args.viz_seeds,
             viz_seed_show: args.viz_seed_show,
             viz_seed_sizes: args.viz_seed_sizes,
-            viz_seed_shapes: args.viz_seed_shapes,
             viz_seed_samples: args.viz_seed_samples,
             viz_seed_max_attempts: args.viz_seed_max_attempts,
             viz_seed_coplanar_clause: args.viz_seed_coplanar_clause,

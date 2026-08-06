@@ -22,6 +22,12 @@ GENERAL OPTIONS:
                              reference: facet-normal exactness per surface type, closed-form
                              initializer error, the seam assumption, and over/under-segmentation.
                              Diagnostics only. Requires --compare.
+    --invariant-report       Score the DEVELOPMENT_PLAN "Invariants" against the --compare
+                             reference: whether the fitting requirement is satisfiable, whether
+                             an angular tolerance can separate adjacent surfaces, whether a wrong
+                             surface type also explains a true support, and whether growth from
+                             different seeds converges on the same surface. Runs after stage 2.2.
+                             Diagnostics only. Requires --compare.
     --vertex-tolerance=<value>  Fitting tolerance in STL units (default: 5e-5)
     --surface-tolerance=<value> Surface-to-face offset tolerance in STL units (default: 0.4)
     --angular-tolerance=<deg>   Max dihedral angle between adjacent triangles on the same surface (default: 25)
@@ -38,6 +44,22 @@ GENERAL OPTIONS:
                              surface ladder, 2.4 resolution & repair, 2.5 selected surfaces
     --viz-stages=<stages>    Open interactive 3D visualization at specified stages (e.g. 2.1,2.2)
     --viz-stages-level=<N>   Viz detail level: 1 = committed hypotheses (default), 2 = region colors
+    --viz-seeds              Interactively visualize how SEED SETS grow, against the --compare
+                             ground truth. Stops on each facet for which every conforming seed
+                             set fails, and names the validation clause that refused it.
+                             Requires --compare. See "Seed-growth visualization" below.
+    --viz-seed-show=<what>   Which seed sets to stop on: failing (default), all, covering
+    --viz-seed-sizes=<list>  Facet counts the seed generators may use; only the maximum
+                             is read, as the bound on chain length (default 2,3,4 — the
+                             sizes the DEVELOPMENT_PLAN Invariants section specifies)
+    --viz-seed-samples=<N>   Anchor facets sampled per reference face (default 12)
+    --viz-seed-max-attempts=<N>  Conforming seed sets tried per anchor facet (default 12)
+    --viz-seed-spec-only     Try only the seed patterns the Invariants section names, without
+                             the grown-ball fallback — shows where those rules alone fall short
+    --viz-seed-coplanar-clause   Enforce the section's "no more than three coplanar" clause
+                             (measured: it rejects every seed containing a fused quad)
+    --viz-seed-confine-region    Confine seed growth to the stage-2.1 smooth region instead of
+                             letting validation be the only limit
 ```
 
 ### Examples
@@ -54,6 +76,12 @@ GENERAL OPTIONS:
 
 # Score the mesh against ground truth read from the reference (see src/reference.rs)
 ./target/debug/brepper input.stl --compare reference.step --stage 1 --reference-report -v
+
+# Score the Invariants section's clauses against that ground truth
+./target/release/brepper input.stl --compare reference.step --stage 2.2 --invariant-report -v
+
+# Watch which seed sets fail to grow to their surface, and why
+./target/release/brepper input.stl --compare reference.step --stage 2.2 --viz-seeds -v
 ```
 
 ### Reference scoring (`--reference-report`)
@@ -88,6 +116,79 @@ At the end of **stage 2**, our decomposition against the reference's:
 Both are area-weighted and threshold-free. They catch what the distance and
 volume gates cannot: a 9-surface decomposition of a 26-surface part passes every
 existing gate but scores `surface purity 0.2201`.
+
+### Invariant scoring (`--invariant-report`)
+
+Scores the clauses of DEVELOPMENT_PLAN's **Invariants** section against the same
+ground truth. Also diagnostics only, and it runs after **stage 2.2** rather than at
+the end of stage 2, so it still works on models whose decomposition crashes or
+times out. One TSV row per reference face on stdout, a per-model summary on stderr.
+
+```bash
+./target/release/brepper input.stl --compare reference.step --stage 2.2 --invariant-report -v
+```
+
+Five families, one per clause:
+
+- **F — is the fitting requirement satisfiable?** With the reference's *own* exact
+  parameters, how far off it the facets' vertices, edge midpoints, quad diagonals,
+  centroids and interiors actually land. This asks whether a clause can be met at
+  all before asking whether the algorithm meets it, and it is what showed that
+  facet centroids are not a bound on the whole facet while edge midpoints are.
+- **A — can an angular tolerance separate adjacent surfaces?** The largest dihedral
+  *inside* a reference face against the smallest *across* its boundary, plus the
+  count of edges stage 2.1 calls sharp strictly inside a true surface.
+- **I — does a wrong surface type also explain a true support?** All four analytic
+  types fitted to each reference face's own facets, with residuals in float32
+  quanta.
+- **S — seed independence.** Growth run from many seeds inside one true surface:
+  how many recover it, how many distinct answers come back, and whether a failure
+  leaked past the true boundary or stopped short of it.
+- **G — growth independence.** The flood re-run with the neighbour iteration
+  reversed, and the refit fixpoint restarted from the whole true face set.
+
+Corpus sweep and aggregation:
+
+```bash
+./tools/invariants.sh --out tmp/inv.tsv --jobs 8 && python3 tools/inv_analyze.py tmp/inv.tsv
+```
+
+`tools/invariants.sh` reuses `tools/sweep.sh`'s model/reference pairing, so the two
+instruments always cover the same corpus.
+
+Env-gated probes on the same path, for when a single fit misbehaves:
+`BREPPER_INV_FITDUMP=1` prints the reference's own parameters beside the fitted
+ones for any seed that fails admission, with a verdict on whether the failure is
+non-identifiability or non-convergence; `BREPPER_INV_BASIN=1` sweeps the basin of
+attraction of grow-with-refit; `BREPPER_INV_PATCHSIZE=1` measures fit accuracy
+against support size.
+
+### Seed-growth visualization (`--viz-seeds`)
+
+Opens the 3D window and walks **anchor facets**, stopping on each one for which
+*every* conforming seed set fails to grow to its surface. Requires `--compare`.
+
+```bash
+./target/release/brepper tests/ccad/generated/simple_cone.stl   --compare tests/ccad/generated/simple_cone.step --stage 2.2   --viz-seeds --viz-seed-spec-only --viz-seed-samples 12 -v
+```
+
+| colour | meaning |
+|--------|---------|
+| white | the anchor facet |
+| green | the rest of the seed set |
+| blue | correctly covered |
+| red | overshoot — grown past the true boundary |
+| orange | true facets that **blocked** further growth |
+| yellow | true facets missed for some other reason |
+
+Controls are the same as `--viz-stages`: `Space` next seed set, `Shift+Space` next
+reference face, `Q` quit. The status line names the seed shape, how far the seed
+sits from its own fit, and the diagnosis — which validation clause refused what,
+since `face_validates` is a conjunction of vertex distance, centroid distance and
+orientation coherence and naming only the first is misleading.
+
+`BREPPER_VIZ_SEEDS_TEXT=1` prints the same diagnoses with no window, which is what
+the corpus catalogues are built from.
 
 See [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for full documentation.
 
@@ -172,6 +273,8 @@ At each BFS step, the window shows the STL mesh with highlighted faces: seed fac
 | Quit visualization | `Q` |
 
 Supported stages: `2.1` (sharp edges + jet prior), `2.2` (smooth regions), `3.3` (edge curves), `3.4` (faces), `3.5` (shells), `3.6` (solids). (The old per-type BFS viz stages are retired with the stage-2 rewrite.)
+
+`--viz-seeds` opens the same window on a different question — how seed sets grow rather than how the pipeline proceeds — and is documented under [Seed-growth visualization](#seed-growth-visualization---viz-seeds) above.
 
 
 ## Viewer

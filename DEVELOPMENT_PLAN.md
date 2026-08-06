@@ -1703,7 +1703,7 @@ that mechanism died with the classifier.)
   - `--viz-seeds` — interactive walk over anchor facets, stopping on those where
     every conforming seed set fails, with the failing validation clause named.
     Options: `--viz-seed-show=failing|all|covering`, `--viz-seed-sizes`,
-    `--viz-seed-shapes`, `--viz-seed-samples`, `--viz-seed-max-attempts`,
+    `--viz-seed-samples`, `--viz-seed-max-attempts`,
     `--viz-seed-spec-only` (only the section's own seed patterns, no grown-ball
     fallback), `--viz-seed-coplanar-clause`, `--viz-seed-confine-region`.
     `BREPPER_VIZ_SEEDS_TEXT=1` gives the same diagnoses without a window.
