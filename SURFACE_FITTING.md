@@ -439,6 +439,158 @@ cube's fillet radius equals its corner-sphere radius. See DEVELOPMENT_PLAN,
 
 ---
 
+## Cone initialization: the options not yet built (surveyed 2026-08-06)
+
+The cone is the worst-initialized surface in the pipeline, and unlike the torus
+its problem is not a single fixable defect. This section records what fails, what
+the literature says is and is not possible, and the three routes that remain
+open — none of them implemented. Nothing here is a recommendation; it is the
+option set, with each option's point/facet cost and its known weakness.
+
+### The measured starting point
+
+On `simple_cone` (true half-angle 9.4623°, apex at (0,0,60)), a two-quad seed
+whose six vertices lie in two rings of three spanning 31.3° of arc:
+
+| quantity | value |
+|---|---|
+| reference parameters' residual on those six vertices | 4.1e-7 mm = 0.01× vtol = 0.40 quanta |
+| `fit_cone`'s half-angle | **2.54°** |
+| `axis_normals_consistent` on that fit | correctly refuses it |
+| the fallback cylinder's residual on its own seed | 1.1e-2 mm = **222.7× vtol** |
+
+So the information is present and exact, and every existing route misses it. The
+routes and why they decline, at this support size:
+
+| route | requirement | on a 2-facet seed |
+|---|---|---|
+| `cone_axis_from_centred_normals` (`initialize.rs`) | centred normals spanning two directions | rank 1 → declines |
+| `estimate_axis_from_normal_diffs` (`conical.rs`) | ≥3 normals | declines |
+| `compute_truncated_cone_axis`, <8 faces | — | apex→centroid *guess* |
+| `fit_cone_normal_line_rescue` | normal-line pairs | narrow arcs degenerate |
+
+Fraction of cone facets that have *some* conforming seed set which grows to cover
+their surface, measured with `--viz-seeds`: `simple_cone` 4/12, `cone_cylinder`
+7/12, `nosecone` 10/12.
+
+### What the literature rules out
+
+Andrews & Séquin (CAD&A 2013) state that no linear least-squares method is known
+for fitting circular cones or cylinders from **point positions alone**, citing
+Petitjean's survey; linear methods exist only for point clouds *with normals*
+(Lukács, Martin & Marshall, ECCV 1998). The obstruction is structural rather than
+a gap in the literature: a right circular cone's quadric form must be
+`M = d dᵀ − cos²α·I`, i.e. `M` must have a **repeated eigenvalue**, and that
+condition is neither linear nor quadratic in the quadric coefficients, so it
+cannot be imposed on a linear fit.
+
+Read that as a bound on what to look for. "Analytic, points-only, six points,
+no structural assumption" is not available.
+
+### Option A — kinematic scaling field for the apex
+
+Fit the linear velocity field `v(p) = γp + a` and require it tangent to the
+surface, `v(p)·n(p) = 0`. Each oriented facet gives one linear equation
+
+```text
+γ (p·n) + a·n = 0
+```
+
+in four unknowns, homogeneous — a null-space solve from **3 facets**. The apex is
+`A = −a/γ`. Then translate the apex to the origin and fit the centred quadric
+`Σ cᵢⱼ pᵢpⱼ = 0` (Taubin) from **5 points**; `M`'s eigenvalues are
+`(sin²α, −cos²α, −cos²α)`, so the odd eigenvector is the axis and
+`tan²α = λ_single / −λ_repeated`. Closed form throughout, no iteration.
+
+**Why this is the interesting one.** Divide the equation by γ and it reads
+`n·(p − A) = 0` — *exactly* Phase 1.1's `nᵢ·A = nᵢ·pᵢ`, the relation already in
+`initialize.rs`. What differs is the parameterization, and that is precisely the
+objection Phase 1.1 recorded when it rejected the apex solve: "the apex runs off
+to infinity as a patch flattens toward a cylinder, and an estimator for an
+unbounded quantity explodes near its degenerate case". In `(γ, a)` coordinates
+**γ → 0 is the cylinder** — a regular interior point of the parameter space, not
+an edge — and the paper's own treatment is to read γ below a floor as "fit a
+cylinder instead". This is the same Pratt/Taubin move DEVELOPMENT_PLAN already
+adopts for the bent tube (`k = 1/R`, "no infinity anywhere"), applied to the apex
+rather than the spine curvature.
+
+**Cost and weakness.** Needs 3 facets, so a two-quad seed is out — with two
+normals no normals-based method can work, and that is structural. The plane
+relation is exact for a facet spanning two rulings and carries the
+`O(Δθ²/8)` chord-plane lean otherwise (measured 1.5e-3 relative at Δθ = 0.11
+rad), so it is near-exact rather than exact on a straddling tessellation. Ample
+for an initializer.
+
+### Option B — general quadric, then eigen-projection
+
+Fit an unconstrained quadric by linear least squares (10 coefficients, 9 DOF, so
+**≥9 points**), then project the 3×3 form onto `d dᵀ − cos²α·I` by averaging its
+two closest eigenvalues. Points only, no normals, no structural assumption — the
+closest thing to the stated preference that exists.
+
+**Cost and weakness.** Algebraic rather than geometric distance, so it is biased
+and is an initializer only. Nine points is reachable at modest support (a 4-quad
+vertex star has 9 vertices, a 4-quad chain 10) but rules out the 6-vertex chain.
+The existing `### Quadric Fitting` note below already flags this as a possible
+cone initialization; this is what it would cost.
+
+### Option C — two circles from the ring structure
+
+Two ruling-aligned quads give six vertices in two rings of three, one per rim.
+Three points in space determine a unique circle, so each rim yields a centre, a
+radius and a normal; the line through the two centres is the axis and the two
+radii at two heights give the half-angle by similar triangles. Exact, vertices
+only, non-iterative, and it works from **2 facets**.
+
+Measured on the seed above: axis **0.0002°** off, half-angle **0.0001°** off,
+the two radii recovered to 0.1–0.2× vtol, against a mesh error of 4.1e-7 mm.
+Conditioning is comfortable rather than marginal — the rings span 31.3°, and the
+sensitivity `2ε/α²` gives a radius uncertainty of 1.1e-5 mm, under a quarter of
+vtol.
+
+**Cost and weakness.** Needs the ruling structure the other options do not: two
+rings with ≥3 points each, i.e. ruling-aligned facets. Phase 1.0 measured 25.6%
+of corpus cylinder facets straddling three or more rulings, so this cannot be the
+only route. Ring identification needs no provisional axis — the shared edge
+between two quads in a strip *is* a ruling, so its endpoints are one per ring and
+walking the strip labels the rest combinatorially.
+
+### Considered and rejected
+
+- **Solving the 6-DOF system from exactly six points.** Exactly determined, so
+  finitely many right circular cones pass through them — but a polynomial system
+  with multiple roots and no least-squares character. It is also the configuration
+  where a *second exact cone* was measured: on one `simple_cone` seed the fitter
+  returned half-angle 72.85° with its apex 10.8 patch-extents away, explaining the
+  six vertices to 6.7e-16 mm, i.e. better than the true cone manages against a
+  float32 mesh. Six points genuinely admit more than one cone; Option C escapes
+  that only because the ring structure supplies information beyond the six
+  positions.
+- **Reordering `compute_truncated_cone_axis` to try the exact normal-difference
+  method before the apex→centroid guess.** Tried, and much worse — see the DO-NOT
+  note on that function. Differencing near-identical normals destroys the signal.
+- **Orthogonal-distance geometric fitting** (Lukács et al.; Ahn, *Least Squares
+  Orthogonal Distance Fitting of Curves and Surfaces*, Springer LNCS 3151). This
+  is the right *refinement* and is essentially what the existing LM already does.
+  It does not address initialization, which is where every measured failure is.
+
+### Sources
+
+- Andrews, J.; Séquin, C. H. *Type-Constrained Direct Fitting of Quadric
+  Surfaces.* Computer-Aided Design & Applications 10(a), 2013.
+- Andrews, J.; Séquin, C. H. *Generalized, basis-independent kinematic surface
+  fitting.* Computer-Aided Design 45, 2013, 615–620.
+- Lukács, G.; Martin, R.; Marshall, D. *Faithful Least-Squares Fitting of Spheres,
+  Cylinders, Cones and Tori for Reliable Segmentation.* ECCV 1998, 671–686.
+- Petitjean, S. *A survey of methods for recovering quadrics in triangle meshes.*
+  ACM Computing Surveys 34(2), 2002, 211–262.
+- Pottmann, H.; Lee, I.-K.; Randrup, T. *Reconstruction of kinematic surfaces from
+  scattered data.* 1998.
+- Taubin, G. / Pratt, V. — direct algebraic surface fitting, the source of the
+  generalized-eigenvalue form used in Options A and B.
+
+---
+
 ## Algorithm Reference
 
 This section documents key algorithmic techniques drawn from computational geometry research that inform the surface fitting approach. These are referenced by the stage descriptions above.
@@ -515,7 +667,7 @@ $$Q(x, y, z) = Ax^2 + By^2 + Cz^2 + Dxy + Exz + Fyz + Gx + Hy + Iz + J = 0$$
 Fitting: construct the $N \times 10$ feature matrix and find its null space via SVD (smallest singular vector). The matrix form $x^T \mathbf{A} x + b^T x + c = 0$ encodes the surface type in the eigenvalues of $\mathbf{A}$:
 - **Sphere**: $\mathbf{A} = \lambda I$ (three equal eigenvalues).
 - **Cylinder**: one eigenvalue is 0 (axis direction), other two equal.
-- **Cone**: three nonzero eigenvalues with $\det(\mathbf{A}) \approx 0$ (passes through apex).
+- **Cone**: eigenvalues $(\sin^2\theta, -\cos^2\theta, -\cos^2\theta)$ — one of opposite sign to a repeated pair, so $\det(\mathbf{A}) \neq 0$. What is singular for a cone is the *extended* $4 \times 4$ matrix, because the apex is a singular point of the surface. (An earlier version of this line said "three nonzero eigenvalues with $\det(\mathbf{A}) \approx 0$", which is the **cylinder** condition — a cylinder is the case with one zero eigenvalue.)
 - **Plane**: $\mathbf{A} = 0$ (all eigenvalues zero).
 
-Quadric fitting is fast (SVD of an $N \times 10$ matrix, $O(N)$) and provides a good initialization for specialized fitters. It could be used as an alternative initialization for cone fitting (stage 2.2).
+Quadric fitting is fast (SVD of an $N \times 10$ matrix, $O(N)$) and provides a good initialization for specialized fitters. It could be used as an alternative initialization for cone fitting — see **Option B** under "Cone initialization: the options not yet built" above for what that costs (≥9 points, algebraic-distance bias) and for the two alternatives.

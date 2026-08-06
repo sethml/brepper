@@ -86,6 +86,27 @@ fn estimate_axis_from_normals(
 /// Strategy 1 (≥8 faces): covariance smallest-eigenvector.
 /// Strategy 2 (few faces, shared vertex): apex→base-centroid direction.
 /// Strategy 3 (few faces, no shared vertex): cross product of normal diffs.
+///
+/// **DO NOT reorder 2 and 3 to put the exact method first — measured, it is much
+/// worse.** Strategy 3 is exact in principle (`(nᵢ − nⱼ)·d = 0` on a cone, so the
+/// cross product of two independent differences *is* the axis) and it is
+/// currently unreachable whenever strategy 2 fires, which on a small support is
+/// always: the candidate test `count >= face_indices.len().max(2) - 1` is
+/// `>= 1` on two facets, so every vertex qualifies. That looks like a bug and is
+/// not. Putting strategy 3 first takes the fraction of cone facets with a
+/// workable seed from 4/12 to 1/12 on `simple_cone`, 7/12 to 1/12 on
+/// `cone_cylinder`, and 10/12 to 6/12 on `nosecone`.
+///
+/// The reason is conditioning, and it is the amplification law from
+/// DEVELOPMENT_PLAN's Phase 1.0 in another guise. Adjacent facet normals differ
+/// by one angular step, so on `simple_cone`'s 1.7° tessellation
+/// `|nᵢ − nⱼ| ≈ 0.03`; two such differences taken along a facet chain are nearly
+/// parallel, so their cross product is tiny and its *direction* is dominated by
+/// the normals' own error. Differencing quantities that are already close throws
+/// away the signal. The apex→centroid guess never differentiates, so it is
+/// better conditioned despite being cruder — exactly the trade Phase 1.1 hit
+/// when it found that the normal-covariance cone axis fails above a 35.26°
+/// half-angle while a bounded, non-differencing estimate does not.
 fn compute_truncated_cone_axis(
     face_indices: &[usize],
     vertex_set: &[usize],

@@ -263,6 +263,10 @@ Integration tests in `tests/stage4_integration.rs` verify that:
 
 Bad test STL files can be regenerated with `python3 scripts/generate_bad_tests.py`.
 
+## Funny
+
+https://www.smbc-comics.com/comic/crank
+
 ## License
 
 MIT License

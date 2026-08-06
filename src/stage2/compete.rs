@@ -170,7 +170,7 @@ impl CompeteHyp {
         }
     }
     /// Short surface-type name for diagnostics.
-    fn kind_name(&self) -> &'static str {
+    pub(super) fn kind_name(&self) -> &'static str {
         match self {
             CompeteHyp::Planar(_) => "plane",
             CompeteHyp::Conical(h) => {
@@ -187,7 +187,7 @@ impl CompeteHyp {
     /// Simplest-first rank for claim resolution (a face both a cylinder and a
     /// torus explain within tolerance is the cylinder's). Matches the ladder's
     /// ascending-DOF order.
-    fn dof_rank(&self) -> u8 {
+    pub(super) fn dof_rank(&self) -> u8 {
         match self {
             CompeteHyp::Planar(_) => 0,
             CompeteHyp::Spherical(_) => 1,
@@ -284,6 +284,49 @@ pub(super) fn compete_region(
         if claimed[seed] && interior_of_claims(mesh, seed, &claimed) {
             continue;
         }
+        if let Some((hyp, _area, _dof)) =
+            compete_from_seed(mesh, &in_region, seed, jet, centroids, config, flat_eps, debug)
+        {
+            let idx = committed.len();
+            for &f in hyp.faces() {
+                claim_lists[f].push(idx);
+                claimed[f] = true;
+            }
+            committed.push(hyp);
+        }
+        // A seed that grows nothing analytic costs only its own turn.
+    }
+
+    resolve_claims(
+        mesh,
+        &region.faces,
+        &mut committed,
+        &claim_lists,
+        config.vertex_tolerance_mm,
+        config,
+    )
+}
+
+/// Compete every jet-admitted surface type from one seed face and return the
+/// winner: the hypothesis with the **largest validated area**, simplest-DOF
+/// tiebreak, after the `MIN_AXIAL_SWEEP_DEG` identifiability guard.
+///
+/// This is the whole of `compete_region`'s per-seed work, extracted verbatim so
+/// that the invariant harness (`super::invariants`) drives the *same* code the
+/// pipeline does rather than a reimplementation of it. `compete_region` keeps
+/// ownership of seed ordering, claiming and resolution.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn compete_from_seed(
+    mesh: &ConnectedMesh,
+    in_region: &[bool],
+    seed: usize,
+    jet: &[JetField],
+    centroids: &[[f64; 3]],
+    config: &Config,
+    flat_eps: f64,
+    debug: bool,
+) -> Option<(CompeteHyp, f64, u8)> {
+    {
         let jf = jet[seed];
         // Dominant / secondary principal-curvature MAGNITUDES. The jet orders
         // k1 ≥ k2 by signed value, so for a concave feature (a hole wall,
@@ -321,13 +364,13 @@ pub(super) fn compete_region(
         };
 
         // Plane is always a candidate (cheap; catches misread flats).
-        let plane = grow::<PlanarSurface>(mesh, &in_region, seed, jet, centroids, config, 1);
+        let plane = grow::<PlanarSurface>(mesh, in_region, seed, jet, centroids, config, 1);
         let mut cone_area = None;
         let mut sphere_area = None;
         let mut torus_area = None;
         if a1 >= flat_eps {
             // Curved: a developable (cylinder/cone) is always plausible.
-            let cone = grow::<ConicalSurface>(mesh, &in_region, seed, jet, centroids, config, MIN_CYLINDER_FACES);
+            let cone = grow::<ConicalSurface>(mesh, in_region, seed, jet, centroids, config, MIN_CYLINDER_FACES);
             cone_area = cone.as_ref().map(|(_, a, f)| (*a, f.len()));
 
             // Toroidal candidate: a direct grow from this seed (fillet tori,
@@ -339,8 +382,8 @@ pub(super) fn compete_region(
             // degenerate R≈r hole of a donut — a whole-region ladder case,
             // not a competition case).
             let mut torus = if a2 < 0.8 * a1 {
-                let patch = seed_patch(mesh, &in_region, seed, jet);
-                torus_candidate(mesh, &in_region, &patch, &[seed], centroids, config)
+                let patch = seed_patch(mesh, in_region, seed, jet);
+                torus_candidate(mesh, in_region, &patch, &[seed], centroids, config)
             } else {
                 None
             };
@@ -350,7 +393,7 @@ pub(super) fn compete_region(
             if let Some((cyl, _, cyl_faces)) = cone.as_ref() {
                 if cyl.is_cylinder() {
                     let promoted =
-                        promote_bend(mesh, &in_region, cyl, cyl_faces, jet, centroids, config);
+                        promote_bend(mesh, in_region, cyl, cyl_faces, jet, centroids, config);
                     if let Some(p) = promoted {
                         if torus.as_ref().is_none_or(|(_, a, _)| p.1 > *a) {
                             torus = Some(p);
@@ -363,7 +406,7 @@ pub(super) fn compete_region(
             consider(cone.map(|(h, a, _)| (CompeteHyp::Conical(h), a)), 2, &mut best);
             // Curved in both directions → also try a sphere.
             if a2 >= 0.3 * a1 {
-                let sphere = grow::<SphericalSurface>(mesh, &in_region, seed, jet, centroids, config, MIN_SPHERE_FACES);
+                let sphere = grow::<SphericalSurface>(mesh, in_region, seed, jet, centroids, config, MIN_SPHERE_FACES);
                 sphere_area = sphere.as_ref().map(|(_, a, f)| (*a, f.len()));
                 consider(sphere.map(|(h, a, _)| (CompeteHyp::Spherical(h), a)), 1, &mut best);
             }
@@ -379,37 +422,22 @@ pub(super) fn compete_region(
             );
         }
 
-        if let Some((hyp, area, dof)) = best {
+        if let Some((hyp, area, dof)) = best.as_ref() {
             if debug {
                 eprintln!(
                     "    compete: seed {seed} → {} ({} faces, area {area:.2}, dof {dof}, sweep {:.1}\u{00b0})",
                     hyp.kind_name(),
                     hyp.faces().len(),
-                    match &hyp {
+                    match hyp {
                         CompeteHyp::Toroidal(t) => torus_sweep(mesh, t).to_degrees(),
                         CompeteHyp::Conical(c) => conical_sweep(mesh, c).to_degrees(),
                         _ => 0.0,
                     }
                 );
             }
-            let idx = committed.len();
-            for &f in hyp.faces() {
-                claim_lists[f].push(idx);
-                claimed[f] = true;
-            }
-            committed.push(hyp);
         }
-        // A seed that grows nothing analytic costs only its own turn.
+        best
     }
-
-    resolve_claims(
-        mesh,
-        &region.faces,
-        &mut committed,
-        &claim_lists,
-        config.vertex_tolerance_mm,
-        config,
-    )
 }
 
 /// Resolve multi-claimed faces to their best-fitting claimant (2× margin to
@@ -613,7 +641,7 @@ fn refit_in_place(mesh: &ConnectedMesh, hyp: &mut CompeteHyp, config: &Config) {
 /// jet-similar seed patch, then flood-accept every region face the fit
 /// validates and refit on the grown support, to a fixpoint. Returns the
 /// hypothesis, its validated area, and its face list.
-fn grow<S: SurfaceType>(
+pub(super) fn grow<S: SurfaceType>(
     mesh: &ConnectedMesh,
     in_region: &[bool],
     seed: usize,
@@ -630,7 +658,7 @@ fn grow<S: SurfaceType>(
 /// fit the patch, flood-accept every region face the fit validates, refit on
 /// the grown support, to a fixpoint. Returns the hypothesis, its validated
 /// area, and its face list.
-fn grow_from<S: SurfaceType>(
+pub(super) fn grow_from<S: SurfaceType>(
     mesh: &ConnectedMesh,
     in_region: &[bool],
     start: usize,
@@ -736,7 +764,7 @@ fn axial_sweep(
 /// Sweep of a candidate's support about the axis whose radius it determines.
 /// Planes and spheres have no axis — a sphere's radius is pinned by any patch —
 /// so they report a full turn and are never rejected on this ground.
-fn candidate_sweep(mesh: &ConnectedMesh, hyp: &CompeteHyp) -> f64 {
+pub(super) fn candidate_sweep(mesh: &ConnectedMesh, hyp: &CompeteHyp) -> f64 {
     match hyp {
         CompeteHyp::Toroidal(h) => torus_sweep(mesh, h),
         CompeteHyp::Conical(h) => conical_sweep(mesh, h),
@@ -932,7 +960,7 @@ fn promote_bend(
 
 /// Connected region-faces reachable from `seed` that all validate `fit`
 /// (vertex tolerance + centroid tolerance + orientation coherence).
-fn flood<S: SurfaceType>(
+pub(super) fn flood<S: SurfaceType>(
     mesh: &ConnectedMesh,
     in_region: &[bool],
     seed: usize,
@@ -971,7 +999,7 @@ fn flood<S: SurfaceType>(
 
 /// Does face `fi` validate `fit` (all vertices ≤ vtol, centroid ≤ stol,
 /// orientation coherent)?
-fn face_validates<S: SurfaceType>(
+pub(super) fn face_validates<S: SurfaceType>(
     mesh: &ConnectedMesh,
     fi: usize,
     fit: &S::Fit,
@@ -1104,7 +1132,7 @@ fn centroid_gap(centroids: &[[f64; 3]], a: usize, b: usize) -> f64 {
 /// the arc degrades to one plane per facet. Handing the fit an unfiltered
 /// neighbourhood instead costs nothing in soundness: a patch straddling a
 /// junction is what `condition_patch` trims and what flood validation rejects.
-fn seed_patch(mesh: &ConnectedMesh, in_region: &[bool], seed: usize, jet: &[JetField]) -> Vec<usize> {
+pub(super) fn seed_patch(mesh: &ConnectedMesh, in_region: &[bool], seed: usize, jet: &[JetField]) -> Vec<usize> {
     let patch = grow_patch(mesh, in_region, seed, jet, true);
     if patch.len() >= MIN_CONDITION_FACES {
         return patch;

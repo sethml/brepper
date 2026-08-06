@@ -146,6 +146,16 @@ struct CliArgs {
     #[arg(long = "reference-report")]
     pub reference_report: bool,
 
+    /// Measure the DEVELOPMENT_PLAN "Invariants" against the --compare
+    /// reference's ground truth: whether the stated fitting requirement is
+    /// satisfiable, whether an angular tolerance can separate adjacent
+    /// surfaces, whether a wrong surface type also explains a true support, and
+    /// whether growth from different seeds and traversal orders converges on
+    /// the same surface. Diagnostics only — see [`crate::stage2::invariants`].
+    /// Requires --compare; runs after stage 2.2.
+    #[arg(long = "invariant-report")]
+    pub invariant_report: bool,
+
     /// Fitting tolerance for vertex-to-surface distance, in STL units.
     #[arg(long, default_value = "5e-5")]
     pub vertex_tolerance: f64,
@@ -202,6 +212,59 @@ struct CliArgs {
     /// 3 = also pause at each BFS face acceptance.
     #[arg(long = "viz-stages-level", default_value = "1")]
     pub viz_stages_level: u8,
+
+    /// Interactively visualize how SEED SETS grow under the clean
+    /// grow-with-refit operator, against `--compare` ground truth. Each step
+    /// shows one seed set and what it grew to: seed green, correctly covered
+    /// blue, overshoot red, missed yellow, and the facets that blocked further
+    /// growth orange. Requires --compare. See [`crate::stage2::invariants`].
+    #[arg(long = "viz-seeds")]
+    pub viz_seeds: bool,
+
+    /// Which seed sets to stop on: `failing` (default — anything that does not
+    /// cover its surface), `all`, or `covering`.
+    #[arg(long = "viz-seed-show", default_value = "failing")]
+    pub viz_seed_show: String,
+
+    /// Seed-set sizes to sample, in facets (default "2,3,4" — the sizes the
+    /// DEVELOPMENT_PLAN Invariants section specifies).
+    #[arg(long = "viz-seed-sizes", default_value = "2,3,4", value_delimiter = ',')]
+    pub viz_seed_sizes: Vec<usize>,
+
+    /// Seed-set shapes to sample: `ball`, `split`, `strip`, `random`.
+    #[arg(long = "viz-seed-shapes", default_value = "ball,split,strip,random",
+          value_delimiter = ',')]
+    pub viz_seed_shapes: Vec<String>,
+
+    /// How many anchor facets to sample per reference face.
+    #[arg(long = "viz-seed-samples", default_value = "12")]
+    pub viz_seed_samples: usize,
+
+    /// Max conforming seed sets to try per anchor facet before calling it a
+    /// failure.
+    #[arg(long = "viz-seed-max-attempts", default_value = "12")]
+    pub viz_seed_max_attempts: usize,
+
+    /// Enforce the section's "no more than three coplanar" clause on
+    /// cylinder/cone seeds. Off by default: measured, it rejects every seed
+    /// containing a fused quad, which is most of them.
+    #[arg(long = "viz-seed-coplanar-clause")]
+    pub viz_seed_coplanar_clause: bool,
+
+    /// Confine seed growth to the stage-2.1 smooth region instead of letting
+    /// validation be the only limit. Off by default, because the sharp-edge
+    /// partition demonstrably cuts true surfaces in two (measured: 350 edges
+    /// inside 68 reference faces), and a seed on the far side of such a cut can
+    /// never cover its surface however good it is — which is a partitioning
+    /// failure, not a seeding one. Turn it on to see that effect.
+    #[arg(long = "viz-seed-confine-region")]
+    pub viz_seed_confine_region: bool,
+
+    /// Try only the seed patterns the DEVELOPMENT_PLAN "Surface Seed
+    /// Requirements" name, without the grown-ball fallback. Use this to see
+    /// where those rules alone are insufficient.
+    #[arg(long = "viz-seed-spec-only")]
+    pub viz_seed_spec_only: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +289,26 @@ pub struct Config {
     pub compare_face_count: usize,
     /// Print the reference-scoring diagnostics (see [`crate::reference`]).
     pub reference_report: bool,
+    /// Print the invariant measurements (see [`crate::stage2::invariants`]).
+    pub invariant_report: bool,
+    /// Interactively visualize seed-set growth (see [`crate::stage2::invariants`]).
+    pub viz_seeds: bool,
+    /// Which seed sets to stop on in `--viz-seeds`.
+    pub viz_seed_show: String,
+    /// Seed-set sizes to sample in `--viz-seeds`.
+    pub viz_seed_sizes: Vec<usize>,
+    /// Seed-set shapes to sample in `--viz-seeds`.
+    pub viz_seed_shapes: Vec<String>,
+    /// Anchor facets sampled per reference face in `--viz-seeds`.
+    pub viz_seed_samples: usize,
+    /// Max conforming seed sets tried per anchor facet.
+    pub viz_seed_max_attempts: usize,
+    /// Enforce the section's coplanarity clause on developable seeds.
+    pub viz_seed_coplanar_clause: bool,
+    /// Confine seed growth to the stage-2.1 smooth region.
+    pub viz_seed_confine_region: bool,
+    /// Try only the section's own seed patterns, no grown-ball fallback.
+    pub viz_seed_spec_only: bool,
     /// Fitting tolerance for vertex-to-surface distance, in mm.
     pub vertex_tolerance_mm: f64,
     /// Tolerance for surface-to-triangle-face offset, in mm.
@@ -286,6 +369,16 @@ impl Config {
             compare_shape: None,
             compare_face_count: 0,
             reference_report: args.reference_report,
+            invariant_report: args.invariant_report || args.viz_seeds,
+            viz_seeds: args.viz_seeds,
+            viz_seed_show: args.viz_seed_show,
+            viz_seed_sizes: args.viz_seed_sizes,
+            viz_seed_shapes: args.viz_seed_shapes,
+            viz_seed_samples: args.viz_seed_samples,
+            viz_seed_max_attempts: args.viz_seed_max_attempts,
+            viz_seed_coplanar_clause: args.viz_seed_coplanar_clause,
+            viz_seed_confine_region: args.viz_seed_confine_region,
+            viz_seed_spec_only: args.viz_seed_spec_only,
             vertex_tolerance_mm: args.vertex_tolerance * scale,
             surface_tolerance_mm: args.surface_tolerance * scale,
             angular_tolerance_rad: args.angular_tolerance.to_radians(),

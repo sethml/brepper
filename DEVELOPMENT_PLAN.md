@@ -156,6 +156,67 @@ dihedral of exactly 360/n around the whole curve (a B-rep tessellation's steps
 vary and its density changes at seams), and its vertices sit exactly on the
 circumscribed circle rather than straddling the true surface.
 
+## Invariants
+
+In order to have consistent results for surface reconstruction regardless of facet ordering and BFS exploration order, we attempt to maintain various invariants. I think these invariants should hold for CAD-generated meshes with infinite precision. Given finite precision they should typically hold - we'll see.
+
+### Surface Fitting Requirement
+
+All surface fits must satisfy the seed requirements below, plus:
+
+* **Cylindrical, Conical:**
+  * All vertices within vertex tolerance of surface.
+  * All edge centers within surface tolerance of surface.
+  * All facet relative angles within angle tolerance.
+* **Spherical:**
+  * All vertices within vertex tolerance of surface.
+  * All facet centers within surface tolerance of surface.
+  * All facet relative angles within angle tolerance.
+* **NURBS:**
+  * All vertices within vertex tolerance of surface.
+  * All edges within surface tolerance of surface. *TODO: Can we inexpensively determine this, or do we need some kind of sampling?*
+  * All facet centers within surface tolerance of surface. *TODO: Ideally entire facet surface within surface tolerance of surface - can we determine this inexpensively?*
+  * All facet relative angles within angle tolerance.
+
+### Surface Seed Requirements
+
+Surfaces can be discovered by growing a set of seed facets to the set of contiguous facets that satisfy 
+
+A **non-contiguous facet chain** is a set of facets where each facet shares a single edge with any other facet in the chain.
+
+* **Plane:** Any facet that corresponds to the planar surface.
+* **Cylinder:** A non-contiuous facet chain including:
+  * Exactly 6 vertices *(avoids too few to identify a cylinder)*;
+  * No more than three of which are coplanar *(avoids misidentifying conical surfaces with a point as cylindrical)*.
+  * Fitted cylinder must not have such a large radius as to be effectively planar. (TBD!)
+* **Cone:** Either same seed criteria as cylinder *(seed facets do not include cone vertex)*, or a non-contiguous facet chain of 3 triangular facets which share a vertex in common *(the candidate cone apex)*.
+* **Sphere:** All facets sharing an edge with the seed facet.
+* **NURBS:** Fallback for unexplained sets of contiguous facets.
+
+### Surface Identification
+
+For every surface in the STEP model (excluding NURBS for now), surface fitting finds that surface.
+
+It may find other surfaces, such as a degenerate cone for a cylindrical surface. *TODO: we need to find a way to select the correct surface. For example, a cylindrical surface with an adjoining tangent spherical surface - a cone may fit the cylinder to within tolerances and include a strip of sphere facets, but the cylindrical fit should fit the cylindrical facets much more precisely - how do we choose between the two?*
+
+Because NURBS surfaces can have sub-surfaces fit other types (for example, a cylindrical strip around the equator of an ellipsoid), NURBS surface invariants are left as a future exercise and will probably require heuristics.
+
+### Surface Seed Independence
+
+For a given analytical surface, surface identification will find that surface regardless of seed, so long as the seed consists of facets which are members of the surface.
+
+### Growth Independence
+
+To discover surfaces we perform expansion starting with the seed. The surface discovered and set of facets at the limit of exapansion are independent of the order in which we grow to include new facets.
+
+### Open Questions
+
+Do we need quad fusion for these invariants to hold?
+Do these invariants hold theoretically given infinite precision?
+How well do these invariants actually hold given finite precision on reasonable test models?
+How do we test these invariants over test models - brute force search of every possible seed and every possible growth pattern would take exponential time, but perhaps random search would be a good approach?
+We should harden the invariants to be more true for actual models given numerical precision, then work on how to efficiently identify surfaces given the invariants.
+
 ## Dependencies
 
 | Library | Purpose | Version |

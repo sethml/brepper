@@ -22,6 +22,7 @@
 
 pub mod edges;
 pub(crate) mod initialize;
+pub mod invariants;
 pub mod regions;
 
 mod surface;
@@ -746,6 +747,32 @@ pub fn stage2(
             if matches!(vs.show_and_wait(overlay), VizAction::Quit) {
                 return Ok(segmentation_only_output(mesh, segmentation));
             }
+        }
+    }
+
+    // Invariant scoring (--invariant-report). Diagnostics only, and placed here
+    // because this is the first point where BOTH halves of what it needs exist:
+    // the jet and the smooth regions (2.2) and the untouched mesh. Running it
+    // before 2.3 keeps it usable on the models whose decomposition fails, which
+    // are the ones a fragility measurement most wants to see.
+    if config.invariant_report {
+        match config.compare_shape.as_ref() {
+            Some(shape) => {
+                let model = crate::reference::ReferenceModel::load(shape);
+                let labels = crate::reference::label_faces(&mesh, &model);
+                invariants::report(
+                    config,
+                    &mesh,
+                    &model,
+                    &labels,
+                    &segmentation.jet,
+                    &segmentation.edge_classes,
+                    &segmentation.face_region,
+                    &segmentation.regions,
+                    viz,
+                );
+            }
+            None => eprintln!("  Invariants: --invariant-report needs --compare; skipped"),
         }
     }
 

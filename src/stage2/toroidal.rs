@@ -702,19 +702,87 @@ fn fit_torus_inner(
     if r_estimates.is_empty() {
         return None;
     }
-
-    // Robust minor radius: 25th percentile of estimates.
-    // On a torus, adjacent-face normal-line intersections measure a mix of:
-    //  - tube curvature (≈ r, the minor radius) — from edges along the tube
-    //  - azimuthal curvature (≈ R ± r) — from edges along the major circle
-    // The tube-curvature estimates are the SMALLEST values, so we use a low
-    // percentile instead of median to avoid contamination from azimuthal estimates.
     r_estimates.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let minor_r = r_estimates[r_estimates.len() / 4];
 
-    if minor_r < 1e-10 {
+    // The adjacent-pair normal-line intersections are a MIXTURE of two
+    // populations: tube curvature (≈ r) from edges across the tube, and
+    // azimuthal curvature (≈ R ± r) from edges along the major circle. The tube
+    // estimates are the smaller ones, and this used to pick the 25th percentile
+    // to land in that population.
+    //
+    // On a large patch that works. On a small one it does not, and the failure
+    // is severe rather than marginal: a 4-facet vertex star of a fillet yields
+    // only a handful of pairs, so if just one of them is a tube pair the 25th
+    // percentile is an AZIMUTHAL estimate — several times too large. Every
+    // later step then compounds it: the tube centres are placed at `v + r·n`
+    // with the wrong r, so they lie on a circle in the wrong plane,
+    // `fit_circle_3d` fits that circle, and LM refines into a basin with the
+    // axis a quarter-turn off and the data sitting on the fitted torus's INNER
+    // EQUATOR — the fitted `R - r` comes out equal to the true minor radius.
+    // Measured on `filleted_hole_block`'s r = 2 fillet: R = 20.7, r = 18.7,
+    // axis 89.9° off, residual 193× vertex tolerance, against the reference's
+    // own parameters fitting the same 16 vertices to 2.1 float32 quanta. The
+    // sum-squared residual at the truth was 1.4e7× smaller, so the global
+    // minimum was never in doubt — only the starting point.
+    //
+    // The fix is not a better percentile, which would be another statistic on a
+    // sample of four. It is to stop guessing which population an estimate came
+    // from and try several, keeping whichever produces the lowest-residual fit
+    // — the same select-the-best-candidate structure `fit_torus` already uses
+    // one level up for its inner/SOR/rescue methods. Selection is decisive here
+    // because the correct candidate's residual is orders of magnitude better,
+    // and it introduces no tolerance: `CANDIDATE_R_MAX` only bounds the work.
+    const CANDIDATE_R_MAX: usize = 6;
+    let candidates: Vec<f64> = {
+        // Spread over the sorted estimates, always including the smallest (the
+        // purest tube reading) and the old 25th percentile (so anything that
+        // used to work still gets its chance).
+        let n = r_estimates.len();
+        let mut picks: Vec<f64> = vec![r_estimates[0], r_estimates[n / 4]];
+        for k in 1..CANDIDATE_R_MAX {
+            picks.push(r_estimates[(k * n) / CANDIDATE_R_MAX]);
+        }
+        picks.retain(|&r| r >= 1e-10);
+        picks.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        picks.dedup_by(|a, b| (*a - *b).abs() <= 1e-12 * b.abs().max(1.0));
+        picks
+    };
+    if candidates.is_empty() {
         return None;
     }
+
+    let mut best_fit: Option<(f64, TorusFitTuple)> = None;
+    for minor_r in candidates {
+        if let Some(cand) =
+            fit_torus_inner_from_r(minor_r, &sorted_verts, face_indices, faces, vertices)
+        {
+            if cand.2 <= 0.0 || cand.3 <= 0.0 || cand.3 > cand.2 {
+                continue;
+            }
+            let err = sorted_verts
+                .iter()
+                .map(|&vi| {
+                    vertex_to_torus_distance(&vertices[vi], &cand.0, &cand.1, cand.2, cand.3).abs()
+                })
+                .fold(0.0_f64, f64::max);
+            if best_fit.as_ref().is_none_or(|(e, _)| err < *e) {
+                best_fit = Some((err, cand));
+            }
+        }
+    }
+    best_fit.map(|(_, c)| c)
+}
+
+/// Steps 2-4 of the tube-centre method for one candidate minor radius: place
+/// the tube centres, fit their circle, refine by LM.
+#[allow(clippy::type_complexity)]
+fn fit_torus_inner_from_r(
+    minor_r: f64,
+    sorted_verts: &[usize],
+    face_indices: &[usize],
+    faces: &[MeshFace],
+    vertices: &[MeshVertex],
+) -> Option<([f64; 3], [f64; 3], f64, f64)> {
 
     // Step 2: Determine tube center sign from face normals.
     // For convex torus (outer surface), normals point outward from tube center,
@@ -796,20 +864,33 @@ fn fit_torus_inner(
         .map(|&vi| [vertices[vi].x, vertices[vi].y, vertices[vi].z])
         .collect();
 
-    if points.len() >= 7 {
-        let problem = TorusLMProblem::new(points, axis, center, major_r, minor_r);
-        let (result, _report) = LevenbergMarquardt::new().with_patience(150).minimize(problem);
-        let refined_axis = result.axis_dir_from_params(&result.params);
-        let refined_center = [result.params[2], result.params[3], result.params[4]];
-        let refined_major_r = result.params[5];
-        let refined_minor_r = result.params[6];
+    Some(
+        refine_torus_lm(&points, axis, center, major_r, minor_r)
+            .unwrap_or((center, axis, major_r, minor_r)),
+    )
+}
 
-        if refined_major_r > 0.0 && refined_minor_r > 0.0 {
-            return Some((refined_center, refined_axis, refined_major_r, refined_minor_r));
-        }
+/// Levenberg-Marquardt refinement of a torus from a starting guess. Returns
+/// `None` when there are too few points or the solve leaves a non-physical
+/// radius, in which case the caller keeps its own starting guess.
+pub(super) fn refine_torus_lm(
+    points: &[[f64; 3]],
+    axis: [f64; 3],
+    center: [f64; 3],
+    major_r: f64,
+    minor_r: f64,
+) -> Option<([f64; 3], [f64; 3], f64, f64)> {
+    if points.len() < 7 {
+        return None;
     }
-
-    Some((center, axis, major_r, minor_r))
+    let problem = TorusLMProblem::new(points.to_vec(), axis, center, major_r, minor_r);
+    let (result, _report) = LevenbergMarquardt::new().with_patience(150).minimize(problem);
+    let refined_axis = result.axis_dir_from_params(&result.params);
+    let refined_center = [result.params[2], result.params[3], result.params[4]];
+    let refined_major_r = result.params[5];
+    let refined_minor_r = result.params[6];
+    (refined_major_r > 0.0 && refined_minor_r > 0.0)
+        .then_some((refined_center, refined_axis, refined_major_r, refined_minor_r))
 }
 
 /// Fallback: fit torus using surface-of-revolution axis estimation + (h,r) profile fitting.
@@ -1086,7 +1167,81 @@ impl SurfaceType for ToroidalSurface {
         let mut vertex_set: Vec<usize> = vertex_list.to_vec();
         vertex_set.sort_unstable();
         vertex_set.dedup();
-        let fit = fit_torus(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
+        let geometric = fit_torus(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
+
+        // Phase 1.1's closed-form initializer as a second candidate, LM-refined
+        // and selected against the geometric fit on residual.
+        //
+        // It earns its place because the two fail in different places rather
+        // than one dominating: the tube-centre method needs adjacent facet pairs
+        // that read the TUBE curvature, and a small vertex star of a fillet may
+        // contain none, while the closed form reads the axis from the
+        // meridian-coplanarity null space and needs no such pair. Measured on
+        // `filleted_hole_block`'s r = 2 fillet, a 9-facet star: the geometric fit
+        // returned R = 20.7 / r = 18.7 with the axis 89.9° off (193x vertex
+        // tolerance), the closed form R = 8.9996 / r = 1.9992 with the axis
+        // 0.049° off. On other seeds the ordering reverses, which is why this
+        // selects rather than replaces. Together with the candidate-r sweep
+        // above it takes the fraction of torus facets that have a *workable
+        // seed set* from 25/54/90% to 100/100/100% on `filleted_hole_block`,
+        // `filleted_cylinder` and `filleted_pipe`.
+        //
+        // What it costs, recorded because it is surprising and will come up
+        // again (`dump_regions surfaces`):
+        //
+        // | variant | stepped_block fine | medium |
+        // |---|---|---|
+        // | neither | 18/38/0/0/18/1 (75) | 33/31/0/0/19/1 (84) |
+        // | sweep only | 20/38/0/0/18/0 (76) | 33/31/0/0/19/1 (84) |
+        // | sweep + closed form | 72/37/0/0/18/0 (127) | 30/31/0/0/18/1 (80) |
+        //
+        // So a strictly better-conditioned candidate pool, selected on residual,
+        // made the old pipeline's end-to-end decomposition much worse: on a
+        // LARGE support the closed form can win the residual comparison while
+        // being the worse surface for the flood that follows. **Residual on the
+        // current support does not predict how a fit will grow.** That is a
+        // property of the surrounding grow-and-compete design, not of this fit.
+        let closed = super::initialize::torus(face_list, mesh).and_then(|init| {
+            let super::initialize::Initial::Torus {
+                centre,
+                axis_dir,
+                major,
+                minor,
+            } = init
+            else {
+                return None;
+            };
+            let points: Vec<[f64; 3]> = vertex_set
+                .iter()
+                .map(|&vi| {
+                    let v = &mesh.vertices[vi];
+                    [v.x, v.y, v.z]
+                })
+                .collect();
+            Some(
+                refine_torus_lm(&points, axis_dir, centre, major, minor)
+                    .unwrap_or((centre, axis_dir, major, minor)),
+            )
+        });
+
+        let max_err = |c: &([f64; 3], [f64; 3], f64, f64)| -> f64 {
+            vertex_set
+                .iter()
+                .map(|&vi| {
+                    vertex_to_torus_distance(&mesh.vertices[vi], &c.0, &c.1, c.2, c.3).abs()
+                })
+                .fold(0.0_f64, f64::max)
+        };
+        let mut fit: Option<([f64; 3], [f64; 3], f64, f64)> = None;
+        for cand in [geometric, closed].into_iter().flatten() {
+            if cand.2 <= 0.0 || cand.3 <= 0.0 || cand.3 > cand.2 {
+                continue;
+            }
+            if fit.as_ref().is_none_or(|b| max_err(&cand) < max_err(b)) {
+                fit = Some(cand);
+            }
+        }
+
         if fit.is_none() && verbosity >= 5 {
             for &vi in &vertex_set {
                 let v = &mesh.vertices[vi];

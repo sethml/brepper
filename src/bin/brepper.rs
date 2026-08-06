@@ -57,7 +57,8 @@ fn main() {
         process::exit(1);
     }
 
-    if config.viz_stages.is_empty() {
+    let seeds_text_mode = std::env::var("BREPPER_VIZ_SEEDS_TEXT").is_ok();
+    if config.viz_stages.is_empty() && (!config.viz_seeds || seeds_text_mode) {
         // No visualization: run directly
         if let Err(e) = run(&mut config, None) {
             eprintln!("Error: {e}");
