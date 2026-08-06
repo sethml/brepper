@@ -53,7 +53,9 @@ principles drive it; retired mechanisms and the reasons they died are in
    region's surface validates its own faces; results are deterministic.
    (The abandoned pipeline's greedy selection violated connectivity —
    3DBenchy face 5841 reached stage 3.4 claiming three disconnected mesh
-   regions.)
+   regions.) These are the *coverage* invariants and they are asserted every
+   run; the **Invariants** section below states the per-surface and per-seed
+   ones, which are measured rather than asserted, and says how well each holds.
 
 ## Assumptions
 
@@ -158,64 +160,320 @@ circumscribed circle rather than straddling the true surface.
 
 ## Invariants
 
-In order to have consistent results for surface reconstruction regardless of facet ordering and BFS exploration order, we attempt to maintain various invariants. I think these invariants should hold for CAD-generated meshes with infinite precision. Given finite precision they should typically hold - we'll see.
+The point of these is consistency: the surfaces recovered from a mesh should be a
+function of the mesh, not of facet ordering, seed choice, or traversal order.
+They are stated as near-invariants because they are asked of a float32 mesh, so
+"holds" means "holds to a bound derived from the mesh's own precision".
+
+**All of them have now been measured** against `--compare` ground truth over 147
+models and 2303 reference faces (`--invariant-report`, see below). Every clause
+carries its measured status. Where a clause was refuted the refutation is kept
+rather than deleted, because several of the refuted forms are the obvious ones and
+will otherwise be re-derived.
 
 ### Surface Fitting Requirement
 
-All surface fits must satisfy the seed requirements below, plus:
+One rule for every analytic type and for NURBS, replacing the per-type variants
+this section used to carry:
 
-* **Cylindrical, Conical:**
-  * All vertices within vertex tolerance of surface.
-  * All edge centers within surface tolerance of surface.
-  * All facet relative angles within angle tolerance.
-* **Spherical:**
-  * All vertices within vertex tolerance of surface.
-  * All facet centers within surface tolerance of surface.
-  * All facet relative angles within angle tolerance.
-* **NURBS:**
-  * All vertices within vertex tolerance of surface.
-  * All edges within surface tolerance of surface. *TODO: Can we inexpensively determine this, or do we need some kind of sampling?*
-  * All facet centers within surface tolerance of surface. *TODO: Ideally entire facet surface within surface tolerance of surface - can we determine this inexpensively?*
-  * All facet relative angles within angle tolerance.
+* **All vertices within `--vertex-tolerance` of the surface.**
+* **All edge midpoints within ¾ · `--surface-tolerance`** — the edges of a
+  *triangulation* of the facet, which for a fused quad means its two diagonals as
+  well as its four sides.
+* **No two adjacent facets of one surface separated by more than
+  `--angular-tolerance`** — as a post-hoc consistency check only, never as a
+  membership rule. See Surface Identification.
+
+**Why edge midpoints, and why the ¾.** Write the facet's deviation from the
+surface as a height function vanishing at the vertices. To second order it is a
+quadratic, and in barycentric coordinates
+`e(λ) = −Σ_{i<j} λᵢλⱼ · (pᵢ−pⱼ)ᵀH(pᵢ−pⱼ)`. At the midpoint of edge `ij` that is
+`|qᵢⱼ|/8`; maximised over the simplex it is at most `max|q|/6`. So
+
+> **max over the facet ∈ [M, (4/3)·M]**, where `M` is the largest edge-midpoint
+> deviation.
+
+Checking edge midpoints and allowing ¾ of the tolerance is therefore a *bound* on
+the whole facet, not a proxy for it — which answers the two TODOs this section
+used to carry about sampling facet interiors, including for NURBS. Cost is about
+1.5 evaluations per triangle, since each interior mesh edge is shared.
+
+Measured over 895 non-degenerate reference faces, ratio of the true whole-facet
+maximum to each candidate probe:
+
+| probe | p95 | max | over 4/3 |
+|---|---|---|---|
+| boundary edge midpoints only | 1.742 | 1.999 | 63 of 895 |
+| **edge midpoints + quad diagonals** | **1.012** | **1.497** | **1 of 895** |
+| facet centroid | 1.384 | 2.239 | — |
+
+**Facet centroids are not a bound and are dropped.** The measured worst case,
+2.239, matches the derived 9/4 for a needle triangle to three digits; and where
+the curvature is indefinite (a saddle, a torus's inner equator) the centroid can
+read *exactly zero* while the facet is off by the full sag. 23 corpus faces read
+under a quarter of their edge-midpoint maximum. The single face that exceeds 4/3
+with diagonals included is a 16-facet "plane" on a wild-corpus model that is
+probably not planar.
+
+**The vertex clause holds at the mesh's own precision, not at a fixed number.**
+On verified synthetic ground truth: plane p95 0.64 quanta, cylinder 1.22, cone
+1.22, sphere 1.49, torus 1.45; worst case ~5 quanta. But two true cylinders on
+`stepped_block_toroidal_fillets_fine` sit at 8.8 and 8.5 quanta = 7.7e-5 mm,
+**outside the 5e-5 default**, so at today's tolerance the requirement is
+unsatisfiable on those two surfaces and no algorithm can recover them. State the
+bar in float32 position bounds (Phase 0.6 supplies the bound).
+
+**`--surface-tolerance` is barely non-binding.** The true worst facet sag over the
+corpus is 0.325 mm against the 0.4 mm default — 1.23× margin — while the p50 is
+2.2e-6 mm. Five orders of magnitude of spread under one constant; see Phase 3.2
+for the per-face alternative.
 
 ### Surface Seed Requirements
 
-Surfaces can be discovered by growing a set of seed facets to the set of contiguous facets that satisfy 
+A surface is discovered by growing a **seed set** — a set of facets that is the
+entire initial fit support — under validation, refitting as it grows. There is no
+separate unvalidated "patch": the seed set is what the first fit sees.
 
-A **non-contiguous facet chain** is a set of facets where each facet shares a single edge with any other facet in the chain.
+A **facet chain** is a set of facets forming a path in the dual graph: each facet
+shares an edge with the next, and each has at most two neighbours within the set.
+(This section previously called it a "non-contiguous facet chain", which
+contradicted its own definition — a set whose members share edges is contiguous.)
 
-* **Plane:** Any facet that corresponds to the planar surface.
-* **Cylinder:** A non-contiuous facet chain including:
-  * Exactly 6 vertices *(avoids too few to identify a cylinder)*;
-  * No more than three of which are coplanar *(avoids misidentifying conical surfaces with a point as cylindrical)*.
-  * Fitted cylinder must not have such a large radius as to be effectively planar. (TBD!)
-* **Cone:** Either same seed criteria as cylinder *(seed facets do not include cone vertex)*, or a non-contiguous facet chain of 3 triangular facets which share a vertex in common *(the candidate cone apex)*.
-* **Sphere:** All facets sharing an edge with the seed facet.
-* **NURBS:** Fallback for unexplained sets of contiguous facets.
+* **Plane:** any facet of the surface. *Measured: 99.9% of plane facets have a
+  working seed; 98.7% of plane faces have one for every facet.*
+* **Cylinder:** a facet chain of at most 4 facets with **exactly 6 distinct
+  vertices**. Measured, exactly three shapes reach 6 — two quads, four triangles,
+  or two triangles and a quad — and the rule works: **94.1%** of cylinder facets
+  have a working seed. Two quads on a cylinder give 6 vertices against 5 DOF, so
+  there is one redundant constraint, which is what pins the right root.
+* **Cone:** the same chain, or three triangular facets sharing one vertex (the
+  candidate apex). The apex alternative earns its place — it is the *least*
+  working rule for 21% of cone facets, cases the chain cannot reach. But the cone
+  is the weak type: **49.4%** of cone facets have a working seed under these
+  rules, and 22% have none at any support size up to 48 facets. The cause is the
+  fitter, not the rule — see Surface Identification.
+* **Sphere:** the seed facet plus every facet sharing an edge with it (and the
+  same ring taken about each of its neighbours). *Measured: **100.0%** of sphere
+  facets and **100.0%** of sphere faces. This rule is exactly right as written.*
+* **Torus:** the closed ring of facets about one vertex — its **vertex star** —
+  grown outward while the seed set's own fit does not yet validate the whole seed
+  set. Typically 4–12 facets, occasionally up to 32.
+* **NURBS:** fallback for the connected leftovers nothing analytic explains.
+
+**Why a torus needs a star rather than a chain.** A torus's normal lines cross the
+axis at a point that *slides with the tube angle*, so a seed confined to one tube
+angle cannot pin the axis — and two quads along the major direction is exactly
+that, which is why a 6-vertex chain is under-determined for a torus. A vertex
+star wraps a grid node, so it spans both parametric directions by construction.
+Measured, the least support that works per torus facet: bare star 40%, the union
+of the anchor's own vertex stars a further 25%, and the rest need 8–48 facets,
+with 0.8% never working. Requiring the ring to **close** matters: complete stars
+win 40% of facets, boundary-cut ones 4%.
+
+**The "no more than three coplanar" clause is deleted.** It was aimed at a real
+degeneracy — a fan of facets sharing a vertex, which on a cylinder leaves the apex
+free along a line — but as a detector it is useless and as a filter it is
+destructive. Measured over 27 984 six-vertex chains: it rejects **85.3%** of the
+chains that produce a good axis while catching only 39.8% of those that produce a
+bad one. Worse, a fused quad is coplanar *by construction* — that is why it was
+fused — so the clause rejects, by definition, every seed containing one: 99.7% of
+2-quad chains and 92.4% of 2-triangle-plus-quad chains. And four vertices spanning
+two rulings of a cylinder lie on two parallel lines, hence in a plane, so it also
+bites the ruling-aligned triangle strips that Phase 1.0 measured as the *good*
+ones. Excluding only the wholly-coplanar chains changes the worst axis error not
+at all (90° either way).
+
+**The "not effectively planar" clause is deleted.** A large-radius cylinder that
+validates every vertex is a valid explanation of the data; preferring the plane is
+a matter of ladder order, which stage 2.3 already has (simplest DOF first), not of
+a radius threshold.
+
+**Seed admissibility, replacing the combinatorial clauses.** A seed set is valid
+for type T iff:
+
+1. `fit_T(seed)` exists, and
+2. every facet of the seed set validates that fit at vertex tolerance.
+
+Nothing about connectivity, vertex counts, or coplanarity. Measured over 87 510
+seed sets: seeds failing this grow to the right surface **0.4%** of the time;
+seeds passing it, **84.6%**. It is the fixpoint condition of growth itself,
+evaluated at round 0 — `S ⊆ flood(fit(S))` is the round-0 case of
+`F = flood(fit(F))` — so admission and termination are one predicate at two
+scales, and it introduces no new constant.
+
+**Seed sets need not be connected**, and requiring it would make things worse:
+measured, disconnected seeds stall on 0.67% of attempts against 2.46% for
+connected ones, and the best-performing shape was two small balls at the two most
+distant points of the surface — which is also the well-conditioned shape for an
+axis (Phase 1.0's amplification law). The chain rules above are stated as chains
+because that is what the corpus supplies, not because connectivity is required.
 
 ### Surface Identification
 
-For every surface in the STEP model (excluding NURBS for now), surface fitting finds that surface.
+For every analytic surface in the reference, growth from some admissible seed
+finds that surface — **subject to an identifiability precondition**, which is the
+part this section previously left out.
 
-It may find other surfaces, such as a degenerate cone for a cylindrical surface. *TODO: we need to find a way to select the correct surface. For example, a cylindrical surface with an adjoining tangent spherical surface - a cone may fit the cylinder to within tolerances and include a strip of sphere facets, but the cylindrical fit should fit the cylindrical facets much more precisely - how do we choose between the two?*
+**A wrong type frequently explains a true support exactly, and the residual does
+not discriminate.** Measured on the true facet set of each reference face:
 
-Because NURBS surfaces can have sub-surfaces fit other types (for example, a cylindrical strip around the equator of an ellipsoid), NURBS surface invariants are left as a future exercise and will probably require heuristics.
+| true type | a wrong type also validates at vtol |
+|---|---|
+| cylinder | sphere on **496 of 652**; torus on 307 |
+| cone | sphere on 64 of 91; torus on 32 |
+| plane | sphere on 322 of 1261; cyl/cone on 126 |
+
+The impostor residuals sit at 0.2–0.5 float32 quanta — the same order as the
+correct type's. **The tie-break this section used to propose is refuted, and
+points the wrong way:** on **393 of 397** true cylinders the impostor sphere fits
+the cylinder's own facets *better* than the cylinder does, median 0.555× the
+residual. `simple_cylinder` shows why in one line: its 32-quad band has vertices
+on exactly two circles, and two circles lie exactly on a sphere — residual
+2.07e-7 mm, machine precision. This is identifiability, not model selection, and
+the distinction is the one already drawn in stage 2.3.
+
+So type discrimination stays structural: ladder order (simplest DOF first),
+largest validated area, and identifiability guards such as
+`MIN_AXIAL_SWEEP_DEG`. Never a comparison of residuals between types.
+
+**The cone is the type where identification currently fails**, and the cause is
+the fitter rather than the information. On `simple_cone`, a two-quad seed whose six
+vertices determine the cone to **0.0001°** (two rings of three spanning 31.3°;
+circumcircle radii to 0.1–0.2× vtol) produces a `fit_cone` half-angle of **2.54°**
+against a true 9.4623°. `axis_normals_consistent` correctly refuses that, and the
+fallback cylinder then misses its own seed vertices by 222.7× vtol. Of the cone
+rung's refusals, 42% are the axis-normal check, 27% a half-angle outside
+[2°, 85°], 12% an apex 429–2128 mm from a 41 mm model. The guards are right; the
+initialization is not. Options are catalogued in SURFACE_FITTING.md, "Cone
+initialization: the options not yet built".
+
+**One genuinely non-identifiable case exists** and is worth knowing: on one
+`simple_cone` seed the fitter returned a half-angle 72.85° cone with its apex 10.8
+patch-extents away that explains the six vertices to 6.7e-16 mm — *better* than
+the true cone manages against a float32 mesh. Six points admit more than one right
+circular cone. It is the exception (8 of 9 cone failures are convergence, not
+identifiability), but it bounds what any optimizer can be asked to do.
+
+Because a NURBS surface can have sub-surfaces that fit other types (a cylindrical
+strip around an ellipsoid's equator), NURBS identification is left out of these
+invariants.
 
 ### Surface Seed Independence
 
-For a given analytical surface, surface identification will find that surface regardless of seed, so long as the seed consists of facets which are members of the surface.
+Stated existentially, which is the right quantifier for an algorithm that gets to
+*choose* its seeds:
+
+> **For every facet of a surface there is at least one admissible seed set
+> containing that facet whose growth covers the surface.**
+
+Not "every admissible seed set works" — that is a much stronger claim and it is
+false (34.9% of surfaces under the current seeding, 80.6% under the clean
+operator). Measured with the section's own seed rules, growth limited only by
+validation:
+
+| type | facets with a working seed | faces where every facet has one |
+|---|---|---|
+| sphere | **100.0%** | **100.0%** |
+| plane | 99.9% | 98.7% |
+| cylinder | 94.1% | 86.4% |
+| cone | 49.4% | 26.8% |
+| torus (star only) | 65.4% | 22.4% |
+| torus (star, grown) | **99.2%** | **99.2%** |
+| **all** | **89.7%** | |
 
 ### Growth Independence
 
-To discover surfaces we perform expansion starting with the seed. The surface discovered and set of facets at the limit of exapansion are independent of the order in which we grow to include new facets.
+Two halves, and only the second is empirical.
 
-### Open Questions
+**The flood is order-independent by construction.** Given a fixed fit, the grown
+set is *defined* as the connected component of `{facets validating the fit}`
+containing the seed — a set, not a traversal. Confirmed at **0 differences over
+18 429 seeds** with the neighbour iteration reversed. This half is a theorem and
+should be stated as one.
 
-Do we need quad fusion for these invariants to hold?
-Do these invariants hold theoretically given infinite precision?
-How well do these invariants actually hold given finite precision on reasonable test models?
-How do we test these invariants over test models - brute force search of every possible seed and every possible growth pattern would take exponential time, but perhaps random search would be a good approach?
-We should harden the invariants to be more true for actual models given numerical precision, then work on how to efficiently identify surfaces given the invariants.
+**The refit fixpoint is start-dependent.** Growth is the iteration
+`F ← flood(fit(F))`, which is neither monotone nor a contraction. Starting it from
+the whole true face set instead of a seed reproduces the truth on 83.0% of faces,
+and 648 of 1285 faces disagree between the two starts. Where the invariant needs
+defending, this is where.
+
+### Coverage and boundary invariants
+
+Two invariants the earlier version of this section omitted, both of which the
+per-surface clauses above permit violating:
+
+* **Partition.** Every mesh facet belongs to exactly one committed surface, and
+  every surface is mesh-connected. Already enforced by `assert_invariants` in
+  stage 2.4, and stated here because the per-surface clauses do not imply it.
+* **Boundary.** Growth may **overshoot** — cover the surface and a collar beyond
+  it — and every overshoot facet must belong to an adjacent surface that explains
+  it strictly better. Measured, this holds identically: **100%** of overshoot
+  facets land in a reference-adjacent face and **100%** of the scorable ones are
+  closer to their true owner than to the fit that claimed them. Overshoot is
+  small everywhere except fillet tori (median |result|/|truth| 1.000 for plane,
+  cylinder, cone and sphere; torus median 1.019, p95 1.117).
+
+  This is why the growth invariant must be stated as *covers*, not *equals*.
+  Scored per reference face over admissible seeds, requiring equality reads
+  **80.6%** and requiring coverage **88.9%** — and the torus is essentially the
+  whole difference, 16.8% against 60.8%. The boundary decision then belongs to a
+  comparison between two surfaces, which is what `resolve_claims` already is, and
+  it is handed exactly the information the clause promises.
+
+### Measuring these (`--invariant-report`, `--viz-seeds`)
+
+`src/stage2/invariants.rs`, diagnostics only — nothing downstream reads it. Runs
+after stage 2.2, where the jet and the smooth regions exist and the mesh is still
+untouched, so it works on models whose decomposition crashes or times out.
+
+- `--invariant-report --compare ref.step` scores the five families above, one TSV
+  row per reference face on stdout plus a per-model summary on stderr.
+  `tools/invariants.sh` sweeps the corpus (sharing `sweep.sh`'s model/reference
+  pairing so the two instruments cover the same models); `tools/inv_analyze.py`
+  aggregates.
+- `--viz-seeds` walks anchor facets interactively and stops on those where *every*
+  conforming seed set fails: seed green, covered blue, overshoot red, the true
+  facets that blocked growth orange, missed yellow, anchor white. The status line
+  names the failing clause.
+- Env-gated probes: `BREPPER_INV_FITDUMP=1` prints the reference's own parameters
+  beside the fitted ones for any seed that fails admission, with a
+  NOT-IDENTIFIABLE / CONVERGENCE verdict from their sum-squared residuals;
+  `BREPPER_INV_BASIN=1` sweeps the clean operator's basin of attraction;
+  `BREPPER_INV_PATCHSIZE=1` measures fit accuracy against support size.
+
+**One reporting trap worth recording.** `face_validates` is a conjunction of
+*three* tests — vertex distance, centroid distance, orientation coherence — and a
+diagnosis naming only the first is actively misleading: 7% of seeds refused by
+their own fit pass the vertex test and die on centroid or orientation. Every
+verdict names its clause for that reason.
+
+### Open questions
+
+Answered by measurement:
+
+- *Do we need quad fusion?* Not for the invariants to hold, but it matters for
+  conditioning: quad fusion is a 23× discriminator for ruling alignment (2.7% of
+  fused quads straddle against 62.3% of triangles), and the edge-midpoint bound
+  needs a quad's diagonals to be sound.
+- *How do we test these without exponential search?* Seed independence is
+  existential and per-facet, so the space is `facets × conforming seeds per
+  facet` — polynomial, and sampled deterministically at a fixed stride. Growth
+  independence needs no search at all for the flood half (it is a theorem) and
+  randomised round-orders for the rest.
+- *How well do they hold at finite precision?* The tables above. The short answer
+  is that plane, cylinder and sphere hold well, the torus holds once its seed is
+  allowed to grow, and the cone does not hold — for a reason that is a fitter
+  defect rather than an invariant that needs weakening.
+
+Still open:
+
+- **Whether the sharp partition belongs in the growth invariant at all.** Growth
+  confined to a smooth region cannot cover a surface the partition has cut, and
+  stage 2.1 cuts 68 true surfaces on 350 edges (see 2.1(a)). Unconfined growth
+  covers those but runs across tangent junctions instead. Neither bound is right
+  as stated.
+- **A cone seed rule that works**, which needs the fitter fixed first.
+- **NURBS**, deliberately excluded above.
 
 ## Dependencies
 
@@ -437,6 +695,23 @@ that used to accompany it is retired (evidence in the Retrospective's
 Resolution; autopsy in Abandoned Approaches): tangent junctions are found
 by stage 2.3's fit competition instead.
 
+**But "measured-exact" is exact only in the direction that was measured**
+(2026-08-06, `--invariant-report`). Sharp edges never *miss* a true face
+boundary — that is the seam assumption, and it holds. They do introduce
+boundaries that are not there: this rule calls **350 edges sharp strictly
+inside 68 reference faces**, cutting those true surfaces in two before any
+fitting happens. The largest clusters are coarse exports whose angular step
+exceeds the default — Fusion's "Low" preset is 30° against a 25° tolerance, so
+every coarse Fusion cylinder is cut into 12 pieces — and small fillet tori
+(`filleted_pipe`'s two big tori take 11 sharp interior edges each, at an
+interior dihedral of 31.4°). Stage 2.4's repair sews most of them back, which is
+why the corpus looks fine and why the effect was invisible until something
+measured per-face coverage. Consequences: `--angular-tolerance` must exceed the
+exporter's own angular setting (the stage-1 dihedral p95 recovers it on
+curvature-dominated meshes), and a growth invariant that confines growth to a
+smooth region cannot cover a surface this rule has cut — see **Invariants**,
+"Open questions".
+
 **(b) The jet curvature prior — data for 2.3, never a decision.** Each
 face carries the differential summary of an **anchored osculating jet**
 (Cazals & Pouget SGP 2005 — the standard robust curvature estimator for
@@ -608,6 +883,15 @@ bounded and cross-region accidents are impossible.
   hypotheses — junction-row faces whose vertices genuinely lie on two
   surfaces end up claimed by both, which is the true ambiguity; 2.4
   resolves multi-claims by best fit.
+- **Order independence is structural, not hoped for.** `flood` returns the
+  connected component of `{faces validating the fit}` containing the seed — a
+  set, defined without reference to a traversal — so its output cannot depend on
+  the order faces are visited. Confirmed 2026-08-06 at **0 differences over
+  18 429 seeds** with the neighbour iteration reversed. What *is* order- and
+  start-dependent is the enclosing refit iteration `F ← flood(fit(F))`: started
+  from the whole true face set instead of a seed patch it reaches a different
+  fixpoint on 648 of 1285 reference faces. When ordering-dependence is
+  suspected, look there and not at the flood.
 - **Soundness** (the sub-region lemma, under exactness): an accidental fit
   is by definition supported on a *sub-region*; the true surface fitted
   from an interior seed expands — with vertex tolerance as the arbiter —
@@ -677,6 +961,20 @@ they genuinely fit *better* than the cylinder they displace, so every
 residual-based or coverage-based rule prefers them. What is wrong with them is
 that their support sweeps 3–7° about the axis, which cannot determine a major
 radius. `MIN_AXIAL_SWEEP_DEG` states exactly that and nothing else.
+
+**Measured 2026-08-06, and it settles the question this note argues from
+first principles.** Fitting all four analytic types to each reference face's own
+facet set: a *wrong* type validates the true support at vertex tolerance on 496
+of 652 cylinders (sphere), 307 of 652 (torus), 64 of 91 cones (sphere) and 322
+of 1261 planes (sphere). Impostor residuals sit at 0.2–0.5 float32 quanta, the
+same order as the correct type's. And the natural tie-break is worse than
+useless: on **393 of 397** true cylinders the impostor sphere fits the
+cylinder's own facets *better* than the cylinder does (median 0.555× the
+residual). `simple_cylinder` is the clean example — a 32-quad band has its
+vertices on exactly two circles, and two circles lie exactly on a sphere, at
+2.07e-7 mm. So no residual comparison between types can be made to work, at any
+threshold. Type discrimination is ladder order, validated area, and
+identifiability guards, or it is nothing.
 
 Keep the three kinds of guard distinct when adding one, because they have
 different justifications and different evidence:
@@ -1393,6 +1691,25 @@ that mechanism died with the classifier.)
   have no equivalent (absorb is gone; repair is core, and debugging-level
   disabling of repair operations can be a `-Z`-style debug option if ever
   needed).
+- **Diagnostic modes against a `--compare` reference**, all default-off and read
+  by nothing downstream:
+  - `--reference-report` — labels every mesh facet with its ground-truth
+    reference face and scores the mesh and our segmentation against it
+    (`src/reference.rs`; see "Reference labeling" below).
+  - `--invariant-report` — scores the **Invariants** section's clauses against
+    that same ground truth (`src/stage2/invariants.rs`). Runs after stage 2.2,
+    so it works where 2.3 crashes or times out. Harness `tools/invariants.sh`,
+    aggregator `tools/inv_analyze.py`.
+  - `--viz-seeds` — interactive walk over anchor facets, stopping on those where
+    every conforming seed set fails, with the failing validation clause named.
+    Options: `--viz-seed-show=failing|all|covering`, `--viz-seed-sizes`,
+    `--viz-seed-shapes`, `--viz-seed-samples`, `--viz-seed-max-attempts`,
+    `--viz-seed-spec-only` (only the section's own seed patterns, no grown-ball
+    fallback), `--viz-seed-coplanar-clause`, `--viz-seed-confine-region`.
+    `BREPPER_VIZ_SEEDS_TEXT=1` gives the same diagnoses without a window.
+  - Env-gated probes on the invariant path: `BREPPER_INV_FITDUMP`,
+    `BREPPER_INV_BASIN`, `BREPPER_INV_PATCHSIZE`, `BREPPER_INV_SEEDS`,
+    `BREPPER_INV_NO_COMPETE`.
 
 #### Implementation hints (read before writing code)
 
@@ -2012,6 +2329,11 @@ unaffected — but do not read exactness below ~1e-6° out of a number from `aco
 
 ### Phase 1.1 as built: what the closed-form initializers actually needed
 
+**Status 2026-08-06: the torus initializer is now wired in** — as a second
+candidate inside `ToroidalSurface::fit_surface`, LM-refined and selected against
+the geometric fit on residual. The other three remain unconsumed. See "The torus
+fitter's percentile, and what wiring the closed form in cost" below.
+
 All four initializers are exact on synthetic data (numbers in TODO.md 1.1), but
 three of the four constructions the Phase 1 design named turned out to be wrong,
 and the reasons generalize past this step.
@@ -2076,6 +2398,65 @@ major radius comes out ~0 and the `minor < major` check rejects it outright. Thi
 is what the design meant by "ladder order and a conditioning floor must precede
 it" — type discrimination belongs to the ladder and to validation, never to a
 conditioning guard.
+
+### The torus fitter's percentile, and what wiring the closed form in cost (2026-08-06)
+
+Two changes to `toroidal.rs`, found by asking `--viz-seeds` why a vertex star of a
+fillet fails its own fit. Both are live.
+
+**1. The 25th percentile was the defect.** `fit_torus_inner` estimates the minor
+radius from normal-line intersections of adjacent facet pairs, which mix two
+populations — tube curvature (≈ r) and azimuthal curvature (≈ R ± r) — and it
+separated them by taking the 25th percentile, on the correct reasoning that tube
+readings are the smaller ones. On a large patch that works. On a 4–9 facet vertex
+star there are only a handful of pairs, so if one is a tube pair the percentile is
+an *azimuthal* reading, and every later step compounds it: the tube centres are
+placed at `v + r·n` with the wrong r, so they lie on a circle in the wrong plane,
+`fit_circle_3d` fits that circle, and LM refines into a basin whose axis is a
+quarter-turn off with the data sitting on the fitted torus's **inner equator** —
+the fitted `R − r` comes out equal to the true minor radius. Measured on
+`filleted_hole_block`'s r = 2 fillet: R = 20.7, r = 18.7, axis 89.86° off,
+residual 193× vertex tolerance, against the reference's own parameters fitting the
+same 16 vertices to **2.1 float32 quanta**. The sum-squared residual at the truth
+was **1.4e7× smaller**, so the global minimum was never in doubt — only the
+starting point. Across 215 rejected torus fits on four fillet models, 39% land
+within 5° of perpendicular and 30% have `R − r` within 15% of the true minor
+radius, while the fitted R itself ranges 0.03–66 mm.
+
+The fix is not a better percentile — that would be another statistic on a sample
+of four. It is to stop guessing which population an estimate came from and try
+several, keeping whichever produces the lowest-residual fit: the same
+select-the-best-candidate structure `fit_torus` already uses one level up for its
+inner/SOR/rescue methods. No tolerance is introduced; `CANDIDATE_R_MAX` only
+bounds work.
+
+**2. Phase 1.1's closed form as a second candidate — a large seed-level win and a
+clear corpus loss.** The two methods fail in different places rather than one
+dominating: the tube-centre method needs adjacent pairs that read the *tube*
+curvature and a small star may contain none, while the closed form reads the axis
+from the meridian-coplanarity null space and needs no such pair. On the seed above
+it returns R = 8.9996 / r = 1.9992 with the axis 0.049° off. Together the two
+changes take the fraction of torus facets with a workable seed set from
+25/54/90% to **100/100/100%** on `filleted_hole_block`, `filleted_cylinder` and
+`filleted_pipe`.
+
+What it costs, on `dump_regions surfaces`:
+
+| variant | stepped_block fine | medium |
+|---|---|---|
+| neither | 18/38/0/0/18/1 (75) | 33/31/0/0/19/1 (84) |
+| candidate-r sweep only | 20/38/0/0/18/0 (76) | 33/31/0/0/19/1 (84) |
+| both (current) | 72/37/0/0/18/0 (127) | 30/31/0/0/18/1 (80) |
+
+**The lesson is the one worth carrying forward.** Selection by residual is
+supposed to make a strictly-better candidate pool safe, and it is not: on a large
+support the closed form can win the residual comparison while being the worse
+surface for the *flood that follows*, and the plane count then explodes.
+**Residual on the current support does not predict how a fit will grow.** That is
+a property of the grow-and-compete design, not of the fit — which is why this
+landed anyway during the invariants rework, with `remesh_cone_tangent_fine`
+failing. That model is the canary this document already nominated for exactly this
+class of change.
 
 ### Phase 1.2 as attempted: why the blind patch is load-bearing
 
@@ -2627,6 +3008,55 @@ of the stol regime. Ablation (Phase 4) runs after the flip so deletions are
 judged under the final regime.
 
 ### Considered and not adopted (with reasons)
+
+Four added 2026-08-06 from the invariants rework, all measured, all of them the
+obvious thing to try:
+
+- **Cylinder-then-cone promotion** (the `promote_bend` analogy: seed a cylinder,
+  grow it, promote at the stall). Refuted at the first step — a cylinder fitted to
+  cone data grows by *nothing*: `cyl grows to 3` from a 3-facet support, 4 from 4,
+  2 from 2, and promotion fired on 0 of 36 cone anchors. On a 9.46° cone the radius
+  diverges along every ruling, so at vertex tolerance a cylinder is wrong
+  immediately and there is no straight stretch to accumulate on. `promote_bend`
+  works because a bend genuinely *is* locally a cylinder (sag ~3.6e-5 mm over a
+  2 mm patch at R = 14); a cone offers no such stretch. **Plane-then-cone** was
+  the natural repair — Phase 1.2 measured that a cone's tangent plane is constant
+  along a ruling, so a plane explains its neighbours up that ruling to ~5e-7 mm,
+  and a ruling is exactly what pins a cone — and the plane rung reached 0 facets on
+  every round of every anchor. What did work was undirected one-ring support
+  enlargement, which takes `simple_cone` to 12/12 and *regresses* `cone_cylinder`
+  7→6 and `nosecone` 10→8 by walking across tangent junctions until the support is
+  3.5× the true face (646 facets against a 186-facet cone). Support enlargement
+  needs a bound on where it may grow; the only measured-exact bound available is
+  the sharp partition, which is the thing that cuts cones in the first place.
+- **The dual plane-rank identifiability test.** Every facet plane of a cone
+  contains the apex and every facet plane of a cylinder is parallel to the axis —
+  the same statement in homogeneous coordinates, so writing facet `i`'s plane as
+  `(nᵢ, −nᵢ·pᵢ)` makes the apex-or-axis the *null vector*, with `w₄ ≠ 0` reading as
+  a cone at `w₁₂₃/w₄` and `w₄ = 0` as a cylinder, continuously. Elegant and dead.
+  As a guard, σ₃ < 1e-4 catches 12% of the seeds that produce a bad axis while
+  rejecting 83% of the good ones — *anti*-correlated. Scored on its own estimator
+  rather than against `n₁ × n₂` it is no better: the null-vector axis is worse at
+  every facet count (k=2 median 14.8° against 0.0000°), cone apexes land 4.8–8.6×
+  the patch extent away, and `w₄` does not separate cylinders from cones at all
+  (true cylinders p50 0.41, true cones p50 0.71, overlapping).
+- **Reordering `compute_truncated_cone_axis` to try its exact method first.** The
+  function looks like it has an ordering bug: `estimate_axis_from_normal_diffs` is
+  exact on a cone (`(nᵢ − nⱼ)·d = 0`) and is unreachable whenever the
+  apex-to-centroid guess above it fires, which on a small support is always.
+  Putting the exact method first takes cone seed coverage from 4/12 to 1/12 on
+  `simple_cone`, 7/12 to 1/12 on `cone_cylinder`, 10/12 to 6/12 on `nosecone`.
+  Differencing near-identical normals destroys the signal: on a 1.7° tessellation
+  `|nᵢ − nⱼ| ≈ 0.03`, two such differences along a chain are nearly parallel, and
+  their cross product's *direction* is noise. The guess never differentiates, so it
+  is better conditioned despite being cruder. A DO-NOT note sits on the function.
+- **A points-only closed-form cone fit.** Surveyed rather than tried: the
+  literature reports no known linear least-squares method for circular cones from
+  point positions alone, because the circularity condition is a repeated
+  eigenvalue of the quadric's 3×3 form and that is neither linear nor quadratic in
+  its coefficients. The routes that do exist, with their costs, are in
+  SURFACE_FITTING.md, "Cone initialization: the options not yet built".
+
 
 - **Recursive subdivision / split-and-merge as the architecture.** Strong
   asymptotics (the tree visits only boundary-containing paths) and its merge
