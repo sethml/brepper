@@ -1006,6 +1006,49 @@ built on the ladder still needs validation to catch the rest.
   may already have crossed a junction — which is the Phase 1.2 chicken-and-egg
   arriving in a new costume rather than being dissolved.
 
+### The junction race (family J, measured 2026-10-15)
+
+The one role left open for the ladder after the verdict above: could it detect
+a **tangent junction** before vertex validation does? A patch that crosses from
+surface A onto a tangent neighbour is generically explained by fewer tangent
+fields than A alone, so its null dimension should drop.
+
+`--invariant-report` family J (`tools/invariants.sh --junction`,
+`tools/junction_analyze.py`). Per analytic reference face with a smooth
+junction, unconfined growth over smooth edges from facets 2, 4, 8 and 16 hops
+from the junction; at each ladder size, has the patch crossed, does A's true
+type refitted to it still validate at `vtol`, and has the rank lost one of A's
+tangent fields. A run is a **race** only when both signals had established A
+before the crossing. 66 models, 457 reference faces, 1166 runs, 490 races:
+
+| A's type | races | rank first | same step | validation first | foreign facets when validation fires (p50) |
+|---|---|---|---|---|---|
+| plane | 59 | 0 | 59 | 0 | 2 |
+| sphere | 241 | 0 | 234 | 7 | 2 |
+| cylinder | 18 | 0 | 18 | 0 | 2 |
+| cone | 29 | 0 | 18 | 11 | 2 |
+| torus | 143 | 0 | 0 | **143** | 2 |
+| **all** | **490** | **0** | 329 | 161 | |
+
+(Over *all* runs where validation had established A — 1024, not only the races —
+the median is 1 foreign facet for cylinder, cone and torus and 2 for plane and
+sphere. Validation does not fire within the ladder on 21% of cylinder runs,
+consistent with the overshoot the Invariants "Boundary" clause already permits;
+the mechanism there was not separately measured.)
+
+**No.** The rank never fires before validation; on the torus it never fires at
+all. The ladder resolution leaves room for the rank to win *within* a step, but
+the last column closes that: **validation already fires with one or two foreign
+facets in the patch**, and a detector cannot fire earlier than the first foreign
+facet without false alarms. Vertex validation is the sharpest instrument in the
+pipeline (Design Principle #1), and this is that principle measured from the
+other side: a tangent junction is invisible to normals to first order, and the
+vertex test at `vtol` does not need first order.
+
+So the ladder's measured role is narrow: a cheap, decisive sphere/plane
+classifier (100% / 94.9%) and a torus axis signal that `axis_line_from_normals`
+already extracts. It is not a backbone, and not a junction detector.
+
 ---
 
 ## Algorithm Reference

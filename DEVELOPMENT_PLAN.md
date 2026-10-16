@@ -391,6 +391,16 @@ validation:
 | torus (star, grown) | **99.2%** | **99.2%** |
 | **all** | **89.7%** | |
 
+*Update 2026-10-15, after the wide-cone fix* (SURFACE_FITTING.md, "Cone
+initialization"). The per-facet catalogue above has not been re-run, but the
+`--invariant-report` S family has, over the same 79 cone reference faces and 940
+seeds: seeds that grow **28.1% → 76.4%**, seeds that recover the true face set
+**24.8% → 71.1%**, faces whose seeds all agree **8 → 17 of 79** (interior seeds:
+56.4% → 92.8% exact, 10 → 19 of 24 faces). Across all types, 57.3% → 60.2% of
+seeds recover the true set, and reference faces not explained at `vtol` by a fit
+of their own type fall **71 → 31**, the cone's own-type residual p95 from 19 926
+float32 quanta to 1.97.
+
 ### Growth Independence
 
 Two halves, and only the second is empirical.
@@ -457,7 +467,12 @@ untouched, so it works on models whose decomposition crashes or times out.
   **81.5%** of readings and a cone's on 28.6%, and is structurally blind to the
   **cylinder** (4.5% of faces), because a cylinder is tessellated as a single
   row of quads and one axial band has a plane's rank at any circumferential
-  extent.
+  extent. `BREPPER_INV_JUNCTION=1` (family J, `--junction`) races the rank
+  against vertex validation across tangent junctions: over 490 races the rank
+  never fired first, and validation fires with one or two foreign facets in the
+  patch, so there is no room for an earlier detector. `BREPPER_INV_REFDUMP=1` and
+  `BREPPER_INV_FITVERBOSE=N` print reference parameters and name the guard that
+  refused a true support.
 
 **One reporting trap worth recording.** `face_validates` is a conjunction of
 *three* tests — vertex distance, centroid distance, orientation coherence — and a
@@ -490,7 +505,11 @@ Still open:
   stage 2.1 cuts 68 true surfaces on 350 edges (see 2.1(a)). Unconfined growth
   covers those but runs across tangent junctions instead. Neither bound is right
   as stated.
-- **A cone seed rule that works**, which needs the fitter fixed first.
+- **A cone seed rule that works**, which needs the fitter fixed first. *Partly
+  done 2026-10-15*: the wide-cone half of the fitter defect is fixed (above). The
+  two-facet half is not — Option C solves it exactly but is exact on a single
+  band of every surface of revolution, so it needs a discrimination mechanism
+  beyond the band before it can be wired.
 - **NURBS**, deliberately excluded above.
 
 ## Dependencies
