@@ -439,7 +439,15 @@ untouched, so it works on models whose decomposition crashes or times out.
   beside the fitted ones for any seed that fails admission, with a
   NOT-IDENTIFIABLE / CONVERGENCE verdict from their sum-squared residuals;
   `BREPPER_INV_BASIN=1` sweeps the clean operator's basin of attraction;
-  `BREPPER_INV_PATCHSIZE=1` measures fit accuracy against support size.
+  `BREPPER_INV_PATCHSIZE=1` measures fit accuracy against support size;
+  `BREPPER_INV_KINEMATIC=1` (family K, `tools/invariants.sh --kinematic`) scores
+  the kinematic rank ladder — see SURFACE_FITTING.md, "Nested fitting: a rank
+  ladder instead of a type ladder". Its result bears directly on the cone and
+  torus rows of the table above: the ladder reads a torus's axis structure on
+  **81.5%** of readings and a cone's on 28.6%, and is structurally blind to the
+  **cylinder** (4.5% of faces), because a cylinder is tessellated as a single
+  row of quads and one axial band has a plane's rank at any circumferential
+  extent.
 
 **One reporting trap worth recording.** `face_validates` is a conjunction of
 *three* tests — vertex distance, centroid distance, orientation coherence — and a

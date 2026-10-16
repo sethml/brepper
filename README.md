@@ -153,6 +153,23 @@ Corpus sweep and aggregation:
 ./tools/invariants.sh --out tmp/inv.tsv --jobs 8 && python3 tools/inv_analyze.py tmp/inv.tsv
 ```
 
+A sixth family is off by default because it multiplies the row count:
+
+- **K — the kinematic rank ladder** (`--kinematic`, or `BREPPER_INV_KINEMATIC=1`).
+  Scores the proposal in SURFACE_FITTING.md, "Nested fitting: a rank ladder
+  instead of a type ladder", which reads the surface type from the *null-space
+  dimension* of the tangent-velocity-field system so that too little support
+  reads as a simpler surface rather than a wrong one. Per reference face, over a
+  patch grown from several starts at support sizes 3…48: the spectrum, the
+  dimension and the type it names, whether that matches the truth, the straddling
+  fraction and the number of distinct axial bands in the support, and the
+  residual of the reference's *own* tangent generators — the family-F question
+  asked of rank rather than of distance — at both candidate evaluation points.
+
+```bash
+./tools/invariants.sh --out tmp/kin.tsv --jobs 8 --kinematic && python3 tools/kin_analyze.py tmp/kin.tsv
+```
+
 `tools/invariants.sh` reuses `tools/sweep.sh`'s model/reference pairing, so the two
 instruments always cover the same corpus.
 

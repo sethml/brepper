@@ -2276,6 +2276,243 @@ fn patch_size_probe(
     }
 }
 
+/// **Family K — the kinematic rank ladder**, measured on truth.
+///
+/// SURFACE_FITTING.md, "Nested fitting: a rank ladder instead of a type ladder",
+/// proposes reading the surface type from the *null-space dimension* of the
+/// tangent-similarity-field system rather than from a residual, so that a patch
+/// with too little support reads as a simpler surface instead of a wrong one.
+/// This asks the corpus four questions about that proposal, per reference face,
+/// over a BFS patch grown from several starts and sampled at a ladder of support
+/// sizes:
+///
+/// 1. **Is the signal there to be read?** The residual of the reference's *own*
+///    tangent generators against the measured rows — the family-F question asked
+///    of rank rather than of distance. Reported at both evaluation points, which
+///    is how the centroid-vs-circumcenter choice gets settled by measurement
+///    rather than by the derivation in [`super::kinematic::Eval`].
+/// 2. **At what support does the read become correct**, and does it pass through
+///    a *wrong* type on the way, or only through simpler ones? Only the second
+///    is acceptable — the whole claim is that under-determination degrades to
+///    simplicity.
+/// 3. **How believable is the reading?** The ratio gap that produced the
+///    dimension. A gap of 1e15 is a different object from a gap of 3.
+/// 4. **Does straddling govern here too?** The fraction of the support whose
+///    facet normals are not ruling-exact, alongside the reading.
+///
+/// Growth is confined to the reference face's own facets: this measures the
+/// signal in the absence of junction contamination, which is the precondition
+/// for the contaminated question being worth asking.
+fn kinematic_probe(
+    mesh: &ConnectedMesh,
+    faces: &[usize],
+    surf: &RefSurface,
+    model: &str,
+    ref_idx: usize,
+) {
+    use super::kinematic::{
+        dilation_about, rotation_about, translation_along, Eval, KinematicType, System,
+    };
+
+    const SIZES: [usize; 10] = [3, 4, 5, 6, 8, 12, 16, 24, 32, 48];
+    const STARTS: usize = 6;
+
+    // The type the ladder should converge on, and the reference's own tangent
+    // generators — the ones that must lie in the null space if the read is to
+    // have any chance.
+    /// A tangent generator of the reference surface, evaluated in a system's own
+    /// normalized frame.
+    type Generator = Box<dyn Fn(super::kinematic::Frame) -> nalgebra::SVector<f64, 7>>;
+
+    let (want, generators): (KinematicType, Vec<Generator>) =
+        match *surf {
+            RefSurface::Plane { point, normal } => {
+                let (e1, e2) = super::perpendicular_basis(&unit(normal));
+                (
+                    KinematicType::Plane,
+                    vec![
+                        Box::new(move |f| translation_along(e1, f)),
+                        Box::new(move |f| translation_along(e2, f)),
+                        Box::new(move |f| rotation_about(point, normal, f)),
+                    ],
+                )
+            }
+            RefSurface::Sphere { centre, .. } => (
+                KinematicType::Sphere,
+                vec![
+                    Box::new(move |f| rotation_about(centre, [1.0, 0.0, 0.0], f)),
+                    Box::new(move |f| rotation_about(centre, [0.0, 1.0, 0.0], f)),
+                    Box::new(move |f| rotation_about(centre, [0.0, 0.0, 1.0], f)),
+                ],
+            ),
+            RefSurface::Cylinder {
+                axis_pos, axis_dir, ..
+            } => (
+                KinematicType::Cylinder,
+                vec![
+                    Box::new(move |f| rotation_about(axis_pos, axis_dir, f)),
+                    Box::new(move |f| translation_along(axis_dir, f)),
+                ],
+            ),
+            RefSurface::Cone {
+                apex, axis_dir, ..
+            } => (
+                KinematicType::Cone,
+                vec![
+                    Box::new(move |f| rotation_about(apex, axis_dir, f)),
+                    Box::new(move |f| dilation_about(apex, f)),
+                ],
+            ),
+            RefSurface::Torus {
+                centre, axis_dir, ..
+            } => (
+                KinematicType::Revolution,
+                vec![Box::new(move |f| rotation_about(centre, axis_dir, f))],
+            ),
+            RefSurface::Other { .. } => return,
+        };
+
+    // Straddling is defined against an axis, so it is only meaningful on the
+    // surfaces that have one.
+    let axis = surf.axis();
+
+    let member: HashSet<usize> = faces.iter().copied().collect();
+    let stride = (faces.len() / STARTS).max(1);
+    for &start in faces.iter().step_by(stride).take(STARTS) {
+        let mut patch = vec![start];
+        let mut seen: HashSet<usize> = HashSet::from([start]);
+        let mut frontier = vec![start];
+        let mut next = 0usize;
+        loop {
+            while next < SIZES.len() && patch.len() >= SIZES[next] {
+                let target = SIZES[next];
+                next += 1;
+                let sub = &patch[..target];
+
+                let Some(sys) = System::build(sub, mesh, Eval::Centroid) else {
+                    continue;
+                };
+                let sp = sys.spectrum();
+                let (got, dim, gap) = sp.read();
+
+                // Q1: is the truth in the measured null space, and does the
+                // read change, at each evaluation point? Both are needed: the
+                // evaluation point is type-dependent by derivation, so a probe
+                // that picked one would be measuring its own choice.
+                let gen_cen = generators
+                    .iter()
+                    .map(|g| sys.generator_residual(g(sys.frame())))
+                    .fold(0.0_f64, f64::max);
+                let (gen_cir, got_x, dim_x, gap_x) = match System::build(sub, mesh, Eval::Circumcenter)
+                {
+                    Some(c) => {
+                        let r = generators
+                            .iter()
+                            .map(|g| c.generator_residual(g(c.frame())))
+                            .fold(0.0_f64, f64::max);
+                        let (k, d, g) = c.spectrum().read();
+                        (r, k, d, g)
+                    }
+                    None => (
+                        f64::NAN,
+                        super::kinematic::KinematicType::Underdetermined,
+                        0,
+                        f64::NAN,
+                    ),
+                };
+
+                // Q4: how much of this support has a normal that is not
+                // ruling-exact?
+                let straddle = match axis {
+                    Some((pos, dir)) => {
+                        let n = sub
+                            .iter()
+                            .filter(|&&fi| {
+                                super::initialize::min_ruling_gap_rad(mesh, fi, pos, dir)
+                                    .is_none_or(|g| g >= super::initialize::RULING_SAME_RAD)
+                            })
+                            .count();
+                        n as f64 / sub.len() as f64
+                    }
+                    None => f64::NAN,
+                };
+
+                // The mechanism behind the cylinder's rank collapse, measured
+                // rather than inferred: how many DISTINCT axial positions the
+                // support's facet centroids occupy. A ruled surface tessellated
+                // as one row of quads spanning its whole height puts every
+                // centroid at the same axial position, and the rows then depend
+                // on the normal alone — rank 3, a plane's rank, at any
+                // circumferential extent. Bucketed at a thousandth of the
+                // support's own axial span, which is far below a tessellation
+                // row and far above float32 noise.
+                let bands = match axis {
+                    Some((pos, dir)) => {
+                        let mut d = dir;
+                        super::normalize3(&mut d);
+                        let mut hs: Vec<f64> = sub
+                            .iter()
+                            .map(|&fi| {
+                                let c = face_centroid(&mesh.faces[fi], &mesh.vertices);
+                                dot([c[0] - pos[0], c[1] - pos[1], c[2] - pos[2]], d)
+                            })
+                            .collect();
+                        hs.sort_by(f64::total_cmp);
+                        let span = hs[hs.len() - 1] - hs[0];
+                        if span <= 0.0 {
+                            1
+                        } else {
+                            let eps = span * 1.0e-3;
+                            1 + hs.windows(2).filter(|w| w[1] - w[0] > eps).count()
+                        }
+                    }
+                    None => 0,
+                };
+
+                let top = sp.values[6].max(f64::MIN_POSITIVE);
+                let spectrum: Vec<String> = sp
+                    .values
+                    .iter()
+                    .map(|v| format!("{:.3e}", v / top))
+                    .collect();
+                println!(
+                    "KINEMATIC\t{model}\t{ref_idx}\t{kind}\t{start}\t{target}\t\
+                     {dim}\t{read}\t{ok}\t{gap:.3e}\t\
+                     {dim_x}\t{read_x}\t{ok_x}\t{gap_x:.3e}\t\
+                     {straddle:.4}\t{bands}\t{gen_cen:.3e}\t{gen_cir:.3e}\t{spec}",
+                    kind = surf.type_name(),
+                    read = got.name(),
+                    ok = u8::from(got == want),
+                    read_x = got_x.name(),
+                    ok_x = u8::from(got_x == want),
+                    spec = spectrum.join("\t"),
+                );
+            }
+            if next >= SIZES.len() {
+                break;
+            }
+            let mut ring = Vec::new();
+            for &fi in &frontier {
+                let vc = mesh.faces[fi].vertex_count as usize;
+                for &ni in &mesh.faces[fi].neighbors[..vc] {
+                    if ni < 0 {
+                        continue;
+                    }
+                    let nj = ni as usize;
+                    if member.contains(&nj) && seen.insert(nj) {
+                        patch.push(nj);
+                        ring.push(nj);
+                    }
+                }
+            }
+            if ring.is_empty() {
+                break;
+            }
+            frontier = ring;
+        }
+    }
+}
+
 /// Measure the section's cylinder/cone seed rule on one developable reference
 /// face: enumerate the chains it admits, test both readings of its coplanarity
 /// clause, and fit each chain's closed-form axis against ground truth.
@@ -2610,6 +2847,11 @@ pub fn report(
     );
     println!("#PATCHSIZE\tmodel\tref\tkind\tfacets\taxis_err_deg");
     println!(
+        "#KINEMATIC\tmodel\tref\tkind\tstart\tsupport\tdim_c\tread_c\tok_c\tgap_c\t\
+         dim_x\tread_x\tok_x\tgap_x\tstraddle\tbands\tgen_centroid\tgen_circumcenter\t\
+         l0\tl1\tl2\tl3\tl4\tl5\tl6"
+    );
+    println!(
         "#SEEDRULE\tmodel\tref\tkind\tpairs\tsix_verts\tall_coplanar\tfour_coplanar\t\
          ax_p50\tax_p95\tax_max\tn_admitted\tadm_p50\tadm_max\tselected_err"
     );
@@ -2690,6 +2932,11 @@ pub fn report(
             fit_residual::<ConicalSurface>(mesh, faces).unwrap_or(f64::NAN),
             fit_residual::<ToroidalSurface>(mesh, faces).unwrap_or(f64::NAN),
         ];
+
+        // --- K: the kinematic rank ladder on truth --------------------------
+        if std::env::var("BREPPER_INV_KINEMATIC").is_ok() {
+            kinematic_probe(mesh, faces, surf, &model_name, r);
+        }
 
         // --- E: the section's stated seed rule, on developables -------------
         if matches!(kind, Kind::Cylinder | Kind::Cone) {

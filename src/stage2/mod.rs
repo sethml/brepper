@@ -23,6 +23,7 @@
 pub mod edges;
 pub(crate) mod initialize;
 pub mod invariants;
+pub(crate) mod kinematic;
 pub mod regions;
 
 mod surface;

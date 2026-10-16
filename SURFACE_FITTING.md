@@ -591,6 +591,355 @@ walking the strip labels the rest combinatorially.
 
 ---
 
+## Nested fitting: a rank ladder instead of a type ladder (surveyed 2026-08-06)
+
+The question this section answers: **could one fitter, run on a growing patch,
+return "the simplest surface that explains what I have so far" — plane, then
+cylinder, then cone, then sphere, then torus — with the type an *output* rather
+than a precondition?** Asked because that is the missing piece of Phase 1.2. The
+earn loop died on a chicken-and-egg — "a cone cannot be fitted from the two
+facets a validated loop has when it must first decide, so it never grows" — and
+a fitter that never has to decide first does not have that problem.
+
+This is a survey with the option set, the costs, and the two families that are
+*not* the answer. **The rank-ladder claim has since been measured** — see "The
+rank ladder measured" below, which demotes it from backbone to complement: it is
+decisive for sphere and plane and structurally blind to the cylinder. Read the
+derivation first; the verdict depends on it.
+
+### The nesting must come from tangency, not from algebra
+
+The obvious nested family is the **general quadric**, and it is the wrong one for
+this pipeline, for two reasons that are already measured here rather than
+speculative.
+
+It **omits the torus**, the one surface every fillet needs, while including
+ellipsoids, paraboloids and hyperboloids that CAD essentially never emits. On
+support that barely pins a circular cylinder, the best algebraic quadric is
+generically some elliptic cylinder or hyperboloid. Escalating to a quartic to
+capture the torus is strictly worse: 34 coefficients, ≥34 points, degree-8
+moments, and an even larger zoo of irrelevant surfaces. No reverse-engineering
+work in the literature fits tori that way.
+
+And it is **points-only, which is exactly the channel that cannot discriminate**.
+The Invariants section measured that a wrong type explains a true support at the
+same residual as the right one — a sphere fits 393 of 397 true cylinders *better*
+than the cylinder does, at 0.2–0.5 float32 quanta. A points-only algebraic fitter
+inherits that blindness whole. Type-projecting the result does not repair it:
+a right circular cone requires a repeated eigenvalue in `M`, a condition Andrews
+& Séquin note is neither linear nor quadratic in the quadric coefficients, so it
+cannot be imposed on the linear fit (this is Option B under "Cone
+initialization", with its ≥9 points and its algebraic-distance bias).
+
+What nests correctly is the **space of tangent velocity fields**. Fit the
+instantaneous similarity field
+
+```text
+v(p) = γ p + c × p + c̄        (7 unknowns: dilation γ, rotation c, translation c̄)
+```
+
+and require it tangent to the surface, `v(p)·n(p) = 0`. Each oriented facet
+contributes **one linear row**, homogeneous:
+
+```text
+γ (p·n) + c·(p × n) + c̄·n = 0
+```
+
+This is Pottmann's kinematic surface fitting as generalized by Andrews & Séquin,
+both already cited above. What makes it the answer to the question is not the
+solve but the **dimension of its null space**, which is a property of the surface
+and nothing else:
+
+| surface | tangent similarity fields | null dim | rank | facets to *confirm* |
+|---|---|---|---|---|
+| plane | 2 in-plane translations, rotation about the normal, one dilation | **4** | 3 | 4 |
+| sphere | 3 rotations about the centre | **3** | 4 | 5 |
+| cylinder | rotation about + translation along the axis | **2** | 5 | 6 |
+| cone | rotation about the axis + **dilation from the apex** | **2** | 5 | 6 |
+| torus / any surface of revolution | rotation about the axis | **1** | 6 | 7 |
+| extrusion | translation along the generator | **1** | 6 | 7 |
+| freeform | none | **0** | 7 | never |
+
+(Confirmation costs one facet more than the rank, for a reason the probe had to
+find the hard way — see finding 4 below.)
+
+**The dimension order is the simplicity order**, and it puts the sphere between
+plane and cylinder rather than in a separate branch. Under-determination behaves
+correctly for free: with `k` rows the rank is at most `k`, so the null space is at
+*least* `7 − k`-dimensional, and a patch that has not yet earned its type reads as
+a simpler surface than it is. That is precisely "when there's insufficient
+support to pin down the result, default to the simplest surface that fits" — as a
+**rank statement rather than a residual statement**, which matters because the
+residual demonstrably cannot carry it.
+
+Dimension alone does not separate cylinder from cone; the null space's *content*
+does, and reading it costs nothing:
+
+| reading | type |
+|---|---|
+| dim 4 | plane |
+| dim 3 | sphere |
+| dim 2, every null vector has `γ = 0` | cylinder |
+| dim 2, some null vector has `γ ≠ 0` | **cone** — the dilation from the apex |
+| dim 1, `c ≠ 0` | torus / surface of revolution |
+| dim 1, `c = 0` | extrusion |
+| dim 0 | freeform |
+
+Parameters come out of the surviving generators: the rotation generator's Plücker
+line **is** the axis, and `A = −c̄/γ` on the cone branch is the apex.
+
+### Why this is cheap here specifically
+
+**Three of the four Phase 1.1 initializers are already sub-blocks of this one
+system**, which is the strongest argument that the unification is real rather
+than decorative:
+
+- The torus's meridian solve `qᵢ·d + nᵢ·m = 0` (`axis_line_from_normals`) is the
+  **rigid sub-block**, `γ = 0`, with `(d, m) = (c, c̄)` read as a Plücker line.
+- Cone Option A's `γ(p·n) + a·n = 0` is the **scaling sub-block**, `c = 0`.
+- `cylinder()`'s `n₁ × n₂` and `sphere()`'s concurrent circumcenter normal lines
+  are 2-row closed forms of the same structure.
+
+The 7×7 Gram matrix *reads which structure is present* instead of assuming one
+per solve. It is also **incremental** — one rank-1 update per admitted face, one
+7×7 symmetric eigensolve per promotion check — which the per-type LM fitters can
+never be, so the check can afford to run at every face admission.
+
+Every measured lesson above transfers unchanged: normalize rows to the patch's own
+centroid and extent (the scale-mismatch note under the torus construction — and
+the normalization is provably rank-preserving, since translating and scaling the
+coordinates maps the 7-parameter space to itself invertibly, so it is conditioning
+and never an answer); select the facets to *initialize* from by ruling alignment
+and angular spread while *collection* stays validation-gated (the
+similarity-vs-spread separation Phase 1.2 paid for); and treat the result as a
+**seed for the vertex-based least squares**, never as the answer, because every
+row is built from a facet normal and inherits the `O(Δθ²/8)` chord-plane lean.
+
+**Why the facet centroid is the right evaluation point**, and it is not obvious:
+the row wants a point on the surface paired with the true normal, and the facet
+gives neither exactly. For a ruling-aligned quad on a cylinder the two errors
+cancel — the chord of a circular arc is parallel to the tangent at the arc's
+*midpoint*, and the centroid sits at that midpoint angle, so the rotation
+generator annihilates the row exactly. Evaluating at a vertex instead is `O(Δθ)`
+wrong, an order worse. On a cone the facet plane contains the apex exactly, so the
+`p·n` entry is exactly zero however the facet is shaped. On a **sphere** the exact
+point is the facet's **circumcenter** rather than its centroid, since that is
+where the normal line passes through the centre — the same distinction Phase 1.1
+recorded for `sphere()`. Both are measured under family K below.
+
+### What it does not fix
+
+Stated plainly, because the failure modes are known and the rank ladder does not
+touch them:
+
+- **Genuine ambiguity stays ambiguous.** A single strip band — vertices on two
+  circles, every facet centroid at one axial position — is sphere-compatible in
+  the normal channel as well as the vertex channel (`simple_cylinder`'s 32-quad
+  band, residual 2.07e-7 mm). The rank signal is degenerate there for the same
+  reason the residual is. *(Measured, and far worse than "stays ambiguous": the
+  band's rank collapses all the way to a plane's, and it is the common case
+  rather than a corner one — see finding 1 below.)* The load stays on the structural gates
+  (`MIN_AXIAL_SWEEP_DEG`, solid-angle coverage) and on branch-don't-choose.
+- **Rank is not to be read with a threshold.** The eigenvalue spectrum orders
+  candidate interpretations; **validation decides**. This is the same rule
+  `MIN_NULLSPACE_SEPARATION` is documented under, arrived at from the other end —
+  the measured sphere-vs-torus conditioning gap is 2.06e-6 against 9.2e-4, a
+  factor of 450 with pure data-dependence in between, so no cut exists.
+- **Support cost is real and is the headline risk.** A cylinder needs 6
+  independent rows against the 2 facets `initialize::cylinder` needs, a torus 7
+  against a vertex star's 4–12. The rank ladder is a *classifier* that needs more
+  support than the closed forms need, and whether the extra support is available
+  before a patch crosses a junction is the whole question family K asks.
+  *(Measured: it is worse than this, because the cylinder also needs its support
+  spread over two axial bands, which a ruled tessellation does not supply.)*
+- **Plane starvation of the freeform rung.** An earned plane patch is by
+  construction "the faces that validate a plane", so a single-facet plane always
+  succeeds — measured to collapse the NURBS models to 94/51/83 per-facet planes.
+  Whatever consumes the ladder must keep the leftover-coherence policy.
+
+### The option set, ranked (before measurement; see the verdict below)
+
+- **A — the kinematic rank ladder above.** Proposed as the backbone. Adds the
+  normal channel the points-only methods lack, subsumes three existing
+  initializers, incremental, and its degeneracies are the ones already
+  understood. **Measured, and demoted — see "The rank ladder measured" below.**
+- **B — general quadric with eigen-projection.** Demoted to triage
+  (analytic-vs-freeform) and initializer of last resort, for the reasons above.
+- **C — per-type fitters with degeneracy-safe parameterizations.** The
+  conservative option, and *complementary rather than alternative*: adopt
+  Lukács–Martin–Marshall's parameterization discipline, whose stated property is
+  that "as the principal curvatures decrease, the results naturally become closer
+  to the surfaces of simpler type, unlike other methods which may diverge". That
+  is the same move as this document's cone `taper = tan α` and the bent tube's
+  `k = 1/R`. Keep it in the refiners whatever backbone wins; it leaves the four
+  initializers un-unified and promotion hand-enumerated if used alone.
+- **D — Dupin cyclides.** The one classical family containing *exactly*
+  {plane, sphere, cylinder, cone, torus} and closed under the relevant
+  degenerations, with a genuine unified theory in the space of oriented spheres.
+  Declined: the literature is construction- and blend-oriented, mesh fitting is
+  thin, the Minkowski–Lorentz machinery is heavy, and the extra coverage is a
+  liability in a pipeline whose whole discipline is "simplest surface that
+  validates". Worth remembering only if variable-radius blends become a target.
+
+### The rank ladder measured (family K)
+
+`src/stage2/kinematic.rs` builds the system; `--invariant-report` family K scores
+it against `--compare` ground truth. Per reference face, over a BFS patch grown
+from several starts and sampled at a ladder of support sizes: the 7 relative
+eigenvalues, the null dimension read from the widest ratio gap *that row
+starvation does not already explain*, the type that dimension plus its
+null-space content names, whether that matches the truth, the straddling
+fraction and axial band count of the support, and — the analogue of family F —
+the residual
+of the **reference's own** tangent generators against the measured rows, at both
+the centroid and the circumcenter, which asks whether the signal is there to be
+read before asking whether the read succeeds.
+
+```bash
+./tools/invariants.sh --out tmp/kin.tsv --jobs 8 --kinematic && python3 tools/kin_analyze.py tmp/kin.tsv
+```
+
+**Measured 2026-08-06 over 138 models, 1360 reference faces, 62 774 readings.**
+Growth confined to each reference face's own facets, so this is the signal with
+*no* junction contamination — the best case, deliberately.
+
+Headline, per reference face: does the ladder read the true type at *any*
+support size on the ladder 3…48?
+
+| true type | faces | best evaluation point | reads correctly | first size that works (p50) |
+|---|---|---|---|---|
+| plane | 374 | either | **94.9%** | 4 |
+| sphere | 133 | **circumcenter** | **100.0%** | 5 |
+| cone | 83 | **centroid** | 66.3% | 6 |
+| torus | 131 | either | 71.0% | 12 |
+| **cylinder** | 639 | — | **4.5%** | — |
+
+**The verdict: the ladder is not a backbone, because it is structurally blind to
+the cylinder — and the cylinder is 47% of the corpus's analytic faces.** The
+other four types work, sphere and plane decisively. The remaining findings say
+why, and two of them are worth more than the headline.
+
+**1. The cylinder failure is structural, and it is the tessellation's doing.**
+In a band of ruling-aligned quads every facet centroid sits at the same axial
+position `z_c` and the same radial distance `r_c`, so `p·n = r_c` is one constant
+and `p × n = z_c (d × n)` is a fixed multiple of the normal: **every row is an
+affine function of `n` alone, the row space is spanned by {constant, nₓ, n_y},
+and the rank is 3 — a plane's rank — at any circumferential extent.** Measured
+rather than inferred, by counting distinct axial centroid positions alongside the
+rank:
+
+| distinct axial bands in the support | readings | mean rank | rank = 3 | read correct |
+|---|---|---|---|---|
+| **1** | 2646 | 3.35 | **64.9%** | **0.0%** |
+| 2 | 349 | 6.00 | 0.0% | 5.7% |
+| 3+ | 2567 | 6.18 | 3.4% | 0.7% |
+
+and a cylinder is *ruled*, so a CAD tessellator emits exactly one row of quads
+spanning its whole height — the same fact this document already records for the
+cone ("one row of quads spans its entire height"). 56–61% of the ladder's wrong
+cylinder readings are literally `plane`. This is the axial analogue of "a short
+arc cannot determine a free surface of revolution": **a single band carries no
+axial information at all**, and no conditioning fixes it.
+
+The failure is also *diagnosable with no ground truth* — count distinct axial
+centroid positions — and the case it fails on is exactly the case
+`initialize::cylinder`'s `n₁ × n₂` handles best, because one band of quads is
+100% ruling-aligned. Measured on the same faces in the same run: the closed form
+lands the axis under **0.1° on 89.7%** of 261 cylinder reference faces, p50
+0.0000°. **They are complementary, and the complementarity is exact rather than
+lucky.**
+
+**2. The evaluation point is type-dependent, decisively, and the derivation was
+right.** The reference's own generators against the measured rows (relative
+residual, p50):
+
+| true type | centroid | circumcenter | reads right: centroid → circumcenter |
+|---|---|---|---|
+| plane | 0.00 | 0.00 | 90.6% → 94.7% |
+| **sphere** | 3.26e-3 | **3.88e-7** | 83.5% → **100.0%** |
+| cylinder | 1.40e-6 | 1.43e-6 | 2.5% → 4.4% |
+| **cone** | 4.91e-4 | 1.29e-4 | **62.7% → 32.5%** |
+| torus | 4.11e-7 | 3.53e-7 | 64.9% → 67.2% |
+
+Sphere wants the circumcenter by four orders of magnitude, and the cone wants the
+**centroid** — note that the cone's generator residual is *better* at the
+circumcenter while its *read* is twice as good at the centroid, so residual and
+readability are not the same quantity here either. A ladder that fixed one
+evaluation point would be measuring its own choice.
+
+**3. The gap measures how cleanly a rank is determined, not whether it is the
+right rank.** Split by whether the read was correct: **for every type but the
+plane the wrong reads' p95 gap exceeds the right reads' p50**, so no cut
+separates them — and on three of the seven type/evaluation-point combinations the
+wrong reads' *median* gap is the larger one outright (sphere at the circumcenter,
+right p50 2.28e9 against wrong 4.73e10; cone at the centroid, 8.35e3 against
+9.05e6; cone at the circumcenter, 5.80e7 against 4.21e8). A one-band cylinder is
+confidently, enormously wrong — rank 3 with a gap of ~1e12. So the standing rule
+against thresholding a spectrum arrives from a third direction, and in its
+sharpest form yet: **a large gap is evidence that a rank is well determined and
+no evidence at all that it is the right rank.**
+
+**4. Two defects the probe found in its own reading rule**, both recorded because
+both are the obvious implementation:
+
+- *Reading the widest gap over the whole spectrum measures `7 − rows`.* With `k`
+  rows the Gram matrix has `7 − k` zero eigenvalues for reasons having nothing to
+  do with the surface. The first version walked 4, 3, 2, 1, 0 as support went 3,
+  4, 5, 6, 8 and hit the true type exactly once per model, by coincidence, where
+  `7 − k` happened to equal it. The fix is to compare the read against that
+  trivial floor, which costs one row more than the type's rank: 4 to confirm a
+  plane, 5 a sphere, 6 a cylinder or cone, 7 a torus — and freeform never
+  confirmable, only "nothing simpler was confirmed", which is its correct status.
+- *A content threshold sharp enough to name a type is wrong most of the time.*
+  `BLOCK_PRESENT` was documented as safe because "a cylinder's `γ` is identically
+  zero and a cone's is of order one, so any cut well below 1 gives the same
+  answer". On real meshes the rank reads a true torus's dimension correctly
+  **79–81%** of the time while that floor labels **70%** of those readings
+  `Spiral`, because a facet normal's `O(Δθ²/8)` error lands ~1e-3 in the `γ`
+  block. `Spectrum::candidates` now returns every type a dimension admits,
+  ordered, and validation picks. Separating the two numbers is what makes the
+  torus row above readable at all — note this table is **per reading** at its
+  best evaluation point, where the headline table is per *face* over all support
+  sizes, so the two answer different questions and the torus's 81.5% and 71.0%
+  are not in conflict:
+
+| true type | dimension read correctly | top-1 type correct |
+|---|---|---|
+| plane | 95.9% | 95.9% |
+| sphere (circumcenter) | 97.4% | 97.4% |
+| cone (centroid) | 28.6% | 28.6% |
+| **torus** | **81.5%** | 11.2% |
+| cylinder | 5.0% | 0.6% |
+
+**5. Failure direction is mostly right, but not entirely.** The design requires
+that an unearned read degrade to something *simpler*, never to a different type
+at equal complexity. Of the wrong cylinder readings, 57–61% are simpler and
+26–28% are under-determined — but **12–16% name a wrong type outright** (mostly
+sphere), and for the torus that figure is 47–49%. So "under-determination
+degrades to simplicity" holds as a tendency, not as a guarantee, and anything
+built on the ladder still needs validation to catch the rest.
+
+### What this changes
+
+- **Option A is demoted from backbone to complement.** Use the rank ladder where
+  it is decisive — **sphere** (100.0%, circumcenter, from 5 facets) and **plane**
+  (94.9%, from 4) — and keep `initialize::cylinder` for the cylinder, where it is
+  90% accurate on exactly the configuration the ladder cannot read. The torus's
+  81.5% dimension read is a usable axis signal and is close to what
+  `axis_line_from_normals` already extracts, which is unsurprising: that solve is
+  this system's rigid sub-block.
+- **The cone stays the weak type**, at 66.3% here against the 49.4% of the
+  Invariants section's seed rules — an improvement, not a solution, and one that
+  needs the centroid evaluation to get even that.
+- **The support cost is the real barrier to using this inside a growth loop.**
+  Confirming a cylinder or cone needs 6 rows and a torus 7, against the 2 facets
+  `initialize::cylinder` needs and the 4–12 of a torus vertex star. A patch that
+  must reach 7 validated facets before it can name its own type is a patch that
+  may already have crossed a junction — which is the Phase 1.2 chicken-and-egg
+  arriving in a new costume rather than being dissolved.
+
+---
+
 ## Algorithm Reference
 
 This section documents key algorithmic techniques drawn from computational geometry research that inform the surface fitting approach. These are referenced by the stage descriptions above.
