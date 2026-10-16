@@ -1223,6 +1223,7 @@ pub(super) struct ConeFit {
 pub(super) struct ConicalSurface;
 
 impl SurfaceType for ConicalSurface {
+    const CACHE_FITS: bool = true;
     type Fit = ConeFit;
     type Hypothesis = ConicalHypothesis;
 

@@ -392,7 +392,7 @@ Integration tests in `tests/integration/stage3_integration.rs` (one test binary,
 - Face creation (stage 3.4) successfully creates OCCT `TopoDS_Face` objects for all test models via shared-edge topological assembly: every edge is one `TopoDS_Edge` shared by both adjacent faces, with per-face pcurves, seam edges, and degenerate pole edges built uniformly for all surface types. All STL/STEP pairs pass `--compare` validation at stage 3.4
 - Shell construction (stage 3.5) assembles faces into shells directly from the shared-edge topology (closed by construction; no sewing) and produces correctly oriented shells. All STL/STEP pairs pass `--compare` validation
 - Solid construction (stage 3.6) creates solids from shells via `ShapeFix_Solid::SolidFromShell`. Volume comparison against STEP reference and `BRepExtrema_DistShapeShape` distance checks pass for all test models
-Integration tests in `tests/integration/stage4_integration.rs` (one test binary, `tests/integration/main.rs`) verify that:
+End-to-end tests in `tests/integration/end_to_end.rs` (one test binary, `tests/integration/main.rs`) verify that:
 - STEP output files are written successfully for cube, cylinder, and sphere models
 - All STL/STEP pairs pass `--compare` validation at stage 4.1, verifying volume agreement and `BRepExtrema_DistShapeShape` distance between written output and reference STEP
 - Missing output path produces the expected error

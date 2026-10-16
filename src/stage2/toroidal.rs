@@ -1195,6 +1195,7 @@ pub(super) struct TorusFit {
 pub(super) struct ToroidalSurface;
 
 impl SurfaceType for ToroidalSurface {
+    const CACHE_FITS: bool = true;
     type Fit = TorusFit;
     type Hypothesis = ToroidalHypothesis;
 

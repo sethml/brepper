@@ -193,24 +193,24 @@ fn refit_geometry(mesh: &ConnectedMesh, cls: &mut Classification, si: usize) {
     let verts = vertices_of(mesh, &faces);
     match cls.selected[si] {
         SelectedSurface::Planar(i) => {
-            if let Some(fit) = PlanarSurface::fit_surface(mesh, &faces, &verts, 0) {
+            if let Some(fit) = super::surface::cached_fit::<PlanarSurface>(mesh, &faces, &verts, 0) {
                 cls.planar[i] = PlanarSurface::make_hypothesis(mesh, faces, verts, &fit);
             }
         }
         SelectedSurface::Conical(i) => {
-            if let Some(mut fit) = ConicalSurface::fit_surface(mesh, &faces, &verts, 0) {
+            if let Some(mut fit) = super::surface::cached_fit::<ConicalSurface>(mesh, &faces, &verts, 0) {
                 ConicalSurface::determine_convexity(mesh, &faces, &mut fit);
                 cls.conical[i] = ConicalSurface::make_hypothesis(mesh, faces, verts, &fit);
             }
         }
         SelectedSurface::Spherical(i) => {
-            if let Some(mut fit) = SphericalSurface::fit_surface(mesh, &faces, &verts, 0) {
+            if let Some(mut fit) = super::surface::cached_fit::<SphericalSurface>(mesh, &faces, &verts, 0) {
                 SphericalSurface::determine_convexity(mesh, &faces, &mut fit);
                 cls.spherical[i] = SphericalSurface::make_hypothesis(mesh, faces, verts, &fit);
             }
         }
         SelectedSurface::Toroidal(i) => {
-            if let Some(mut fit) = ToroidalSurface::fit_surface(mesh, &faces, &verts, 0) {
+            if let Some(mut fit) = super::surface::cached_fit::<ToroidalSurface>(mesh, &faces, &verts, 0) {
                 ToroidalSurface::determine_convexity(mesh, &faces, &mut fit);
                 cls.toroidal[i] = ToroidalSurface::make_hypothesis(mesh, faces, verts, &fit);
             }

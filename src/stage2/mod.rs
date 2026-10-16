@@ -783,13 +783,19 @@ pub fn stage2(
 
     // --- Stage 2.3: per-region surface discovery (ladder + competition) ---
     let t = Instant::now();
-    let mut cls = classify::classify_regions(
-        &mesh,
-        &segmentation.regions,
-        &segmentation.jet,
-        &segmentation.face_region,
-        config,
-    );
+    // Fit memoization (surface::with_fit_cache) — bit-identical, see there.
+    // Off at verbosity >= 4, where the fitters print per-fit diagnostics that a
+    // cache hit would silently skip.
+    let memoize = config.verbosity < 4;
+    let mut cls = surface::with_fit_cache(memoize, || {
+        classify::classify_regions(
+            &mesh,
+            &segmentation.regions,
+            &segmentation.jet,
+            &segmentation.face_region,
+            config,
+        )
+    });
     if config.verbosity >= 1 {
         eprintln!(
             "Stage 2.3 ({:.3}s): Region classification: {} surfaces ({} planar, {} cyl/cone, {} spherical, {} toroidal)",
@@ -805,7 +811,7 @@ pub fn stage2(
     // --- Stage 2.4: resolution & repair (snap, relabel, merge, re-split) ---
     if config.stage.at_least(2, 4) {
         let t = Instant::now();
-        let stats = repair::repair(&mesh, &mut cls, config);
+        let stats = surface::with_fit_cache(memoize, || repair::repair(&mesh, &mut cls, config));
         if config.verbosity >= 1 {
             eprintln!(
                 "Stage 2.4 ({:.3}s): Repair: {} snapped ({} pair(s) unhandled), {} relabeled, {} merged, {} re-split → {} surfaces",

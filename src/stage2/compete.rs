@@ -612,24 +612,24 @@ fn refit_in_place(mesh: &ConnectedMesh, hyp: &mut CompeteHyp, config: &Config) {
     let v = config.verbosity;
     match hyp {
         CompeteHyp::Planar(h) => {
-            if let Some(fit) = PlanarSurface::fit_surface(mesh, &faces, &verts, v) {
+            if let Some(fit) = super::surface::cached_fit::<PlanarSurface>(mesh, &faces, &verts, v) {
                 *h = PlanarSurface::make_hypothesis(mesh, faces, verts, &fit);
             }
         }
         CompeteHyp::Conical(h) => {
-            if let Some(mut fit) = ConicalSurface::fit_surface(mesh, &faces, &verts, v) {
+            if let Some(mut fit) = super::surface::cached_fit::<ConicalSurface>(mesh, &faces, &verts, v) {
                 ConicalSurface::determine_convexity(mesh, &faces, &mut fit);
                 *h = ConicalSurface::make_hypothesis(mesh, faces, verts, &fit);
             }
         }
         CompeteHyp::Spherical(h) => {
-            if let Some(mut fit) = SphericalSurface::fit_surface(mesh, &faces, &verts, v) {
+            if let Some(mut fit) = super::surface::cached_fit::<SphericalSurface>(mesh, &faces, &verts, v) {
                 SphericalSurface::determine_convexity(mesh, &faces, &mut fit);
                 *h = SphericalSurface::make_hypothesis(mesh, faces, verts, &fit);
             }
         }
         CompeteHyp::Toroidal(h) => {
-            if let Some(mut fit) = ToroidalSurface::fit_surface(mesh, &faces, &verts, v) {
+            if let Some(mut fit) = super::surface::cached_fit::<ToroidalSurface>(mesh, &faces, &verts, v) {
                 ToroidalSurface::determine_convexity(mesh, &faces, &mut fit);
                 *h = ToroidalSurface::make_hypothesis(mesh, faces, verts, &fit);
             }
@@ -671,12 +671,30 @@ pub(super) fn grow_from<S: SurfaceType>(
     let vtol = config.vertex_tolerance_mm;
     let mut accepted =
         condition_patch::<S>(mesh, start, initial, centroids, config, vtol, stol, min_faces);
+    // The last fit and the flood it produced, keyed by the exact face list it
+    // was fitted on. Fitting and flooding are deterministic functions of that
+    // list, so whenever the loop comes back to it — a flood that reproduces its
+    // own input, which is how this loop usually converges, and then the final
+    // fit below — the stored pair IS what recomputing would return. Reusing it
+    // changes no result and skips the most expensive call in stage 2 (a torus
+    // or cone LM) about once per grow.
+    let mut last: Option<(Vec<usize>, S::Fit, Vec<usize>)> = None;
+    let mut fit_and_flood = |faces: &Vec<usize>| -> Option<(S::Fit, Vec<usize>)> {
+        if let Some((key, fit, comp)) = &last {
+            if key == faces {
+                return Some((fit.clone(), comp.clone()));
+            }
+        }
+        let verts = vertices_of(mesh, faces);
+        let mut fit = super::surface::cached_fit::<S>(mesh, faces, &verts, config.verbosity)?;
+        S::determine_convexity(mesh, faces, &mut fit);
+        let comp = flood::<S>(mesh, in_region, start, &fit, centroids, vtol, stol);
+        last = Some((faces.clone(), fit.clone(), comp.clone()));
+        Some((fit, comp))
+    };
     let mut prev = 0usize;
     for round in 0..MAX_GROW_ROUNDS {
-        let verts = vertices_of(mesh, &accepted);
-        let mut fit = S::fit_surface(mesh, &accepted, &verts, config.verbosity)?;
-        S::determine_convexity(mesh, &accepted, &mut fit);
-        let comp = flood::<S>(mesh, in_region, start, &fit, centroids, vtol, stol);
+        let (_, comp) = fit_and_flood(&accepted)?;
         if comp.is_empty() {
             return None; // the start face does not lie on its own fit — reject
         }
@@ -696,10 +714,7 @@ pub(super) fn grow_from<S: SurfaceType>(
     }
 
     // Final fit + validated flood.
-    let verts = vertices_of(mesh, &accepted);
-    let mut fit = S::fit_surface(mesh, &accepted, &verts, config.verbosity)?;
-    S::determine_convexity(mesh, &accepted, &mut fit);
-    let faces = flood::<S>(mesh, in_region, start, &fit, centroids, vtol, stol);
+    let (fit, faces) = fit_and_flood(&accepted)?;
     if faces.len() < min_faces {
         return None;
     }
@@ -1068,7 +1083,7 @@ fn condition_patch<S: SurfaceType>(
             break;
         }
         let verts = vertices_of(mesh, &patch);
-        let mut fit = match S::fit_surface(mesh, &patch, &verts, config.verbosity) {
+        let mut fit = match super::surface::cached_fit::<S>(mesh, &patch, &verts, config.verbosity) {
             Some(f) => f,
             None => {
                 // No fit to rank by — shrink toward the seed instead.

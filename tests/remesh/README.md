@@ -64,7 +64,7 @@ vertex tolerance therefore has under 20% margin, and a part positioned a few
 metres out in an assembly would break it. That is what Phase 0.6's clamp is
 for.
 
-## Status against the reference (see tests/stage4_integration.rs)
+## Status against the reference (see tests/integration/end_to_end.rs)
 
 25 of the 32 pass end-to-end `--compare`. The 7 that fail are all real
 findings, not corpus defects, and carry precise blockers in the suite:

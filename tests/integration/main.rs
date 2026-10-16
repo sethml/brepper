@@ -8,11 +8,19 @@
 //! also links once instead of six times.
 //!
 //! Run one area with a module filter, e.g.
-//! `cargo test --release --test integration stage4_integration::`.
+//! `cargo test --release --test integration end_to_end::`.
+//!
+//! **Module names set the schedule.** libtest starts tests in name order and has
+//! no stable way to change that, so a slow test that sorts last starts last and
+//! the run ends on one or two busy cores. The whole-pipeline compare tests
+//! (formerly `stage4_integration`) hold most of the slowest single tests, so
+//! they live in `end_to_end`, which sorts before `stage*`: simulated from
+//! measured durations, 258 s against 285 s for the old order and 256 s for an
+//! ideal longest-first schedule. Keep slow end-to-end tests in that module.
 
+mod end_to_end;
 mod stage1_integration;
 mod stage2_competition;
 mod stage2_integration;
 mod stage2_segmentation;
 mod stage3_integration;
-mod stage4_integration;

@@ -40,7 +40,7 @@ reports the rate.
 ## What the pipeline does with them
 
 15 of 31 pass end-to-end `--compare`; the 16 that do not carry their numbers in
-`tests/stage4_integration.rs`. Three results are worth reading here.
+`tests/integration/end_to_end.rs`. Three results are worth reading here.
 
 **Four models are rejected at stage 1, not by the decomposition.** A mesh
 exported at 0.5 mm chordal deviation has facet-centroid sag of 0.51–0.83 mm,

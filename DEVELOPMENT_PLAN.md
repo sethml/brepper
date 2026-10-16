@@ -3817,7 +3817,7 @@ Stage-2 integration tests assert:
   models = final counts; tangent models = tangent-chain counts, e.g.
   capsule 1, nosecone 2 — measure with `dump_regions` when re-pinning,
   don't guess) plus the coverage/connectivity/determinism invariants
-  (already in `tests/stage2_segmentation.rs`).
+  (already in `tests/integration/stage2_segmentation.rs`).
 - Surface-discovery end states after 2.3/2.4 — the same expectations the
   old suite pinned (cube = 6 planar; block_with_hole = 6 planar +
   1 cylindrical; pipe = 2 planar + 2 cylindrical; ball_on_cylinder =
@@ -3832,6 +3832,35 @@ Stage-2 integration tests assert:
 **Migration reality**: the suite is red during the rewrite (see Rewrite
 Roadmap step 7). Re-enable per model; a model stays disabled with a comment
 naming its blocker rather than being nerfed with loosened gates.
+
+### Suite runtime (2026-10-16)
+
+The suite took **26 min** by 2026-10-15. Measured per test, two things
+dominated: one model (`pipe_elbow_10_fine`, 12 min of stage 2) run by four
+identical tests, and 64% of all test time re-running a model another test had
+already run. What changed, in order of payoff:
+
+- **Pipeline, results bit-identical:** an O(V·F) normal scan in the torus fitter
+  (`toroidal::vertex_normals`), a per-grow fit+flood reuse (`compete::grow_from`)
+  and a run-scoped fit memo for cone and torus fits (`surface::with_fit_cache`).
+  Each was checked by diffing full `--verbose=3` stage-2 logs. Total test time
+  6283 s → 1318 s.
+- **Structure:** one integration binary (`tests/integration/main.rs`) so every
+  test shares one parallel pool; per-model stage-2 compare tests collapsed into
+  the stage-4 tests that already run the same model (stage 2 performs no compare
+  check of its own, so only the coverage assertions were unique, and they moved);
+  segmentation tests stop at 2.2.
+- **Schedule:** libtest starts tests in name order, so the whole-pipeline tests
+  live in `end_to_end`, which sorts first — the slowest tests then start at
+  t = 0.
+
+The floor is now the slowest single test: `nurbs_bspline_hill` (~255 s) and
+`nurbs_bspline_terrain` (~220 s), both spending nearly all their time in 2.3's
+competition trying torus and cone fits on a freeform region (42% in the gated
+closed-form torus refinement alone). Lowering it means changing what
+competition computes — fewer flood starts, less LM effort, or not trying the
+torus rung where it cannot win — which changes decisions and needs a corpus
+sweep, unlike everything above.
 
 ### Test Cases
 

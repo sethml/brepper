@@ -389,7 +389,7 @@ pub(super) fn fit_validate<S: SurfaceType>(
 
     for _round in 0..=MAX_REFIT {
         let fit_verts = vertices_of(mesh, &fit_faces);
-        let mut fit = S::fit_surface(mesh, &fit_faces, &fit_verts, config.verbosity)?;
+        let mut fit = super::surface::cached_fit::<S>(mesh, &fit_faces, &fit_verts, config.verbosity)?;
         S::determine_convexity(mesh, region_faces, &mut fit);
 
         // Validate every region face; collect near-miss offenders for a refit.

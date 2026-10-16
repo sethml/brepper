@@ -33,8 +33,10 @@ matching the project's existing convention.
 >   percentile", resolution. The per-commit corpus protocol remains **suspended
 >   for invariants work** — those numbers pin the design being replaced — and
 >   still applies to any change made *to* the existing pipeline, as this one was.
->   Note the suite now takes **~26 min**, not rule 1's ~2.5 min: stage2_integration
->   and stage4_integration take ~11–12 min each.
+>   The suite took ~26 min by 2026-10-15; it is **~4.5 min** since 2026-10-16
+>   (one test binary, deduplicated model runs, three bit-identical pipeline
+>   speed-ups — DEVELOPMENT_PLAN, "Suite runtime"). Its floor is now
+>   `nurbs_bspline_hill` at ~255 s.
 > - Rule 6's dead-end list has grown; four of the new entries are cone- and
 >   torus-seeding ideas that look obviously right.
 

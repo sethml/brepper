@@ -175,7 +175,7 @@ pub(super) fn assert_step_surfaces_covered(
 /// coverage for. One run with the union of the types is the same set of
 /// checks. Where a stage-4 compare test exists for the same model and flags,
 /// even this one run is redundant and the coverage check lives there instead
-/// (`stage4_integration::run_stage4_covering`).
+/// (`end_to_end::run_stage4_covering`).
 macro_rules! stage2_compare {
     ($name:ident, $stl_path:literal, $step_path:literal, covers = [$($t:ident),*] $(, ignore = $reason:literal)?) => {
         #[test]
