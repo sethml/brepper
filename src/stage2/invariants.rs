@@ -2513,6 +2513,191 @@ fn kinematic_probe(
     }
 }
 
+/// **Family J — the junction race.** When growth crosses a tangent junction,
+/// does the kinematic rank notice before vertex validation does?
+///
+/// Family K settled that the rank ladder cannot be the backbone (it is blind to
+/// the cylinder). This asks whether it can still earn a role as a *junction
+/// detector*: a patch that crosses from surface A onto a tangent neighbour is
+/// generically explained by fewer tangent fields than A alone, so its null
+/// dimension should drop — and if that happens before A's own refit stops
+/// validating, the rank would localize junctions the pipeline currently finds
+/// only by failure.
+///
+/// Per analytic reference face A with at least one smooth (non-sharp) edge to
+/// another reference face: grow an unconfined BFS over smooth edges from facets
+/// at fixed hop distances from that junction, and at each ladder size record
+/// whether the patch has crossed (any facet outside A), whether A's true type
+/// refitted to the patch still validates every patch vertex at `vtol`, and
+/// whether the rank has lost a tangent field (null dimension below A's own,
+/// counted only when the reading is not row starvation). One row per start.
+#[allow(clippy::too_many_arguments)]
+fn junction_probe(
+    mesh: &ConnectedMesh,
+    edges: &EdgeClassification,
+    faces_a: &[usize],
+    surf: &RefSurface,
+    ref_of: &[Option<usize>],
+    model: &ReferenceModel,
+    vtol: f64,
+    model_name: &str,
+    ref_idx: usize,
+) {
+    use super::kinematic::{Eval, System};
+
+    const SIZES: [usize; 11] = [4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128];
+    const DISTANCES: [usize; 4] = [2, 4, 8, 16];
+
+    let kind = kind_of(surf);
+    // The tangent fields A itself has, and the evaluation point family K
+    // measured best for its type.
+    let (want_dim, eval) = match kind {
+        Kind::Plane => (4, Eval::Centroid),
+        Kind::Sphere => (3, Eval::Circumcenter),
+        Kind::Cylinder | Kind::Cone => (2, Eval::Centroid),
+        Kind::Torus => (1, Eval::Centroid),
+        Kind::Other => return,
+    };
+    let true_fit_validates = |patch: &[usize]| -> bool {
+        let res = match kind {
+            Kind::Plane => fit_residual::<PlanarSurface>(mesh, patch),
+            Kind::Sphere => fit_residual::<SphericalSurface>(mesh, patch),
+            Kind::Cylinder | Kind::Cone => fit_residual::<ConicalSurface>(mesh, patch),
+            Kind::Torus => fit_residual::<ToroidalSurface>(mesh, patch),
+            Kind::Other => None,
+        };
+        res.is_some_and(|r| r <= vtol)
+    };
+
+    let member: HashSet<usize> = faces_a.iter().copied().collect();
+    let smooth_neighbours = |fi: usize| {
+        let vc = mesh.faces[fi].vertex_count as usize;
+        (0..vc).filter_map(move |e| {
+            let ni = mesh.faces[fi].neighbors[e];
+            (ni >= 0 && edges.class[fi][e] == EdgeClass::Interior).then_some(ni as usize)
+        })
+    };
+
+    // A's facets on a smooth junction: those with a smooth edge to a facet
+    // labelled with another reference face.
+    let junction: Vec<usize> = faces_a
+        .iter()
+        .copied()
+        .filter(|&fi| {
+            smooth_neighbours(fi).any(|ni| ref_of[ni].is_some_and(|o| o != ref_idx))
+        })
+        .collect();
+    if junction.is_empty() {
+        return;
+    }
+
+    // Hop distance from the junction, within A.
+    let mut dist: HashMap<usize, usize> = junction.iter().map(|&f| (f, 0)).collect();
+    let mut frontier = junction.clone();
+    let mut d = 0;
+    while !frontier.is_empty() && d < *DISTANCES.last().unwrap() {
+        d += 1;
+        let mut next = Vec::new();
+        for &fi in &frontier {
+            for ni in smooth_neighbours(fi) {
+                if member.contains(&ni) && !dist.contains_key(&ni) {
+                    dist.insert(ni, d);
+                    next.push(ni);
+                }
+            }
+        }
+        frontier = next;
+    }
+
+    for &want in &DISTANCES {
+        // Deterministic: the smallest facet index at exactly this distance.
+        let Some(start) = faces_a.iter().copied().find(|f| dist.get(f) == Some(&want)) else {
+            continue;
+        };
+
+        // Unconfined BFS over smooth edges.
+        let mut order = vec![start];
+        let mut seen: HashSet<usize> = HashSet::from([start]);
+        let mut head = 0;
+        while head < order.len() && order.len() < *SIZES.last().unwrap() {
+            let fi = order[head];
+            head += 1;
+            for ni in smooth_neighbours(fi) {
+                if seen.insert(ni) {
+                    order.push(ni);
+                }
+            }
+        }
+
+        /// One ladder size of one run.
+        struct Sample {
+            size: usize,
+            /// Facets of the patch outside A.
+            foreign: usize,
+            /// A's true type, refitted to the patch, validates every vertex.
+            validates: bool,
+            /// The rank has lost one of A's tangent fields.
+            lost: bool,
+            /// The rank reads exactly A's null dimension.
+            holds: bool,
+        }
+        let mut samples: Vec<Sample> = Vec::new();
+        let mut first_foreign_kind = "-";
+        for &k in &SIZES {
+            if k > order.len() {
+                break;
+            }
+            let patch = &order[..k];
+            let foreign = patch.iter().filter(|f| !member.contains(f)).count();
+            if foreign > 0 && first_foreign_kind == "-" {
+                if let Some(o) = patch.iter().find_map(|&f| ref_of[f].filter(|&o| o != ref_idx)) {
+                    first_foreign_kind = model.surfaces[o].type_name();
+                }
+            }
+            let validates = true_fit_validates(patch);
+            let (lost, holds) = match System::build(patch, mesh, eval) {
+                Some(sys) => {
+                    let (dim, _) = sys.spectrum().null_dim();
+                    let informative = dim + sys.rows() > 7;
+                    (informative && dim < want_dim, informative && dim == want_dim)
+                }
+                None => (false, false),
+            };
+            samples.push(Sample { size: k, foreign, validates, lost, holds });
+        }
+
+        let k_cross = samples.iter().find(|s| s.foreign > 0).map(|s| s.size);
+        let before = samples.iter().take_while(|s| s.foreign == 0).last();
+        let pre_val = before.is_some_and(|s| s.validates);
+        let pre_rank = before.is_some_and(|s| s.holds);
+        // Only events at or after the crossing count: a fit that never
+        // validated A, or a rank that never read it, has nothing to lose.
+        let after = |pred: &dyn Fn(&Sample) -> bool| {
+            samples
+                .iter()
+                .filter(|s| s.foreign > 0)
+                .find(|s| pred(s))
+                .map(|s| (s.size, s.foreign))
+        };
+        let val_fire = after(&|s| !s.validates);
+        let rank_fire = after(&|s| s.lost);
+        let fmt = |v: Option<(usize, usize)>| match v {
+            Some((k, f)) => (k.to_string(), f.to_string()),
+            None => ("-".to_string(), "-".to_string()),
+        };
+        let (kv, fv) = fmt(val_fire);
+        let (kr, fr) = fmt(rank_fire);
+        println!(
+            "JUNCTION\t{model_name}\t{ref_idx}\t{kind}\t{start}\t{want}\t{cross}\t{first_foreign_kind}\t\
+             {pv}\t{pr}\t{kv}\t{fv}\t{kr}\t{fr}",
+            kind = surf.type_name(),
+            cross = k_cross.map_or("-".to_string(), |k| k.to_string()),
+            pv = u8::from(pre_val),
+            pr = u8::from(pre_rank),
+        );
+    }
+}
+
 /// Measure the section's cylinder/cone seed rule on one developable reference
 /// face: enumerate the chains it admits, test both readings of its coplanarity
 /// clause, and fit each chain's closed-form axis against ground truth.
@@ -2633,7 +2818,13 @@ fn kind_of(s: &RefSurface) -> Kind {
 /// `None` when the fitter declines the face set.
 fn fit_residual<S: SurfaceType>(mesh: &ConnectedMesh, faces: &[usize]) -> Option<f64> {
     let verts = vertices_of(mesh, faces);
-    let fit = S::fit_surface(mesh, faces, &verts, 0)?;
+    // `BREPPER_INV_FITVERBOSE=N` passes N to the fitter, so a refusal on a TRUE
+    // support (the `res_*` columns read NaN) says which guard refused it.
+    let verbosity = std::env::var("BREPPER_INV_FITVERBOSE")
+        .ok()
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(0);
+    let fit = S::fit_surface(mesh, faces, &verts, verbosity)?;
     let mut worst = 0.0_f64;
     for &vi in &verts {
         worst = worst.max(S::vertex_distance(&fit, &vertex_pos(mesh, vi)));
@@ -2847,6 +3038,10 @@ pub fn report(
     );
     println!("#PATCHSIZE\tmodel\tref\tkind\tfacets\taxis_err_deg");
     println!(
+        "#JUNCTION\tmodel\tref\tkind\tstart\tdist\tk_cross\tforeign_kind\tpre_val\tpre_rank\t\
+         k_val\tforeign_at_val\tk_rank\tforeign_at_rank"
+    );
+    println!(
         "#KINEMATIC\tmodel\tref\tkind\tstart\tsupport\tdim_c\tread_c\tok_c\tgap_c\t\
          dim_x\tread_x\tok_x\tgap_x\tstraddle\tbands\tgen_centroid\tgen_circumcenter\t\
          l0\tl1\tl2\tl3\tl4\tl5\tl6"
@@ -2925,6 +3120,13 @@ pub fn report(
             }
         }
 
+        // `BREPPER_INV_REFDUMP=1` prints the reference's own parameters for
+        // every face. Nothing else in the report names them, and a refused fit
+        // on a true support is unreadable without them.
+        if std::env::var("BREPPER_INV_REFDUMP").is_ok() {
+            eprintln!("REFDUMP\t{model_name}\t{r}\t{}\t{:?}", faces.len(), surf);
+        }
+
         // --- I: all four types on the true support -------------------------
         let res = [
             fit_residual::<PlanarSurface>(mesh, faces).unwrap_or(f64::NAN),
@@ -2936,6 +3138,11 @@ pub fn report(
         // --- K: the kinematic rank ladder on truth --------------------------
         if std::env::var("BREPPER_INV_KINEMATIC").is_ok() {
             kinematic_probe(mesh, faces, surf, &model_name, r);
+        }
+
+        // --- J: the junction race (rank vs validation) ---------------------
+        if std::env::var("BREPPER_INV_JUNCTION").is_ok() {
+            junction_probe(mesh, edges, faces, surf, &ref_of, model, vtol, &model_name, r);
         }
 
         // --- E: the section's stated seed rule, on developables -------------

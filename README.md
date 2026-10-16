@@ -170,6 +170,20 @@ A sixth family is off by default because it multiplies the row count:
 ./tools/invariants.sh --out tmp/kin.tsv --jobs 8 --kinematic && python3 tools/kin_analyze.py tmp/kin.tsv
 ```
 
+And a seventh, also off by default:
+
+- **J — the junction race** (`--junction`, or `BREPPER_INV_JUNCTION=1`). When a
+  patch grown on a surface crosses a tangent junction, does the kinematic rank
+  lose a tangent field before the surface's own refit stops validating? Per
+  analytic reference face with a smooth junction: unconfined growth from facets
+  2, 4, 8 and 16 hops from the junction, recording at each ladder size whether
+  the patch has crossed, whether the true type still validates at
+  `--vertex-tolerance`, and whether the rank has dropped.
+
+```bash
+./tools/invariants.sh --out tmp/junction.tsv --jobs 8 --junction && python3 tools/junction_analyze.py tmp/junction.tsv
+```
+
 `tools/invariants.sh` reuses `tools/sweep.sh`'s model/reference pairing, so the two
 instruments always cover the same corpus.
 
@@ -178,7 +192,10 @@ Env-gated probes on the same path, for when a single fit misbehaves:
 ones for any seed that fails admission, with a verdict on whether the failure is
 non-identifiability or non-convergence; `BREPPER_INV_BASIN=1` sweeps the basin of
 attraction of grow-with-refit; `BREPPER_INV_PATCHSIZE=1` measures fit accuracy
-against support size.
+against support size; `BREPPER_INV_REFDUMP=1` prints every reference face's exact
+parameters to stderr; `BREPPER_INV_FITVERBOSE=N` passes verbosity `N` to the
+fitters that score each reference face's own support, so a `NaN` in the `res_*`
+columns names the guard that refused it.
 
 ### Seed-growth visualization (`--viz-seeds`)
 

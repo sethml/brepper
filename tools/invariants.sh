@@ -7,7 +7,7 @@
 #
 # Usage:
 #   tools/invariants.sh [--out FILE] [--jobs N] [--filter REGEX] [--timeout SECS]
-#                       [--seeds N] [--no-compete] [--kinematic]
+#                       [--seeds N] [--no-compete] [--kinematic] [--junction]
 #
 # Output TSV columns are documented in src/stage2/invariants.rs. Per-model
 # stderr summaries go to <out>.log.
@@ -23,6 +23,7 @@ TIMEOUT=900
 SEEDS=""
 NO_COMPETE=""
 KINEMATIC=""
+JUNCTION=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -33,6 +34,7 @@ while [ $# -gt 0 ]; do
         --seeds) SEEDS="$2"; shift 2 ;;
         --no-compete) NO_COMPETE=1; shift ;;
         --kinematic) KINEMATIC=1; shift ;;
+        --junction) JUNCTION=1; shift ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -51,6 +53,7 @@ run_one() {
     [ -n "$SEEDS" ] && env_args+=("BREPPER_INV_SEEDS=$SEEDS")
     [ -n "$NO_COMPETE" ] && env_args+=("BREPPER_INV_NO_COMPETE=1")
     [ -n "$KINEMATIC" ] && env_args+=("BREPPER_INV_KINEMATIC=1")
+    [ -n "$JUNCTION" ] && env_args+=("BREPPER_INV_JUNCTION=1")
     local out err
     err=$(mktemp)
     out=$(env "${env_args[@]}" $TO "$TIMEOUT" "$BREPPER" "$stl" --compare "$step" \
@@ -63,7 +66,7 @@ run_one() {
     rm -f "$err"
     # Rewrite the model column to the full corpus-relative stem so rows from
     # two directories with the same basename stay distinguishable.
-    echo "$out" | awk -v m="${model%.stl}" -F'\t' 'BEGIN{OFS="\t"} /^(INV|SEEDRULE|KINEMATIC)\t/ {$2=m; print}'
+    echo "$out" | awk -v m="${model%.stl}" -F'\t' 'BEGIN{OFS="\t"} /^(INV|SEEDRULE|KINEMATIC|JUNCTION)\t/ {$2=m; print}'
 }
 
 # sweep.sh --list pads the model column with spaces, and some model paths

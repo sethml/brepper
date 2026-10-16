@@ -439,13 +439,54 @@ cube's fillet radius equals its corner-sphere radius. See DEVELOPMENT_PLAN,
 
 ---
 
-## Cone initialization: the options not yet built (surveyed 2026-08-06)
+## Cone initialization: the options (surveyed 2026-08-06; status 2026-10-15)
 
 The cone is the worst-initialized surface in the pipeline, and unlike the torus
 its problem is not a single fixable defect. This section records what fails, what
-the literature says is and is not possible, and the three routes that remain
-open — none of them implemented. Nothing here is a recommendation; it is the
-option set, with each option's point/facet cost and its known weakness.
+the literature says is and is not possible, and the routes that were open.
+
+> **Status 2026-10-15.** Two things changed, and they are different kinds of
+> change.
+>
+> **A defect was found and fixed: the fitter could not fit wide cones at all.**
+> `fit_cone`'s primary path takes the axis as the smallest eigenvector of the
+> **uncentred** normal covariance — the form "Centring matters" below records as
+> wrong above a 35.26° half-angle — and its normal-line rescue degenerates on a
+> wide cone too, because every normal lies near the axis. The centred form was
+> built in Phase 1.1 (`initialize::cone_tapered`) and never reached the fitter.
+> On `cone_tangent_planes_occt_fine` this refused a 73.0° and an 84.3° cone **on
+> their entire true support** (503 and 504 facets); a torus then claimed their
+> territory and stage 3 failed — the `remesh_cone_tangent_fine` test failure that
+> had been attributed to the 2026-08-06 torus change. `ConicalSurface::fit_surface`
+> now consults the centred-normal seed, LM-refined, when the existing routes do
+> not explain the support to `RESCUE_ERR_THRESHOLD` — **and accepts it only if it
+> does**. The second half matters: ungated, it regressed every `stepped_block`
+> variant (+30–55 planes) and broke `rounded_cube_10_r2_occt_medium`, because on a
+> conditioning patch straddling a junction the centred cone out-fit the true
+> cylinder on residual and then grew nothing. That is the torus lesson
+> ("residual on the current support does not predict how a fit will grow") a
+> second time; requiring the route to *explain* the support rather than merely
+> beat the primary removed all of it.
+>
+> Corpus (`tools/sweep.sh`, 193 models, against the parent commit): **3 fail→ok**
+> (`cone_tangent_planes_occt_fine`, `cone_tangent_planes_fusion_medium`,
+> `led_cover_-_top`), **no ok→fail**, volume error on the other
+> `cone_tangent_planes` remeshes **3e-3 → 7e-8–1e-6** and on `rand_cone_chain_1`
+> 2e-3 → 6e-9. The cost sits on three external models that fail before and after:
+> reference coverage down 0.001–0.010 (more splitting — `drag_chain_link`'s four
+> narrow cones now come out as ~20 correctly-typed fragments where they were
+> spheres, tori and B-splines), purity unchanged or better. Seed level
+> (`--viz-seeds`, 12 anchors, cone facets with a working seed set):
+>
+> | model | before | after | + Option C wired |
+> |---|---|---|---|
+> | `simple_cone` | 4/12 | **8/12** | 12/12 |
+> | `cone_cylinder` | 7/12 | **12/12** | 12/12 |
+> | `nosecone` | 10/12 | **12/12** | 12/12 |
+>
+> **Option C was built and measured, and is deliberately not wired** — see its
+> subsection. It completes the seed table above, and it creates an impostor the
+> pipeline cannot reject.
 
 ### The measured starting point
 
@@ -554,6 +595,33 @@ of corpus cylinder facets straddling three or more rulings, so this cannot be th
 only route. Ring identification needs no provisional axis — the shared edge
 between two quads in a strip *is* a ruling, so its endpoints are one per ring and
 walking the strip labels the rest combinatorially.
+
+**Built 2026-10-15 as `initialize::cone_from_rings`; measured; not wired.** Two
+departures from the design above, and the reason it stays unwired.
+
+- *Rims are found, not labelled.* "A shared edge is a ruling" holds only for
+  quads in one band; in a triangle strip the shared edges alternate between
+  rulings and diagonals. Instead every split of the seed's vertices into two
+  groups of ≥3 is tried — at most `2^(n−1)`, with `n` capped at 10 by a work
+  bound that decides nothing — each scored by the largest distance of any vertex
+  from the cone the split implies. The true split scores at the mesh's own
+  precision and a wrong one misses by a wide margin. Unit-tested exact to 1e-9 at
+  10°–84°, from **two quads or four triangles** alike.
+- *Taper, not apex.* The profile is `ρ = r₁ + t·h`, so a split reading `t = 0`
+  is a cylinder at a regular point rather than an apex at infinity (and is left
+  to the caller's own cylinder route).
+
+**Why it is not wired: two coaxial circles always lie on a cone.** A single band
+of *any* surface of revolution has its vertices on two coaxial circles, so this
+route finds an **exact** cone on a band of a torus fillet just as it does on a
+real cone. Wired into `fit_surface` it committed a 17-face, 360° impostor cone on
+`filleted_pipe` and broke that model. Nothing at band level separates the two —
+not the residual, and not the facet normals either, because a facet's plane is
+fixed by vertices that lie on both surfaces. This is the Invariants section's
+"two circles lie exactly on a sphere" with the sphere replaced by a cone, and it
+belongs to the same family of answers: discrimination has to come from beyond
+the band (the torus continues smoothly into the next band; the cone's band ends
+at its rims), i.e. from competition or branching, not from a better fit.
 
 ### Considered and rejected
 
@@ -995,6 +1063,11 @@ the smallest eigenvector of the centred covariance is the axis exactly. Over a
 uncentred estimate well before 35.26°; centring is unaffected. Use the centred
 form.
 
+*(2026-10-15: `conical.rs`'s fitter was still using the uncentred form, and a
+quad strip over a 115° arc measured it failing between 40° and 60° half-angle —
+earlier than the full-revolution bound, as predicted. It now falls back to the
+centred seed; see "Cone initialization", status.)*
+
 ### Medial Axis / Tube Center Method
 
 For any surface with a constant principal curvature $\kappa_1 = 1/r$ in one direction, the **medial axis** (locus of centers of curvature) can be computed directly from the surface points and normals:
@@ -1019,4 +1092,4 @@ Fitting: construct the $N \times 10$ feature matrix and find its null space via 
 - **Cone**: eigenvalues $(\sin^2\theta, -\cos^2\theta, -\cos^2\theta)$ — one of opposite sign to a repeated pair, so $\det(\mathbf{A}) \neq 0$. What is singular for a cone is the *extended* $4 \times 4$ matrix, because the apex is a singular point of the surface. (An earlier version of this line said "three nonzero eigenvalues with $\det(\mathbf{A}) \approx 0$", which is the **cylinder** condition — a cylinder is the case with one zero eigenvalue.)
 - **Plane**: $\mathbf{A} = 0$ (all eigenvalues zero).
 
-Quadric fitting is fast (SVD of an $N \times 10$ matrix, $O(N)$) and provides a good initialization for specialized fitters. It could be used as an alternative initialization for cone fitting — see **Option B** under "Cone initialization: the options not yet built" above for what that costs (≥9 points, algebraic-distance bias) and for the two alternatives.
+Quadric fitting is fast (SVD of an $N \times 10$ matrix, $O(N)$) and provides a good initialization for specialized fitters. It could be used as an alternative initialization for cone fitting — see **Option B** under "Cone initialization: the options" above for what that costs (≥9 points, algebraic-distance bias) and for the two alternatives.

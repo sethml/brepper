@@ -19,6 +19,11 @@ const MIN_HALF_ANGLE_DEG: f64 = 2.0;
 const MAX_HALF_ANGLE_DEG: f64 = 85.0;
 /// Maximum apex distance as a multiple of the mesh bounding-box diagonal.
 const MAX_APEX_DISTANCE_FACTOR: f64 = 10.0;
+/// A cone fit worse than this (max vertex error, mm) is not trusted to stand
+/// alone, and the alternative axis routes — the normal-line rescue inside
+/// [`fit_cone`], then the centred-normal seed in `fit_surface` — are consulted.
+/// Shared by both so the second route adds no constant of its own.
+const RESCUE_ERR_THRESHOLD: f64 = 1e-4;
 
 // ---------------------------------------------------------------------------
 // Conical fitting: 4-step algorithm
@@ -674,7 +679,6 @@ fn fit_cone(
     // transition piece spanning only a few tessellation columns). Cone
     // surface normals all pass through the axis, so closest-approach
     // midpoints of normal-line pairs trace the axis directly.
-    const RESCUE_ERR_THRESHOLD: f64 = 1e-4; // mm
     if best.as_ref().is_none_or(|(e, _)| *e > RESCUE_ERR_THRESHOLD) {
         if let Some(fit) = fit_cone_normal_line_rescue(face_indices, vertex_set, faces, vertices) {
             let err = max_err(&fit);
@@ -685,6 +689,95 @@ fn fit_cone(
     }
 
     best.map(|(_, f)| f)
+}
+
+/// A cone from `initialize::cone_taper_seed` — axis from the **centred** normal
+/// covariance — refined by the same 6-parameter LM as the truncated path.
+///
+/// [`fit_cone`]'s primary path reads the axis from the *uncentred* covariance,
+/// whose smallest eigenvector is the axis only while the half-angle is under
+/// 35.26° (SURFACE_FITTING.md, "Centring matters"); above that it is the
+/// *largest*, so the primary fit starts on the wrong axis and LM cannot recover.
+/// The normal-line rescue does not cover the gap either: on a wide cone every
+/// normal lies within `90° − α` of the axis, so normal pairs are near-parallel
+/// and the rescue finds too few crossings. Measured on
+/// `cone_tangent_planes_occt_fine`, whose 73.0° and 84.3° cones (503 and 504
+/// facets) `fit_cone` refused outright on their **entire true support** — and a
+/// torus then claimed their territory, which is what broke stage 3 there.
+///
+/// The seed is a seed: the vertex least squares decides, as everywhere else.
+fn fit_cone_centred(
+    mesh: &ConnectedMesh,
+    face_indices: &[usize],
+    vertex_set: &[usize],
+) -> Option<([f64; 3], [f64; 3], f64)> {
+    let seed = super::initialize::cone_taper_seed(face_indices, mesh)?;
+    refine_cone_seed(mesh, vertex_set, seed)
+}
+
+/// A cone from the two rims of a single-band seed (SURFACE_FITTING.md Option
+/// C, `initialize::cone_from_rings`), refined by the same LM.
+///
+/// The route for the smallest supports. On two facets every normal-based axis
+/// is rank-deficient — two normals cannot pin a cone — and the free 6-DOF fit
+/// is exactly determined, which is where a *second* exact cone was measured
+/// (half-angle 72.85°, apex 10.8 patch-extents away, explaining six vertices to
+/// 6.7e-16 mm). The rims carry information the six positions alone do not, and
+/// starting LM from them keeps it in the right basin.
+#[allow(dead_code)] // built and measured; not wired — see the note in `fit_surface`
+fn fit_cone_rings(
+    mesh: &ConnectedMesh,
+    face_indices: &[usize],
+    vertex_set: &[usize],
+) -> Option<([f64; 3], [f64; 3], f64)> {
+    let seed = super::initialize::cone_from_rings(face_indices, mesh)?;
+    refine_cone_seed(mesh, vertex_set, seed)
+}
+
+/// LM-refine a closed-form `(apex, axis, half_angle)` seed exactly as the
+/// truncated path does, falling back to the seed if LM leaves the admitted
+/// half-angle range.
+fn refine_cone_seed(
+    mesh: &ConnectedMesh,
+    vertex_set: &[usize],
+    seed: ([f64; 3], [f64; 3], f64),
+) -> Option<([f64; 3], [f64; 3], f64)> {
+    if vertex_set.len() < 4 {
+        return None;
+    }
+    let (apex, axis, half_angle) = seed;
+
+    let n_pts = vertex_set.len() as f64;
+    let mut centroid = [0.0_f64; 3];
+    for &vi in vertex_set {
+        let v = &mesh.vertices[vi];
+        centroid[0] += v.x / n_pts;
+        centroid[1] += v.y / n_pts;
+        centroid[2] += v.z / n_pts;
+    }
+    let centered_points: Vec<[f64; 3]> = vertex_set
+        .iter()
+        .map(|&vi| {
+            let v = &mesh.vertices[vi];
+            [v.x - centroid[0], v.y - centroid[1], v.z - centroid[2]]
+        })
+        .collect();
+    let centered_apex = [apex[0] - centroid[0], apex[1] - centroid[1], apex[2] - centroid[2]];
+
+    let problem = ConeLMProblem::new(centered_points, axis, centered_apex, half_angle);
+    let (result, _report) = LevenbergMarquardt::new().with_patience(150).minimize(problem);
+    let refined_dir = result.axis_dir_from_params(&result.params);
+    let refined_apex = [
+        result.params[2] + centroid[0],
+        result.params[3] + centroid[1],
+        result.params[4] + centroid[2],
+    ];
+    let refined_ha = result.params[5];
+    if refined_ha > 0.01 && refined_ha < MAX_HALF_ANGLE_DEG.to_radians() {
+        Some((refined_apex, refined_dir, refined_ha))
+    } else {
+        Some((apex, axis, half_angle))
+    }
 }
 
 /// Closest-approach midpoint between two 3D lines (p1 + t·d1, p2 + s·d2).
@@ -1188,8 +1281,54 @@ impl SurfaceType for ConicalSurface {
             }
         }
 
-        // Try cone fit
-        let cone_result = fit_cone(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
+        // Try cone fit, then — only if that did not already explain the support —
+        // the centred-normal route, which is the one that works on wide cones.
+        // Gated on the same threshold as `fit_cone`'s own rescue, so a support
+        // the existing routes already fit is untouched.
+        let cone_err = |fit: &([f64; 3], [f64; 3], f64)| -> f64 {
+            vertex_set
+                .iter()
+                .map(|&vi| vertex_to_cone_distance(&mesh.vertices[vi], &fit.0, &fit.1, fit.2).abs())
+                .fold(0.0_f64, f64::max)
+        };
+        let mut cone_result = fit_cone(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
+        if cone_result.as_ref().is_none_or(|f| cone_err(f) > RESCUE_ERR_THRESHOLD) {
+            // Only the centred-normal route is consulted. The two-rim route
+            // (`fit_cone_rings`, Option C) is exact on a cone's single band —
+            // and equally exact on a single band of ANY surface of revolution,
+            // because two coaxial circles always lie on a cone. Wired in here
+            // it found a 17-face, 360° impostor cone on a torus band of
+            // `filleted_pipe` and broke that model; nothing at band level can
+            // tell the two apart, normals included, since a facet's plane is
+            // fixed by vertices that lie on both. See SURFACE_FITTING.md,
+            // "Option C".
+            let routes = [("centred-normal", fit_cone_centred(mesh, face_list, &vertex_set))];
+            for (name, cand) in routes {
+                let Some(cand) = cand else { continue };
+                // A route must EXPLAIN the support, not merely beat the primary
+                // on it. On a support nothing explains — a conditioning patch
+                // straddling a junction — the closed form's better residual does
+                // not make it the better surface to grow from: measured on
+                // `rounded_cube_10_r2_occt_medium`, a centred cone out-fit the
+                // true cylinder on such a patch and the fillet then grew nothing
+                // (the torus lesson again: residual on the current support does
+                // not predict growth). The bar is the one that decided to
+                // consult the routes, so this adds no constant.
+                if cone_err(&cand) > RESCUE_ERR_THRESHOLD {
+                    continue;
+                }
+                if cone_result.as_ref().is_none_or(|f| cone_err(&cand) < cone_err(f)) {
+                    if verbosity >= 4 {
+                        eprintln!(
+                            "      cone fit: {name} route taken (half_angle={:.2}\u{00b0}, max_vtx_err={:.6e})",
+                            cand.2.to_degrees(),
+                            cone_err(&cand)
+                        );
+                    }
+                    cone_result = Some(cand);
+                }
+            }
+        }
         let cone_fit = cone_result.and_then(|(apex, dir, ha)| {
             let ha_deg = ha.to_degrees();
             if !(MIN_HALF_ANGLE_DEG..=MAX_HALF_ANGLE_DEG).contains(&ha_deg) {
@@ -1774,5 +1913,92 @@ mod tests {
             }
         }
     }
-}
 
+    /// A ruling-aligned quad strip over a partial arc of a cone, with facet
+    /// normals computed from the geometry exactly as stage 1 does (Newell) —
+    /// not handed out per index, so the chord-plane lean is real.
+    fn wide_cone_strip(half_angle: f64, arc: f64, divs: usize, hs: &[f64]) -> ConnectedMesh {
+        // An oblique axis and an off-origin apex: an axis-aligned cone at the
+        // origin would let an index or sign slip through.
+        let mut d = [0.3, -0.5, 0.81];
+        normalize3(&mut d);
+        let apex = [12.0, -7.0, 31.0];
+        let (u, w) = super::super::perpendicular_basis(&d);
+        let tan_a = half_angle.tan();
+        let mut pts = Vec::new();
+        for &h in hs {
+            let r = h * tan_a;
+            for k in 0..=divs {
+                let t = arc * k as f64 / divs as f64;
+                let (st, ct) = t.sin_cos();
+                pts.push([
+                    apex[0] + h * d[0] + r * (ct * u[0] + st * w[0]),
+                    apex[1] + h * d[1] + r * (ct * u[1] + st * w[1]),
+                    apex[2] + h * d[2] + r * (ct * u[2] + st * w[2]),
+                ]);
+            }
+        }
+        let row = divs + 1;
+        let mut faces = Vec::new();
+        for ring in 0..hs.len() - 1 {
+            for k in 0..divs {
+                let idx = [ring * row + k, ring * row + k + 1, (ring + 1) * row + k + 1, (ring + 1) * row + k];
+                let mut n = [0.0_f64; 3];
+                for i in 0..4 {
+                    let c = pts[idx[i]];
+                    let x = pts[idx[(i + 1) % 4]];
+                    n[0] += (c[1] - x[1]) * (c[2] + x[2]);
+                    n[1] += (c[2] - x[2]) * (c[0] + x[0]);
+                    n[2] += (c[0] - x[0]) * (c[1] + x[1]);
+                }
+                normalize3(&mut n);
+                faces.push(MeshFace {
+                    vertex_count: 4,
+                    vertex_indices: idx,
+                    neighbors: [-1; 4],
+                    normal: Some(n),
+                });
+            }
+        }
+        ConnectedMesh {
+            vertices: pts.iter().map(|p| MeshVertex::from_xyz(p[0], p[1], p[2])).collect(),
+            faces,
+            stats: Default::default(),
+        }
+    }
+
+    /// Wide cones fit on their own support at every half-angle the rung admits.
+    ///
+    /// The regression this pins: `fit_cone`'s primary axis is the smallest
+    /// eigenvector of the *uncentred* normal covariance, which is the axis only
+    /// below 35.26°, and the normal-line rescue degenerates on a wide cone
+    /// because its normals all lie near the axis. `cone_tangent_planes_occt_fine`
+    /// has 73.0° and 84.3° cones that were refused on their entire true support,
+    /// a torus took their place, and stage 3 failed. `fit_surface` now consults
+    /// the centred-normal seed when the existing routes do not explain the
+    /// support.
+    #[test]
+    fn wide_cones_fit_at_every_admitted_half_angle() {
+        for deg in [20.0_f64, 40.0, 60.0, 73.0, 80.0, 84.0] {
+            let ha = deg.to_radians();
+            let mesh = wide_cone_strip(ha, 2.0, 16, &[6.0, 8.0, 10.5, 13.0]);
+            let face_list: Vec<usize> = (0..mesh.faces.len()).collect();
+            let vertex_list: Vec<usize> = (0..mesh.vertices.len()).collect();
+            let fit = ConicalSurface::fit_surface(&mesh, &face_list, &vertex_list, 0)
+                .unwrap_or_else(|| panic!("a {deg}° cone must fit its own support"));
+            assert!(
+                (fit.half_angle - ha).abs() < 1e-6,
+                "{deg}° cone: half-angle {:.6}° should be {deg}°",
+                fit.half_angle.to_degrees()
+            );
+            let worst = vertex_list
+                .iter()
+                .map(|&vi| {
+                    vertex_to_cone_distance(&mesh.vertices[vi], &fit.apex, &fit.axis_direction, fit.half_angle)
+                        .abs()
+                })
+                .fold(0.0_f64, f64::max);
+            assert!(worst < 1e-9, "{deg}° cone: worst vertex residual {worst:e}");
+        }
+    }
+}

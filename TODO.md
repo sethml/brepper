@@ -23,11 +23,18 @@ matching the project's existing convention.
 > - **Phase 1 is superseded** (see its own status block). Phases 2–6 are not
 >   started and their premises should be re-read against the Invariants section
 >   before any of them is.
-> - **The suite is no longer green by design.** `remesh_cone_tangent_fine` fails
->   from the torus-fitter change described in Phase 1.1 below. Execution rule 1's
->   "suite green" and the per-commit corpus protocol are **suspended for
->   invariants work** — those numbers pin the design being replaced. They still
->   apply to any change made *to* the existing pipeline.
+> - **The suite is green again (2026-10-15)** — 607 passed, 0 failed, 32 ignored.
+>   It was red from 2026-08-06, when `remesh_cone_tangent_fine` started failing
+>   after the torus-fitter change in Phase 1.1 below. The torus change only
+>   *exposed* the cause: the cone fitter could not fit cones wider than ~35° at
+>   all (uncentred normal covariance), and that model has a 73° and an 84° one.
+>   Fixed, together with a gate that removes the torus change's stepped_block
+>   cost (127 → 76 surfaces). See DEVELOPMENT_PLAN, "The torus fitter's
+>   percentile", resolution. The per-commit corpus protocol remains **suspended
+>   for invariants work** — those numbers pin the design being replaced — and
+>   still applies to any change made *to* the existing pipeline, as this one was.
+>   Note the suite now takes **~26 min**, not rule 1's ~2.5 min: stage2_integration
+>   and stage4_integration take ~11–12 min each.
 > - Rule 6's dead-end list has grown; four of the new entries are cone- and
 >   torus-seeding ideas that look obviously right.
 
@@ -763,6 +770,14 @@ commit gate (`MIN_AXIAL_SWEEP_DEG`, torus ratio, `MIN_*_FACES`,
   initializer is now consumed**, as a second candidate inside
   `ToroidalSurface::fit_surface`, LM-refined and selected against the geometric
   fit on residual. The cylinder, sphere and cone ones remain unconsumed.
+  **Wiring update 2026-10-15:** the torus candidate is now **gated** — consulted
+  only when the geometric fit misses `RESCUE_ERR_THRESHOLD`, accepted only if it
+  meets it — which keeps the filleted seed wins (24/24, 24/24, 48/48 anchors) and
+  returns stepped_block fine to 76. The **cone**'s centred taper seed is now
+  consumed too (`initialize::cone_taper_seed`, same gate), fixing wide cones; and
+  Option C (`initialize::cone_from_rings`) is built and deliberately unwired
+  because two coaxial circles always lie on a cone, which makes it an impostor
+  generator on torus bands.
   What forced it was a separate defect in `fit_torus_inner`: it picked the **25th
   percentile** of adjacent-pair normal-line radius estimates to separate tube from
   azimuthal readings, which is a statistic on a sample of four and on a small

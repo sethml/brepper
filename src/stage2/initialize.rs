@@ -715,6 +715,140 @@ pub(crate) fn cone(faces: &[usize], mesh: &ConnectedMesh, vtol: f64) -> Option<I
     }
 }
 
+/// The tapered-cone seed alone, as `(apex, axis_dir, half_angle)`, for a fitter
+/// that already weighs the cylinder itself and wants only the cone.
+///
+/// The only route in the codebase whose axis is right at **every** half-angle:
+/// `conical.rs`'s primary path takes the *uncentred* covariance, which picks the
+/// wrong eigenvector above 35.26° — and wide cones (countersinks, chamfers,
+/// shallow conical caps) are where that bites. `vtol` is passed as zero because
+/// the "taper unresolvable, return the cylinder" decision belongs to the caller,
+/// which fits the cylinder separately and compares.
+pub(crate) fn cone_taper_seed(
+    faces: &[usize],
+    mesh: &ConnectedMesh,
+) -> Option<([f64; 3], [f64; 3], f64)> {
+    match cone_tapered(faces, mesh, 0.0)? {
+        Initial::Cone {
+            apex,
+            axis_dir,
+            half_angle,
+        } => Some((apex, axis_dir, half_angle)),
+        _ => None,
+    }
+}
+
+/// Most vertices [`cone_from_rings`] will split, which bounds its work at
+/// `2^(n-1)` partitions — 256 at the cap, the size of a four-quad chain plus
+/// slack. It decides nothing about the surface; a larger support simply goes
+/// to the centred-normal route, which needs breadth and has it.
+const RING_SPLIT_MAX_VERTICES: usize = 10;
+
+/// A cone from the **two rings** of a single-band strip — SURFACE_FITTING.md's
+/// cone initialization Option C. Returns `(apex, axis_dir, half_angle)` with the
+/// axis oriented from the apex toward the support.
+///
+/// A CAD tessellator lays a cone as one band of facets spanning its whole
+/// height, so every vertex of a small seed sits on one of two circles, one per
+/// rim. Three points determine a circle, so each rim gives a centre and a
+/// radius; the line through the centres is the axis and the two radii at two
+/// heights give the taper by similar triangles. Vertices only — no facet
+/// normal, so none of the `O(Δθ²/8)` chord-plane lean — and it works from **two
+/// facets**, where every normal-based route is rank-deficient (two normals pin
+/// nothing about a cone).
+///
+/// **Which vertex belongs to which rim is found, not assumed.** The documented
+/// design labels rims combinatorially by treating a shared quad edge as a
+/// ruling, which holds only for quads in one band; a triangle strip's shared
+/// edges alternate between rulings and diagonals. Instead every split of the
+/// vertices into two groups of at least three is tried, each scored by the
+/// largest distance of any vertex from the cone the split implies. On the true
+/// split that is the mesh's own precision; a wrong split makes two circles whose
+/// centre line is not their common normal, and misses by a large margin. The
+/// winner is a seed for least squares, never the answer.
+///
+/// The taper `t = dρ/dh` is used throughout rather than the apex, for the reason
+/// [`cone_tapered`] gives: `t = 0` is a cylinder, a regular point rather than an
+/// apex at infinity. A split that reads as a cylinder returns `None` — the
+/// caller fits cylinders by its own route — and so does any support too large or
+/// too small to split.
+pub(crate) fn cone_from_rings(
+    faces: &[usize],
+    mesh: &ConnectedMesh,
+) -> Option<([f64; 3], [f64; 3], f64)> {
+    let verts = patch_vertices(faces, mesh);
+    let n = verts.len();
+    if !(6..=RING_SPLIT_MAX_VERTICES).contains(&n) {
+        return None;
+    }
+    let pts: Vec<[f64; 3]> = verts
+        .iter()
+        .map(|&vi| {
+            let v = &mesh.vertices[vi];
+            [v.x, v.y, v.z]
+        })
+        .collect();
+
+    /// The best split so far: its score, and the profile it implies.
+    struct Split {
+        score: f64,
+        c1: [f64; 3],
+        d: [f64; 3],
+        r1: f64,
+        taper: f64,
+    }
+    let mut best: Option<Split> = None;
+    // Vertex 0 always goes to the first group, so each split is visited once.
+    for mask in 0u32..(1u32 << (n - 1)) {
+        let in_first = |i: usize| i == 0 || (mask >> (i - 1)) & 1 == 1;
+        let first: Vec<[f64; 3]> = (0..n).filter(|&i| in_first(i)).map(|i| pts[i]).collect();
+        let second: Vec<[f64; 3]> = (0..n).filter(|&i| !in_first(i)).map(|i| pts[i]).collect();
+        if first.len() < 3 || second.len() < 3 {
+            continue;
+        }
+        let Some((c1, _, r1)) = super::toroidal::fit_circle_3d(&first) else {
+            continue;
+        };
+        let Some((c2, _, r2)) = super::toroidal::fit_circle_3d(&second) else {
+            continue;
+        };
+        let mut d = sub(c2, c1);
+        let span = normalize3(&mut d);
+        if !(span > 0.0 && span.is_finite() && r1.is_finite() && r2.is_finite()) {
+            continue; // concentric rims in one plane: an annulus, not a band
+        }
+        let taper = (r2 - r1) / span;
+        let cos_a = 1.0 / (1.0 + taper * taper).sqrt();
+        let score = pts
+            .iter()
+            .map(|&p| {
+                let w = sub(p, c1);
+                let h = dot3(&w, &d);
+                let rho = norm(sub(w, scale(d, h)));
+                ((rho - (r1 + taper * h)) * cos_a).abs()
+            })
+            .fold(0.0_f64, f64::max);
+        if score.is_finite() && best.as_ref().is_none_or(|b| score < b.score) {
+            best = Some(Split { score, c1, d, r1, taper });
+        }
+    }
+
+    let Split { c1, d, r1, taper, .. } = best?;
+    if taper == 0.0 || !taper.is_finite() {
+        return None;
+    }
+    // The apex is where the profile reaches radius zero: h_A = −r1 / taper.
+    let apex = add(c1, scale(d, -r1 / taper));
+    // Orient the axis from the apex toward the support: along +d when the
+    // radius grows with h, against it when it shrinks.
+    let axis = if taper > 0.0 { d } else { scale(d, -1.0) };
+    let half_angle = taper.abs().atan();
+    if !(half_angle > 0.0 && half_angle < std::f64::consts::FRAC_PI_2) {
+        return None;
+    }
+    Some((apex, axis, half_angle))
+}
+
 /// The taper solve itself: axis from the centred normals, half-angle from the
 /// normals, and only the position from a linear least squares.
 ///
@@ -1526,6 +1660,73 @@ mod tests {
                 (r * half_angle.cos() - z * half_angle.sin()).abs()
             }
             _ => f64::MAX,
+        }
+    }
+
+    /// Option C: a cone from the two rims of a two-facet strip, exactly — and
+    /// from triangles as well as quads, since the rims are found by trying every
+    /// split rather than by assuming a shared edge is a ruling.
+    #[test]
+    fn cone_from_rings_is_exact_from_two_facets() {
+        let apex = [2.0, 1.0, -3.0];
+        let d = oblique_axis();
+        for deg in [10.0_f64, 30.0, 50.0, 75.0, 84.0] {
+            let ha = deg.to_radians();
+            let quads = cone_strip(apex, d, ha, 2, 0.6);
+            // The same six vertices, each quad split along a diagonal: a shared
+            // edge is now sometimes a diagonal, not a ruling.
+            let tri_faces = (0..2)
+                .flat_map(|k| [vec![2 * k, 2 * k + 1, 2 * k + 3], vec![2 * k, 2 * k + 3, 2 * k + 2]])
+                .collect();
+            let points: Vec<[f64; 3]> =
+                quads.vertices.iter().map(|v| [v.x, v.y, v.z]).collect();
+            let tris = mesh_from(points, tri_faces);
+            for (label, mesh) in [("quads", &quads), ("triangles", &tris)] {
+                let faces: Vec<usize> = (0..mesh.faces.len()).collect();
+                let (got_apex, got_axis, got_ha) = cone_from_rings(&faces, mesh)
+                    .unwrap_or_else(|| panic!("{deg}° {label}: no cone from two rims"));
+                assert!(
+                    parallel_miss(got_axis, d) < 1e-9 && dot3(&got_axis, &d) > 0.0,
+                    "{deg}° {label}: axis must point from the apex toward the support"
+                );
+                assert!(
+                    (got_ha - ha).abs() < 1e-9,
+                    "{deg}° {label}: half-angle {} vs {}",
+                    got_ha.to_degrees(),
+                    deg
+                );
+                assert!(
+                    vnorm(vsub(got_apex, apex)) < 1e-8,
+                    "{deg}° {label}: apex off by {:e}",
+                    vnorm(vsub(got_apex, apex))
+                );
+            }
+        }
+    }
+
+    /// Two rims of equal radius are a cylinder, which is not this function's
+    /// to report: the caller fits cylinders by its own route.
+    #[test]
+    fn cone_from_rings_declines_a_cylinder() {
+        let d = oblique_axis();
+        let (u, v) = perpendicular_basis(&d);
+        let mut points = Vec::new();
+        for k in 0..=2 {
+            let th = 0.3 * k as f64;
+            for z in [0.0, 5.0] {
+                points.push([
+                    4.0 * (u[0] * th.cos() + v[0] * th.sin()) + d[0] * z,
+                    4.0 * (u[1] * th.cos() + v[1] * th.sin()) + d[1] * z,
+                    4.0 * (u[2] * th.cos() + v[2] * th.sin()) + d[2] * z,
+                ]);
+            }
+        }
+        let mesh = mesh_from(points, vec![vec![0, 1, 3, 2], vec![2, 3, 5, 4]]);
+        let faces: Vec<usize> = (0..mesh.faces.len()).collect();
+        // Rounding can leave a taper of order 1e-16 rather than exactly zero;
+        // what matters is that no plausible cone comes back.
+        if let Some((_, _, ha)) = cone_from_rings(&faces, &mesh) {
+            assert!(ha < 1e-9, "a cylinder must not read as a cone, got {}°", ha.to_degrees());
         }
     }
 }

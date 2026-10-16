@@ -81,13 +81,20 @@ fn normal_line_intersection(
     Some((t, s, dist))
 }
 
+/// A torus fit worse than this (max vertex error, mm) has not reached CAD-mesh
+/// precision, and the alternative routes — the multi-axis rescue inside
+/// [`fit_torus`], then Phase 1.1's closed form in `fit_surface` — are consulted.
+/// Shared by both so the second adds no constant of its own; the cone fitter
+/// gates its alternative routes on the same value.
+const RESCUE_ERR_THRESHOLD: f64 = 1e-4;
+
 // ---------------------------------------------------------------------------
 // 3D circle fitting from tube centers
 // ---------------------------------------------------------------------------
 
 /// Fit a 3D circle to a set of points using PCA + 2D algebraic circle fit.
 /// Returns (center, axis_direction, radius) or None if degenerate.
-fn fit_circle_3d(points: &[[f64; 3]]) -> Option<([f64; 3], [f64; 3], f64)> {
+pub(super) fn fit_circle_3d(points: &[[f64; 3]]) -> Option<([f64; 3], [f64; 3], f64)> {
     let n = points.len();
     if n < 3 {
         return None;
@@ -617,7 +624,6 @@ fn fit_torus(
     // Multi-axis rescue for small patches, only when the geometric methods
     // fail to reach CAD-mesh precision (bounds the extra LM cost to the
     // rare hard cases).
-    const RESCUE_ERR_THRESHOLD: f64 = 1e-4; // mm
     if best.as_ref().is_none_or(|(e, _)| *e > RESCUE_ERR_THRESHOLD) {
         if let Some(cand) = fit_torus_axes_rescue(face_indices, vertex_set, faces, vertices) {
             if valid(&cand) {
@@ -1194,6 +1200,7 @@ impl SurfaceType for ToroidalSurface {
         // | neither | 18/38/0/0/18/1 (75) | 33/31/0/0/19/1 (84) |
         // | sweep only | 20/38/0/0/18/0 (76) | 33/31/0/0/19/1 (84) |
         // | sweep + closed form | 72/37/0/0/18/0 (127) | 30/31/0/0/18/1 (80) |
+        // | ... closed form gated (2026-10-15) | 20/38/0/0/18/0 (76) | 30/31/0/0/18/1 (80) |
         //
         // So a strictly better-conditioned candidate pool, selected on residual,
         // made the old pipeline's end-to-end decomposition much worse: on a
@@ -1201,7 +1208,36 @@ impl SurfaceType for ToroidalSurface {
         // being the worse surface for the flood that follows. **Residual on the
         // current support does not predict how a fit will grow.** That is a
         // property of the surrounding grow-and-compete design, not of this fit.
-        let closed = super::initialize::torus(face_list, mesh).and_then(|init| {
+        //
+        // The gated row keeps both wins: the seed-level filleted numbers stay at
+        // 100/100/100% (24/24, 24/24, 48/48 anchors) and stepped_block returns to
+        // the pre-closed-form 76 — medium keeps the closed form's 80, whose 18
+        // tori are the reference's count where "sweep only" had a spurious 19th.
+        let max_err = |c: &([f64; 3], [f64; 3], f64, f64)| -> f64 {
+            vertex_set
+                .iter()
+                .map(|&vi| {
+                    vertex_to_torus_distance(&mesh.vertices[vi], &c.0, &c.1, c.2, c.3).abs()
+                })
+                .fold(0.0_f64, f64::max)
+        };
+        let admissible =
+            |c: &([f64; 3], [f64; 3], f64, f64)| c.2 > 0.0 && c.3 > 0.0 && c.3 <= c.2;
+
+        // **Gated on both sides** (2026-10-15), the shape that fixed the
+        // identical problem in the cone fitter: consult the closed form only
+        // when the geometric fit does not reach CAD-mesh precision, and accept
+        // it only if it does. The seed-level wins above all came from small
+        // stars where the geometric fit was far out (193x vtol); the corpus loss
+        // came from supports the geometric fit already explained, where the
+        // closed form won on residual and grew worse.
+        let geometric_explains = geometric
+            .as_ref()
+            .is_some_and(|g| admissible(g) && max_err(g) <= RESCUE_ERR_THRESHOLD);
+        let closed = (!geometric_explains)
+            .then(|| super::initialize::torus(face_list, mesh))
+            .flatten()
+            .and_then(|init| {
             let super::initialize::Initial::Torus {
                 centre,
                 axis_dir,
@@ -1224,17 +1260,10 @@ impl SurfaceType for ToroidalSurface {
             )
         });
 
-        let max_err = |c: &([f64; 3], [f64; 3], f64, f64)| -> f64 {
-            vertex_set
-                .iter()
-                .map(|&vi| {
-                    vertex_to_torus_distance(&mesh.vertices[vi], &c.0, &c.1, c.2, c.3).abs()
-                })
-                .fold(0.0_f64, f64::max)
-        };
+        let closed = closed.filter(|c| max_err(c) <= RESCUE_ERR_THRESHOLD);
         let mut fit: Option<([f64; 3], [f64; 3], f64, f64)> = None;
         for cand in [geometric, closed].into_iter().flatten() {
-            if cand.2 <= 0.0 || cand.3 <= 0.0 || cand.3 > cand.2 {
+            if !admissible(&cand) {
                 continue;
             }
             if fit.as_ref().is_none_or(|b| max_err(&cand) < max_err(b)) {

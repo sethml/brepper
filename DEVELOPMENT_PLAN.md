@@ -345,7 +345,17 @@ fallback cylinder then misses its own seed vertices by 222.7× vtol. Of the cone
 rung's refusals, 42% are the axis-normal check, 27% a half-angle outside
 [2°, 85°], 12% an apex 429–2128 mm from a 41 mm model. The guards are right; the
 initialization is not. Options are catalogued in SURFACE_FITTING.md, "Cone
-initialization: the options not yet built".
+initialization".
+
+*Update 2026-10-15.* One initialization defect turned out to be structural and is
+fixed: the fitter's axis came from the uncentred normal covariance, which cannot
+fit a cone wider than ~35° at all, and the centred-normal seed now backs it up
+(gated — see SURFACE_FITTING.md for why the gate matters). Cone facets with a
+working seed set on the three models above: `simple_cone` 4/12 → **8/12**,
+`cone_cylinder` 7/12 → **12/12**, `nosecone` 10/12 → **12/12**. Option C (two
+rims) takes `simple_cone` to 12/12 as well, but it is exact on a single band of
+*any* surface of revolution and so manufactures impostor cones on torus bands;
+it is built and not wired.
 
 **One genuinely non-identifiable case exists** and is worth knowing: on one
 `simple_cone` seed the fitter returned a half-angle 72.85° cone with its apex 10.8
@@ -2454,7 +2464,8 @@ What it costs, on `dump_regions surfaces`:
 |---|---|---|
 | neither | 18/38/0/0/18/1 (75) | 33/31/0/0/19/1 (84) |
 | candidate-r sweep only | 20/38/0/0/18/0 (76) | 33/31/0/0/19/1 (84) |
-| both (current) | 72/37/0/0/18/0 (127) | 30/31/0/0/18/1 (80) |
+| both | 72/37/0/0/18/0 (127) | 30/31/0/0/18/1 (80) |
+| **both, closed form gated (2026-10-15, current)** | **20/38/0/0/18/0 (76)** | **30/31/0/0/18/1 (80)** |
 
 **The lesson is the one worth carrying forward.** Selection by residual is
 supposed to make a strictly-better candidate pool safe, and it is not: on a large
@@ -2465,6 +2476,35 @@ a property of the grow-and-compete design, not of the fit — which is why this
 landed anyway during the invariants rework, with `remesh_cone_tangent_fine`
 failing. That model is the canary this document already nominated for exactly this
 class of change.
+
+**Resolved 2026-10-15, and the canary was a misdiagnosis.** Two separate
+findings:
+
+1. **`remesh_cone_tangent_fine` was never the torus's fault.** Its reference has
+   three cones, and the cone fitter refused two of them — 73.0° and 84.3°
+   half-angles — on their **entire true support**, because `fit_cone` read the
+   axis from the uncentred normal covariance, which is wrong above 35.26°
+   (SURFACE_FITTING.md, "Centring matters"; the centred form was built in Phase
+   1.1 and never reached the fitter). The better-initialized torus only
+   *exposed* the hole by claiming the refused territory. Fixed in the cone fitter;
+   the model now decomposes into exactly its 4 planes + 3 cones, volume error
+   1.8e-7. Details and corpus numbers in SURFACE_FITTING.md, "Cone
+   initialization", status.
+2. **The stepped_block cost was real, and a two-sided gate removes it.** The
+   closed form is now consulted only when the geometric fit does **not** reach
+   `RESCUE_ERR_THRESHOLD` (the value the torus fitter's own multi-axis rescue
+   already gated on), and accepted only if it does. That keeps every seed-level
+   win — `filleted_hole_block` 24/24, `filleted_cylinder` 24/24, `filleted_pipe`
+   48/48 torus anchors with a working seed set, unchanged from ungated — and
+   returns stepped_block fine to 76, while medium keeps the closed form's 80 (18
+   tori, the reference's count, where "sweep only" had 19).
+
+The general form of the fix is worth stating, because it was needed twice in one
+day — once here and once for the wide-cone route — and both times the ungated
+version regressed the corpus: **an alternative route should compete only where
+the primary has failed to explain the support, and should win only by explaining
+it.** "Better residual than the primary" is not a licence on a support nothing
+explains, because there the residual says nothing about growth.
 
 ### Phase 1.2 as attempted: why the blind patch is load-bearing
 
@@ -3063,7 +3103,7 @@ obvious thing to try:
   point positions alone, because the circularity condition is a repeated
   eigenvalue of the quadric's 3×3 form and that is neither linear nor quadratic in
   its coefficients. The routes that do exist, with their costs, are in
-  SURFACE_FITTING.md, "Cone initialization: the options not yet built".
+  SURFACE_FITTING.md, "Cone initialization: the options".
 
 
 - **Recursive subdivision / split-and-merge as the architecture.** Strong
