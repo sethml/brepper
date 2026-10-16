@@ -33,10 +33,11 @@ matching the project's existing convention.
 >   percentile", resolution. The per-commit corpus protocol remains **suspended
 >   for invariants work** — those numbers pin the design being replaced — and
 >   still applies to any change made *to* the existing pipeline, as this one was.
->   The suite took ~26 min by 2026-10-15; it is **~4.5 min** since 2026-10-16
+>   The suite took ~26 min by 2026-10-15; it is **~3 min** since 2026-10-16
 >   (one test binary, deduplicated model runs, three bit-identical pipeline
->   speed-ups — DEVELOPMENT_PLAN, "Suite runtime"). Its floor is now
->   `nurbs_bspline_hill` at ~255 s.
+>   speed-ups, and competition parallelized with bit-identical output —
+>   DEVELOPMENT_PLAN, "Suite runtime"). It is now bound by total CPU work, not
+>   by its slowest test.
 > - Rule 6's dead-end list has grown; four of the new entries are cone- and
 >   torus-seeding ideas that look obviously right.
 
@@ -53,7 +54,7 @@ Report both in every commit message that moves either.
 1. **Invariants after every commit**: every mesh face in exactly one surface
    (`assert_invariants`); committed supports are flood/validation outputs at
    `vtol`/`stol`, never hand-adjusted; build clean; `cargo clippy` clean;
-   suite green (`cargo test --release --no-fail-fast`, ~2.5 min) or newly
+   suite green (`cargo test --release --no-fail-fast`, ~3 min) or newly
    `#[ignore]`d only with a precise blocker string.
 2. **Measurement protocol**: save a `tools/sweep.sh --baseline` before each
    phase (and `tools/probe.sh` for a fast look);

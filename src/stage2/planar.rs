@@ -66,9 +66,17 @@ pub(super) fn fit_plane(
             }
         }
     }
+    // Sum in sorted vertex order, never `HashSet` order: the set's iteration
+    // order is randomized per process, so summing in it made the fitted
+    // distance differ in its last bits from run to run — and with it every
+    // decision downstream that compares a residual against a tolerance. Found
+    // 2026-10-16 when stage 2 output, fingerprinted at full precision, differed
+    // between two runs of the same binary on 5 of 7 models.
+    let mut ordered: Vec<usize> = vertex_set.iter().copied().collect();
+    ordered.sort_unstable();
     let mut sum_d = 0.0_f64;
     let mut sum_w = 0.0_f64;
-    for &vi in vertex_set {
+    for &vi in &ordered {
         let v = &vertices[vi];
         let w = weight.get(&vi).copied().unwrap_or(0.0);
         sum_d += w * (normal[0] * v.x + normal[1] * v.y + normal[2] * v.z);
@@ -78,7 +86,7 @@ pub(super) fn fit_plane(
         sum_d / sum_w
     } else {
         // Degenerate support (zero total area) — fall back to the plain mean.
-        vertex_set
+        ordered
             .iter()
             .map(|&vi| {
                 let v = &vertices[vi];

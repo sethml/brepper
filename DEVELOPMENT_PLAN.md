@@ -51,6 +51,8 @@ principles drive it; retired mechanisms and the reasons they died are in
 6. **Invariants are enforced, not assumed.** Before stage 3: every mesh face
    belongs to exactly one region; every region is mesh-connected; every
    region's surface validates its own faces; results are deterministic.
+   (Determinism was not actually delivered until 2026-10-16: two `HashSet`
+   iteration orders leaked into fitted parameters — see "Suite runtime".)
    (The abandoned pipeline's greedy selection violated connectivity —
    3DBenchy face 5841 reached stage 3.4 claiming three disconnected mesh
    regions.) These are the *coverage* invariants and they are asserted every
@@ -3854,13 +3856,65 @@ already run. What changed, in order of payoff:
   live in `end_to_end`, which sorts first — the slowest tests then start at
   t = 0.
 
-The floor is now the slowest single test: `nurbs_bspline_hill` (~255 s) and
-`nurbs_bspline_terrain` (~220 s), both spending nearly all their time in 2.3's
-competition trying torus and cone fits on a freeform region (42% in the gated
-closed-form torus refinement alone). Lowering it means changing what
-competition computes — fewer flood starts, less LM effort, or not trying the
-torus rung where it cannot win — which changes decisions and needs a corpus
-sweep, unlike everything above.
+That left the floor at the slowest single test, `nurbs_bspline_hill` (~255 s):
+nearly all of it 2.3's competition trying torus and cone fits on a freeform
+region, where every face seeds and every seed's conditioning runs its full 16
+trim rounds per type. Changing *what* competition computes was measured and
+rejected: the closed-form torus is accepted on 1.7% of its 433 663
+consultations (across 105 models, so it is not dead weight); passing LM
+refinements use the whole evaluation budget too (p95 1200 of 1200), so a
+smaller budget would perturb good fits; and conditioning successes are spread
+across rounds (torus: 49% in round 0, then 3–6% per round to round 11), so a
+faster trim schedule would lose real tori. Conditioning is load-bearing, as
+Phase 1.2 found.
+
+What changed instead is *where* it runs. `compete_from_seed` reads only the
+mesh, the region and the seed — never the claims — so `compete_region`
+evaluates seeds ahead of their turn on worker threads and applies the results
+strictly in seed order, re-checking the skip rule
+(`compete::evaluate_seeds_in_order`). The output is the serial loop's, bit for
+bit (verified at full precision on six models; `--threads`, and the
+`competition_is_thread_count_independent` test). Debug runs (verbosity ≥ 3)
+stay serial so diagnostics print in seed order.
+
+How far ahead is the whole question. A seed evaluated ahead is wasted when an
+earlier commit makes it skippable, and on analytic models those are the costly
+seeds: one inside a large surface regrows that whole surface, and the leading
+seeds of `rounded_cube_10_r2_fine` all lie on the few surfaces being grown at
+that moment. Speculating a fixed ten seeds ahead wasted 71 of its 128
+evaluations — 130 s of CPU for a 31.6 s serial job, which in a suite that keeps
+every core busy is a net loss. The lookahead now follows the waste it sees:
+halved on every wasted result, grown by one on every used one, capped at two
+per thread. Stage 2 with ten threads, wall / CPU against serial:
+
+| Model | Serial | Fixed 10 ahead | Waste-driven |
+|---|---|---|---|
+| `rounded_cube_10_r2_fine` | 31.6 s | 30.5 s / 130 s | 20.7 s / 58 s |
+| `pipe_elbow_10_fine` | 101 s | 18.1 s / 123 s | 16.5 s / 129 s |
+| `bspline_hill` (freeform, nothing wasted) | 215 s | — | 30.6 s / 279 s |
+
+Three things measured and dropped: resetting the window to one after every
+commit (cheap on `rounded_cube_10_r2_fine`, but `pipe_elbow_10_fine` commits
+often while wasting almost nothing, and fell back to 47 s); bounding only the
+seeds still *running* (a slow seed at the head of the line let the others run
+arbitrarily far ahead); and abandoning in-flight seeds a commit made skippable
+(1–6% once the window is waste-driven — not worth a fit that can silently
+return `None`). CPU stays ~20–30% above serial even with no waste: four of
+this M2 Pro's ten cores are efficiency cores.
+
+Suite: **4:32 → 3:05** wall (integration binary 167 s), 1267 → 1685 s of CPU
+(fixed-block speculation had reached 3:24 at 1889 s). At ~9 busy cores out of
+10 the suite is now bound by total work, not by its slowest test, so further
+gains have to come from doing less, not from spreading it.
+
+**Stage 2 was not deterministic before this**, despite Design Principle 6, and
+the parallel work is what exposed it: fingerprinting stage 2's output at full
+precision showed the same binary disagreeing with itself across runs on 5 of 7
+models, in the last bits of fitted parameters. Two causes, both iteration over
+a `HashSet`, whose order is randomized per instance: `planar::fit_plane`
+summed the plane offset in set order, and `classify` collected candidate axes
+in set order while keeping the first of each near-parallel pair. Both now
+iterate in sorted order; the regression test fails 3 of 3 times without them.
 
 ### Test Cases
 

@@ -60,6 +60,32 @@ use super::{
     MIN_CYLINDER_FACES, MIN_SPHERE_FACES, MIN_TORUS_FACES,
 };
 
+/// The settings competition reads, as a plain `Sync` value.
+///
+/// `Config` carries the `--compare` reference shape, an OCCT handle, so it
+/// cannot be shared across threads — and competition, which `compete_region`
+/// runs on several, never reads it. The field names match `Config`'s so the code
+/// below reads exactly as it did when it took `&Config`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CompeteConfig {
+    pub vertex_tolerance_mm: f64,
+    pub surface_tolerance_mm: f64,
+    pub verbosity: u8,
+    /// `--threads`; `None` = all cores.
+    pub threads: Option<usize>,
+}
+
+impl From<&Config> for CompeteConfig {
+    fn from(c: &Config) -> Self {
+        CompeteConfig {
+            vertex_tolerance_mm: c.vertex_tolerance_mm,
+            surface_tolerance_mm: c.surface_tolerance_mm,
+            verbosity: c.verbosity,
+            threads: c.threads,
+        }
+    }
+}
+
 /// Max faces in the jet-similar seed patch used to condition the initial fit.
 const SEED_PATCH_CAP: usize = 32;
 
@@ -225,7 +251,7 @@ pub(super) fn compete_region(
     region: &Region,
     jet: &[JetField],
     centroids: &[[f64; 3]],
-    config: &Config,
+    config: &CompeteConfig,
 ) -> (Vec<CompeteHyp>, Vec<usize>) {
     let n = mesh.faces.len();
     let debug = config.verbosity >= 3 || std::env::var("BREPPER_DEBUG_COMPETE").is_ok();
@@ -276,25 +302,47 @@ pub(super) fn compete_region(
     let mut claim_lists: Vec<Vec<usize>> = vec![Vec::new(); n]; // face -> committed idxs
     let mut claimed = vec![false; n];
 
-    for &seed in &seeds {
-        // Skip only faces in the INTERIOR of what is already explained: every
-        // neighbour claimed too. Seeding there cannot produce a competitor —
-        // a fit grown from the middle of a validated surface refits that same
-        // surface — so it is pure cost. Faces at the margin still seed.
-        if claimed[seed] && interior_of_claims(mesh, seed, &claimed) {
-            continue;
+    // Skip only faces in the INTERIOR of what is already explained: every
+    // neighbour claimed too. Seeding there cannot produce a competitor — a fit
+    // grown from the middle of a validated surface refits that same surface —
+    // so it is pure cost. Faces at the margin still seed.
+    let skip = |seed: usize, claimed: &[bool]| claimed[seed] && interior_of_claims(mesh, seed, claimed);
+    let mut commit = |hyp: CompeteHyp, claimed: &mut Vec<bool>| {
+        let idx = committed.len();
+        for &f in hyp.faces() {
+            claim_lists[f].push(idx);
+            claimed[f] = true;
         }
-        if let Some((hyp, _area, _dof)) =
-            compete_from_seed(mesh, &in_region, seed, jet, centroids, config, flat_eps, debug)
-        {
-            let idx = committed.len();
-            for &f in hyp.faces() {
-                claim_lists[f].push(idx);
-                claimed[f] = true;
+        committed.push(hyp);
+    };
+    let evaluate =
+        |seed: usize| compete_from_seed(mesh, &in_region, seed, jet, centroids, config, flat_eps, debug);
+    let threads = competition_threads(debug, config.threads);
+    if threads <= 1 {
+        for &seed in &seeds {
+            if skip(seed, &claimed) {
+                continue;
             }
-            committed.push(hyp);
+            if let Some((hyp, _area, _dof)) = evaluate(seed) {
+                commit(hyp, &mut claimed);
+            }
         }
-        // A seed that grows nothing analytic costs only its own turn.
+    } else {
+        // The same loop, with seeds evaluated ahead on worker threads. See
+        // `evaluate_seeds_in_order` for why the result is the serial loop's.
+        evaluate_seeds_in_order(
+            &seeds,
+            threads,
+            super::surface::current_fit_cache(),
+            |seed, claimed: &[bool]| skip(seed, claimed),
+            evaluate,
+            |result, claimed: &mut Vec<bool>| {
+                if let Some((hyp, _area, _dof)) = result {
+                    commit(hyp, claimed);
+                }
+            },
+            &mut claimed,
+        );
     }
 
     resolve_claims(
@@ -305,6 +353,151 @@ pub(super) fn compete_region(
         config.vertex_tolerance_mm,
         config,
     )
+}
+
+/// Most seeds competition evaluates ahead of their turn, per worker thread.
+/// One per thread lets a single slow seed at the head of the line idle the
+/// rest: `bspline_hill`, where no speculation is wasted, took 39 s at one per
+/// thread and 30.6 s at two (four: 29.9 s). A work bound only — the result is
+/// the same at any value.
+const COMPETE_LOOKAHEAD_PER_THREAD: usize = 2;
+
+/// Worker threads for competition: 1 (the serial loop) when debugging, so
+/// per-seed diagnostics print in seed order; otherwise `--threads`, or the
+/// machine's parallelism. The result is the same either way — see
+/// `evaluate_seeds_in_order` — which the `competition_is_thread_count_independent`
+/// test pins.
+fn competition_threads(debug: bool, requested: Option<usize>) -> usize {
+    if debug {
+        return 1;
+    }
+    requested
+        .filter(|&n| n >= 1)
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+}
+
+/// The serial seed loop — `for seed in seeds { if !skip(seed) { apply(evaluate(seed)) } }`
+/// — with seeds evaluated ahead of their turn on `threads` workers.
+///
+/// **Why the result is the serial loop's, bit for bit.** `evaluate` reads only
+/// the mesh, the region and the seed — never the claims — so its value for a
+/// seed does not depend on when, or on which thread, it is computed. Claims
+/// decide only WHETHER a seed is used, and results are applied strictly in seed
+/// order with the skip rule re-checked against the claims as they stand at that
+/// seed's turn. A seed is dispatched only if unskipped at dispatch, and claims
+/// only grow, so a seed skipped at dispatch is skipped at its turn too.
+///
+/// **How far ahead.** A seed evaluated ahead is wasted if a commit before its
+/// turn makes it skippable, and those are the expensive seeds: one inside a
+/// large surface regrows that whole surface. How often that happens depends on
+/// the region. With ten seeds always in hand, `pipe_elbow_10_fine` wasted 9 of
+/// 586 evaluations, but `rounded_cube_10_r2_fine` wasted 71 of 128 — 90 s of
+/// evaluation to use 35 s — because its leading seeds lie on the few large
+/// surfaces being grown at that moment. So the lookahead follows the waste it
+/// sees: at most `window` seeds are dispatched and not yet applied, and the
+/// window halves on every wasted result and grows by one on every used one, up
+/// to [`COMPETE_LOOKAHEAD_PER_THREAD`] per thread. Measured with ten threads,
+/// wall / CPU against serial: `rounded_cube_10_r2_fine` 20.7 s / 58 s against
+/// 31.6 s (a fixed window of ten: 30.5 s / 130 s); `pipe_elbow_10_fine`
+/// 16.5 s / 129 s against 101 s; `bspline_hill`, freeform, where nothing is
+/// wasted, 30.6 s / 279 s against 215 s.
+fn evaluate_seeds_in_order<T, Skip, Eval, Apply>(
+    seeds: &[usize],
+    threads: usize,
+    cache: Option<super::surface::FitCache>,
+    skip: Skip,
+    evaluate: Eval,
+    mut apply: Apply,
+    claimed: &mut Vec<bool>,
+) where
+    T: Send,
+    Skip: Fn(usize, &[bool]) -> bool,
+    Eval: Fn(usize) -> T + Sync,
+    Apply: FnMut(T, &mut Vec<bool>),
+{
+    enum Slot<T> {
+        Waiting,
+        Skipped,
+        Running,
+        Done(T),
+    }
+    type Outcome<T> = std::thread::Result<T>;
+    let n = seeds.len();
+    let (job_tx, job_rx) = std::sync::mpsc::channel::<(usize, usize)>();
+    let job_rx = std::sync::Mutex::new(job_rx);
+    let (res_tx, res_rx) = std::sync::mpsc::channel::<(usize, Outcome<T>)>();
+    std::thread::scope(|scope| {
+        // Owned here so that it drops — and the workers exit — however this
+        // closure ends, including by a panic.
+        let job_tx = job_tx;
+        for _ in 0..threads {
+            let (job_rx, res_tx, cache, evaluate) = (&job_rx, res_tx.clone(), cache.clone(), &evaluate);
+            std::thread::Builder::new()
+                // Stage 2's own thread runs on the 8 MB main stack; give workers
+                // the same headroom rather than the 2 MB default.
+                .stack_size(8 << 20)
+                .spawn_scoped(scope, move || {
+                    super::surface::with_shared_fit_cache(cache, || loop {
+                        let job = job_rx.lock().expect("job queue").recv();
+                        let Ok((i, seed)) = job else { break };
+                        // A panic goes back to the dispatcher, which re-raises
+                        // it; left here it would leave the dispatcher waiting.
+                        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| evaluate(seed)));
+                        if res_tx.send((i, outcome)).is_err() {
+                            break;
+                        }
+                    })
+                })
+                .expect("spawn competition worker");
+        }
+        drop(res_tx);
+
+        let mut slots: Vec<Slot<T>> = (0..n).map(|_| Slot::Waiting).collect();
+        // `pending` counts seeds dispatched and not yet applied, running or done.
+        let max_window = COMPETE_LOOKAHEAD_PER_THREAD * threads;
+        let (mut next_dispatch, mut next_apply, mut pending, mut window) = (0, 0, 0, max_window);
+        while next_apply < n {
+            while pending < window && next_dispatch < n {
+                let seed = seeds[next_dispatch];
+                slots[next_dispatch] = if skip(seed, claimed) {
+                    Slot::Skipped
+                } else {
+                    job_tx.send((next_dispatch, seed)).expect("workers alive");
+                    pending += 1;
+                    Slot::Running
+                };
+                next_dispatch += 1;
+            }
+            while next_apply < next_dispatch {
+                match std::mem::replace(&mut slots[next_apply], Slot::Waiting) {
+                    Slot::Skipped => {}
+                    Slot::Done(result) => {
+                        pending -= 1;
+                        if skip(seeds[next_apply], claimed) {
+                            window = (window / 2).max(1);
+                        } else {
+                            window = (window + 1).min(max_window);
+                            apply(result, claimed);
+                        }
+                    }
+                    running => {
+                        slots[next_apply] = running;
+                        break;
+                    }
+                }
+                next_apply += 1;
+            }
+            // Stopped short of `next_dispatch`: the seed whose turn it is is
+            // still running, so wait for a result.
+            if next_apply < next_dispatch {
+                let (i, outcome) = res_rx.recv().expect("workers alive");
+                match outcome {
+                    Ok(result) => slots[i] = Slot::Done(result),
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
+            }
+        }
+    });
 }
 
 /// Compete every jet-admitted surface type from one seed face and return the
@@ -322,7 +515,7 @@ pub(super) fn compete_from_seed(
     seed: usize,
     jet: &[JetField],
     centroids: &[[f64; 3]],
-    config: &Config,
+    config: &CompeteConfig,
     flat_eps: f64,
     debug: bool,
 ) -> Option<(CompeteHyp, f64, u8)> {
@@ -470,7 +663,7 @@ pub(super) fn grow_with_axis(
     seed: usize,
     axis: [f64; 3],
     centroids: &[[f64; 3]],
-    config: &Config,
+    config: &CompeteConfig,
 ) -> Option<(ConicalHypothesis, f64, Vec<usize>)> {
     let vtol = config.vertex_tolerance_mm;
     let stol = config.surface_tolerance_mm;
@@ -518,7 +711,7 @@ fn resolve_claims(
     committed: &mut Vec<CompeteHyp>,
     claim_lists: &[Vec<usize>],
     vtol: f64,
-    config: &Config,
+    config: &CompeteConfig,
 ) -> (Vec<CompeteHyp>, Vec<usize>) {
     let hyp_area: Vec<f64> = committed
         .iter()
@@ -606,7 +799,7 @@ fn resolve_claims(
 
 /// Refit a committed hypothesis to its current face set, keeping the existing
 /// fit if the fitter cannot produce one.
-fn refit_in_place(mesh: &ConnectedMesh, hyp: &mut CompeteHyp, config: &Config) {
+fn refit_in_place(mesh: &ConnectedMesh, hyp: &mut CompeteHyp, config: &CompeteConfig) {
     let faces = hyp.faces().to_vec();
     let verts = vertices_of(mesh, &faces);
     let v = config.verbosity;
@@ -647,7 +840,7 @@ pub(super) fn grow<S: SurfaceType>(
     seed: usize,
     jet: &[JetField],
     centroids: &[[f64; 3]],
-    config: &Config,
+    config: &CompeteConfig,
     min_faces: usize,
 ) -> Option<(S::Hypothesis, f64, Vec<usize>)> {
     let patch = seed_patch(mesh, in_region, seed, jet);
@@ -664,7 +857,7 @@ pub(super) fn grow_from<S: SurfaceType>(
     start: usize,
     initial: Vec<usize>,
     centroids: &[[f64; 3]],
-    config: &Config,
+    config: &CompeteConfig,
     min_faces: usize,
 ) -> Option<(S::Hypothesis, f64, Vec<usize>)> {
     let stol = config.surface_tolerance_mm;
@@ -817,7 +1010,7 @@ fn torus_candidate(
     initial: &[usize],
     starts: &[usize],
     centroids: &[[f64; 3]],
-    config: &Config,
+    config: &CompeteConfig,
 ) -> Option<(ToroidalHypothesis, f64, Vec<usize>)> {
     let bb_diag = bounding_box_diagonal(&mesh.vertices);
     for &start in starts.iter().take(MAX_TORUS_STARTS) {
@@ -861,7 +1054,7 @@ fn promote_bend(
     cyl_faces: &[usize],
     jet: &[JetField],
     centroids: &[[f64; 3]],
-    config: &Config,
+    config: &CompeteConfig,
 ) -> Option<(ToroidalHypothesis, f64, Vec<usize>)> {
     if cyl.radius_at_apex <= 0.0 {
         return None;
@@ -1072,7 +1265,7 @@ fn condition_patch<S: SurfaceType>(
     seed: usize,
     mut patch: Vec<usize>,
     centroids: &[[f64; 3]],
-    config: &Config,
+    config: &CompeteConfig,
     vtol: f64,
     stol: f64,
     min_faces: usize,

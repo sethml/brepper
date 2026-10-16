@@ -34,6 +34,8 @@ GENERAL OPTIONS:
     -v, --verbose[=LEVEL]    Verbosity level: 1 = stage summaries, 2 = per-hypothesis details,
                              3 = commit details/stats/profiles, 4 = per-seed details, 5 = BFS face trace
     -q, --quiet              Suppress non-error output
+    --threads=<N>            Worker threads for stage 2's fit competition (default: all
+                             cores; 1 = serial). Output is identical for every value.
     --strict-mesh            Fail on mesh defects instead of repairing them (dropping
                              duplicate-vertex and coincident faces, stitching T-junction
                              slivers, unifying winding, reorienting inverted shells)

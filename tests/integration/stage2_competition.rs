@@ -180,3 +180,47 @@ fn boundaries_sit_on_their_junctions() {
         );
     }
 }
+
+/// Every selected surface at full precision, in selection order: the
+/// fingerprint two stage-2 runs must agree on bit for bit.
+fn fingerprint(out: &stage2::Stage2Output) -> Vec<String> {
+    out.selected_surfaces
+        .iter()
+        .map(|s| match s {
+            stage2::SelectedSurface::Planar(i) => format!("{:?}", out.planar_hypotheses[*i]),
+            stage2::SelectedSurface::Conical(i) => format!("{:?}", out.conical_hypotheses[*i]),
+            stage2::SelectedSurface::Spherical(i) => format!("{:?}", out.spherical_hypotheses[*i]),
+            stage2::SelectedSurface::Toroidal(i) => format!("{:?}", out.toroidal_hypotheses[*i]),
+            stage2::SelectedSurface::BSpline(i) => {
+                let b = &out.bspline_hypotheses[*i];
+                format!("bspline {:?} {:?} {:?}", b.faces, b.error_max, b.centroid_error_max)
+            }
+        })
+        .collect()
+}
+
+/// Competition evaluates seeds speculatively on worker threads and applies
+/// the results in seed order, so the thread count must not change a single
+/// bit of stage 2's output — and the output must not depend on hash-set
+/// iteration order, which differs between `HashSet` instances even within one
+/// process. This model showed run-to-run differences in its
+/// fitted parameters' last bits before 2026-10-16 (a plane offset summed in
+/// `HashSet` order; candidate axes collected in it), so a reintroduced
+/// order dependence is likely to show up here too.
+#[test]
+fn competition_is_thread_count_independent() {
+    // One small model: it exhibited the run-to-run difference, and the test
+    // must stay cheap — it runs stage 2 three times.
+    let model = "tests/ccad/generated/cone_cylinder.stl";
+    let stl = format!("{}/{model}", manifest_dir());
+    let run_with = |threads: &str| {
+        let config =
+            config::parse_config_from(["brepper", &stl, "--stage=2", "-q", threads]).unwrap();
+        let mesh = stage1::stage1(&config).expect("stage1 should pass");
+        fingerprint(&stage2::stage2(&config, mesh, None).expect("stage2 should pass"))
+    };
+    let serial = run_with("--threads=1");
+    assert!(!serial.is_empty(), "{model}: no surfaces");
+    assert_eq!(run_with("--threads=1"), serial, "{model}: two serial runs differ");
+    assert_eq!(run_with("--threads=4"), serial, "{model}: 4 threads differ from 1");
+}

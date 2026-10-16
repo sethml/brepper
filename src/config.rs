@@ -194,6 +194,11 @@ struct CliArgs {
     #[arg(long)]
     pub strict_mesh: bool,
 
+    /// Worker threads for stage 2's fit competition (default: all cores;
+    /// 1 = serial). The result is identical for every value.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    pub threads: Option<u32>,
+
     /// Enable debug output and intermediate files.
     #[arg(long)]
     pub debug: bool,
@@ -317,6 +322,8 @@ pub struct Config {
     pub quiet: bool,
     /// Fail on degenerate mesh faces instead of repairing them.
     pub strict_mesh: bool,
+    /// Worker threads for stage 2's fit competition; `None` = all cores.
+    pub threads: Option<usize>,
     /// Enable debug output and intermediate files.
     pub debug: bool,
     /// Stop after this stage.
@@ -343,6 +350,7 @@ impl std::fmt::Debug for Config {
             .field("verbose", &self.verbose)
             .field("quiet", &self.quiet)
             .field("strict_mesh", &self.strict_mesh)
+            .field("threads", &self.threads)
             .field("debug", &self.debug)
             .field("stage", &self.stage)
             .field("viz_stages", &self.viz_stages)
@@ -379,6 +387,7 @@ impl Config {
             verbose: args.verbose_level.unwrap_or(0).max(args.verbose_short) >= 1,
             quiet: args.quiet,
             strict_mesh: args.strict_mesh,
+            threads: args.threads.map(|n| n as usize),
             debug: args.debug,
             stage: args.stage.unwrap_or_default(),
             viz_stages: args.viz_stages.unwrap_or_default(),

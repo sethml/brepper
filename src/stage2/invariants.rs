@@ -3375,19 +3375,19 @@ pub fn report(
                 // Single-type grow: the invariant as the section states it.
                 let grown: Option<Vec<usize>> = match kind {
                     Kind::Plane => compete::grow::<PlanarSurface>(
-                        mesh, &in_region, seed, jet, &centroids, config, 1,
+                        mesh, &in_region, seed, jet, &centroids, &compete::CompeteConfig::from(config), 1,
                     )
                     .map(|(_, _, f)| f),
                     Kind::Cylinder | Kind::Cone => compete::grow::<ConicalSurface>(
-                        mesh, &in_region, seed, jet, &centroids, config, MIN_CYLINDER_FACES,
+                        mesh, &in_region, seed, jet, &centroids, &compete::CompeteConfig::from(config), MIN_CYLINDER_FACES,
                     )
                     .map(|(_, _, f)| f),
                     Kind::Sphere => compete::grow::<SphericalSurface>(
-                        mesh, &in_region, seed, jet, &centroids, config, MIN_SPHERE_FACES,
+                        mesh, &in_region, seed, jet, &centroids, &compete::CompeteConfig::from(config), MIN_SPHERE_FACES,
                     )
                     .map(|(_, _, f)| f),
                     Kind::Torus => compete::grow::<ToroidalSurface>(
-                        mesh, &in_region, seed, jet, &centroids, config, MIN_TORUS_FACES,
+                        mesh, &in_region, seed, jet, &centroids, &compete::CompeteConfig::from(config), MIN_TORUS_FACES,
                     )
                     .map(|(_, _, f)| f),
                     Kind::Other => None,
@@ -3427,7 +3427,7 @@ pub fn report(
                     continue;
                 }
                 if let Some((hyp, _, _)) = compete::compete_from_seed(
-                    mesh, &in_region, seed, jet, &centroids, config, flat_eps, false,
+                    mesh, &in_region, seed, jet, &centroids, &compete::CompeteConfig::from(config), flat_eps, false,
                 ) {
                     ctypes.insert(hyp.kind_name());
                     *chist.entry(hyp.kind_name()).or_insert(0) += 1;
@@ -3487,20 +3487,20 @@ pub fn report(
             let seed0 = seeds[0];
             let oracle: Option<Vec<usize>> = match kind {
                 Kind::Plane => compete::grow_from::<PlanarSurface>(
-                    mesh, &in_region, seed0, faces.clone(), &centroids, config, 1,
+                    mesh, &in_region, seed0, faces.clone(), &centroids, &compete::CompeteConfig::from(config), 1,
                 )
                 .map(|(_, _, f)| f),
                 Kind::Cylinder | Kind::Cone => compete::grow_from::<ConicalSurface>(
-                    mesh, &in_region, seed0, faces.clone(), &centroids, config,
+                    mesh, &in_region, seed0, faces.clone(), &centroids, &compete::CompeteConfig::from(config),
                     MIN_CYLINDER_FACES,
                 )
                 .map(|(_, _, f)| f),
                 Kind::Sphere => compete::grow_from::<SphericalSurface>(
-                    mesh, &in_region, seed0, faces.clone(), &centroids, config, MIN_SPHERE_FACES,
+                    mesh, &in_region, seed0, faces.clone(), &centroids, &compete::CompeteConfig::from(config), MIN_SPHERE_FACES,
                 )
                 .map(|(_, _, f)| f),
                 Kind::Torus => compete::grow_from::<ToroidalSurface>(
-                    mesh, &in_region, seed0, faces.clone(), &centroids, config, MIN_TORUS_FACES,
+                    mesh, &in_region, seed0, faces.clone(), &centroids, &compete::CompeteConfig::from(config), MIN_TORUS_FACES,
                 )
                 .map(|(_, _, f)| f),
                 Kind::Other => None,

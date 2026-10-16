@@ -168,7 +168,7 @@ pub(super) fn classify_regions(
         }
         // The ladder cannot explain this region — scoped competition.
         competed_regions += 1;
-        let (mut hyps, leftovers) = compete::compete_region(mesh, region, jet, &centroids, config);
+        let (mut hyps, leftovers) = compete::compete_region(mesh, region, jet, &centroids, &compete::CompeteConfig::from(config));
 
         // Stage 2.3(d): run the whole-region ladder on each connected
         // component of the leftovers.
@@ -526,7 +526,12 @@ fn rescue_with_neighbour_axes(
         // Candidate axes: the axis directions of every committed surface
         // adjacent to something still open.
         let mut axes: Vec<[f64; 3]> = Vec::new();
-        for &fi in open.iter() {
+        // In sorted face order, not `HashSet` order: near-parallel axes are
+        // merged by keeping the FIRST one seen, so the surviving axis — and the
+        // order the axes are tried in — would otherwise vary per process.
+        let mut open_sorted: Vec<usize> = open.iter().copied().collect();
+        open_sorted.sort_unstable();
+        for &fi in &open_sorted {
             let vc = mesh.faces[fi].vertex_count as usize;
             for &ni in &mesh.faces[fi].neighbors[..vc] {
                 if ni < 0 {
@@ -565,7 +570,7 @@ fn rescue_with_neighbour_axes(
         for &seed in &seeds {
             for &axis in &axes {
                 if let Some((h, area, faces)) =
-                    compete::grow_with_axis(mesh, &in_open, seed, axis, centroids, config)
+                    compete::grow_with_axis(mesh, &in_open, seed, axis, centroids, &compete::CompeteConfig::from(config))
                 {
                     if best.as_ref().is_none_or(|(_, ba, _)| area > *ba + 1e-12) {
                         best = Some((h, area, faces));
