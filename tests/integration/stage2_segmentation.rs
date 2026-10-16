@@ -20,9 +20,15 @@ fn manifest_dir() -> String {
 }
 
 /// Run stages 1 and 2 (through the 2.2 frontier) on a test STL.
+///
+/// `--stage=2.2` is what makes "through the 2.2 frontier" true: without it this
+/// ran the whole of stage 2, including the 2.3 fit competition that none of
+/// these tests reads (95 s of the rounded cube's 96). The segmentation is
+/// built in 2.1–2.2 and only borrowed afterwards, so stopping there returns the
+/// identical value.
 fn run_segmentation(stl_rel: &str) -> Stage2Output {
     let stl = format!("{}/{stl_rel}", manifest_dir());
-    let config = config::parse_config_from(["brepper", &stl, "-q"]).unwrap();
+    let config = config::parse_config_from(["brepper", &stl, "--stage=2.2", "-q"]).unwrap();
     let mesh = stage1::stage1(&config).expect("stage1 should pass");
     stage2::stage2(&config, mesh, None).expect("stage2 should pass")
 }

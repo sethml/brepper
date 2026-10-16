@@ -8,7 +8,7 @@
 //! 5. LM refinement of 7 parameters [Cx, Cy, Cz, alpha, beta, R, r]
 //! 6. BFS expansion with vertex-to-torus distance validation
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use levenberg_marquardt::{LeastSquaresProblem, LevenbergMarquardt};
 use nalgebra::{Const, Dyn, OMatrix, OVector, Owned};
@@ -757,10 +757,11 @@ fn fit_torus_inner(
         return None;
     }
 
+    let normals = vertex_normals(&sorted_verts, face_indices, faces);
     let mut best_fit: Option<(f64, TorusFitTuple)> = None;
     for minor_r in candidates {
         if let Some(cand) =
-            fit_torus_inner_from_r(minor_r, &sorted_verts, face_indices, faces, vertices)
+            fit_torus_inner_from_r(minor_r, &sorted_verts, &normals, vertices)
         {
             if cand.2 <= 0.0 || cand.3 <= 0.0 || cand.3 > cand.2 {
                 continue;
@@ -779,14 +780,61 @@ fn fit_torus_inner(
     best_fit.map(|(_, c)| c)
 }
 
+/// Each vertex's average normal over the support's faces incident to it,
+/// normalized, aligned with `sorted_verts`; `None` where no incident face has a
+/// normal or the sum vanishes.
+///
+/// One pass over the faces. This used to be computed inside
+/// [`fit_torus_inner_from_r`] by scanning every face of the support for every
+/// vertex — O(V·F), repeated for both normal signs and every candidate minor
+/// radius at every refit — which made `pipe_elbow_10_fine`'s stage 2 take
+/// 12 minutes, 80% of it in that scan. Faces are visited in `face_indices` order
+/// exactly as the scan visited them, so every sum, and therefore every fit, is
+/// bit-identical.
+fn vertex_normals(
+    sorted_verts: &[usize],
+    face_indices: &[usize],
+    faces: &[MeshFace],
+) -> Vec<Option<[f64; 3]>> {
+    let mut acc: HashMap<usize, ([f64; 3], u32)> =
+        sorted_verts.iter().map(|&vi| (vi, ([0.0; 3], 0))).collect();
+    for &fi in face_indices {
+        let Some(n) = faces[fi].normal else { continue };
+        let vc = faces[fi].vertex_count as usize;
+        let idx = &faces[fi].vertex_indices[..vc];
+        for (k, vi) in idx.iter().enumerate() {
+            // A face counts once per vertex, as `contains` did, even if a
+            // degenerate face lists the vertex twice.
+            if idx[..k].contains(vi) {
+                continue;
+            }
+            if let Some((sum, count)) = acc.get_mut(vi) {
+                sum[0] += n[0];
+                sum[1] += n[1];
+                sum[2] += n[2];
+                *count += 1;
+            }
+        }
+    }
+    sorted_verts
+        .iter()
+        .map(|vi| {
+            let (mut avg_n, count) = acc[vi];
+            if count == 0 || normalize3(&mut avg_n) < 1e-15 {
+                return None;
+            }
+            Some(avg_n)
+        })
+        .collect()
+}
+
 /// Steps 2-4 of the tube-centre method for one candidate minor radius: place
 /// the tube centres, fit their circle, refine by LM.
 #[allow(clippy::type_complexity)]
 fn fit_torus_inner_from_r(
     minor_r: f64,
     sorted_verts: &[usize],
-    face_indices: &[usize],
-    faces: &[MeshFace],
+    normals: &[Option<[f64; 3]>],
     vertices: &[MeshVertex],
 ) -> Option<([f64; 3], [f64; 3], f64, f64)> {
 
@@ -797,24 +845,11 @@ fn fit_torus_inner_from_r(
     // We try both signs, and use the one that produces a better circle fit.
     let best = [1.0_f64, -1.0].iter().filter_map(|&sign| {
         // Compute tube centers
-        let tube_centers: Vec<[f64; 3]> = sorted_verts.iter().filter_map(|&vi| {
-            // Average normal from all incident seed faces for a better
-            // surface-normal estimate at the vertex.
-            let mut avg_n = [0.0_f64; 3];
-            let mut count = 0u32;
-            for &fi in face_indices {
-                let vc = faces[fi].vertex_count as usize;
-                if !faces[fi].vertex_indices[..vc].contains(&vi) { continue; }
-                if let Some(n) = faces[fi].normal {
-                    avg_n[0] += n[0];
-                    avg_n[1] += n[1];
-                    avg_n[2] += n[2];
-                    count += 1;
-                }
-            }
-            if count == 0 { return None; }
-            let len = normalize3(&mut avg_n);
-            if len < 1e-15 { return None; }
+        // Average normal from all incident seed faces for a better
+        // surface-normal estimate at the vertex (precomputed: see
+        // `vertex_normals`).
+        let tube_centers: Vec<[f64; 3]> = sorted_verts.iter().zip(normals).filter_map(|(&vi, n)| {
+            let avg_n = (*n)?;
             let v = &vertices[vi];
             Some([
                 v.x + sign * minor_r * avg_n[0],

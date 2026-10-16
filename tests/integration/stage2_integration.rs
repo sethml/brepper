@@ -30,14 +30,6 @@ fn config_for_stl_stage22(stl_path: &str) -> config::Config {
     config::parse_config_from(["brepper", stl_path, "--stage=2", "-q"]).unwrap()
 }
 
-fn config_for_compare_stage22(stl_path: &str, step_path: &str) -> config::Config {
-    let mut config =
-        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=2", "-q"])
-            .unwrap();
-    config.load_compare_step().unwrap();
-    config
-}
-
 /// Run stages 1 and 2.1, returning the Stage2Output.
 fn run_stage2(config: &config::Config) -> stage2::Stage2Output {
     let mesh = stage1::stage1(config).expect("stage1 should pass");
@@ -84,7 +76,7 @@ fn face_centroid(face: &stage1::MeshFace, vertices: &[stage1::MeshVertex]) -> [f
 /// For every face in the STEP file whose surface type is in `check_types`,
 /// assert that there's at least one hypothesis of the matching type with a mesh face
 /// centroid within surface_tolerance of that STEP face.
-fn assert_step_surfaces_covered(
+pub(super) fn assert_step_surfaces_covered(
     output: &stage2::Stage2Output,
     config: &config::Config,
     check_types: &[geom_abs::SurfaceType],
@@ -173,39 +165,31 @@ fn assert_step_surfaces_covered(
 // Macros for generating test cases
 // ---------------------------------------------------------------------------
 
-/// Generate a test that runs stage 2.1 with --compare against a STEP file.
-macro_rules! test_stl_step_stage2_compare {
-    ($name:ident, $stl_path:literal, $step_path:literal $(, ignore = $reason:literal)?) => {
+/// One stage-2 test per model: run stages 1 and 2 against the reference, then
+/// check that every reference face of each `covers` type has a hypothesis of
+/// that type within tolerance.
+///
+/// This replaced six macros (stage2, stage22 … stage26) that each re-ran the
+/// SAME full stage 2 — they were named for sub-stages of the old pipeline, but
+/// all ran `--stage=2` — and differed only in which types they checked
+/// coverage for. One run with the union of the types is the same set of
+/// checks. Where a stage-4 compare test exists for the same model and flags,
+/// even this one run is redundant and the coverage check lives there instead
+/// (`stage4_integration::run_stage4_covering`).
+macro_rules! stage2_compare {
+    ($name:ident, $stl_path:literal, $step_path:literal, covers = [$($t:ident),*] $(, ignore = $reason:literal)?) => {
         #[test]
         $(#[ignore = $reason])?
         fn $name() {
             let stl = format!("{}/{}", manifest_dir(), $stl_path);
             let step = format!("{}/{}", manifest_dir(), $step_path);
             let config = config_for_compare(&stl, &step);
-            run_stage2(&config);
+            let output = run_stage2(&config);
+            assert_step_surfaces_covered(&output, &config, &[$(geom_abs::SurfaceType::$t),*]);
         }
     };
 }
 
-/// Generate a test that runs stage 2.2 with --compare against a STEP file.
-/// Also checks that every Plane/Cylinder STEP face is covered by a
-/// hypothesis of the corresponding type.
-macro_rules! test_stl_step_stage22_compare {
-    ($name:ident, $stl_path:literal, $step_path:literal $(, ignore = $reason:literal)?) => {
-        #[test]
-        $(#[ignore = $reason])?
-        fn $name() {
-            let stl = format!("{}/{}", manifest_dir(), $stl_path);
-            let step = format!("{}/{}", manifest_dir(), $step_path);
-            let config = config_for_compare_stage22(&stl, &step);
-            let output = run_stage2(&config);
-            assert_step_surfaces_covered(
-                &output, &config,
-                &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder],
-            );
-        }
-    };
-}
 
 // ===========================================================================
 // Planar hypothesis count tests
@@ -277,160 +261,21 @@ fn all_faces_assigned_to_planar_hypotheses() {
 // ===========================================================================
 
 // --- tests/manual/ ---
-test_stl_step_stage2_compare!(
-    manual_cube_stage2_compare,
-    "tests/manual/cube.stl",
-    "tests/manual/cube.step"
-);
 
 // --- tests/ccad/generated/ ---
-test_stl_step_stage2_compare!(
-    ccad_cube_stage2_compare,
-    "tests/ccad/generated/cube.stl",
-    "tests/ccad/generated/cube.step"
-);
-test_stl_step_stage2_compare!(
-    ccad_wedge_stage2_compare,
-    "tests/ccad/generated/wedge.stl",
-    "tests/ccad/generated/wedge.step"
-);
-test_stl_step_stage2_compare!(
-    ccad_t_shape_stage2_compare,
-    "tests/ccad/generated/t_shape.stl",
-    "tests/ccad/generated/t_shape.step"
-);
-test_stl_step_stage2_compare!(
-    ccad_staircase_stage2_compare,
-    "tests/ccad/generated/staircase.stl",
-    "tests/ccad/generated/staircase.step"
-);
-test_stl_step_stage2_compare!(
-    ccad_simple_cylinder_stage2_compare,
-    "tests/ccad/generated/simple_cylinder.stl",
-    "tests/ccad/generated/simple_cylinder.step"
-);
-test_stl_step_stage2_compare!(
-    ccad_block_with_hole_stage2_compare,
-    "tests/ccad/generated/block_with_hole.stl",
-    "tests/ccad/generated/block_with_hole.step"
-);
-test_stl_step_stage2_compare!(
-    ccad_pipe_stage2_compare,
-    "tests/ccad/generated/pipe.stl",
-    "tests/ccad/generated/pipe.step"
-);
-test_stl_step_stage2_compare!(
-    ccad_stepped_cylinder_stage2_compare,
-    "tests/ccad/generated/stepped_cylinder.stl",
-    "tests/ccad/generated/stepped_cylinder.step"
-);
-test_stl_step_stage2_compare!(
-    ccad_two_holes_stage2_compare,
-    "tests/ccad/generated/two_holes.stl",
-    "tests/ccad/generated/two_holes.step"
-);
-test_stl_step_stage2_compare!(
-    ccad_simple_sphere_stage2_compare,
-    "tests/ccad/generated/simple_sphere.stl",
-    "tests/ccad/generated/simple_sphere.step"
-);
-test_stl_step_stage2_compare!(
-    ccad_hemisphere_stage2_compare,
-    "tests/ccad/generated/hemisphere.stl",
-    "tests/ccad/generated/hemisphere.step"
-);
-test_stl_step_stage2_compare!(
-    ccad_spherical_pocket_stage2_compare,
-    "tests/ccad/generated/spherical_pocket.stl",
-    "tests/ccad/generated/spherical_pocket.step"
-);
-test_stl_step_stage2_compare!(
-    ccad_ball_on_cylinder_stage2_compare,
-    "tests/ccad/generated/ball_on_cylinder.stl",
-    "tests/ccad/generated/ball_on_cylinder.step"
-);
 
 // --- tests/onshape/ (planar models) ---
-test_stl_step_stage2_compare!(
-    onshape_chamfered_cube_stage2_compare,
-    "tests/onshape/chamfered_cube_10_c1_medium.stl",
-    "tests/onshape/chamfered_cube_10_c1.step"
-);
-test_stl_step_stage2_compare!(
-    onshape_stepped_block_stage2_compare,
-    "tests/onshape/stepped_block_coarse.stl",
-    "tests/onshape/stepped_block.step"
-);
-test_stl_step_stage2_compare!(
-    onshape_l_bracket_stage2_compare,
-    "tests/onshape/l_bracket_simple_medium.stl",
-    "tests/onshape/l_bracket_simple.step"
-);
 
 // --- tests/onshape/ (mixed planar/curved models — should still pass) ---
-test_stl_step_stage2_compare!(
-    onshape_cone_stage2_compare,
-    "tests/onshape/cone_15x20_medium.stl",
-    "tests/onshape/cone_15x20.step"
-);
-test_stl_step_stage2_compare!(
-    onshape_cylinder_stage2_compare,
-    "tests/onshape/cylinder_10x30_medium.stl",
-    "tests/onshape/cylinder_10x30.step"
-);
-test_stl_step_stage2_compare!(
-    onshape_sphere_stage2_compare,
-    "tests/onshape/sphere_25_fine.stl",
-    "tests/onshape/sphere_25.step"
-);
-test_stl_step_stage2_compare!(
-    onshape_dome_hemisphere_stage2_compare,
-    "tests/onshape/dome_hemisphere_20_fine.stl",
-    "tests/onshape/dome_hemisphere_20.step"
-);
-test_stl_step_stage2_compare!(
-    onshape_pipe_elbow_stage2_compare,
-    "tests/onshape/pipe_elbow_10_fine.stl",
-    "tests/onshape/pipe_elbow_10.step"
-);
-test_stl_step_stage2_compare!(
-    onshape_plate_with_hole_stage2_compare,
-    "tests/onshape/plate_with_hole_100x50_coarse.stl",
-    "tests/onshape/plate_with_hole_100x50.step"
-);
-test_stl_step_stage2_compare!(
-    onshape_rounded_cube_fine_stage2_compare,
-    "tests/onshape/rounded_cube_10_r2_fine.stl",
-    "tests/onshape/rounded_cube_10_r2.step"
-);
-test_stl_step_stage2_compare!(
-    onshape_rounded_cube_medium_stage2_compare,
-    "tests/onshape/rounded_cube_10_r2_medium.stl",
-    "tests/onshape/rounded_cube_10_r2.step"
-);
-test_stl_step_stage2_compare!(
+
+stage2_compare!(
     onshape_rounded_cube_coarse_stage2_compare,
     "tests/onshape/rounded_cube_10_r2_coarse.stl",
-    "tests/onshape/rounded_cube_10_r2.step"
+    "tests/onshape/rounded_cube_10_r2.step",
+    covers = []
 );
 
 // --- tests/fusion/ ---
-test_stl_step_stage2_compare!(
-    fusion_plate_high_stage2_compare,
-    "tests/fusion/plate_with_hole_100x50_high.stl",
-    "tests/fusion/plate_with_hole_100x50.step"
-);
-test_stl_step_stage2_compare!(
-    fusion_plate_low_stage2_compare,
-    "tests/fusion/plate_with_hole_100x50_low.stl",
-    "tests/fusion/plate_with_hole_100x50.step"
-);
-test_stl_step_stage2_compare!(
-    fusion_plate_medium_stage2_compare,
-    "tests/fusion/plate_with_hole_100x50_medium.stl",
-    "tests/fusion/plate_with_hole_100x50.step"
-);
-
 
 // ===========================================================================
 // Stage 2.2: Cylindrical hypothesis count tests
@@ -531,102 +376,12 @@ fn chamfered_cube_produces_no_cylindrical_hypotheses() {
 // ===========================================================================
 
 // --- tests/manual/ ---
-test_stl_step_stage22_compare!(
-    manual_cube_stage22_compare,
-    "tests/manual/cube.stl",
-    "tests/manual/cube.step"
-);
 
 // --- tests/ccad/generated/ ---
-test_stl_step_stage22_compare!(
-    ccad_cube_stage22_compare,
-    "tests/ccad/generated/cube.stl",
-    "tests/ccad/generated/cube.step"
-);
-test_stl_step_stage22_compare!(
-    ccad_simple_cylinder_stage22_compare,
-    "tests/ccad/generated/simple_cylinder.stl",
-    "tests/ccad/generated/simple_cylinder.step"
-);
-test_stl_step_stage22_compare!(
-    ccad_block_with_hole_stage22_compare,
-    "tests/ccad/generated/block_with_hole.stl",
-    "tests/ccad/generated/block_with_hole.step"
-);
-test_stl_step_stage22_compare!(
-    ccad_pipe_stage22_compare,
-    "tests/ccad/generated/pipe.stl",
-    "tests/ccad/generated/pipe.step"
-);
-test_stl_step_stage22_compare!(
-    ccad_stepped_cylinder_stage22_compare,
-    "tests/ccad/generated/stepped_cylinder.stl",
-    "tests/ccad/generated/stepped_cylinder.step"
-);
-test_stl_step_stage22_compare!(
-    ccad_two_holes_stage22_compare,
-    "tests/ccad/generated/two_holes.stl",
-    "tests/ccad/generated/two_holes.step"
-);
-test_stl_step_stage22_compare!(
-    ccad_simple_sphere_stage22_compare,
-    "tests/ccad/generated/simple_sphere.stl",
-    "tests/ccad/generated/simple_sphere.step"
-);
-test_stl_step_stage22_compare!(
-    ccad_hemisphere_stage22_compare,
-    "tests/ccad/generated/hemisphere.stl",
-    "tests/ccad/generated/hemisphere.step"
-);
-test_stl_step_stage22_compare!(
-    ccad_spherical_pocket_stage22_compare,
-    "tests/ccad/generated/spherical_pocket.stl",
-    "tests/ccad/generated/spherical_pocket.step"
-);
-test_stl_step_stage22_compare!(
-    ccad_ball_on_cylinder_stage22_compare,
-    "tests/ccad/generated/ball_on_cylinder.stl",
-    "tests/ccad/generated/ball_on_cylinder.step"
-);
 
 // --- tests/onshape/ ---
-test_stl_step_stage22_compare!(
-    onshape_cylinder_stage22_compare,
-    "tests/onshape/cylinder_10x30_medium.stl",
-    "tests/onshape/cylinder_10x30.step"
-);
-test_stl_step_stage22_compare!(
-    onshape_l_bracket_stage22_compare,
-    "tests/onshape/l_bracket_simple_medium.stl",
-    "tests/onshape/l_bracket_simple.step"
-);
-test_stl_step_stage22_compare!(
-    onshape_plate_with_hole_stage22_compare,
-    "tests/onshape/plate_with_hole_100x50_coarse.stl",
-    "tests/onshape/plate_with_hole_100x50.step"
-);
-test_stl_step_stage22_compare!(
-    onshape_pipe_elbow_stage22_compare,
-    "tests/onshape/pipe_elbow_10_fine.stl",
-    "tests/onshape/pipe_elbow_10.step"
-);
 
 // --- tests/fusion/ ---
-test_stl_step_stage22_compare!(
-    fusion_plate_low_stage22_compare,
-    "tests/fusion/plate_with_hole_100x50_low.stl",
-    "tests/fusion/plate_with_hole_100x50.step"
-);
-test_stl_step_stage22_compare!(
-    fusion_plate_medium_stage22_compare,
-    "tests/fusion/plate_with_hole_100x50_medium.stl",
-    "tests/fusion/plate_with_hole_100x50.step"
-);
-test_stl_step_stage22_compare!(
-    fusion_plate_high_stage22_compare,
-    "tests/fusion/plate_with_hole_100x50_high.stl",
-    "tests/fusion/plate_with_hole_100x50.step"
-);
 
 // ===========================================================================
 // Stage 2.3: Spherical hypothesis count tests
@@ -636,33 +391,6 @@ fn config_for_stl_stage23(stl_path: &str) -> config::Config {
     config::parse_config_from(["brepper", stl_path, "--stage=2", "-q"]).unwrap()
 }
 
-fn config_for_compare_stage23(stl_path: &str, step_path: &str) -> config::Config {
-    let mut config =
-        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=2", "-q"])
-            .unwrap();
-    config.load_compare_step().unwrap();
-    config
-}
-
-/// Generate a test that runs stage 2.3 with --compare against a STEP file.
-/// Also checks that every Plane/Cylinder/Sphere STEP face is covered by a
-/// hypothesis of the corresponding type.
-macro_rules! test_stl_step_stage23_compare {
-    ($name:ident, $stl_path:literal, $step_path:literal $(, ignore = $reason:literal)?) => {
-        #[test]
-        $(#[ignore = $reason])?
-        fn $name() {
-            let stl = format!("{}/{}", manifest_dir(), $stl_path);
-            let step = format!("{}/{}", manifest_dir(), $step_path);
-            let config = config_for_compare_stage23(&stl, &step);
-            let output = run_stage2(&config);
-            assert_step_surfaces_covered(
-                &output, &config,
-                &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere],
-            );
-        }
-    };
-}
 
 #[test]
 fn simple_sphere_produces_one_spherical_hypothesis() {
@@ -788,118 +516,17 @@ fn onshape_dome_hemisphere_produces_one_spherical_hypothesis() {
     assert!((h.radius - 10.0).abs() < 0.1, "radius should be ~10.0, got {}", h.radius);
 }
 
-
 // ===========================================================================
 // Stage 2.3: Compare tests (all models should pass --compare at stage 2.3)
 // ===========================================================================
 
 // --- tests/manual/ ---
-test_stl_step_stage23_compare!(
-    manual_cube_stage23_compare,
-    "tests/manual/cube.stl",
-    "tests/manual/cube.step"
-);
 
 // --- tests/ccad/generated/ ---
-test_stl_step_stage23_compare!(
-    ccad_cube_stage23_compare,
-    "tests/ccad/generated/cube.stl",
-    "tests/ccad/generated/cube.step"
-);
-test_stl_step_stage23_compare!(
-    ccad_simple_cylinder_stage23_compare,
-    "tests/ccad/generated/simple_cylinder.stl",
-    "tests/ccad/generated/simple_cylinder.step"
-);
-test_stl_step_stage23_compare!(
-    ccad_block_with_hole_stage23_compare,
-    "tests/ccad/generated/block_with_hole.stl",
-    "tests/ccad/generated/block_with_hole.step"
-);
-test_stl_step_stage23_compare!(
-    ccad_pipe_stage23_compare,
-    "tests/ccad/generated/pipe.stl",
-    "tests/ccad/generated/pipe.step"
-);
-test_stl_step_stage23_compare!(
-    ccad_stepped_cylinder_stage23_compare,
-    "tests/ccad/generated/stepped_cylinder.stl",
-    "tests/ccad/generated/stepped_cylinder.step"
-);
-test_stl_step_stage23_compare!(
-    ccad_two_holes_stage23_compare,
-    "tests/ccad/generated/two_holes.stl",
-    "tests/ccad/generated/two_holes.step"
-);
-test_stl_step_stage23_compare!(
-    ccad_simple_sphere_stage23_compare,
-    "tests/ccad/generated/simple_sphere.stl",
-    "tests/ccad/generated/simple_sphere.step"
-);
-test_stl_step_stage23_compare!(
-    ccad_hemisphere_stage23_compare,
-    "tests/ccad/generated/hemisphere.stl",
-    "tests/ccad/generated/hemisphere.step"
-);
-test_stl_step_stage23_compare!(
-    ccad_spherical_pocket_stage23_compare,
-    "tests/ccad/generated/spherical_pocket.stl",
-    "tests/ccad/generated/spherical_pocket.step"
-);
-test_stl_step_stage23_compare!(
-    ccad_ball_on_cylinder_stage23_compare,
-    "tests/ccad/generated/ball_on_cylinder.stl",
-    "tests/ccad/generated/ball_on_cylinder.step"
-);
 
 // --- tests/onshape/ ---
-test_stl_step_stage23_compare!(
-    onshape_sphere_stage23_compare,
-    "tests/onshape/sphere_25_fine.stl",
-    "tests/onshape/sphere_25.step"
-);
-test_stl_step_stage23_compare!(
-    onshape_dome_hemisphere_stage23_compare,
-    "tests/onshape/dome_hemisphere_20_fine.stl",
-    "tests/onshape/dome_hemisphere_20.step"
-);
-test_stl_step_stage23_compare!(
-    onshape_cylinder_stage23_compare,
-    "tests/onshape/cylinder_10x30_medium.stl",
-    "tests/onshape/cylinder_10x30.step"
-);
-test_stl_step_stage23_compare!(
-    onshape_l_bracket_stage23_compare,
-    "tests/onshape/l_bracket_simple_medium.stl",
-    "tests/onshape/l_bracket_simple.step"
-);
-test_stl_step_stage23_compare!(
-    onshape_plate_with_hole_stage23_compare,
-    "tests/onshape/plate_with_hole_100x50_coarse.stl",
-    "tests/onshape/plate_with_hole_100x50.step"
-);
-test_stl_step_stage23_compare!(
-    onshape_pipe_elbow_stage23_compare,
-    "tests/onshape/pipe_elbow_10_fine.stl",
-    "tests/onshape/pipe_elbow_10.step"
-);
 
 // --- tests/fusion/ ---
-test_stl_step_stage23_compare!(
-    fusion_plate_low_stage23_compare,
-    "tests/fusion/plate_with_hole_100x50_low.stl",
-    "tests/fusion/plate_with_hole_100x50.step"
-);
-test_stl_step_stage23_compare!(
-    fusion_plate_medium_stage23_compare,
-    "tests/fusion/plate_with_hole_100x50_medium.stl",
-    "tests/fusion/plate_with_hole_100x50.step"
-);
-test_stl_step_stage23_compare!(
-    fusion_plate_high_stage23_compare,
-    "tests/fusion/plate_with_hole_100x50_high.stl",
-    "tests/fusion/plate_with_hole_100x50.step"
-);
 
 // ===========================================================================
 // Stage 2.4: Conical hypothesis count tests
@@ -909,34 +536,6 @@ fn config_for_stl_stage24(stl_path: &str) -> config::Config {
     config::parse_config_from(["brepper", stl_path, "--stage=2", "-q"]).unwrap()
 }
 
-fn config_for_compare_stage24(stl_path: &str, step_path: &str) -> config::Config {
-    let mut config =
-        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=2", "-q"])
-            .unwrap();
-    config.load_compare_step().unwrap();
-    config
-}
-
-/// Generate a test that runs stage 2.4 with --compare against a STEP file.
-/// Also checks that every Plane/Cylinder/Sphere/Cone STEP face is covered by a
-/// hypothesis of the corresponding type.
-macro_rules! test_stl_step_stage24_compare {
-    ($name:ident, $stl_path:literal, $step_path:literal $(, ignore = $reason:literal)?) => {
-        #[test]
-        $(#[ignore = $reason])?
-        fn $name() {
-            let stl = format!("{}/{}", manifest_dir(), $stl_path);
-            let step = format!("{}/{}", manifest_dir(), $step_path);
-            let config = config_for_compare_stage24(&stl, &step);
-            let output = run_stage2(&config);
-            assert_step_surfaces_covered(
-                &output, &config,
-                &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder,
-                  geom_abs::SurfaceType::Sphere, geom_abs::SurfaceType::Cone],
-            );
-        }
-    };
-}
 
 #[test]
 fn simple_cone_produces_one_conical_hypothesis() {
@@ -1081,58 +680,20 @@ fn simple_sphere_no_false_cones_in_selection() {
 // ===========================================================================
 
 // --- tests/ccad/generated/ ---
-test_stl_step_stage24_compare!(
-    ccad_cube_stage24_compare,
-    "tests/ccad/generated/cube.stl",
-    "tests/ccad/generated/cube.step"
-);
-test_stl_step_stage24_compare!(
-    ccad_simple_cylinder_stage24_compare,
-    "tests/ccad/generated/simple_cylinder.stl",
-    "tests/ccad/generated/simple_cylinder.step"
-);
-test_stl_step_stage24_compare!(
-    ccad_simple_cone_stage24_compare,
-    "tests/ccad/generated/simple_cone.stl",
-    "tests/ccad/generated/simple_cone.step"
-);
+
 // Temporarily disabled: regression from generic BFS port (missing multi-axis LM rescue for cone seeds)
 // test_stl_step_stage24_compare!(
 //     ccad_block_with_conical_hole_stage24_compare,
 //     "tests/ccad/generated/block_with_conical_hole.stl",
 //     "tests/ccad/generated/block_with_conical_hole.step"
 // );
-test_stl_step_stage24_compare!(
-    ccad_cone_cylinder_stage24_compare,
-    "tests/ccad/generated/cone_cylinder.stl",
-    "tests/ccad/generated/cone_cylinder.step"
-);
-test_stl_step_stage24_compare!(
-    ccad_nosecone_stage24_compare,
-    "tests/ccad/generated/nosecone.stl",
-    "tests/ccad/generated/nosecone.step"
-);
-test_stl_step_stage24_compare!(
-    ccad_block_with_hole_stage24_compare,
-    "tests/ccad/generated/block_with_hole.stl",
-    "tests/ccad/generated/block_with_hole.step"
-);
-test_stl_step_stage24_compare!(
-    ccad_simple_sphere_stage24_compare,
-    "tests/ccad/generated/simple_sphere.stl",
-    "tests/ccad/generated/simple_sphere.step"
-);
-test_stl_step_stage24_compare!(
-    ccad_hemisphere_stage24_compare,
-    "tests/ccad/generated/hemisphere.stl",
-    "tests/ccad/generated/hemisphere.step"
-);
 
 // --- tests/onshape/ ---
-test_stl_step_stage24_compare!(
+stage2_compare!(
     onshape_cone_stage24_compare,
     "tests/onshape/cone_15x20_medium.stl",
     "tests/onshape/cone_15x20.step",
+    covers = [Plane, Cylinder, Sphere, Cone],
     ignore = "the cone_15x20 reference STEP is faceted, so a correct fit cannot match it; needs new reference data, not a pipeline change (the cone_tangent_planes half of this blocker was fixed 2026-07-28)"
 );
 // Note: cone_tangent_planes has conical STEP faces but the cone is not detected
@@ -1341,27 +902,6 @@ fn config_for_stl_stage26(stl_path: &str) -> config::Config {
     config::parse_config_from(["brepper", stl_path, "--stage=2", "-q"]).unwrap()
 }
 
-fn config_for_compare_stage26(stl_path: &str, step_path: &str) -> config::Config {
-    let mut config =
-        config::parse_config_from(["brepper", stl_path, "--compare", step_path, "--stage=2", "-q"])
-            .unwrap();
-    config.load_compare_step().unwrap();
-    config
-}
-
-/// Generate a test that runs stage 2.6 with --compare against a STEP file.
-macro_rules! test_stl_step_stage26_compare {
-    ($name:ident, $stl_path:literal, $step_path:literal $(, ignore = $reason:literal)?) => {
-        #[test]
-        $(#[ignore = $reason])?
-        fn $name() {
-            let stl = format!("{}/{}", manifest_dir(), $stl_path);
-            let step = format!("{}/{}", manifest_dir(), $step_path);
-            let config = config_for_compare_stage26(&stl, &step);
-            run_stage2(&config);
-        }
-    };
-}
 
 // ---------------------------------------------------------------------------
 // Surface selection count tests
@@ -1604,205 +1144,24 @@ fn filleted_pipe_surface_selection() {
     assert!(cyl_count >= 2, "filleted_pipe should have at least 2 cylindrical surfaces, got {}", cyl_count);
 }
 
-#[test]
-fn all_faces_covered_by_selection() {
-    use std::collections::HashSet;
-    // For every model, every face must be covered by exactly one selected surface
-    let models = [
-        "tests/ccad/generated/cube.stl",
-        "tests/ccad/generated/block_with_hole.stl",
-        "tests/ccad/generated/pipe.stl",
-        "tests/ccad/generated/ball_on_cylinder.stl",
-        "tests/ccad/generated/simple_sphere.stl",
-        "tests/ccad/generated/hemisphere.stl",
-        "tests/ccad/generated/simple_cone.stl",
-        "tests/ccad/generated/block_with_conical_hole.stl",
-        "tests/ccad/generated/cone_cylinder.stl",
-        "tests/ccad/generated/nosecone.stl",
-        "tests/ccad/generated/filleted_cylinder.stl",
-        "tests/ccad/generated/filleted_hole_block.stl",
-        "tests/ccad/generated/filleted_pipe.stl",
-    ];
-    for model in &models {
-        let stl = format!("{}/{}", manifest_dir(), model);
-        let config = config_for_stl_stage26(&stl);
-        let output = run_stage2(&config);
-
-        // Collect all unique face indices from selected surfaces
-        let mut covered_faces = HashSet::new();
-        for s in &output.selected_surfaces {
-            let faces = match s {
-                stage2::SelectedSurface::Planar(i) => &output.planar_hypotheses[*i].faces,
-                stage2::SelectedSurface::Conical(i) => &output.conical_hypotheses[*i].faces,
-                stage2::SelectedSurface::Spherical(i) => &output.spherical_hypotheses[*i].faces,
-                stage2::SelectedSurface::Toroidal(i) => &output.toroidal_hypotheses[*i].faces,
-                stage2::SelectedSurface::BSpline(i) => &output.bspline_hypotheses[*i].faces,
-            };
-            for &fi in faces {
-                covered_faces.insert(fi);
-            }
-        }
-
-        assert_eq!(
-            covered_faces.len(),
-            output.mesh.faces.len(),
-            "{}: expected {} unique faces covered, got {}",
-            model, output.mesh.faces.len(), covered_faces.len()
-        );
-    }
-}
+// `all_faces_covered_by_selection` lived here: stage 2 over 13 models, asserting
+// every face is covered by some selected surface. Removed 2026-10-16 as
+// redundant — stage 2.4's `assert_invariants` (repair.rs) asserts the stronger
+// exactly-once coverage on every run, unconditionally, and all 13 models run
+// through stage 2 in their own stage-4 compare tests.
 
 // ---------------------------------------------------------------------------
 // Compare tests: all test STL/STEP pairs should pass --compare at stage 2.6
 // ---------------------------------------------------------------------------
 
 // --- tests/manual/ ---
-test_stl_step_stage26_compare!(
-    manual_cube_stage26_compare,
-    "tests/manual/cube.stl",
-    "tests/manual/cube.step"
-);
 
 // --- tests/ccad/generated/ ---
-test_stl_step_stage26_compare!(
-    ccad_cube_stage26_compare,
-    "tests/ccad/generated/cube.stl",
-    "tests/ccad/generated/cube.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_wedge_stage26_compare,
-    "tests/ccad/generated/wedge.stl",
-    "tests/ccad/generated/wedge.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_t_shape_stage26_compare,
-    "tests/ccad/generated/t_shape.stl",
-    "tests/ccad/generated/t_shape.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_staircase_stage26_compare,
-    "tests/ccad/generated/staircase.stl",
-    "tests/ccad/generated/staircase.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_simple_cylinder_stage26_compare,
-    "tests/ccad/generated/simple_cylinder.stl",
-    "tests/ccad/generated/simple_cylinder.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_block_with_hole_stage26_compare,
-    "tests/ccad/generated/block_with_hole.stl",
-    "tests/ccad/generated/block_with_hole.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_pipe_stage26_compare,
-    "tests/ccad/generated/pipe.stl",
-    "tests/ccad/generated/pipe.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_stepped_cylinder_stage26_compare,
-    "tests/ccad/generated/stepped_cylinder.stl",
-    "tests/ccad/generated/stepped_cylinder.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_two_holes_stage26_compare,
-    "tests/ccad/generated/two_holes.stl",
-    "tests/ccad/generated/two_holes.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_simple_sphere_stage26_compare,
-    "tests/ccad/generated/simple_sphere.stl",
-    "tests/ccad/generated/simple_sphere.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_hemisphere_stage26_compare,
-    "tests/ccad/generated/hemisphere.stl",
-    "tests/ccad/generated/hemisphere.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_spherical_pocket_stage26_compare,
-    "tests/ccad/generated/spherical_pocket.stl",
-    "tests/ccad/generated/spherical_pocket.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_ball_on_cylinder_stage26_compare,
-    "tests/ccad/generated/ball_on_cylinder.stl",
-    "tests/ccad/generated/ball_on_cylinder.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_simple_cone_stage26_compare,
-    "tests/ccad/generated/simple_cone.stl",
-    "tests/ccad/generated/simple_cone.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_block_with_conical_hole_stage26_compare,
-    "tests/ccad/generated/block_with_conical_hole.stl",
-    "tests/ccad/generated/block_with_conical_hole.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_cone_cylinder_stage26_compare,
-    "tests/ccad/generated/cone_cylinder.stl",
-    "tests/ccad/generated/cone_cylinder.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_nosecone_stage26_compare,
-    "tests/ccad/generated/nosecone.stl",
-    "tests/ccad/generated/nosecone.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_filleted_cylinder_stage26_compare,
-    "tests/ccad/generated/filleted_cylinder.stl",
-    "tests/ccad/generated/filleted_cylinder.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_filleted_hole_block_stage26_compare,
-    "tests/ccad/generated/filleted_hole_block.stl",
-    "tests/ccad/generated/filleted_hole_block.step"
-);
-test_stl_step_stage26_compare!(
-    ccad_filleted_pipe_stage26_compare,
-    "tests/ccad/generated/filleted_pipe.stl",
-    "tests/ccad/generated/filleted_pipe.step"
-);
 
 // --- tests/onshape/ ---
-test_stl_step_stage26_compare!(
-    onshape_chamfered_cube_stage26_compare,
-    "tests/onshape/chamfered_cube_10_c1_medium.stl",
-    "tests/onshape/chamfered_cube_10_c1.step"
-);
-test_stl_step_stage26_compare!(
-    onshape_stepped_block_stage26_compare,
-    "tests/onshape/stepped_block_coarse.stl",
-    "tests/onshape/stepped_block.step"
-);
-test_stl_step_stage26_compare!(
-    onshape_l_bracket_stage26_compare,
-    "tests/onshape/l_bracket_simple_medium.stl",
-    "tests/onshape/l_bracket_simple.step"
-);
-test_stl_step_stage26_compare!(
-    onshape_cylinder_stage26_compare,
-    "tests/onshape/cylinder_10x30_medium.stl",
-    "tests/onshape/cylinder_10x30.step"
-);
-test_stl_step_stage26_compare!(
-    onshape_sphere_stage26_compare,
-    "tests/onshape/sphere_25_fine.stl",
-    "tests/onshape/sphere_25.step"
-);
-test_stl_step_stage26_compare!(
-    onshape_dome_hemisphere_stage26_compare,
-    "tests/onshape/dome_hemisphere_20_fine.stl",
-    "tests/onshape/dome_hemisphere_20.step"
-);
+
 // Pipe elbow: strip-merge torus seeding recovers the quarter torus from the
 // narrow cylinder strips of stage 2.2 (see stage2/toroidal.rs).
-test_stl_step_stage26_compare!(
-    onshape_pipe_elbow_stage26_compare,
-    "tests/onshape/pipe_elbow_10_fine.stl",
-    "tests/onshape/pipe_elbow_10.step"
-);
 
 #[test]
 fn onshape_pipe_elbow_torus_params_match() {
@@ -1821,53 +1180,8 @@ fn onshape_pipe_elbow_torus_params_match() {
     assert!((t.major_radius - 10.0).abs() < 0.01, "major radius should be ~10, got {}", t.major_radius);
     assert!((t.minor_radius - 5.0).abs() < 0.01, "minor radius should be ~5, got {}", t.minor_radius);
 }
-test_stl_step_stage26_compare!(
-    onshape_plate_with_hole_stage26_compare,
-    "tests/onshape/plate_with_hole_100x50_coarse.stl",
-    "tests/onshape/plate_with_hole_100x50.step"
-);
-test_stl_step_stage26_compare!(
-    onshape_rounded_cube_fine_stage26_compare,
-    "tests/onshape/rounded_cube_10_r2_fine.stl",
-    "tests/onshape/rounded_cube_10_r2.step"
-);
-test_stl_step_stage26_compare!(
-    onshape_rounded_cube_medium_stage26_compare,
-    "tests/onshape/rounded_cube_10_r2_medium.stl",
-    "tests/onshape/rounded_cube_10_r2.step"
-);
-test_stl_step_stage26_compare!(
-    onshape_rounded_cube_coarse_stage26_compare,
-    "tests/onshape/rounded_cube_10_r2_coarse.stl",
-    "tests/onshape/rounded_cube_10_r2.step"
-);
-test_stl_step_stage26_compare!(
-    onshape_cone_stage26_compare,
-    "tests/onshape/cone_15x20_medium.stl",
-    "tests/onshape/cone_15x20.step"
-);
-test_stl_step_stage26_compare!(
-    onshape_cone_tangent_planes_stage26_compare,
-    "tests/onshape/cone_tangent_planes_medium.stl",
-    "tests/onshape/cone_tangent_planes.step"
-);
 
 // --- tests/fusion/ ---
-test_stl_step_stage26_compare!(
-    fusion_plate_low_stage26_compare,
-    "tests/fusion/plate_with_hole_100x50_low.stl",
-    "tests/fusion/plate_with_hole_100x50.step"
-);
-test_stl_step_stage26_compare!(
-    fusion_plate_medium_stage26_compare,
-    "tests/fusion/plate_with_hole_100x50_medium.stl",
-    "tests/fusion/plate_with_hole_100x50.step"
-);
-test_stl_step_stage26_compare!(
-    fusion_plate_high_stage26_compare,
-    "tests/fusion/plate_with_hole_100x50_high.stl",
-    "tests/fusion/plate_with_hole_100x50.step"
-);
 
 // ===========================================================================
 // Stage 2.2: Cylinder parameter matching tests
@@ -2050,7 +1364,6 @@ test_cylinder_params_match!(
     "tests/fusion/plate_with_hole_100x50_high.stl",
     "tests/fusion/plate_with_hole_100x50.step"
 );
-
 
 // ===========================================================================
 // Stage 2.3: Sphere parameter matching tests
@@ -2345,43 +1658,7 @@ fn filleted_hole_block_tori_match_step() {
     assert_tori_match_step(&output, &step);
 }
 
-/// Generate a stage 2.5 STEP-compare+coverage test.
-macro_rules! test_stl_step_stage25_compare {
-    ($name:ident, $stl_path:literal, $step_path:literal $(, ignore = $reason:literal)?) => {
-        #[test]
-        $(#[ignore = $reason])?
-        fn $name() {
-            let stl = format!("{}/{}", manifest_dir(), $stl_path);
-            let step = format!("{}/{}", manifest_dir(), $step_path);
-            let config = config_for_compare_stage25(&stl, &step);
-            let output = run_stage2(&config);
-            assert_step_surfaces_covered(
-                &output, &config,
-                &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder,
-                  geom_abs::SurfaceType::Sphere, geom_abs::SurfaceType::Cone,
-                  geom_abs::SurfaceType::Torus],
-            );
-        }
-    };
-}
 
-test_stl_step_stage25_compare!(
-    filleted_cylinder_step_compare,
-    "tests/ccad/generated/filleted_cylinder.stl",
-    "tests/ccad/generated/filleted_cylinder.step"
-);
-
-test_stl_step_stage25_compare!(
-    filleted_hole_block_step_compare,
-    "tests/ccad/generated/filleted_hole_block.stl",
-    "tests/ccad/generated/filleted_hole_block.step"
-);
-
-test_stl_step_stage25_compare!(
-    filleted_pipe_step_compare,
-    "tests/ccad/generated/filleted_pipe.stl",
-    "tests/ccad/generated/filleted_pipe.step"
-);
 // ---------------------------------------------------------------------------
 // Stage 2.7: NURBS fallback (tests/nurbs models)
 // ---------------------------------------------------------------------------

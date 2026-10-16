@@ -1,4 +1,5 @@
 use brepper::{config, stage1, stage2, stage3, stage4};
+use opencascade_sys::geom_abs;
 
 fn manifest_dir() -> String {
     env!("CARGO_MANIFEST_DIR").to_string()
@@ -18,8 +19,24 @@ fn config_for_compare(stl_path: &str, output_path: &str, step_path: &str) -> con
 }
 
 fn run_stage4(config: &config::Config) {
+    run_stage4_covering(config, &[]);
+}
+
+/// The whole pipeline once, with stage 2's reference-coverage check for
+/// `covers` run on the way through.
+///
+/// The coverage check used to live in separate stage-2 tests that re-ran the
+/// identical stages 1 and 2 for the same model (a stage-2 run performs no
+/// compare check of its own, so those tests checked nothing a stage-4 run of the
+/// same model does not, apart from coverage). Doing it here costs one pipeline
+/// run instead of up to five.
+fn run_stage4_covering(config: &config::Config, covers: &[geom_abs::SurfaceType]) {
     let mesh = stage1::stage1(config).expect("stage1 should pass");
     let surfaces = stage2::stage2(config, mesh, None).expect("stage2 should pass");
+    if !covers.is_empty() {
+        // Needs the reference; the plain `-o` output tests have none.
+        super::stage2_integration::assert_step_surfaces_covered(&surfaces, config, covers);
+    }
     let brep = stage3::stage3(config, surfaces, None).expect("stage3 should pass");
     stage4::stage4(config, brep).expect("stage4 should pass");
 }
@@ -80,7 +97,7 @@ fn ccad_cube_stage41_compare() {
         &format!("{dir}/tmp/test_cube_cmp.step"),
         &format!("{dir}/tests/ccad/generated/cube.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere, geom_abs::SurfaceType::Cone]);
 }
 
 #[test]
@@ -102,7 +119,7 @@ fn ccad_simple_cylinder_stage41_compare() {
         &format!("{dir}/tmp/test_simple_cylinder_cmp.step"),
         &format!("{dir}/tests/ccad/generated/simple_cylinder.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere, geom_abs::SurfaceType::Cone]);
 }
 
 #[test]
@@ -113,7 +130,7 @@ fn ccad_block_with_hole_stage41_compare() {
         &format!("{dir}/tmp/test_block_with_hole_cmp.step"),
         &format!("{dir}/tests/ccad/generated/block_with_hole.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere, geom_abs::SurfaceType::Cone]);
 }
 
 #[test]
@@ -124,7 +141,7 @@ fn ccad_pipe_stage41_compare() {
         &format!("{dir}/tmp/test_pipe_cmp.step"),
         &format!("{dir}/tests/ccad/generated/pipe.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere]);
 }
 
 #[test]
@@ -135,7 +152,7 @@ fn ccad_simple_sphere_stage41_compare() {
         &format!("{dir}/tmp/test_simple_sphere_cmp.step"),
         &format!("{dir}/tests/ccad/generated/simple_sphere.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere, geom_abs::SurfaceType::Cone]);
 }
 
 #[test]
@@ -146,7 +163,7 @@ fn ccad_hemisphere_stage41_compare() {
         &format!("{dir}/tmp/test_hemisphere_cmp.step"),
         &format!("{dir}/tests/ccad/generated/hemisphere.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere, geom_abs::SurfaceType::Cone]);
 }
 
 #[test]
@@ -157,7 +174,7 @@ fn ccad_ball_on_cylinder_stage41_compare() {
         &format!("{dir}/tmp/test_ball_on_cylinder_cmp.step"),
         &format!("{dir}/tests/ccad/generated/ball_on_cylinder.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere]);
 }
 
 #[test]
@@ -168,7 +185,7 @@ fn ccad_spherical_pocket_stage41_compare() {
         &format!("{dir}/tmp/test_spherical_pocket_cmp.step"),
         &format!("{dir}/tests/ccad/generated/spherical_pocket.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere]);
 }
 
 #[test]
@@ -190,7 +207,7 @@ fn manual_cube_stage41_compare() {
         &format!("{dir}/tmp/test_manual_cube_cmp.step"),
         &format!("{dir}/tests/manual/cube.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere]);
 }
 
 #[test]
@@ -234,7 +251,7 @@ fn onshape_dome_hemisphere_stage41_compare() {
         &format!("{dir}/tmp/test_dome_hemisphere_cmp.step"),
         &format!("{dir}/tests/onshape/dome_hemisphere_20.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere]);
 }
 
 // --- Cone pipeline tests ---
@@ -257,7 +274,7 @@ fn ccad_simple_cone_stage41_compare() {
         &format!("{dir}/tmp/test_simple_cone_cmp.step"),
         &format!("{dir}/tests/ccad/generated/simple_cone.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere, geom_abs::SurfaceType::Cone]);
 }
 
 #[test]
@@ -268,7 +285,7 @@ fn ccad_cone_cylinder_stage41_compare() {
         &format!("{dir}/tmp/test_cone_cylinder_cmp.step"),
         &format!("{dir}/tests/ccad/generated/cone_cylinder.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere, geom_abs::SurfaceType::Cone]);
 }
 
 #[test]
@@ -279,7 +296,7 @@ fn ccad_nosecone_stage41_compare() {
         &format!("{dir}/tmp/test_nosecone_cmp.step"),
         &format!("{dir}/tests/ccad/generated/nosecone.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere, geom_abs::SurfaceType::Cone]);
 }
 
 #[test]
@@ -303,7 +320,7 @@ fn ccad_filleted_cylinder_stage41_compare() {
         &format!("{dir}/tmp/test_filleted_cylinder_cmp.step"),
         &format!("{dir}/tests/ccad/generated/filleted_cylinder.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere, geom_abs::SurfaceType::Cone, geom_abs::SurfaceType::Torus]);
 }
 
 #[test]
@@ -314,7 +331,7 @@ fn ccad_filleted_pipe_stage41_compare() {
         &format!("{dir}/tmp/test_filleted_pipe_cmp.step"),
         &format!("{dir}/tests/ccad/generated/filleted_pipe.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere, geom_abs::SurfaceType::Cone, geom_abs::SurfaceType::Torus]);
 }
 
 #[test]
@@ -325,7 +342,7 @@ fn ccad_filleted_hole_block_stage41_compare() {
         &format!("{dir}/tmp/test_filleted_hole_block_cmp.step"),
         &format!("{dir}/tests/ccad/generated/filleted_hole_block.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere, geom_abs::SurfaceType::Cone, geom_abs::SurfaceType::Torus]);
 }
 
 #[test]
@@ -425,7 +442,7 @@ fn onshape_pipe_elbow_fine_stage41_compare() {
         &format!("{dir}/tmp/test_pipe_elbow_fine_cmp.step"),
         &format!("{dir}/tests/onshape/pipe_elbow_10.step"),
     );
-    run_stage4(&config);
+    run_stage4_covering(&config, &[geom_abs::SurfaceType::Plane, geom_abs::SurfaceType::Cylinder, geom_abs::SurfaceType::Sphere]);
 }
 
 #[test]
@@ -481,6 +498,18 @@ fn missing_output_path_error() {
 // a reference STEP sitting next to it, so there was never a reason not to.
 
 macro_rules! nurbs_compare {
+    ($name:ident, $model:literal, covers = [$($t:ident),*]) => {
+        #[test]
+        fn $name() {
+            let dir = manifest_dir();
+            let config = config_for_compare(
+                &format!("{dir}/tests/nurbs/{}.stl", $model),
+                &format!("{dir}/tmp/test_nurbs_{}.step", $model),
+                &format!("{dir}/tests/nurbs/{}.step", $model),
+            );
+            run_stage4_covering(&config, &[$(geom_abs::SurfaceType::$t),*]);
+        }
+    };
     ($name:ident, $model:literal) => {
         #[test]
         fn $name() {
@@ -558,6 +587,18 @@ outside the data bounding box'), so nothing explains them. Fix the freeform fit 
 //     stage1_integration.rs rather than by a duplicate pipeline run.
 
 macro_rules! stage41_compare {
+    ($name:ident, $stl:literal, $step:literal, covers = [$($t:ident),*]) => {
+        #[test]
+        fn $name() {
+            let dir = manifest_dir();
+            let config = config_for_compare(
+                &format!("{dir}/tests/{}.stl", $stl),
+                &format!("{dir}/tmp/test_cover_{}.step", stringify!($name)),
+                &format!("{dir}/tests/{}.step", $step),
+            );
+            run_stage4_covering(&config, &[$(geom_abs::SurfaceType::$t),*]);
+        }
+    };
     ($name:ident, $stl:literal, $step:literal) => {
         #[test]
         fn $name() {
@@ -600,13 +641,11 @@ stage41_compare!(
 stage41_compare!(
     ccad_stepped_cylinder_stage41_compare,
     "ccad/generated/stepped_cylinder",
-    "ccad/generated/stepped_cylinder"
-);
+    "ccad/generated/stepped_cylinder", covers = [Plane, Cylinder, Sphere]);
 stage41_compare!(
     ccad_two_holes_stage41_compare,
     "ccad/generated/two_holes",
-    "ccad/generated/two_holes"
-);
+    "ccad/generated/two_holes", covers = [Plane, Cylinder, Sphere]);
 // block_corner_hole had NO test at any stage before this.
 stage41_compare!(
     ccad_block_corner_hole_stage41_compare,
@@ -621,30 +660,25 @@ stage41_compare!(
 stage41_compare!(
     fusion_plate_low_stage41_compare,
     "fusion/plate_with_hole_100x50_low",
-    "fusion/plate_with_hole_100x50"
-);
+    "fusion/plate_with_hole_100x50", covers = [Plane, Cylinder, Sphere]);
 stage41_compare!(
     fusion_plate_medium_stage41_compare,
     "fusion/plate_with_hole_100x50_medium",
-    "fusion/plate_with_hole_100x50"
-);
+    "fusion/plate_with_hole_100x50", covers = [Plane, Cylinder, Sphere]);
 stage41_compare!(
     fusion_plate_high_stage41_compare,
     "fusion/plate_with_hole_100x50_high",
-    "fusion/plate_with_hole_100x50"
-);
+    "fusion/plate_with_hole_100x50", covers = [Plane, Cylinder, Sphere]);
 stage41_compare!(
     onshape_plate_coarse_stage41_compare,
     "onshape/plate_with_hole_100x50_coarse",
-    "onshape/plate_with_hole_100x50"
-);
+    "onshape/plate_with_hole_100x50", covers = [Plane, Cylinder, Sphere]);
 
 // --- tests/onshape/ analytic primitives (previously stage 1 + stage 2 only) ---
 stage41_compare!(
     onshape_cylinder_10x30_stage41_compare,
     "onshape/cylinder_10x30_medium",
-    "onshape/cylinder_10x30"
-);
+    "onshape/cylinder_10x30", covers = [Plane, Cylinder, Sphere]);
 stage41_compare!(
     onshape_cylinder_10_r2_stage41_compare,
     "onshape/cylinder_10_r2_fine",
@@ -653,13 +687,11 @@ stage41_compare!(
 stage41_compare!(
     onshape_sphere_25_stage41_compare,
     "onshape/sphere_25_fine",
-    "onshape/sphere_25"
-);
+    "onshape/sphere_25", covers = [Plane, Cylinder, Sphere]);
 stage41_compare!(
     onshape_l_bracket_stage41_compare,
     "onshape/l_bracket_simple_medium",
-    "onshape/l_bracket_simple"
-);
+    "onshape/l_bracket_simple", covers = [Plane, Cylinder, Sphere]);
 stage41_compare!(
     onshape_stepped_block_coarse_stage41_compare,
     "onshape/stepped_block_coarse",

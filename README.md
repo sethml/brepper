@@ -365,15 +365,15 @@ Rendering uses PBR shading with ambient and two directional lights. Sharp featur
 cargo test
 
 # Run only integration tests
-cargo test --test stage1_integration
+cargo test --test integration stage1_integration::
 ```
 
-Integration tests in `tests/stage1_integration.rs` verify that:
+Integration tests in `tests/integration/stage1_integration.rs` (one test binary, `tests/integration/main.rs`) verify that:
 - All STL files in `tests/manual/`, `tests/onshape/`, `tests/ccad/generated/`, and `tests/fusion/` pass stage 1 mesh validation and coplanar triangle fusion
 - All STL/STEP pairs pass `--compare` surface distance checks (after fusion)
 - Bad files in `tests/bad/` fail with expected error types (degenerate faces, non-manifold edges, inconsistent winding, compare failures)
 
-Integration tests in `tests/stage2_integration.rs` verify that:
+Integration tests in `tests/integration/stage2_integration.rs` (one test binary, `tests/integration/main.rs`) verify that:
 - Planar hypothesis deduction produces correct counts for known planar models (cube=6, wedge=6, chamfered cube=26)
 - Cylindrical hypothesis deduction produces correct counts and properties (simple_cylinder=1 convex, block_with_hole=1 concave, pipe=2, two_holes=2 concave)
 - Spherical hypothesis deduction produces correct counts and properties (simple_sphere=1 convex r=10, hemisphere=1 convex r=10, spherical_pocket=1 concave r=8, ball_on_cylinder=1 sphere+1 cylinder)
@@ -382,7 +382,7 @@ Integration tests in `tests/stage2_integration.rs` verify that:
 - Deduced cylinder parameters (axis direction, axis position, radius) match STEP cylinder parameters for all cylindrical test models
 - Deduced sphere parameters (center, radius) match STEP sphere parameters for all spherical test models
 - Angular tolerance enforcement prevents spurious cylindrical/spherical hypotheses on planar-only models (e.g., cube faces meet at 90°, exceeding the 25° default)
-Integration tests in `tests/stage3_integration.rs` verify that:
+Integration tests in `tests/integration/stage3_integration.rs` (one test binary, `tests/integration/main.rs`) verify that:
 - Adjacency graph topology (faces, edges, vertices) is correct for known models (cube=6F/12E/8V, cylinder=3F/2E/0V, sphere=1F/0E/0V, etc.)
 - Euler's formula V-E+F=2 holds for genus-0 models
 - Edge validity, adjacency symmetry, and edge-face consistency are maintained
@@ -392,7 +392,7 @@ Integration tests in `tests/stage3_integration.rs` verify that:
 - Face creation (stage 3.4) successfully creates OCCT `TopoDS_Face` objects for all test models via shared-edge topological assembly: every edge is one `TopoDS_Edge` shared by both adjacent faces, with per-face pcurves, seam edges, and degenerate pole edges built uniformly for all surface types. All STL/STEP pairs pass `--compare` validation at stage 3.4
 - Shell construction (stage 3.5) assembles faces into shells directly from the shared-edge topology (closed by construction; no sewing) and produces correctly oriented shells. All STL/STEP pairs pass `--compare` validation
 - Solid construction (stage 3.6) creates solids from shells via `ShapeFix_Solid::SolidFromShell`. Volume comparison against STEP reference and `BRepExtrema_DistShapeShape` distance checks pass for all test models
-Integration tests in `tests/stage4_integration.rs` verify that:
+Integration tests in `tests/integration/stage4_integration.rs` (one test binary, `tests/integration/main.rs`) verify that:
 - STEP output files are written successfully for cube, cylinder, and sphere models
 - All STL/STEP pairs pass `--compare` validation at stage 4.1, verifying volume agreement and `BRepExtrema_DistShapeShape` distance between written output and reference STEP
 - Missing output path produces the expected error
