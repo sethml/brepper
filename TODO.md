@@ -780,7 +780,12 @@ commit gate (`MIN_AXIAL_SWEEP_DEG`, torus ratio, `MIN_*_FACES`,
   consumed too (`initialize::cone_taper_seed`, same gate), fixing wide cones; and
   Option C (`initialize::cone_from_rings`) is built and deliberately unwired
   because two coaxial circles always lie on a cone, which makes it an impostor
-  generator on torus bands.
+  generator on torus bands. **Wiring update 2026-10-16:** Option C is wired, with
+  a containment rule in `compete::resolve_claims` that drops the impostor (it is
+  wholly inside the torus grown across its band from another seed). Sweep: no
+  ok→fail; Option C alone was 1 ok→fail (`filleted_pipe`). Cone seed coverage
+  12/12 on `simple_cone`, `cone_cylinder`, `nosecone`. SURFACE_FITTING.md,
+  "Option C".
   What forced it was a separate defect in `fit_torus_inner`: it picked the **25th
   percentile** of adjacent-pair normal-line radius estimates to separate tube from
   azimuthal readings, which is a statistic on a sample of four and on a small

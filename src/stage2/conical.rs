@@ -724,7 +724,10 @@ fn fit_cone_centred(
 /// (half-angle 72.85°, apex 10.8 patch-extents away, explaining six vertices to
 /// 6.7e-16 mm). The rims carry information the six positions alone do not, and
 /// starting LM from them keeps it in the right basin.
-#[allow(dead_code)] // built and measured; not wired — see the note in `fit_surface`
+///
+/// Exact on one band of any surface of revolution, not only a cone's — its
+/// impostors are removed by competition's containment rule, not here (see the
+/// note at its call in `fit_surface`).
 fn fit_cone_rings(
     mesh: &ConnectedMesh,
     face_indices: &[usize],
@@ -1294,16 +1297,21 @@ impl SurfaceType for ConicalSurface {
         };
         let mut cone_result = fit_cone(face_list, &vertex_set, &mesh.faces, &mesh.vertices);
         if cone_result.as_ref().is_none_or(|f| cone_err(f) > RESCUE_ERR_THRESHOLD) {
-            // Only the centred-normal route is consulted. The two-rim route
-            // (`fit_cone_rings`, Option C) is exact on a cone's single band —
-            // and equally exact on a single band of ANY surface of revolution,
-            // because two coaxial circles always lie on a cone. Wired in here
-            // it found a 17-face, 360° impostor cone on a torus band of
-            // `filleted_pipe` and broke that model; nothing at band level can
-            // tell the two apart, normals included, since a facet's plane is
-            // fixed by vertices that lie on both. See SURFACE_FITTING.md,
+            // The two-rim route (`fit_cone_rings`, Option C) is exact on a
+            // cone's single band — and equally exact on a single band of ANY
+            // surface of revolution, because two coaxial circles always lie on
+            // a cone. Nothing at band level tells the two apart, normals
+            // included, since a facet's plane is fixed by vertices that lie on
+            // both: on `filleted_pipe` it grows a 17-face, 360° impostor cone on
+            // the first facet ring of a fillet torus. The discrimination comes
+            // from beyond the band — the torus grown from another seed claims
+            // that ring too, and `compete::resolve_claims` drops a hypothesis
+            // wholly inside a larger claimant. See SURFACE_FITTING.md,
             // "Option C".
-            let routes = [("centred-normal", fit_cone_centred(mesh, face_list, &vertex_set))];
+            let routes = [
+                ("centred-normal", fit_cone_centred(mesh, face_list, &vertex_set)),
+                ("two-rim", fit_cone_rings(mesh, face_list, &vertex_set)),
+            ];
             for (name, cand) in routes {
                 let Some(cand) = cand else { continue };
                 // A route must EXPLAIN the support, not merely beat the primary

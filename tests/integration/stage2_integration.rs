@@ -1142,6 +1142,10 @@ fn filleted_pipe_surface_selection() {
         .count();
     assert!(torus_count >= 4, "filleted_pipe should have at least 4 toroidal surfaces, got {}", torus_count);
     assert!(cyl_count >= 2, "filleted_pipe should have at least 2 cylindrical surfaces, got {}", cyl_count);
+    // The reference's 8 faces. A ninth is a cone on one facet band of a fillet
+    // torus: the two-rim cone route fits any such band exactly, and only
+    // `resolve_claims`'s containment rule keeps it from carving the band out.
+    assert_eq!(output.selected_surfaces.len(), 8, "filleted_pipe: 2 planes, 2 cylinders, 4 tori");
 }
 
 // `all_faces_covered_by_selection` lived here: stage 2 over 13 models, asserting

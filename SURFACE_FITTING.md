@@ -16,10 +16,12 @@ This document describes the surface fitting math and validation algorithms used 
 > **Closed-form initialization (Phase 1.1/1.2, 2026-07-31).** A newer module,
 > `src/stage2/initialize.rs`, fits each analytic type from a handful of facets
 > in closed form — see "Closed-form initialization from facet normals" below.
-> It is **not wired into the pipeline**: the earn loop that was to consume it
-> (Phase 1.2) was measured and not landed, so today the module is exercised only
-> by its unit tests. Its math and its measured failure modes are recorded here
-> because they are properties of the geometry, not of that attempt.
+> The earn loop that was to consume it (Phase 1.2) was measured and not landed.
+> Three of its initializers have since been wired in as candidates inside the
+> fitters instead: the torus (2026-08-06), the centred cone taper (2026-10-15)
+> and the two-rim cone, Option C (2026-10-16). Its math and its measured failure
+> modes are recorded here because they are properties of the geometry, not of
+> that attempt.
 
 ---
 
@@ -439,7 +441,7 @@ cube's fillet radius equals its corner-sphere radius. See DEVELOPMENT_PLAN,
 
 ---
 
-## Cone initialization: the options (surveyed 2026-08-06; status 2026-10-15)
+## Cone initialization: the options (surveyed 2026-08-06; status 2026-10-16)
 
 The cone is the worst-initialized surface in the pipeline, and unlike the torus
 its problem is not a single fixable defect. This section records what fails, what
@@ -484,9 +486,9 @@ the literature says is and is not possible, and the routes that were open.
 > | `cone_cylinder` | 7/12 | **12/12** | 12/12 |
 > | `nosecone` | 10/12 | **12/12** | 12/12 |
 >
-> **Option C was built and measured, and is deliberately not wired** — see its
-> subsection. It completes the seed table above, and it creates an impostor the
-> pipeline cannot reject.
+> **Option C was built and measured, and is wired since 2026-10-16** — see its
+> subsection. It completes the seed table above, and it creates an impostor no
+> fit can reject; competition's claim resolution rejects it instead.
 
 ### The measured starting point
 
@@ -596,8 +598,10 @@ only route. Ring identification needs no provisional axis — the shared edge
 between two quads in a strip *is* a ruling, so its endpoints are one per ring and
 walking the strip labels the rest combinatorially.
 
-**Built 2026-10-15 as `initialize::cone_from_rings`; measured; not wired.** Two
-departures from the design above, and the reason it stays unwired.
+**Built 2026-10-15 as `initialize::cone_from_rings`; measured; wired
+2026-10-16 behind a containment rule in claim resolution.** Two departures from
+the design above, the reason it could not be wired on its own, and what let it
+be.
 
 - *Rims are found, not labelled.* "A shared edge is a ruling" holds only for
   quads in one band; in a triangle strip the shared edges alternate between
@@ -611,17 +615,59 @@ departures from the design above, and the reason it stays unwired.
   is a cylinder at a regular point rather than an apex at infinity (and is left
   to the caller's own cylinder route).
 
-**Why it is not wired: two coaxial circles always lie on a cone.** A single band
-of *any* surface of revolution has its vertices on two coaxial circles, so this
-route finds an **exact** cone on a band of a torus fillet just as it does on a
-real cone. Wired into `fit_surface` it committed a 17-face, 360° impostor cone on
-`filleted_pipe` and broke that model. Nothing at band level separates the two —
-not the residual, and not the facet normals either, because a facet's plane is
-fixed by vertices that lie on both surfaces. This is the Invariants section's
-"two circles lie exactly on a sphere" with the sphere replaced by a cone, and it
-belongs to the same family of answers: discrimination has to come from beyond
-the band (the torus continues smoothly into the next band; the cone's band ends
-at its rims), i.e. from competition or branching, not from a better fit.
+**Why it could not be wired alone: two coaxial circles always lie on a cone.** A
+single band of *any* surface of revolution has its vertices on two coaxial
+circles, so this route finds an **exact** cone on a band of a torus fillet just
+as it does on a real cone. Wired into `fit_surface` it committed a 17-face, 360°
+impostor cone on `filleted_pipe` and broke that model. Nothing at band level
+separates the two — not the residual, and not the facet normals either, because
+a facet's plane is fixed by vertices that lie on both surfaces. This is the
+Invariants section's "two circles lie exactly on a sphere" with the sphere
+replaced by a cone, and it belongs to the same family of answers: discrimination
+has to come from beyond the band (the torus continues smoothly into the next
+band; the cone's band ends at its rims), i.e. from competition or branching, not
+from a better fit.
+
+**What let it be wired: containment in claim resolution (2026-10-16).** The
+impostor was never unopposed. Traced on `filleted_pipe`: seed 679 commits the
+17-face cone on the first facet ring of the top outer fillet (R 8.5, r 1.5),
+where the torus attempt from that seed grew nothing; the full 432-face torus is
+grown later from seed 426 and claims those 17 faces too. What carved the ring out
+was `resolve_claims`: a face several claimants explain within vtol went to the
+lowest `dof_rank` — cone 2 below torus 3 — a rule written for the
+cylinder-to-fillet tangency, where it is right. The ring cone moved the
+cylinder/fillet seam 0.29 mm (stage 3.1 `--compare` fails at 5e-5 mm; without
+`--compare` the output is a silently wrong solid).
+
+`resolve_claims` now first drops a hypothesis **every one of whose faces a single
+other claimant of strictly larger area also claims and explains within vtol**
+(`compete::contained_hypotheses`). A band impostor is wholly inside the surface it
+was cut from once that surface grows across the band from a seed of its own; a
+cylinder is never wholly inside its fillet, since it continues past the junction
+rows the torus reaches, so the tangency rule is untouched. The rule adds no
+constant (vtol is the bar per-face resolution already used), is computed over
+the whole committed set so commit order cannot change it, and can never create a
+leftover: a dropped hypothesis's container claims all its faces, and containment
+strictly increases area, so every chain ends at a live claimant.
+
+Measured (`tools/sweep.sh`, 193 models; the parent commit is 115 ok / 73 fail /
+5 timeout, and every variant below keeps those totals except where noted):
+
+| variant | ok→fail | models changed |
+|---|---|---|
+| containment rule alone | 0 | 1 — `VoronUsers__12mm_strip_mini_mount` 61 → 56 surfaces (fails before and after on the same 2.63 mm edge; drops two 4-face cones inside two 0.08 mm² tori, where the reference has 8 planes and 5 cylinders) |
+| Option C alone | **1** — `filleted_pipe` 8 → 9 (+1 cone) | 4 |
+| rule + Option C (shipped) | **0** | 3, each failing before and after, each moving toward its reference |
+
+The three under the shipped pair: `led_cover_drag_chain_termination` 2 → **4
+cones** against a reference with 4 (cylinders 24 → 22, reference 14);
+`hill_with_hole` loses a spurious torus and now matches its reference's types
+exactly (5 planes, 1 cylinder, 1 B-spline), passing stage 3.1 at 1.0e-8 mm and
+failing later, at stage 3.6 (boundary deviation 10.9 mm); `12mm_strip_mini_mount`
+61 → 58. The first two are Option C's own gains (identical with the rule off).
+`filleted_pipe` drops two 17-face ring cones, one per top fillet, and passes at
+9.5e-8 relative volume, unchanged. Seed level: 12/12 on all three models in the
+table above. Suite: 493 passed, 0 failed, 32 ignored.
 
 ### Considered and rejected
 

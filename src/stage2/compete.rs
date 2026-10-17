@@ -23,9 +23,11 @@
 //!   decides every face.
 //! - **Claims**: a flood may grow through faces already claimed by an
 //!   earlier hypothesis (junction rows that genuinely lie on two surfaces),
-//!   so a face can be claimed by several hypotheses. `resolve_claims`
-//!   assigns each contested face to the claimant that fits its vertices best
-//!   (2× margin to leave the larger claimant).
+//!   so a face can be claimed by several hypotheses. `resolve_claims` first
+//!   drops any hypothesis wholly inside a larger claimant (every face also
+//!   claimed and explained within vtol by it — a band impostor, not a
+//!   surface), then assigns each contested face to the claimant that fits its
+//!   vertices best (2× margin to leave the larger claimant).
 //! - **Toroidal candidates (stage 2.3(c))**: a torus competes like any other
 //!   type — grown directly from curved seeds (fillet tori, bend tubes), and
 //!   additionally *promoted* from a cylinder whose flood stalled against
@@ -352,6 +354,7 @@ pub(super) fn compete_region(
         &claim_lists,
         config.vertex_tolerance_mm,
         config,
+        debug,
     )
 }
 
@@ -712,17 +715,39 @@ fn resolve_claims(
     claim_lists: &[Vec<usize>],
     vtol: f64,
     config: &CompeteConfig,
+    debug: bool,
 ) -> (Vec<CompeteHyp>, Vec<usize>) {
     let hyp_area: Vec<f64> = committed
         .iter()
         .map(|h| h.faces().iter().map(|&fi| face_area(&mesh.faces[fi], &mesh.vertices)).sum())
         .collect();
 
+    let redundant = contained_hypotheses(mesh, committed, claim_lists, &hyp_area, vtol);
+    if debug {
+        for (ci, &(drop, by)) in redundant.iter().enumerate() {
+            if drop {
+                eprintln!(
+                    "    compete: {} #{ci} ({} faces, area {:.2}) dropped — wholly inside {} #{by} (area {:.2})",
+                    committed[ci].kind_name(),
+                    committed[ci].faces().len(),
+                    hyp_area[ci],
+                    committed[by].kind_name(),
+                    hyp_area[by],
+                );
+            }
+        }
+    }
+
     let mut assigned: Vec<Vec<usize>> = vec![Vec::new(); committed.len()];
     let mut leftovers: Vec<usize> = Vec::new();
 
     for &fi in region_faces {
-        let claimants = &claim_lists[fi];
+        let live: Vec<usize> = claim_lists[fi].iter().copied().filter(|&ci| !redundant[ci].0).collect();
+        // A dropped hypothesis's container claims every face it did, and
+        // containment is strictly area-increasing, so the chain ends at a live
+        // claimant: dropping never turns a claimed face into a leftover.
+        debug_assert!(live.is_empty() == claim_lists[fi].is_empty());
+        let claimants = &live;
         if claimants.is_empty() {
             leftovers.push(fi);
             continue;
@@ -796,6 +821,49 @@ fn resolve_claims(
     (out, leftovers)
 }
 
+
+/// Committed hypotheses that are redundant: every one of their faces is also
+/// claimed, and explained within `vtol`, by a single other claimant of strictly
+/// larger area. Returns `(dropped, container)` per hypothesis.
+///
+/// Per-face resolution alone cannot see this. It hands a face several claimants
+/// explain to the lowest-DOF one, which is right at a tangency — a face on both
+/// a cylinder and its fillet torus is the cylinder's — but wrong when the
+/// simpler claimant is merely a *piece* of the more complex one: a cone fitted
+/// to one facet band of a torus is exact on that band (two coaxial circles
+/// always lie on a cone, SURFACE_FITTING.md "Option C"), and it would carve the
+/// band out of the fillet. A cylinder is never wholly inside its fillet — it
+/// continues past the junction rows the torus can reach — so the tangency rule
+/// is untouched; an impostor confined to one band is wholly inside the surface
+/// once that surface grows across the band from a seed of its own.
+///
+/// Computed over the whole committed set at once, so it does not depend on the
+/// order hypotheses were committed in; and it adds no constant — the bar is the
+/// vertex tolerance per-face resolution already uses.
+fn contained_hypotheses(
+    mesh: &ConnectedMesh,
+    committed: &[CompeteHyp],
+    claim_lists: &[Vec<usize>],
+    hyp_area: &[f64],
+    vtol: f64,
+) -> Vec<(bool, usize)> {
+    (0..committed.len())
+        .map(|ci| {
+            let faces = committed[ci].faces();
+            let Some(&first) = faces.first() else { return (false, ci) };
+            claim_lists[first]
+                .iter()
+                .copied()
+                .filter(|&cj| cj != ci && hyp_area[cj] > hyp_area[ci])
+                .find(|&cj| {
+                    faces.iter().all(|&fi| {
+                        claim_lists[fi].contains(&cj) && max_vertex_dist(mesh, &committed[cj], fi) <= vtol
+                    })
+                })
+                .map_or((false, ci), |cj| (true, cj))
+        })
+        .collect()
+}
 
 /// Refit a committed hypothesis to its current face set, keeping the existing
 /// fit if the fitter cannot produce one.

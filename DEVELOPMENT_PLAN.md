@@ -356,8 +356,12 @@ fit a cone wider than ~35° at all, and the centred-normal seed now backs it up
 working seed set on the three models above: `simple_cone` 4/12 → **8/12**,
 `cone_cylinder` 7/12 → **12/12**, `nosecone` 10/12 → **12/12**. Option C (two
 rims) takes `simple_cone` to 12/12 as well, but it is exact on a single band of
-*any* surface of revolution and so manufactures impostor cones on torus bands;
-it is built and not wired.
+*any* surface of revolution and so manufactures impostor cones on torus bands.
+*Update 2026-10-16:* it is wired, because the impostor turned out to be
+rejectable one level up — the true torus, grown from another seed, claims the
+whole band, and claim resolution now drops a hypothesis wholly inside a larger
+claimant (SURFACE_FITTING.md, "Option C", with the sweep numbers: no ok→fail,
+three failing models moved toward their references).
 
 **One genuinely non-identifiable case exists** and is worth knowing: on one
 `simple_cone` seed the fitter returned a half-angle 72.85° cone with its apex 10.8
@@ -508,10 +512,12 @@ Still open:
   covers those but runs across tangent junctions instead. Neither bound is right
   as stated.
 - **A cone seed rule that works**, which needs the fitter fixed first. *Partly
-  done 2026-10-15*: the wide-cone half of the fitter defect is fixed (above). The
-  two-facet half is not — Option C solves it exactly but is exact on a single
-  band of every surface of revolution, so it needs a discrimination mechanism
-  beyond the band before it can be wired.
+  done 2026-10-15*: the wide-cone half of the fitter defect is fixed (above).
+  *Done 2026-10-16*: the two-facet half — Option C solves it exactly but is exact
+  on a single band of every surface of revolution, and the discrimination beyond
+  the band is now `compete::contained_hypotheses` (a hypothesis every face of
+  which a larger claimant also claims and explains within vtol is dropped).
+  Cone seed coverage is 12/12 on `simple_cone`, `cone_cylinder` and `nosecone`.
 - **NURBS**, deliberately excluded above.
 
 ## Dependencies
