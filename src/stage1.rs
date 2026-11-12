@@ -1344,6 +1344,9 @@ pub fn max_distance_to_shape(
 }
 
 /// Check mesh vertices and face centroids against comparison STEP shape.
+///
+/// Every vertex must be within `--vertex-tolerance` of the reference's trimmed
+/// faces, except boundary vertices that miss only the trim (see the body).
 fn compare_mesh_to_step(mesh: &ConnectedMesh, config: &Config) -> Result<(), CompareError> {
     // Measure against the reference's FACES. Against the solid, every interior
     // point reads as distance zero — see the `compare` module docs.
@@ -1399,13 +1402,58 @@ fn compare_mesh_to_step(mesh: &ConnectedMesh, config: &Config) -> Result<(), Com
         );
     }
 
-    let vtx_fail = vtx_max_dist > config.vertex_tolerance_mm;
+    // A vertex beyond tolerance of the trimmed faces is not necessarily off
+    // the reference's surfaces: a face is a surface cut down by its edges, and
+    // a STEP edge is an explicit curve that only approximates the intersection
+    // it stands for. A boundary vertex can be exactly on both surfaces and
+    // still read 1e-4 mm, purely from where that curve runs. Measured on wild
+    // SolidWorks exports (`ToolChanger__docking_station`, `…blower_fan_duct`):
+    // every one of their over-tolerance vertices is on its two surfaces to
+    // ~1e-6 mm and within the edge's own tolerance of the edge. Those are
+    // excused — see `BoundaryMiss::excused` for the rule and for the looser
+    // one that was tried and is unsound.
+    //
+    // Worst first, stopping at the first vertex that is NOT excused: that is
+    // the worst genuine miss, and on a pair that is simply wrong it is found
+    // immediately.
+    let mut strays: Vec<usize> = (0..vtx_dists.len())
+        .filter(|&i| vtx_dists[i] > config.vertex_tolerance_mm)
+        .collect();
+    strays.sort_by(|&a, &b| vtx_dists[b].total_cmp(&vtx_dists[a]));
+    let (mut excused, mut worst_excused) = (0usize, 0.0_f64);
+    let (mut vtx_fail_dist, mut vtx_fail_idx) = (0.0_f64, vtx_max_idx);
+    if !strays.is_empty() {
+        let model = crate::reference::ReferenceModel::load(config.compare_shape.as_ref().unwrap());
+        for &i in &strays {
+            match model.boundary_miss(vertex_points[i]) {
+                Some(miss) if miss.excused(config.vertex_tolerance_mm) => {
+                    excused += 1;
+                    worst_excused = worst_excused.max(vtx_dists[i]);
+                }
+                _ => {
+                    vtx_fail_dist = vtx_dists[i];
+                    vtx_fail_idx = i;
+                    break;
+                }
+            }
+        }
+    }
+    if excused > 0 && !config.quiet {
+        eprintln!(
+            "  Compare: {excused} boundary vert{} up to {worst_excused:.6e} mm outside the \
+             reference's trim, on both adjacent surfaces and within the edge's own tolerance \
+             (not counted against the vertex tolerance)",
+            if excused == 1 { "ex" } else { "ices" },
+        );
+    }
+
+    let vtx_fail = vtx_fail_dist > config.vertex_tolerance_mm;
     let ctr_fail = ctr_max_dist > config.surface_tolerance_mm;
 
     if vtx_fail || ctr_fail {
         return Err(CompareError {
-            vertex_max_distance: vtx_max_dist,
-            vertex_max_index: vtx_max_idx,
+            vertex_max_distance: vtx_fail_dist,
+            vertex_max_index: vtx_fail_idx,
             vertex_tolerance: config.vertex_tolerance_mm,
             centroid_max_distance: ctr_max_dist,
             centroid_max_face_index: ctr_max_face,

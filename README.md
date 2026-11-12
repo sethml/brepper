@@ -86,6 +86,23 @@ GENERAL OPTIONS:
 ./target/release/brepper input.stl --compare reference.step --stage 2.2 --viz-seeds -v
 ```
 
+### Reference check (`--compare`, stage 1.2)
+
+With `--compare`, stage 1.2 requires every mesh vertex to be within
+`--vertex-tolerance` of the reference's faces and every facet centroid within
+`--surface-tolerance`, and prints the vertex-distance p50 / p95 / max.
+
+One class of vertex is not counted: a boundary vertex that lies on both of the
+surfaces meeting at its edge and misses only the reference's *trim*, by no more
+than that edge's own tolerance. STEP stores an edge as an explicit curve that
+approximates the true intersection, so such a vertex can be exact and still read
+1e-4 mm from the trimmed faces. When any are excused, a second `Compare:` line
+says how many and how far. To see every over-tolerance vertex classified:
+
+```bash
+./target/release/gen-test-models strays input.stl reference.step
+```
+
 ### Reference scoring (`--reference-report`)
 
 With a `--compare` reference, brepper can label every mesh face with the

@@ -627,6 +627,23 @@ Traverse the faces of the mesh, collecting statistics, validating the geometry, 
   neighbor at the interior vertex), unify winding per shell, and reorient
   inverted closed shells — everything fixable without moving a vertex.
 - With the `--compare` flag: check that all vertices are within `--vertex-tolerance` of the STEP shape, and that all face centroids are within `--surface-tolerance`. Uses `BRepExtrema_DistShapeShape` for bounded distance (respects face trimming). Reports the worst vertex and worst centroid with their distances.
+  - **Boundary vertices that miss only the trim are excused (2026-11-11).** A
+    face is a surface cut down by its edges, and a STEP edge is an explicit
+    curve that approximates the intersection it stands for, so a bounded
+    distance measures "off the surface" and "outside the trim" at once. A
+    vertex beyond tolerance is not counted when (a) its closest reference point
+    is on an edge or vertex, (b) it is within `--vertex-tolerance` of the
+    *untrimmed* surfaces of at least two faces meeting there, and (c) its miss
+    is no more than that edge's own OCCT tolerance plus `--vertex-tolerance`
+    (`reference::BoundaryMiss::excused`). No new constant. Measured on the wild
+    corpus: on four SolidWorks pairs every over-tolerance vertex (12 to 60 per
+    part, up to 4.3e-4 mm) is on its two surfaces to ~1e-6 mm, and those pairs
+    now pass; a different-revision pair 0.2 mm wider than its reference is
+    still refused, because clause (c) holds its moved corners to an edge good
+    to 1e-7 mm. A looser clause (c), dividing by the sine of half the angle
+    between the surfaces, is geometrically right and was dropped as unsound:
+    see the DO-NOT note on `BoundaryMiss::trim_allowance`. `gen-test-models
+    strays <stl> <step>` prints the classification per vertex.
 
 Validation checks, in priority order (first failure is reported):
 1. **Degenerate faces**: faces with <3 vertices or zero-area normals.

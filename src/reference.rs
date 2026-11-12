@@ -181,8 +181,8 @@ use crate::stage1::ConnectedMesh;
 // findings cannot drift apart in what "ruling-aligned" means.
 use crate::stage2::initialize::{min_ruling_gap_rad, RULING_SAME_RAD};
 use opencascade_sys::{
-    b_rep, b_rep_adaptor, b_rep_builder_api, b_rep_extrema, extrema, geom, geom_abs, geom_l_prop,
-    gp, message, n_collection, top_abs, top_exp, topo_ds, OwnedPtr,
+    b_rep, b_rep_adaptor, b_rep_builder_api, b_rep_extrema, extrema, geom, geom_abs, geom_api,
+    geom_l_prop, gp, message, n_collection, top_abs, top_exp, topo_ds, OwnedPtr,
 };
 
 // ---------------------------------------------------------------------------
@@ -532,6 +532,101 @@ impl ReferenceModel {
         self.surfaces.is_empty()
     }
 
+    /// For a point that misses the reference's trimmed faces: where its closest
+    /// point landed, and how far it is from the *untrimmed* surface of every
+    /// face meeting there.
+    ///
+    /// A B-rep face is a surface cut down by its edges, and a point-to-face
+    /// distance therefore measures two different things at once: how far the
+    /// point is off the surface, and how far it is outside the trim. A mesh
+    /// vertex on a face boundary can be exactly on both surfaces that meet
+    /// there and still read 1e-4 mm, because the reference's edge — an explicit
+    /// curve that a STEP file stores as an approximation of the true
+    /// intersection — passes that far to one side of it. This separates the
+    /// two. See [`BoundaryMiss::on_intersection`].
+    ///
+    /// Not thread-safe (it reads the geometry handles); call it for the few
+    /// points that need it, not for every vertex.
+    pub fn boundary_miss(&self, pt: [f64; 3]) -> Option<BoundaryMiss> {
+        let p = gp::Pnt::new_real3(pt[0], pt[1], pt[2]);
+        let mut vertex = b_rep_builder_api::MakeVertex::new_pnt(&p);
+        let vtx_shape = vertex.vertex();
+        let progress = message::ProgressRange::new();
+        let dist = b_rep_extrema::DistShapeShape::new_shape2_extflag_extalgo_progressrange(
+            vtx_shape.as_shape(),
+            self.shape(),
+            0, // F (unused/obsolete)
+            extrema::ExtAlgo::Grad,
+            &progress,
+        );
+        if !dist.is_done() || dist.nb_solution() < 1 {
+            return None;
+        }
+        let support = dist.support_on_shape2(1);
+        let (on_boundary, support_tolerance, sub_kind) = match dist.support_type_shape2(1) {
+            b_rep_extrema::SupportType::Isinface => (false, 0.0, top_abs::ShapeEnum::Face),
+            b_rep_extrema::SupportType::Isonedge => (
+                true,
+                b_rep::Tool::tolerance_edge(topo_ds::edge(&support)),
+                top_abs::ShapeEnum::Edge,
+            ),
+            b_rep_extrema::SupportType::Isvertex => (
+                true,
+                b_rep::Tool::tolerance_vertex(topo_ds::vertex(&support)),
+                top_abs::ShapeEnum::Vertex,
+            ),
+        };
+
+        // Every face the support belongs to, in the same explorer order as
+        // `self.geometry`.
+        let mut surface_distances = Vec::new();
+        let mut faces = top_exp::Explorer::new_shape_shapeenum2(
+            self.shape(),
+            top_abs::ShapeEnum::Face,
+            top_abs::ShapeEnum::Shape,
+        );
+        let mut fi = 0usize;
+        while faces.more() {
+            let meets = if on_boundary {
+                let mut subs = top_exp::Explorer::new_shape_shapeenum2(
+                    faces.value(),
+                    sub_kind,
+                    top_abs::ShapeEnum::Shape,
+                );
+                let mut found = false;
+                while subs.more() {
+                    if subs.value().is_same(&support) {
+                        found = true;
+                        break;
+                    }
+                    subs.next();
+                }
+                found
+            } else {
+                faces.value().is_same(&support)
+            };
+            if meets {
+                let proj = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
+                    &p,
+                    &self.geometry[fi],
+                    extrema::ExtAlgo::Grad,
+                );
+                if proj.is_done() && proj.nb_points() > 0 {
+                    surface_distances.push(proj.lower_distance());
+                }
+            }
+            fi += 1;
+            faces.next();
+        }
+        surface_distances.sort_by(f64::total_cmp);
+        Some(BoundaryMiss {
+            trimmed_distance: dist.value(),
+            on_boundary,
+            support_tolerance,
+            surface_distances,
+        })
+    }
+
     /// Map a `SupportOnShape2` result back to an index into [`Self::surfaces`].
     ///
     /// `FindIndex` is a const hash lookup returning OCCT's 1-based index, or 0
@@ -542,6 +637,72 @@ impl ReferenceModel {
             0 => None,
             i => Some((i - 1) as usize),
         }
+    }
+}
+
+/// What [`ReferenceModel::boundary_miss`] found for one point.
+#[derive(Debug, Clone)]
+pub struct BoundaryMiss {
+    /// Distance to the reference's trimmed faces — the ordinary measurement.
+    pub trimmed_distance: f64,
+    /// The closest point is on an edge or vertex of the reference rather than
+    /// in the interior of a face.
+    pub on_boundary: bool,
+    /// OCCT's own tolerance on that edge or vertex: how far the reader found
+    /// the edge's curve to stray from the surfaces it bounds. Zero for a face.
+    pub support_tolerance: f64,
+    /// Distance to the untrimmed surface of each face meeting at the closest
+    /// point, ascending. One entry for a face interior.
+    pub surface_distances: Vec<f64>,
+}
+
+impl BoundaryMiss {
+    /// The point lies, within `tolerance`, on at least two of the surfaces that
+    /// meet where it landed — on their intersection, which is where a
+    /// tessellator puts a boundary vertex. Such a point is exact in the sense
+    /// brepper relies on (it validates vertices against unbounded fitted
+    /// surfaces); what it misses is only the reference's trim.
+    ///
+    /// Two, not all: at a corner the vertex may sit just past the end of the
+    /// edge it belongs to, on that edge's two surfaces and off the third.
+    pub fn on_intersection(&self, tolerance: f64) -> bool {
+        self.on_boundary
+            && self.surface_distances.len() >= 2
+            && self.surface_distances[1] <= tolerance
+    }
+
+    /// How far outside the trim an excused point may sit: the reference's own
+    /// tolerance on the edge or vertex it landed on, plus the vertex tolerance.
+    ///
+    /// Being on the intersection is not enough to excuse a point, because an
+    /// intersection runs on past the end of its edge: lengthen a box by 1 mm
+    /// and its four moved corners are still exactly on two of the old box's
+    /// planes. So the miss also has to be no larger than the reference says its
+    /// own edge is good to. Both terms are read off the inputs; nothing is
+    /// tuned.
+    ///
+    /// A LARGER ALLOWANCE WAS TRIED AND IS UNSOUND — do not re-derive it. Two
+    /// surfaces meeting at an angle `theta` stay within `e` of each other over
+    /// a width `e / sin(theta/2)`, so an edge curve within `e` of both can
+    /// genuinely sit that far from the true intersection, and dividing by
+    /// `sin(theta/2)` does excuse a few more real vertices at shallow junctions
+    /// (measured on `ToolChanger__dock_brace`: on both surfaces to 4e-7 mm,
+    /// 8.5e-4 mm from an edge of tolerance 3.7e-4). But the bound is vacuous
+    /// exactly where it is dangerous. Kernels split one plane or cylinder into
+    /// several faces, the copies' normals differ by rounding (2e-7 rad on
+    /// `Open-Task-Light__belt_clip`), and the formula then allows 490 mm — which
+    /// excused two corners of a part that is a different revision, 0.2 mm
+    /// wider than its reference. No floor on the angle separates "the same
+    /// surface twice" from "tangent" from "shallow"; they are one continuum.
+    pub fn trim_allowance(&self, tolerance: f64) -> f64 {
+        self.support_tolerance + tolerance
+    }
+
+    /// The point misses the trimmed reference only because of where the
+    /// reference's edge runs: it is on the intersection of two adjacent
+    /// surfaces and within [`Self::trim_allowance`] of the edge.
+    pub fn excused(&self, tolerance: f64) -> bool {
+        self.on_intersection(tolerance) && self.trimmed_distance <= self.trim_allowance(tolerance)
     }
 }
 
@@ -593,6 +754,15 @@ impl FaceLabel {
 /// This is [`crate::stage1::min_distance_to_shape`] with the support read back
 /// instead of discarded — the whole reason this module is cheap.
 fn nearest(pt: [f64; 3], model: &ReferenceModel) -> (f64, Support, Option<(f64, f64)>) {
+    let (distance, support, uv, _) = nearest_with_point(pt, model);
+    (distance, support, uv)
+}
+
+/// [`nearest`], plus the closest point itself.
+fn nearest_with_point(
+    pt: [f64; 3],
+    model: &ReferenceModel,
+) -> (f64, Support, Option<(f64, f64)>, [f64; 3]) {
     let p = gp::Pnt::new_real3(pt[0], pt[1], pt[2]);
     let mut vertex = b_rep_builder_api::MakeVertex::new_pnt(&p);
     let vtx_shape = vertex.vertex();
@@ -605,7 +775,7 @@ fn nearest(pt: [f64; 3], model: &ReferenceModel) -> (f64, Support, Option<(f64, 
         &progress,
     );
     if !dist.is_done() || dist.nb_solution() < 1 {
-        return (f64::MAX, Support::None, None);
+        return (f64::MAX, Support::None, None, pt);
     }
     let support = match dist.support_type_shape2(1) {
         b_rep_extrema::SupportType::Isinface => {
@@ -630,7 +800,81 @@ fn nearest(pt: [f64; 3], model: &ReferenceModel) -> (f64, Support, Option<(f64, 
         }
         _ => None,
     };
-    (dist.value(), support, uv)
+    let q = dist.point_on_shape2(1);
+    (dist.value(), support, uv, [q.x(), q.y(), q.z()])
+}
+
+/// A point's closest approach to the reference boundary: where it landed and,
+/// when that is the interior of a face, the surface normal there.
+#[derive(Debug, Clone, Copy)]
+pub struct Footpoint {
+    pub distance: f64,
+    /// The closest point on the reference.
+    pub point: [f64; 3],
+    /// Unit surface normal at `point`, unoriented. `None` when the closest
+    /// point is on an edge or vertex of the reference (no single face owns it)
+    /// or at a pole/seam where the normal does not exist.
+    pub normal: Option<[f64; 3]>,
+}
+
+/// The footpoint of every point on the reference. `None` where OCCT found no
+/// solution.
+///
+/// This is what a point-to-surface registration needs (`gen_test_models
+/// align`): the residual along the *surface* normal, which stays well defined
+/// as the distance goes to zero, where the direction of `point - footpoint`
+/// does not.
+///
+/// The distance queries run in parallel, exactly as in [`label_faces`]; the
+/// normals are evaluated afterwards on the calling thread, because
+/// [`ReferenceModel::normal_at_uv`] reads the geometry handles that the
+/// labeling threads must not touch.
+pub fn footpoints(points: &[[f64; 3]], model: &ReferenceModel) -> Vec<Option<Footpoint>> {
+    type Raw = (f64, Support, Option<(f64, f64)>, [f64; 3]);
+    let n = points.len();
+    if n == 0 || model.is_empty() {
+        return vec![None; n];
+    }
+    let threads = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(1)
+        .min(8)
+        .min(n.div_ceil(16).max(1));
+    let mut raw: Vec<Raw> = vec![(f64::MAX, Support::None, None, [0.0; 3]); n];
+    if threads <= 1 {
+        for (slot, &p) in raw.iter_mut().zip(points) {
+            *slot = nearest_with_point(p, model);
+        }
+    } else {
+        struct SharedModel(*const ReferenceModel);
+        unsafe impl Send for SharedModel {}
+        unsafe impl Sync for SharedModel {}
+        let shared = SharedModel(model as *const _);
+        let chunk = n.div_ceil(threads);
+        std::thread::scope(|s| {
+            for (pts_chunk, out_chunk) in points.chunks(chunk).zip(raw.chunks_mut(chunk)) {
+                let shared = &shared;
+                s.spawn(move || {
+                    let model = unsafe { &*shared.0 };
+                    for (p, slot) in pts_chunk.iter().zip(out_chunk.iter_mut()) {
+                        *slot = nearest_with_point(*p, model);
+                    }
+                });
+            }
+        });
+    }
+    raw.into_iter()
+        .map(|(distance, support, uv, point)| {
+            if distance == f64::MAX {
+                return None;
+            }
+            let normal = match (support, uv) {
+                (Support::Face(i), Some((u, v))) => model.normal_at_uv(i, u, v),
+                _ => None,
+            };
+            Some(Footpoint { distance, point, normal })
+        })
+        .collect()
 }
 
 /// The interior sample points used to test a facet's label for agreement.
@@ -1562,6 +1806,42 @@ mod tests {
         let u = unit(cross(d, seed)).unwrap();
         let v = cross(d, u);
         (u, v)
+    }
+
+    fn miss(trimmed: f64, on_boundary: bool, support_tol: f64, surfaces: &[f64]) -> BoundaryMiss {
+        BoundaryMiss {
+            trimmed_distance: trimmed,
+            on_boundary,
+            support_tolerance: support_tol,
+            surface_distances: surfaces.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_boundary_vertex_on_both_surfaces_within_the_edge_tolerance_is_excused() {
+        // Measured shape: ToolChanger__docking_station, vertex 2319.
+        assert!(miss(1.78e-4, true, 1.76e-4, &[8.9e-8, 6.6e-7]).excused(5.0e-5));
+        // At a corner: on the edge's two surfaces, off the third.
+        assert!(miss(9.0e-5, true, 1.0e-4, &[1.0e-7, 2.0e-7, 9.0e-5]).excused(5.0e-5));
+    }
+
+    #[test]
+    fn a_miss_the_edge_cannot_explain_is_not_excused() {
+        // A box lengthened by 0.2 mm: the moved corner is still exactly on two
+        // of the old box's planes, but 0.2 mm past an edge good to 1e-7.
+        // Measured shape: Open-Task-Light__belt_clip, vertex 147.
+        let widened = miss(2.0e-1, true, 1.0e-7, &[3.7e-8, 3.6e-7, 2.0e-1]);
+        assert!(widened.on_intersection(5.0e-5));
+        assert!(!widened.excused(5.0e-5));
+    }
+
+    #[test]
+    fn a_vertex_off_one_of_its_surfaces_or_inside_a_face_is_not_excused() {
+        // On one surface, 4e-3 off its neighbour: sampled from an approximate
+        // edge curve. Measured shape: VoronUsers__10x11_chain_bottom_anchor.
+        assert!(!miss(3.85e-3, true, 2.59e-3, &[3.1e-6, 4.0e-3]).excused(5.0e-5));
+        // Closest to a face interior: simply off the surface.
+        assert!(!miss(8.1e-4, false, 0.0, &[8.1e-4]).excused(5.0e-5));
     }
 
     #[test]

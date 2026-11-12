@@ -357,6 +357,15 @@ instrument first; you cannot claim generality you cannot measure.
     resolved; the raw rate is kept above because the gap between it and the final
     one is the finding.
 
+    **SUPERSEDED 2026-11-11: alignment is now scored and fitted** (candidate
+    frames chosen by vertex distance, then a rigid least-squares refinement,
+    per body for multi-body parts). The rule below left five genuine pairs
+    6e-5..1e-2 mm off, six 10-17 mm off behind a 180 degree flip, and four
+    two-body pairs 200-300 mm off; and a fit of six parameters cannot make a
+    different part read exact (the belt clips still read 0.2 mm). Results and
+    the per-pair verdicts are in `tests/external/README.md` and
+    `tests/external/alignment.tsv`. The paragraph is kept as history.
+
     **Alignment is discrete and never fitted.** `gen-test-models align` derives a
     transform from bounding-box centres plus the first of the **24 proper
     rotations of a cube** whose *unsorted* extents match, writing

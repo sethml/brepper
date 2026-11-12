@@ -70,6 +70,7 @@ use opencascade_sys::{
     b_rep_builder_api, b_rep_tools, ch_fi3d, g_prop, geom, gp, message, stl_api,
     n_collection, top_abs, top_exp, topo_ds, OwnedPtr,
 };
+use nalgebra::{Matrix3, Matrix6, Rotation3, SymmetricEigen, Vector3, Vector6};
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
@@ -729,32 +730,301 @@ fn remesh_corpus(out_dir: &str, models: &[(String, String)]) {
 }
 
 // ---------------------------------------------------------------------------
-// Reference alignment (Phase 0.5b)
+// Reference alignment (Phase 0.5b; rigid fit added 2026-11-11)
 // ---------------------------------------------------------------------------
 //
-// `gen_test_models align <dir>` writes `<stem>_aligned.step` beside any
-// `<stem>.stl` + `<stem>.step` pair whose two files describe the same part in
-// different coordinate frames.
+// `gen_test_models align <dir> [<stem substring>]` writes `<stem>_aligned.step`
+// beside any `<stem>.stl` + `<stem>.step` pair whose two files describe the same
+// part in different coordinate frames, re-points `<dir>/sources.tsv` at it, and
+// records what it measured in `<dir>/alignment.tsv`.
 //
-// Wild pairs need this. Measured over 18 STEP+STL pairs harvested from
-// open-source hardware repos, half were published in different frames: the STL
-// positioned for printing, the STEP left in design coordinates. Nine differ by a
-// pure translation (up to 112 mm) and three by a 90 degree axis swap, which is
-// Z-up versus Y-up. Those are the same object, and refusing to compare them
-// measures the exporter's habits rather than the geometry.
+// Wild pairs need this: about half are published in different frames, the STL
+// positioned for printing and the STEP left in design coordinates.
 //
-// THE TRANSFORM IS DERIVED, NEVER FITTED. Translation comes from bounding-box
-// centres and rotation is chosen from the 24 axis-aligned rotations by which one
-// makes the *unsorted* extents match. Nothing here minimizes the vertex distance
-// that the verification gate then measures, so the gate keeps its power to fail:
-// a genuine pair collapses to ~1e-7 mm (measured: a NucDeck button went from
-// 6.52 mm to 4.58e-7 after a (-0.5, 0, -6.5) translation), and a mismatched pair
-// does not collapse under any of the 24. A free six-degree-of-freedom best fit
-// would instead quietly minimize the very number being used as evidence.
+// Two steps.
 //
-// A pair whose extents match under no rotation is left alone: those are revision
-// drift or genuinely different parts, and that is a finding to report rather
-// than a transform to search for.
+// 1. A coarse frame, chosen from DERIVED candidates only: the identity; each of
+//    the 24 axis-aligned rotations whose permuted bounding-box extents match,
+//    with the translation that matches the box centres; and the four proper
+//    rotations that map the STEP's principal axes of inertia onto the mesh's,
+//    with the translation that matches the centres of mass. The candidate with
+//    the smallest median vertex-to-surface distance wins.
+//
+//    Scoring them is what the first version of this tool refused to do, and it
+//    is why six White-Knight pairs sat 10-17 mm off: a box has the same extents
+//    after a 180 degree flip, so "the first rotation whose extents match" picks
+//    a flip about as often as the truth. The inertia candidates are for frames
+//    the 24 cannot reach at all (the four VoronUsers chain anchors: volumes
+//    equal to 1e-5, extents equal under no axis swap).
+//
+// 2. A rigid least-squares refinement of that frame: point-to-surface
+//    Gauss-Newton over a sample of mesh vertices, all six degrees of freedom.
+//
+//    The first version stopped at step 1's box centres, on the argument that a
+//    fitted transform "would quietly minimize the very number being used as
+//    evidence". That cost more than it bought. A mesh's bounding box is inset
+//    from the true solid by up to the chord error, so a centre-derived
+//    translation is only good to ~1e-4..1e-2 mm, and five genuine pairs read as
+//    failures at a 5e-5 mm tolerance purely from that residue. And the worry
+//    does not survive arithmetic: six parameters against thousands of vertices
+//    cannot make two different shapes agree to float32 precision. Measured, a
+//    pair that is a different revision still reads 0.2 mm and worse after the
+//    fit (see tests/external/README.md), so the verdict keeps its power.
+//
+// The verdict is taken afterwards on EVERY vertex, not on the fitted sample,
+// and is reported as p50 / p95 / max rather than as a single pass/fail.
+
+/// A rigid motion `x -> r * x + t`.
+#[derive(Clone, Copy, Debug)]
+struct Rigid {
+    r: Matrix3<f64>,
+    t: Vector3<f64>,
+}
+
+impl Rigid {
+    fn identity() -> Self {
+        Rigid { r: Matrix3::identity(), t: Vector3::zeros() }
+    }
+    fn apply(&self, p: [f64; 3]) -> [f64; 3] {
+        let q = self.r * Vector3::new(p[0], p[1], p[2]) + self.t;
+        [q.x, q.y, q.z]
+    }
+    fn inverse(&self) -> Self {
+        let rt = self.r.transpose();
+        Rigid { r: rt, t: -(rt * self.t) }
+    }
+    fn angle_deg(&self) -> f64 {
+        ((self.r.trace() - 1.0) / 2.0).clamp(-1.0, 1.0).acos().to_degrees()
+    }
+}
+
+/// Volume, centre of mass and covariance (second central moment per unit
+/// volume) of a solid — everything a principal-axes frame needs.
+struct MassProps {
+    volume: f64,
+    centre: Vector3<f64>,
+    cov: Matrix3<f64>,
+}
+
+/// Exact mass properties of the solid bounded by the given faces of a closed
+/// oriented mesh, by summing signed tetrahedra against the origin.
+fn mesh_mass_props(mesh: &brepper::stage1::ConnectedMesh, faces: &[usize]) -> MassProps {
+    let mut vol = 0.0_f64;
+    let mut m1 = Vector3::zeros();
+    let mut m2 = Matrix3::zeros();
+    for &fi in faces {
+        let f = &mesh.faces[fi];
+        let n = f.vertex_count as usize;
+        let p = |k: usize| {
+            let v = &mesh.vertices[f.vertex_indices[k]];
+            Vector3::new(v.x, v.y, v.z)
+        };
+        for k in 1..n.saturating_sub(1) {
+            let (a, b, c) = (p(0), p(k), p(k + 1));
+            let v = a.dot(&b.cross(&c)) / 6.0;
+            let s = a + b + c;
+            vol += v;
+            m1 += s * (v / 4.0);
+            // Integral of x xT over the tetrahedron (0, a, b, c).
+            m2 += (a * a.transpose() + b * b.transpose() + c * c.transpose() + s * s.transpose())
+                * (v / 20.0);
+        }
+    }
+    let centre = m1 / vol;
+    MassProps { volume: vol, centre, cov: m2 / vol - centre * centre.transpose() }
+}
+
+/// One connected body of the mesh: its vertices and its mass properties.
+struct MeshBody {
+    points: Vec<[f64; 3]>,
+    mass: MassProps,
+}
+
+/// Split a mesh into its vertex-connected bodies, largest volume first.
+fn mesh_bodies(mesh: &brepper::stage1::ConnectedMesh) -> Vec<MeshBody> {
+    let n = mesh.vertices.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for f in &mesh.faces {
+        let a = find(&mut parent, f.vertex_indices[0]);
+        for k in 1..f.vertex_count as usize {
+            let b = find(&mut parent, f.vertex_indices[k]);
+            parent[b] = a;
+        }
+    }
+    let mut faces_of: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (fi, f) in mesh.faces.iter().enumerate() {
+        if f.vertex_count >= 3 {
+            let root = find(&mut parent, f.vertex_indices[0]);
+            faces_of.entry(root).or_default().push(fi);
+        }
+    }
+    let mut points_of: HashMap<usize, Vec<[f64; 3]>> = HashMap::new();
+    for (vi, v) in mesh.vertices.iter().enumerate() {
+        let root = find(&mut parent, vi);
+        points_of.entry(root).or_default().push([v.x, v.y, v.z]);
+    }
+    let mut bodies: Vec<MeshBody> = faces_of
+        .into_iter()
+        .map(|(root, faces)| MeshBody {
+            points: points_of.remove(&root).unwrap_or_default(),
+            mass: mesh_mass_props(mesh, &faces),
+        })
+        .collect();
+    bodies.sort_by(|a, b| b.mass.volume.abs().total_cmp(&a.mass.volume.abs()));
+    bodies
+}
+
+/// Each solid of a shape, wrapped in its own compound, largest volume first.
+fn step_solids(shape: &topo_ds::Shape) -> Vec<OwnedPtr<topo_ds::Compound>> {
+    let mut out = Vec::new();
+    let mut explorer = top_exp::Explorer::new_shape_shapeenum2(
+        shape,
+        top_abs::ShapeEnum::Solid,
+        top_abs::ShapeEnum::Shape,
+    );
+    while explorer.more() {
+        let builder = topo_ds::Builder::new();
+        let mut compound = topo_ds::Compound::new();
+        builder.make_compound(&mut compound);
+        builder.add(compound.as_shape_mut(), explorer.value());
+        out.push(compound);
+        explorer.next();
+    }
+    out.sort_by(|a, b| {
+        shape_volume(b.as_shape()).abs().total_cmp(&shape_volume(a.as_shape()).abs())
+    });
+    out
+}
+
+/// The same for a B-rep, from OCCT's volume properties. `MatrixOfInertia` is
+/// about the centre of mass, `I = integral(|x|^2 Id - x xT)`, so the second
+/// central moment is `(tr I / 2) Id - I`.
+fn step_mass_props(shape: &topo_ds::Shape) -> MassProps {
+    let mut props = g_prop::GProps::new();
+    b_rep_g_prop::volume_properties_shape_gprops_bool3(shape, &mut props, false, false, false);
+    let volume = props.mass();
+    let c = props.centre_of_mass();
+    let i = props.matrix_of_inertia();
+    let im = Matrix3::from_fn(|r, c| *i.value(r as i32 + 1, c as i32 + 1));
+    let m2 = Matrix3::identity() * (im.trace() / 2.0) - im;
+    MassProps { volume, centre: Vector3::new(c.x(), c.y(), c.z()), cov: m2 / volume }
+}
+
+/// Principal axes as matrix columns, largest moment first.
+fn principal_axes(cov: &Matrix3<f64>) -> Matrix3<f64> {
+    let eig = SymmetricEigen::new(*cov);
+    let mut order = [0usize, 1, 2];
+    order.sort_by(|&a, &b| eig.eigenvalues[b].total_cmp(&eig.eigenvalues[a]));
+    Matrix3::from_columns(&[
+        eig.eigenvectors.column(order[0]).into_owned(),
+        eig.eigenvectors.column(order[1]).into_owned(),
+        eig.eigenvectors.column(order[2]).into_owned(),
+    ])
+}
+
+fn percentile(sorted: &[f64], q: f64) -> f64 {
+    if sorted.is_empty() {
+        return f64::NAN;
+    }
+    sorted[((sorted.len() - 1) as f64 * q).round() as usize]
+}
+
+/// p50 / p95 / max of the distance from each point, moved by `m`, to the
+/// reference boundary.
+fn distance_stats(
+    points: &[[f64; 3]],
+    m: &Rigid,
+    model: &brepper::reference::ReferenceModel,
+) -> [f64; 3] {
+    let moved: Vec<[f64; 3]> = points.iter().map(|p| m.apply(*p)).collect();
+    let mut d = brepper::stage1::distances_to_shape(&moved, model.shape());
+    d.sort_by(f64::total_cmp);
+    [percentile(&d, 0.5), percentile(&d, 0.95), percentile(&d, 1.0)]
+}
+
+/// Every `stride`-th point, at most `cap` of them. Deterministic.
+fn subsample(points: &[[f64; 3]], cap: usize) -> Vec<[f64; 3]> {
+    let stride = points.len().div_ceil(cap.max(1)).max(1);
+    points.iter().step_by(stride).copied().collect()
+}
+
+/// Refine `m` (mesh frame -> reference frame) by point-to-surface Gauss-Newton.
+///
+/// Each iteration takes every sample's footpoint on the reference and solves
+/// the linearized problem `min sum (n_i . (p_i + w x (p_i - c) + d - q_i))^2`
+/// for a small rotation `w` about the sample centroid `c` and a translation
+/// `d`. Residuals beyond six times the median are left out of that solve: a
+/// wild mesh carries a thin tail of stray vertices (measured: p95 at float32
+/// precision with a max 100-1000x larger), and a least-squares fit would tilt
+/// the whole frame to split the difference with them.
+///
+/// The solve is by SVD with a relative cutoff, so a motion the geometry does
+/// not constrain — rotation about the axis of a part that is a solid of
+/// revolution — is left at zero instead of being amplified from noise.
+fn refine_rigid(
+    mut m: Rigid,
+    points: &[[f64; 3]],
+    model: &brepper::reference::ReferenceModel,
+) -> Rigid {
+    let mut last_step = f64::MAX;
+    for _ in 0..25 {
+        let moved: Vec<[f64; 3]> = points.iter().map(|p| m.apply(*p)).collect();
+        let feet = brepper::reference::footpoints(&moved, model);
+        let mut rows: Vec<(Vector3<f64>, Vector3<f64>, f64)> = Vec::with_capacity(moved.len());
+        for (p, fp) in moved.iter().zip(&feet) {
+            let Some(fp) = fp else { continue };
+            let p = Vector3::new(p[0], p[1], p[2]);
+            let d = p - Vector3::new(fp.point[0], fp.point[1], fp.point[2]);
+            let n = match fp.normal {
+                Some(n) => Vector3::new(n[0], n[1], n[2]),
+                // Closest point on an edge or vertex: no face normal, so use
+                // the direction of approach while it is still well defined.
+                None if d.norm() > 1.0e-9 => d / d.norm(),
+                None => continue,
+            };
+            rows.push((p, n, n.dot(&d)));
+        }
+        if rows.len() < 6 {
+            break;
+        }
+        let mut abs: Vec<f64> = rows.iter().map(|r| r.2.abs()).collect();
+        abs.sort_by(f64::total_cmp);
+        let cut = (6.0 * percentile(&abs, 0.5)).max(1.0e-12);
+        rows.retain(|r| r.2.abs() <= cut);
+
+        let c = rows.iter().fold(Vector3::zeros(), |a, r| a + r.0) / rows.len() as f64;
+        let radius = rows.iter().map(|r| (r.0 - c).norm()).fold(0.0_f64, f64::max);
+        let mut a = Matrix6::<f64>::zeros();
+        let mut b = Vector6::<f64>::zeros();
+        for (p, n, r) in &rows {
+            let x = (p - c).cross(n);
+            let j = Vector6::new(x.x, x.y, x.z, n.x, n.y, n.z);
+            a += j * j.transpose();
+            b -= j * *r;
+        }
+        let Ok(x) = a.svd(true, true).solve(&b, 1.0e-10 * a.trace()) else { break };
+        let w = Vector3::new(x[0], x[1], x[2]);
+        let d = Vector3::new(x[3], x[4], x[5]);
+        let dr = Rotation3::from_scaled_axis(w).into_inner();
+        m = Rigid { r: dr * m.r, t: dr * (m.t - c) + c + d };
+        // Converged, or as converged as the footpoints allow: once the update
+        // is below a float32 quantum and has stopped shrinking, further rounds
+        // only chase the distance query's own noise.
+        let step = d.norm() + w.norm() * radius;
+        if step < 1.0e-9 || (step < 1.0e-6 && step > 0.5 * last_step) {
+            break;
+        }
+        last_step = step;
+    }
+    m
+}
 
 /// Bounding box of a shape as (min, max).
 ///
@@ -828,9 +1098,113 @@ fn axis_rotations() -> Vec<[[f64; 3]; 3]> {
     out
 }
 
-fn align_corpus(dir: &str) {
-    let mut aligned = 0;
-    let mut untouched = Vec::new();
+/// Fit one rigid body: the motion `T` that carries `shape` (the reference, as
+/// published) onto the mesh points, the name of the coarse candidate it was
+/// refined from, and the median distance it reached on a small sample.
+fn fit_body(
+    points: &[[f64; 3]],
+    mesh_mass: &MassProps,
+    shape: &topo_ds::Shape,
+) -> (Rigid, String, f64) {
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    for p in points {
+        for i in 0..3 {
+            lo[i] = lo[i].min(p[i]);
+            hi[i] = hi[i].max(p[i]);
+        }
+    }
+    let mesh_size = Vector3::new(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+    let mesh_centre = Vector3::new(hi[0] + lo[0], hi[1] + lo[1], hi[2] + lo[2]) / 2.0;
+    let diag = mesh_size.norm().max(1e-9);
+    let model = brepper::reference::ReferenceModel::load(shape);
+
+    // --- Step 1: the coarse frame, from derived candidates. ---
+    // Candidates are (label, T) with T mapping the reference into the mesh
+    // frame; they are scored through T's inverse so the reference shape is
+    // never moved.
+    let score_pts = subsample(points, 80);
+    let raw_score = distance_stats(&score_pts, &Rigid::identity(), &model)[0];
+    let mut best = ("identity".to_string(), Rigid::identity(), raw_score);
+    // Within a thousandth of the part's size the refinement converges from
+    // where it stands, and searching frames would only cost time.
+    if raw_score > 1.0e-3 * diag {
+        let mut candidates: Vec<(String, Rigid)> = Vec::new();
+        let (slo, shi) = shape_bounds(shape);
+        let step_size = Vector3::new(shi[0] - slo[0], shi[1] - slo[1], shi[2] - slo[2]);
+        let step_centre = Vector3::new(shi[0] + slo[0], shi[1] + slo[1], shi[2] + slo[2]) / 2.0;
+        let scale = mesh_size.max();
+        for (k, m) in axis_rotations().into_iter().enumerate() {
+            let r = Matrix3::from_fn(|i, j| m[i][j]);
+            let rotated = (r * step_size).abs();
+            if (0..3).all(|i| (rotated[i] - mesh_size[i]).abs() / scale < 0.02) {
+                candidates.push((format!("bbox#{k}"), Rigid { r, t: mesh_centre - r * step_centre }));
+            }
+        }
+        let step_mass = step_mass_props(shape);
+        let em = principal_axes(&mesh_mass.cov);
+        let es = principal_axes(&step_mass.cov);
+        for signs in 0..8 {
+            let s = Matrix3::from_diagonal(&Vector3::new(
+                if signs & 1 != 0 { -1.0 } else { 1.0 },
+                if signs & 2 != 0 { -1.0 } else { 1.0 },
+                if signs & 4 != 0 { -1.0 } else { 1.0 },
+            ));
+            let r = em * s * es.transpose();
+            if r.determinant() > 0.0 {
+                candidates.push((
+                    format!("inertia#{signs}"),
+                    Rigid { r, t: mesh_mass.centre - r * step_mass.centre },
+                ));
+            }
+        }
+        // Score every candidate where it stands, then refine the best few on a
+        // small sample before choosing: principal axes are only as good as the
+        // solid's moments are distinct, and a candidate that starts a few
+        // degrees out can still be the right one.
+        let mut scored: Vec<(f64, String, Rigid)> = candidates
+            .into_iter()
+            .map(|(label, t)| (distance_stats(&score_pts, &t.inverse(), &model)[0], label, t))
+            .collect();
+        scored.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let trial_pts = subsample(points, 200);
+        for (_, label, t) in scored.into_iter().take(6) {
+            let m = refine_rigid(t.inverse(), &trial_pts, &model);
+            let score = distance_stats(&score_pts, &m, &model)[0];
+            if score < best.2 {
+                best = (label, m.inverse(), score);
+            }
+        }
+    }
+    let (coarse, coarse_t, _) = best;
+
+    // --- Step 2: rigid refinement. ---
+    let fitted_m = refine_rigid(coarse_t.inverse(), &subsample(points, 800), &model);
+    let score = distance_stats(&score_pts, &fitted_m, &model)[0];
+    (fitted_m.inverse(), coarse, score)
+}
+
+/// One pair's outcome, for the report and `alignment.tsv`.
+struct AlignRow {
+    stem: String,
+    verdict: &'static str,
+    reference: String,
+    raw: [f64; 3],
+    fitted: [f64; 3],
+    angle_deg: f64,
+    shift_mm: f64,
+    volume_rel: f64,
+    coarse: String,
+    vertices: usize,
+    /// Vertices farther than the tolerance from the reference used, and how
+    /// many of those are closest to a reference edge or vertex.
+    stray: usize,
+    stray_boundary: usize,
+    /// How many of the strays stage 1.2 excuses; `None` where not asked.
+    stray_excused: Option<usize>,
+}
+
+fn align_corpus(dir: &str, filter: Option<&str>) {
     let mut entries: Vec<_> = std::fs::read_dir(dir)
         .expect("cannot read alignment directory")
         .filter_map(|e| e.ok())
@@ -839,8 +1213,13 @@ fn align_corpus(dir: &str) {
         .collect();
     entries.sort();
 
+    let mut rows: Vec<AlignRow> = Vec::new();
+    let mut skipped = Vec::new();
     for stl_path in entries {
         let stem = stl_path.file_stem().unwrap().to_string_lossy().to_string();
+        if filter.is_some_and(|f| !stem.contains(f)) {
+            continue;
+        }
         let step_path = format!("{dir}/{stem}.step");
         if !std::path::Path::new(&step_path).exists() {
             continue;
@@ -853,110 +1232,374 @@ fn align_corpus(dir: &str) {
         ) {
             Ok(m) => m,
             Err(e) => {
-                untouched.push(format!("{stem}: STL unreadable ({e})"));
+                skipped.push(format!("{stem}: STL unreadable ({e})"));
                 continue;
             }
         };
         if mesh.vertices.is_empty() {
             continue;
         }
-        let mut lo = [f64::MAX; 3];
-        let mut hi = [f64::MIN; 3];
-        for v in &mesh.vertices {
-            for (i, c) in [v.x, v.y, v.z].into_iter().enumerate() {
-                lo[i] = lo[i].min(c);
-                hi[i] = hi[i].max(c);
-            }
-        }
-        let mesh_size = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
-        let mesh_centre = [
-            (hi[0] + lo[0]) / 2.0,
-            (hi[1] + lo[1]) / 2.0,
-            (hi[2] + lo[2]) / 2.0,
-        ];
-
         let shape = match read_step_file(&step_path) {
             Ok(s) => s,
             Err(e) => {
-                untouched.push(format!("{stem}: STEP unreadable ({e})"));
+                skipped.push(format!("{stem}: STEP unreadable ({e})"));
                 continue;
             }
         };
-        let (slo, shi) = shape_bounds(&shape);
-        let step_size = [shi[0] - slo[0], shi[1] - slo[1], shi[2] - slo[2]];
-        let step_centre = [
-            (shi[0] + slo[0]) / 2.0,
-            (shi[1] + slo[1]) / 2.0,
-            (shi[2] + slo[2]) / 2.0,
-        ];
-        let scale = mesh_size.iter().fold(0.0_f64, |a, &b| a.max(b)).max(1e-9);
+        let t0 = std::time::Instant::now();
+        let points: Vec<[f64; 3]> = mesh.vertices.iter().map(|v| [v.x, v.y, v.z]).collect();
 
-        // The first rotation whose permuted extents match; extents alone decide,
-        // never the distance the gate will measure.
-        let chosen = axis_rotations().into_iter().find(|m| {
-            (0..3).all(|r| {
-                let rotated: f64 = (0..3).map(|c| m[r][c] * step_size[c]).sum::<f64>().abs();
-                (rotated - mesh_size[r]).abs() / scale < 0.02
-            })
-        });
-        let Some(m) = chosen else {
-            untouched.push(format!(
-                "{stem}: extents {:.1}x{:.1}x{:.1} vs {:.1}x{:.1}x{:.1} match under no rotation",
-                mesh_size[0], mesh_size[1], mesh_size[2],
-                step_size[0], step_size[1], step_size[2]
-            ));
-            continue;
+        // Stated against the default --vertex-tolerance, floored on what the
+        // mesh's own float32 storage can resolve.
+        let tol = 5.0e-5_f64.max(brepper::stage1::float32_position_bound_mm(&mesh));
+
+        // (p50, p95, max) over every vertex, plus the footpoints they came from.
+        let measure = |target: &topo_ds::Shape| {
+            let model = brepper::reference::ReferenceModel::load(target);
+            let feet = brepper::reference::footpoints(&points, &model);
+            let mut d: Vec<f64> = feet.iter().map(|f| f.map_or(f64::MAX, |f| f.distance)).collect();
+            d.sort_by(f64::total_cmp);
+            ([percentile(&d, 0.5), percentile(&d, 0.95), percentile(&d, 1.0)], feet)
         };
-        let rotated_centre: Vec<f64> = (0..3)
-            .map(|r| (0..3).map(|c| m[r][c] * step_centre[c]).sum())
-            .collect();
-        let t = [
-            mesh_centre[0] - rotated_centre[0],
-            mesh_centre[1] - rotated_centre[1],
-            mesh_centre[2] - rotated_centre[2],
-        ];
-        let identity = m[0][0] == 1.0 && m[1][1] == 1.0 && m[2][2] == 1.0;
-        let shift = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
-        // A translation this small is not evidence of displacement. Both centres
-        // come from bounding boxes, and a tessellated mesh's box is inset from
-        // the true solid by up to the sag — asymmetrically, so the centre
-        // inherits an error of that order (~1e-2 mm on these meshes). Applying
-        // it makes an already-framed pair WORSE: measured on the ToolChanger
-        // ducts, whose vertex p95 went 6.9e-6 -> 4.4e-4 mm when a ~4e-4 mm
-        // "correction" was applied to a pair that was already exact.
-        //
-        // The cut is safe rather than tuned: across the corpus the shifts are
-        // bimodal with a 3000x empty gap — noise at 5e-4 and 2e-3 mm, real
-        // displacements at 6.5 mm and above — so any cut inside the gap gives
-        // the same answer. The skipped magnitude is printed, so a future corpus
-        // landing IN the gap shows up instead of being silently decided.
-        const NOISE_SHIFT_MM: f64 = 1.0e-2;
-        if identity && shift < NOISE_SHIFT_MM {
-            println!("  {stem}: already aligned (bbox centres differ by {shift:.3e} mm, below the {NOISE_SHIFT_MM:.0e} mm noise floor)");
-            continue;
+        let (raw, raw_feet) = measure(&shape);
+
+        // A multi-body part is routinely published with its bodies laid out for
+        // printing in the STL and assembled in the STEP (measured: the four
+        // VoronUsers chain anchors, two bodies each, volume and area equal to
+        // 1e-5 and no rigid motion between the files). Each body is rigid, so
+        // each is fitted on its own.
+        let bodies = mesh_bodies(&mesh);
+        let solids = step_solids(&shape);
+        let solid_volumes: Vec<f64> =
+            solids.iter().map(|s| shape_volume(s.as_shape()).abs()).collect();
+        let compatible = |b: &MeshBody, sv: f64| (b.mass.volume.abs() - sv).abs() / sv < 0.02;
+        let whole_faces: Vec<usize> = (0..mesh.faces.len()).collect();
+        let whole_mass = mesh_mass_props(&mesh, &whole_faces);
+        let volume_rel = {
+            let sv = shape_volume(&shape);
+            (whole_mass.volume - sv) / sv
+        };
+
+        // (solid index, T, coarse label), one per piece of the reference.
+        let mut fits: Vec<(usize, Rigid, String)> = Vec::new();
+        // A pair that already verifies as published is left exactly as it is.
+        // This is not only thrift: with nothing to improve, a fit can only
+        // trade one exact placement for another, and on a multi-body part of
+        // congruent bodies it can swap them (measured: `OpenBot__90deg_joint`,
+        // every vertex still on a surface and a facet centroid 2.25 mm off).
+        let already_exact = raw[2] <= tol;
+        if already_exact {
+            fits.push((0, Rigid::identity(), "as-published".to_string()));
+        } else if bodies.len() > 1 && bodies.len() == solids.len() {
+            // Volume says which solids a body COULD be; the fit says which it
+            // is. Volume alone is not enough: the two halves of
+            // `10x15_chain_bottom_anchor` differ by 2e-6 relative, far inside
+            // the tessellation's own volume error, and are not interchangeable.
+            let mut trials: Vec<(f64, usize, usize, Rigid, String)> = Vec::new();
+            for (bi, body) in bodies.iter().enumerate() {
+                for (si, solid) in solids.iter().enumerate() {
+                    if compatible(body, solid_volumes[si]) {
+                        let (t, label, score) = fit_body(&body.points, &body.mass, solid.as_shape());
+                        trials.push((score, bi, si, t, label));
+                    }
+                }
+            }
+            trials.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut body_done = vec![false; bodies.len()];
+            let mut solid_done = vec![false; solids.len()];
+            for (_, bi, si, t, label) in trials {
+                if !body_done[bi] && !solid_done[si] {
+                    body_done[bi] = true;
+                    solid_done[si] = true;
+                    fits.push((si, t, label));
+                }
+            }
+            if fits.len() != bodies.len() {
+                fits.clear();
+            }
+        }
+        let per_body = !already_exact && !fits.is_empty();
+        if fits.is_empty() {
+            let (t, label, _) = fit_body(&points, &whole_mass, &shape);
+            fits.push((0, t, label));
         }
 
-        let mut trsf = gp::Trsf::new();
-        trsf.set_values(
-            m[0][0], m[0][1], m[0][2], t[0],
-            m[1][0], m[1][1], m[1][2], t[1],
-            m[2][0], m[2][1], m[2][2], t[2],
-        );
-        let mut xform = b_rep_builder_api::Transform::new_shape_trsf_bool(&shape, &trsf, true);
-        let moved = xform.as_modify_shape_mut().shape();
-        write_step(moved, dir, &format!("{stem}_aligned"));
+        // Move the reference, then measure every vertex against the MOVED
+        // shape: the verdict is on the file that will be used, not on the
+        // sample the fit saw.
+        let mut xforms = Vec::new();
+        for (si, t, _) in fits.iter() {
+            let mut trsf = gp::Trsf::new();
+            trsf.set_values(
+                t.r[(0, 0)], t.r[(0, 1)], t.r[(0, 2)], t.t[0],
+                t.r[(1, 0)], t.r[(1, 1)], t.r[(1, 2)], t.t[1],
+                t.r[(2, 0)], t.r[(2, 1)], t.r[(2, 2)], t.t[2],
+            );
+            let piece: &topo_ds::Shape = if per_body { solids[*si].as_shape() } else { &shape };
+            xforms.push(b_rep_builder_api::Transform::new_shape_trsf_bool(piece, &trsf, true));
+        }
+        let builder = topo_ds::Builder::new();
+        let mut assembled = topo_ds::Compound::new();
+        builder.make_compound(&mut assembled);
+        for xf in xforms.iter_mut() {
+            builder.add(assembled.as_shape_mut(), xf.as_modify_shape_mut().shape());
+        }
+        let moved: &topo_ds::Shape = if per_body {
+            assembled.as_shape()
+        } else {
+            xforms[0].as_modify_shape_mut().shape()
+        };
+
+        let (fitted, fitted_feet) = if already_exact {
+            (raw, raw_feet.clone())
+        } else {
+            measure(moved)
+        };
+        let angle_deg = fits.iter().map(|f| f.1.angle_deg()).fold(0.0_f64, f64::max);
+        let shift_mm = fits.iter().map(|f| f.1.t.norm()).fold(0.0_f64, f64::max);
+        let coarse = fits.iter().map(|f| f.2.as_str()).collect::<Vec<_>>().join("+");
+
+        // Keep the reference as published unless moving it helps: a pair that
+        // is already in one frame gains nothing from a re-written STEP.
+        let improves = !already_exact && (fitted[0] < 0.5 * raw[0] || fitted[1] < 0.5 * raw[1]);
+        let aligned_path = format!("{dir}/{stem}_aligned.step");
+        let (reference, stats) = if improves {
+            write_step(moved, dir, &format!("{stem}_aligned"));
+            (format!("{stem}_aligned.step"), fitted)
+        } else {
+            // A stale file from an earlier run would otherwise keep being used.
+            if std::path::Path::new(&aligned_path).exists() {
+                std::fs::remove_file(&aligned_path).expect("cannot remove stale aligned STEP");
+                println!("removed stale {aligned_path}");
+            }
+            (format!("{stem}.step"), raw)
+        };
+
+        // Where the vertices that miss the tolerance sit: closest to the interior
+        // of a reference face, or to one of its edges or vertices. Describes the
+        // reference actually used.
+        let (mut stray, mut stray_boundary) = (0usize, 0usize);
+        let mut stray_points = Vec::new();
+        for (p, fp) in points.iter().zip(if improves { &fitted_feet } else { &raw_feet }) {
+            let Some(fp) = fp else { continue };
+            if fp.distance > tol {
+                stray += 1;
+                stray_points.push(*p);
+                if fp.normal.is_none() {
+                    stray_boundary += 1;
+                }
+            }
+        }
+        // How many of those stage 1.2 would excuse (`BoundaryMiss::excused`):
+        // on both adjacent surfaces and within the edge's own tolerance. Only
+        // worth asking where the strays are a tail; `None` otherwise.
+        let stray_excused = (stats[1] <= tol && stray > 0).then(|| {
+            let used = brepper::reference::ReferenceModel::load(if improves { moved } else { &shape });
+            stray_points
+                .iter()
+                .filter(|p| used.boundary_miss(**p).is_some_and(|m| m.excused(tol)))
+                .count()
+        });
+        let verdict = if stats[2] <= tol {
+            "exact"
+        } else if stray_excused == Some(stray) {
+            "trim"
+        } else if stats[1] <= tol {
+            "tail"
+        } else if stats[0] <= tol {
+            "partial"
+        } else {
+            "mismatch"
+        };
         println!(
-            "  {stem}: {} translate ({:.3}, {:.3}, {:.3})",
-            if identity { "aligned by".to_string() } else { format!("rotation {m:?} +") },
-            t[0], t[1], t[2]
+            "  {stem}: {verdict} via {reference} [{coarse}; rot {:.4} deg, shift {:.4} mm] \
+             raw p50 {:.2e} p95 {:.2e} max {:.2e} -> fitted p50 {:.2e} p95 {:.2e} max {:.2e} \
+             ({stray}/{} over tolerance, {stray_boundary} of them nearest an edge; \
+             volume {:+.1e}, {:.1}s)",
+            angle_deg, shift_mm,
+            raw[0], raw[1], raw[2], fitted[0], fitted[1], fitted[2],
+            points.len(), volume_rel, t0.elapsed().as_secs_f64(),
         );
-        aligned += 1;
+        rows.push(AlignRow {
+            stem,
+            verdict,
+            reference,
+            raw,
+            fitted,
+            angle_deg,
+            shift_mm,
+            volume_rel,
+            coarse,
+            vertices: points.len(),
+            stray,
+            stray_boundary,
+            stray_excused,
+        });
     }
 
-    println!("\naligned {aligned}; left alone {}:", untouched.len());
-    for u in &untouched {
-        println!("  {u}");
+    for s in &skipped {
+        println!("  skipped {s}");
     }
+
+    // alignment.tsv: one row per pair. A filtered run replaces only the rows it
+    // re-measured and keeps the rest.
+    let tsv_path = format!("{dir}/alignment.tsv");
+    let mut lines: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    if filter.is_some() {
+        if let Ok(old) = std::fs::read_to_string(&tsv_path) {
+            for line in old.lines() {
+                if let Some((stem, _)) = line.split_once('\t') {
+                    if !line.starts_with('#') && stem != "stem" {
+                        // Rows written before `stray_excused` existed.
+                        let pad = if line.split('\t').count() == 16 { "\t-" } else { "" };
+                        lines.insert(stem.to_string(), format!("{line}{pad}"));
+                    }
+                }
+            }
+        }
+    }
+    for r in &rows {
+        lines.insert(
+            r.stem.clone(),
+            format!(
+                "{}\t{}\t{}\t{:.3e}\t{:.3e}\t{:.3e}\t{:.3e}\t{:.3e}\t{:.3e}\t{:.5}\t{:.5}\t{:+.2e}\t{}\t{}\t{}\t{}\t{}",
+                r.stem, r.verdict, r.reference,
+                r.raw[0], r.raw[1], r.raw[2], r.fitted[0], r.fitted[1], r.fitted[2],
+                r.angle_deg, r.shift_mm, r.volume_rel, r.coarse,
+                r.vertices, r.stray, r.stray_boundary,
+                r.stray_excused.map_or("-".to_string(), |n| n.to_string()),
+            ),
+        );
+    }
+    let mut tsv = String::from(
+        "# Written by `gen_test_models align`. Distances are mesh vertex -> reference\n\
+         # surface in mm over EVERY vertex; raw = as published, fit = after the rigid fit.\n\
+         # verdict (of the reference actually used): exact = max within tolerance; trim = every\n\
+         # vertex beyond it misses only the reference's trim (stage 1.2 passes these too);\n\
+         # tail = p95 within (a few genuinely stray vertices); partial = p50 within (most of\n\
+         # the part agrees, some does not: revision drift or a heavy tail); mismatch = not the\n\
+         # same geometry.\n\
+         # volume_rel = (mesh - STEP) / STEP; a mesh normally loses a little to chord error.\n\
+         # stray = vertices beyond tolerance of the reference used; stray_edge = those of\n\
+         # them whose closest reference point is on an edge or vertex, not inside a face;\n\
+         # stray_excused = those stage 1.2 excuses (asked only where p95 is within tolerance).\n\
+         stem\tverdict\treference\traw_p50\traw_p95\traw_max\tfit_p50\tfit_p95\tfit_max\t\
+         rot_deg\tshift_mm\tvolume_rel\tcoarse\tvertices\tstray\tstray_edge\tstray_excused\n",
+    );
+    for line in lines.values() {
+        tsv.push_str(line);
+        tsv.push('\n');
+    }
+    std::fs::write(&tsv_path, tsv).expect("failed to write alignment.tsv");
+    println!("wrote {tsv_path}");
+
+    // Re-point sources.tsv, which tools/sweep.sh pairs models by.
+    let sources_path = format!("{dir}/sources.tsv");
+    if let Ok(old) = std::fs::read_to_string(&sources_path) {
+        let chosen: HashMap<&str, &str> =
+            rows.iter().map(|r| (r.stem.as_str(), r.reference.as_str())).collect();
+        let mut out = String::new();
+        for line in old.lines() {
+            match line.split_once('\t') {
+                Some((stem, _)) if !line.starts_with('#') && chosen.contains_key(stem) => {
+                    out.push_str(&format!("{stem}\t{dir}/{}\n", chosen[stem]));
+                }
+                _ => {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        }
+        std::fs::write(&sources_path, out).expect("failed to write sources.tsv");
+        println!("wrote {sources_path}");
+    }
+
+    let count = |v: &str| lines.values().filter(|l| l.split('\t').nth(1) == Some(v)).count();
+    println!(
+        "\n{} pairs: {} exact, {} trim, {} tail, {} partial, {} mismatch",
+        lines.len(), count("exact"), count("trim"), count("tail"), count("partial"), count("mismatch"),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Stray-vertex diagnosis
+// ---------------------------------------------------------------------------
+//
+// `gen_test_models strays <stl> <step>` lists the mesh vertices that are
+// farther than the vertex tolerance from the reference's TRIMMED faces, and for
+// each asks `ReferenceModel::boundary_miss` how far it is from the UNTRIMMED
+// surfaces meeting at its closest point. It is the evidence behind stage 1.2's
+// boundary rule (`compare_mesh_to_step`), kept runnable so the rule can be
+// re-checked on a new corpus.
+fn diagnose_strays(stl_path: &str, step_path: &str) {
+    let mesh = brepper::stage1::read_connected_mesh_from_stl(
+        stl_path,
+        brepper::stage1::VertexWeldOptions::default(),
+    )
+    .expect("STL unreadable");
+    let shape = read_step_file(step_path).expect("STEP unreadable");
+    let model = brepper::reference::ReferenceModel::load(&shape);
+    let points: Vec<[f64; 3]> = mesh.vertices.iter().map(|v| [v.x, v.y, v.z]).collect();
+    let tol = 5.0e-5_f64.max(brepper::stage1::float32_position_bound_mm(&mesh));
+    let dists = brepper::stage1::distances_to_shape(&points, model.shape());
+
+    // BREPPER_STRAYS_DUMP=<path>: write every vertex with its distance and stop,
+    // for analysis that wants the whole field (where the strays are on the part).
+    if let Ok(path) = std::env::var("BREPPER_STRAYS_DUMP") {
+        let mut out = String::from("x\ty\tz\tdistance_mm\n");
+        for (p, d) in points.iter().zip(&dists) {
+            out.push_str(&format!("{}\t{}\t{}\t{:e}\n", p[0], p[1], p[2], d));
+        }
+        std::fs::write(&path, out).expect("cannot write stray dump");
+        println!("wrote {path}");
+        return;
+    }
+
+    let mut order: Vec<usize> = (0..points.len()).filter(|&i| dists[i] > tol).collect();
+    order.sort_by(|&a, &b| dists[b].total_cmp(&dists[a]));
+    let (mut on_intersection, mut on_one, mut interior, mut off) = (0usize, 0usize, 0usize, 0usize);
+    let mut worst_excused = 0.0_f64;
+    let mut over_support_tol = 0usize;
+    // The first few of each class, worst first.
+    let mut shown: HashMap<&str, usize> = HashMap::new();
+    for &i in &order {
+        let Some(miss) = model.boundary_miss(points[i]) else { continue };
+        let class = if miss.excused(tol) {
+            on_intersection += 1;
+            worst_excused = worst_excused.max(miss.trimmed_distance);
+            "on the intersection, within the edge's allowance"
+        } else if miss.on_intersection(tol) {
+            over_support_tol += 1;
+            "on the intersection, BEYOND the edge's allowance"
+        } else if !miss.on_boundary {
+            interior += 1;
+            "face interior"
+        } else if miss.surface_distances.first().is_some_and(|&d| d <= tol) {
+            on_one += 1;
+            "on one surface only"
+        } else {
+            off += 1;
+            "off every adjacent surface"
+        };
+        let seen = shown.entry(class).or_insert(0usize);
+        *seen += 1;
+        if *seen <= 3 {
+            println!(
+                "  vertex {i}: {:.2e} mm outside the trim (edge tolerance {:.2e}), adjacent surfaces {:?} -> {class}",
+                miss.trimmed_distance,
+                miss.support_tolerance,
+                miss.surface_distances.iter().map(|d| format!("{d:.1e}")).collect::<Vec<_>>(),
+            );
+        }
+    }
+    println!(
+        "{} of {} vertices beyond {tol:.1e} mm of the trimmed reference: {on_intersection} excused \
+         (on the intersection of two adjacent surfaces, worst {worst_excused:.2e} mm outside the \
+         trim), {over_support_tol} on an intersection but beyond the edge's allowance, {on_one} on \
+         one adjacent surface only, {off} off every adjacent surface, {interior} in a face interior",
+        order.len(),
+        points.len(),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1602,7 +2245,14 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("align") {
         let dir = args.get(1).cloned().unwrap_or_else(|| "tests/external".to_string());
-        align_corpus(&dir);
+        align_corpus(&dir, args.get(2).map(String::as_str));
+        return;
+    }
+    if args.first().map(String::as_str) == Some("strays") {
+        diagnose_strays(
+            args.get(1).expect("usage: gen_test_models strays <stl> <step>"),
+            args.get(2).expect("usage: gen_test_models strays <stl> <step>"),
+        );
         return;
     }
     if args.first().map(String::as_str) == Some("random") {

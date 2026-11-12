@@ -1,0 +1,44 @@
+# Written by `gen_test_models align`. Distances are mesh vertex -> reference
+# surface in mm over EVERY vertex; raw = as published, fit = after the rigid fit.
+# verdict (of the reference actually used): exact = max within tolerance; trim = every
+# vertex beyond it misses only the reference's trim (stage 1.2 passes these too);
+# tail = p95 within (a few genuinely stray vertices); partial = p50 within (most of
+# the part agrees, some does not: revision drift or a heavy tail); mismatch = not the
+# same geometry.
+# volume_rel = (mesh - STEP) / STEP; a mesh normally loses a little to chord error.
+# stray = vertices beyond tolerance of the reference used; stray_edge = those of
+# them whose closest reference point is on an edge or vertex, not inside a face;
+# stray_excused = those stage 1.2 excuses (asked only where p95 is within tolerance).
+stem	verdict	reference	raw_p50	raw_p95	raw_max	fit_p50	fit_p95	fit_max	rot_deg	shift_mm	volume_rel	coarse	vertices	stray	stray_edge	stray_excused
+NucDeck__+_volume_button	exact	NucDeck__+_volume_button_aligned.step	3.203e0	6.434e0	6.517e0	7.032e-8	2.588e-7	4.353e-7	0.00000	6.51920	-8.94e-4	bbox#0	262	0	0	-
+NucDeck__-_volume_button	exact	NucDeck__-_volume_button_aligned.step	3.203e0	6.434e0	6.517e0	6.512e-8	2.663e-7	4.295e-7	0.00000	6.51920	-8.90e-4	bbox#0	246	0	0	-
+Open-Task-Light__counterweight_-_flex_tab	exact	Open-Task-Light__counterweight_-_flex_tab.step	3.997e-14	1.907e-7	1.907e-7	4.200e-14	1.907e-7	1.907e-7	0.00000	0.00000	-9.82e-1	identity	28	0	0	-
+Open-Task-Light__drag_chain_link	exact	Open-Task-Light__drag_chain_link.step	4.831e-8	1.344e-7	2.274e-7	4.831e-8	1.344e-7	2.274e-7	0.00000	0.00000	+2.15e-4	as-published	1540	0	0	-
+Open-Task-Light__drag_chain_termination_(base)	exact	Open-Task-Light__drag_chain_termination_(base).step	2.879e-8	9.922e-8	3.859e-7	2.879e-8	9.922e-8	3.859e-7	0.00000	0.00000	+5.28e-5	as-published	7080	0	0	-
+Open-Task-Light__led_cover_-_bottom	exact	Open-Task-Light__led_cover_-_bottom.step	2.223e-7	1.166e-6	1.969e-6	2.269e-7	1.166e-6	1.982e-6	0.00000	0.00000	-8.33e-1	identity	1292	0	0	-
+Open-Task-Light__led_cover_-_top	exact	Open-Task-Light__led_cover_-_top.step	1.911e-7	1.184e-6	3.743e-6	2.167e-7	1.171e-6	3.776e-6	0.00000	0.00000	+1.20e-4	identity	3770	0	0	-
+Open-Task-Light__led_cover_drag_chain_termination	exact	Open-Task-Light__led_cover_drag_chain_termination.step	4.847e-8	2.003e-7	2.859e-7	4.847e-8	2.003e-7	2.859e-7	0.00000	0.00000	+1.18e-4	as-published	1330	0	0	-
+Open-Task-Light__penultimate_link	exact	Open-Task-Light__penultimate_link.step	3.252e-8	1.101e-7	2.490e-7	3.318e-8	1.072e-7	2.816e-7	0.00000	0.00000	+3.96e-6	identity	6890	0	0	-
+Open-Task-Light__routed_spacer	exact	Open-Task-Light__routed_spacer.step	6.435e-8	1.973e-7	2.698e-7	6.823e-8	1.826e-7	2.481e-7	0.00000	0.00000	-9.03e-5	identity	1541	0	0	-
+OpenBot__100deg_joint	exact	OpenBot__100deg_joint.step	3.919e-8	6.539e-7	1.414e-6	3.390e-8	6.601e-7	1.396e-6	0.00000	0.00000	-1.69e-3	identity	171	0	0	-
+OpenBot__100deg_joint_mirror	exact	OpenBot__100deg_joint_mirror.step	4.410e-8	6.342e-7	1.414e-6	4.268e-8	6.649e-7	1.387e-6	0.00000	0.00000	-1.69e-3	identity	175	0	0	-
+OpenBot__90deg_joint	exact	OpenBot__90deg_joint.step	5.551e-17	1.141e-6	1.529e-6	5.551e-17	1.141e-6	1.529e-6	0.00000	0.00000	-1.04e-3	as-published	164	0	0	-
+OpenBot__front_light_spacer	exact	OpenBot__front_light_spacer.step	4.156e-8	1.902e-7	2.131e-7	4.135e-8	1.848e-7	2.277e-7	0.00000	0.00000	-3.34e-4	identity	580	0	0	-
+ToolChanger__blower_fan_duct	trim	ToolChanger__blower_fan_duct.step	1.864e-6	6.925e-6	4.333e-4	1.832e-6	6.777e-6	4.335e-4	0.00000	0.00001	+1.83e-4	identity	2913	60	60	60
+ToolChanger__blower_fan_duct_(m)	trim	ToolChanger__blower_fan_duct_(m).step	1.910e-6	6.804e-6	3.427e-4	1.945e-6	6.885e-6	3.416e-4	0.00000	0.00000	+2.10e-4	identity	2997	51	51	51
+ToolChanger__blower_fan_holder_arm	exact	ToolChanger__blower_fan_holder_arm_aligned.step	9.195e1	9.902e1	1.019e2	1.867e-6	4.909e-6	9.304e-6	0.00000	101.87226	+1.12e-6	bbox#0	1854	0	0	-
+ToolChanger__blower_fan_holder_arm_(m)	exact	ToolChanger__blower_fan_holder_arm_(m).step	2.129e-6	5.367e-6	9.395e-6	1.840e-6	5.385e-6	9.373e-6	0.00000	0.00001	+2.76e-6	identity	1867	0	0	-
+ToolChanger__dock_to_rhxs	exact	ToolChanger__dock_to_rhxs.step	2.232e-6	8.351e-6	1.443e-5	2.232e-6	8.351e-6	1.443e-5	0.00000	0.00000	-1.08e-5	as-published	1238	0	0	-
+ToolChanger__dock_to_rhxs_(m)	exact	ToolChanger__dock_to_rhxs_(m).step	2.958e-6	8.292e-6	1.443e-5	2.958e-6	8.292e-6	1.443e-5	0.00000	0.00000	-1.03e-5	as-published	1240	0	0	-
+ToolChanger__docking_station	trim	ToolChanger__docking_station_aligned.step	3.782e1	5.025e1	5.535e1	3.456e-7	1.493e-6	1.779e-4	0.00000	55.34777	+1.93e-5	inertia#0	8400	12	12	12
+ToolChanger__docking_station_(m)	trim	ToolChanger__docking_station_(m)_aligned.step	2.693e1	5.067e1	5.524e1	3.532e-7	1.598e-6	1.787e-4	0.00000	55.23989	+2.00e-5	inertia#0	8443	12	12	12
+ToolChanger__hemera_bowden_bracket	exact	ToolChanger__hemera_bowden_bracket.step	1.270e-7	8.119e-7	9.267e-7	1.342e-7	8.014e-7	9.474e-7	0.00000	0.00000	+1.43e-4	identity	1864	0	0	-
+VoronUsers__10mm_strip_mount_full	exact	VoronUsers__10mm_strip_mount_full.step	7.938e-8	2.891e-6	7.250e-6	8.043e-8	2.888e-6	7.251e-6	0.00000	0.00000	+6.07e-4	identity	543	0	0	-
+VoronUsers__10mm_strip_mount_full_with_channel	exact	VoronUsers__10mm_strip_mount_full_with_channel.step	7.938e-8	2.891e-6	7.250e-6	8.056e-8	2.887e-6	7.254e-6	0.00000	0.00000	+6.36e-4	identity	551	0	0	-
+VoronUsers__10x11_befenybay_chain_top_anchor	exact	VoronUsers__10x11_befenybay_chain_top_anchor_aligned.step	2.011e2	2.147e2	2.179e2	2.070e-6	1.830e-5	3.822e-5	90.00000	263.67580	-4.13e-3	bbox#20+inertia#1	292	0	0	-
+VoronUsers__12mm_strip_mini_mount	exact	VoronUsers__12mm_strip_mini_mount.step	8.676e-8	3.232e-6	7.276e-6	8.166e-8	3.236e-6	7.304e-6	0.00000	0.00000	+3.40e-4	identity	434	0	0	-
+VoronUsers__1515_snapin_ziptie_ldo	exact	VoronUsers__1515_snapin_ziptie_ldo.step	9.991e-8	3.687e-7	4.689e-7	9.972e-8	3.709e-7	4.849e-7	0.00000	0.00000	-3.31e-5	identity	1510	0	0	-
+VoronUsers__1515_snapin_ziptie_makerbeam	exact	VoronUsers__1515_snapin_ziptie_makerbeam.step	4.898e-8	1.653e-7	2.713e-7	4.950e-8	1.684e-7	2.785e-7	0.00000	0.00000	-4.49e-5	identity	1663	0	0	-
+VoronUsers__2020-wago_221-412_tray-5x2	exact	VoronUsers__2020-wago_221-412_tray-5x2.step	1.166e-7	4.265e-7	8.710e-7	1.278e-7	4.137e-7	9.148e-7	0.00000	0.00000	+3.79e-6	identity	839	0	0	-
+White-Knight__1-5i_case_front_v4	exact	White-Knight__1-5i_case_front_v4.step	2.879e-7	2.312e-6	3.689e-6	2.879e-7	2.312e-6	3.689e-6	0.00000	0.00000	-1.14e-3	as-published	1248	0	0	-
+White-Knight__1-belt_stepper_roller_endcap_v1	exact	White-Knight__1-belt_stepper_roller_endcap_v1.step	2.108e-6	4.638e-6	7.815e-6	2.108e-6	4.638e-6	7.815e-6	0.00000	0.00000	-8.26e-4	as-published	3073	0	0	-

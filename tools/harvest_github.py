@@ -66,6 +66,24 @@ REDISTRIBUTABLE = {
 
 MAX_FILE_BYTES = 20 * 1024 * 1024
 
+# Pairs that were harvested, measured and then removed, with the reason and the
+# URL + sha256 needed to get them back. A harvest must not quietly re-fetch
+# them: they pass every check this script makes (the mesh is dense and curved)
+# and fail the one it cannot make, which is whether the mesh was tessellated
+# from that exact STEP. See tests/external/README.md.
+REJECTED = os.path.join(OUT_DIR, "rejected.tsv")
+
+
+def rejected_stems():
+    stems = set()
+    if os.path.exists(REJECTED):
+        with open(REJECTED) as fh:
+            for line in fh:
+                if line.startswith("#") or line.startswith("file\t") or not line.strip():
+                    continue
+                stems.add(line.split("\t")[0].rsplit(".", 1)[0])
+    return stems
+
 
 def gh_api(path, jq=None):
     cmd = ["gh", "api", path]
@@ -231,6 +249,7 @@ def main():
 
     os.makedirs(OUT_DIR, exist_ok=True)
     rows, sources, taken = [], [], 0
+    rejected = rejected_stems()
 
     for repo in CANDIDATE_REPOS:
         if taken >= args.target:
@@ -256,6 +275,8 @@ def main():
             if tried >= args.max_candidates:
                 break
             slug = f"{repo.split('/')[1]}__{pair['stem']}".replace(" ", "_")[:80]
+            if slug in rejected:
+                continue  # measured and removed; see tests/external/rejected.tsv
             if args.dry_run:
                 taken += 1
                 kept += 1
@@ -362,6 +383,9 @@ def main():
         fh.write("# Below ~20 facets/90deg a mesh is weak test material however\n")
         fh.write("# well it verifies -- passing then means having little to get\n")
         fh.write("# wrong. Do not quote a pass rate over the coarse rows.\n")
+        fh.write("# A url pinned to a commit sha instead of a branch is deliberate: the two White-Knight\n")
+        fh.write("# STLs so pinned are the direct Fusion exports from before the upstream commit\n")
+        fh.write("# \"Updated STL file orientation\", which re-saved every STL in that repo.\n")
         fh.write("\t".join(cols) + "\n")
         for r in final:
             fh.write("\t".join(r[c] for c in cols) + "\n")
