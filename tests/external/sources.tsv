@@ -1,17 +1,12 @@
 # STL stem	reference STEP (…_aligned.step = rigidly re-framed; see manifest.tsv)
 NucDeck__+_volume_button	tests/external/NucDeck__+_volume_button_aligned.step
 NucDeck__-_volume_button	tests/external/NucDeck__-_volume_button_aligned.step
-Open-Task-Light__counterweight_-_flex_tab	tests/external/Open-Task-Light__counterweight_-_flex_tab.step
 Open-Task-Light__drag_chain_link	tests/external/Open-Task-Light__drag_chain_link.step
 Open-Task-Light__drag_chain_termination_(base)	tests/external/Open-Task-Light__drag_chain_termination_(base).step
-Open-Task-Light__led_cover_-_bottom	tests/external/Open-Task-Light__led_cover_-_bottom.step
 Open-Task-Light__led_cover_-_top	tests/external/Open-Task-Light__led_cover_-_top.step
 Open-Task-Light__led_cover_drag_chain_termination	tests/external/Open-Task-Light__led_cover_drag_chain_termination.step
 Open-Task-Light__penultimate_link	tests/external/Open-Task-Light__penultimate_link.step
 Open-Task-Light__routed_spacer	tests/external/Open-Task-Light__routed_spacer.step
-OpenBot__100deg_joint	tests/external/OpenBot__100deg_joint.step
-OpenBot__100deg_joint_mirror	tests/external/OpenBot__100deg_joint_mirror.step
-OpenBot__90deg_joint	tests/external/OpenBot__90deg_joint.step
 OpenBot__front_light_spacer	tests/external/OpenBot__front_light_spacer.step
 ToolChanger__blower_fan_duct	tests/external/ToolChanger__blower_fan_duct.step
 ToolChanger__blower_fan_duct_(m)	tests/external/ToolChanger__blower_fan_duct_(m).step
@@ -24,10 +19,7 @@ ToolChanger__docking_station_(m)	tests/external/ToolChanger__docking_station_(m)
 ToolChanger__hemera_bowden_bracket	tests/external/ToolChanger__hemera_bowden_bracket.step
 VoronUsers__10mm_strip_mount_full	tests/external/VoronUsers__10mm_strip_mount_full.step
 VoronUsers__10mm_strip_mount_full_with_channel	tests/external/VoronUsers__10mm_strip_mount_full_with_channel.step
-VoronUsers__10x11_befenybay_chain_top_anchor	tests/external/VoronUsers__10x11_befenybay_chain_top_anchor_aligned.step
 VoronUsers__12mm_strip_mini_mount	tests/external/VoronUsers__12mm_strip_mini_mount.step
-VoronUsers__1515_snapin_ziptie_ldo	tests/external/VoronUsers__1515_snapin_ziptie_ldo.step
-VoronUsers__1515_snapin_ziptie_makerbeam	tests/external/VoronUsers__1515_snapin_ziptie_makerbeam.step
 VoronUsers__2020-wago_221-412_tray-5x2	tests/external/VoronUsers__2020-wago_221-412_tray-5x2.step
 White-Knight__1-5i_case_front_v4	tests/external/White-Knight__1-5i_case_front_v4.step
 White-Knight__1-belt_stepper_roller_endcap_v1	tests/external/White-Knight__1-belt_stepper_roller_endcap_v1.step

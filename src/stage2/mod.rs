@@ -883,6 +883,60 @@ pub fn stage2(
                 &output.selected_face_sets(),
             )
             .print();
+
+            // Type agreement: the share of labelled mesh area on which our
+            // surface is the same KIND of surface as the reference's. Coverage
+            // and purity above cannot see a cone recognized as a sphere (one
+            // surface for one face, both score 1); this can. And unlike a
+            // comparison of face counts it does not care that a kernel splits
+            // a cylinder into two half faces.
+            let (mut agree, mut total) = (0.0_f64, 0.0_f64);
+            for (surface, faces) in output.selected_surfaces.iter().zip(output.selected_face_sets()) {
+                let ours = match surface {
+                    SelectedSurface::Planar(_) => "plane",
+                    SelectedSurface::Conical(i) if output.conical_hypotheses[*i].is_cylinder() => {
+                        "cylinder"
+                    }
+                    SelectedSurface::Conical(_) => "cone",
+                    SelectedSurface::Spherical(_) => "sphere",
+                    SelectedSurface::Toroidal(_) => "torus",
+                    SelectedSurface::BSpline(_) => "freeform",
+                };
+                for fi in faces {
+                    let Some(ri) = labels[fi].face() else { continue };
+                    let theirs = match &model.surfaces[ri] {
+                        crate::reference::RefSurface::Other { .. } => "freeform",
+                        analytic => analytic.type_name(),
+                    };
+                    let f = &output.mesh.faces[fi];
+                    let p = |k: usize| {
+                        let v = &output.mesh.vertices[f.vertex_indices[k]];
+                        [v.x, v.y, v.z]
+                    };
+                    let mut area = 0.0;
+                    for k in 1..(f.vertex_count as usize).saturating_sub(1) {
+                        let (a, b, c) = (p(0), p(k), p(k + 1));
+                        let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                        let w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                        let x = [
+                            u[1] * w[2] - u[2] * w[1],
+                            u[2] * w[0] - u[0] * w[2],
+                            u[0] * w[1] - u[1] * w[0],
+                        ];
+                        area += 0.5 * (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt();
+                    }
+                    total += area;
+                    if ours == theirs {
+                        agree += area;
+                    }
+                }
+            }
+            if total > 0.0 {
+                eprintln!(
+                    "    type agreement {:.4} (share of labelled area whose surface type matches the reference's)",
+                    agree / total
+                );
+            }
         }
     }
 

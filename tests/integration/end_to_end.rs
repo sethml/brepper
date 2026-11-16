@@ -578,7 +578,7 @@ outside the data bounding box'), so nothing explains them. Fix the freeform fit 
 // case below, so a future change that breaks one is visible rather than silent.
 //
 // Not covered here, deliberately:
-//   * tests/downloaded/ (3DBenchy, OrcaCube, xyz-cube-test) — real-world
+//   * tests/downloaded/ (3DBenchy, xyz-cube-test) — real-world
 //     meshes with no verified provenance; Phase 0.8 baselines them as harness
 //     rows, not as suite gates.
 //   * tests/onshape/chamfered_cube_10_c1_medium.ascii.stl — the same geometry

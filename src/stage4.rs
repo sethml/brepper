@@ -22,6 +22,8 @@ pub enum Stage4Error {
     TransferFailed(String),
     WriteFailed(String),
     Compare(Stage4CompareError),
+    /// The written solid is not a valid, faithful conversion of the input mesh.
+    SelfCheck { status: &'static str, detail: String, path: String },
 }
 
 impl Display for Stage4Error {
@@ -31,6 +33,11 @@ impl Display for Stage4Error {
             Stage4Error::TransferFailed(msg) => write!(f, "stage 4.1 STEP transfer failed: {msg}"),
             Stage4Error::WriteFailed(msg) => write!(f, "stage 4.1 STEP write failed: {msg}"),
             Stage4Error::Compare(e) => write!(f, "stage 4.1 compare: {e}"),
+            Stage4Error::SelfCheck { status, detail, path } => write!(
+                f,
+                "self-check: the output is {status} ({detail}). {path} was written anyway; \
+                 --no-self-check skips this check"
+            ),
         }
     }
 }
@@ -109,10 +116,50 @@ pub fn stage4(config: &Config, input: Stage3Output) -> Result<(), Stage4Error> {
         eprintln!("Stage 4.1 ({:.3}s): Wrote {} solid(s) to {output_path}", t.elapsed().as_secs_f64(), input.solids.len());
     }
 
+    // Is this the mesh we were given? Asked on every run, reference or not:
+    // see `crate::selfcheck`. The file is already written, so a failed check
+    // leaves it in place to be looked at and says so.
+    if !config.no_self_check {
+        let t = Instant::now();
+        let check = crate::selfcheck::self_check(config, &input, compound.as_shape());
+        if !config.quiet {
+            eprintln!("{} ({:.3}s)", check.line(), t.elapsed().as_secs_f64());
+            for p in check.problems.iter().chain(&check.examples) {
+                eprintln!("  Self-check: {p}");
+            }
+        }
+        if check.status() != "good" {
+            let mut detail = check.problems.clone();
+            if check.vertices_off > 0 {
+                detail.push(format!(
+                    "{} mesh vert(ices) off their output face, worst {:.3e} mm",
+                    check.vertices_off, check.vertex_max
+                ));
+            }
+            if check.too_loose {
+                detail.push(format!(
+                    "the solid declares a tolerance of {:.3e} mm, above --surface-tolerance",
+                    check.tolerance_max
+                ));
+            }
+            if check.facets_uncovered > 0 {
+                detail.push(format!(
+                    "{} mesh facet(s) not covered by their output face, worst {:.3e} mm",
+                    check.facets_uncovered, check.cover_worst
+                ));
+            }
+            return Err(Stage4Error::SelfCheck {
+                status: check.status(),
+                detail: detail.join("; "),
+                path: output_path.to_string(),
+            });
+        }
+    }
+
     // Verify the written file only under --compare (it already re-reads the
     // output, so the round-trip self-check is free there; a normal run does
     // not pay the extra STEP read).
-    if config.compare_shape.is_some() {
+    if config.compare_gates() {
         verify_output(output_path, in_memory_volume, config)?;
     }
 

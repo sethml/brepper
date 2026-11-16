@@ -4,7 +4,23 @@
 
 **brepper** (B-Rep from Mesh) - A utility to convert triangulated STL meshes from CAD exports into parametric STEP files with fitted analytic and freeform surfaces.
 
+## Current direction (2026-11-12)
+
+**The working plan is at the top of [TODO.md](TODO.md).** In one paragraph: the
+exactness premise below was confirmed on wild SolidWorks and Fusion 360 exports,
+but the pipeline finishes on fewer than half of them and often gets face types
+wrong on simple geometry when it does. Progress is now measured by
+`tools/scoreboard.py`, which judges the output against the input mesh and uses
+a reference STEP only for face labels; the order of work is never-fail first,
+then face quality on analytic-only parts, then freeform cost. Sections of this
+document written before that date describe the pipeline accurately but argue
+for a plan that has been replaced.
+
 ## Design Principles
+
+*(The self-check that ends every run — `src/selfcheck.rs`, added 2026-11-12 — is
+described in README.md; it is what principle 6's "enforced, not assumed" now
+means for the output as a whole.)*
 
 The stage 2 architecture was rewritten twice: from the fit-driven BFS
 hypothesis pipeline to partition-then-classify (2026-07-17), and then —

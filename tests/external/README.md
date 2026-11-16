@@ -3,22 +3,20 @@
 Harvested from GitHub by `tools/harvest_github.py`. Model files are gitignored;
 `manifest.tsv` records url + sha256, `sources.tsv` maps each STL to its reference.
 
-## The corpus now: 32 pairs (pruned 2026-11-11)
+## The corpus now: 24 pairs (pruned 2026-11-13)
 
-53 pairs were harvested. 21 were removed after measuring each mesh against its
-own STEP, and are listed in `rejected.tsv` with the reason and the url + sha256
-that recover them; `tools/harvest_github.py` skips those stems. Every pair that
-remains is within tolerance.
+53 pairs were harvested. 29 were removed — 23 after measuring each mesh against
+its own STEP, 6 because the part is multi-body — and are listed in
+`rejected.tsv` with the reason and the url + sha256 that recover them;
+`tools/harvest_github.py` skips those stems. Every pair that remains is a
+single body and within tolerance.
 
 | Verdict | Pairs | Meaning |
 |---|---|---|
-| exact | 28 | every vertex within 5e-5 mm of the trimmed reference |
+| exact | 20 | every vertex within 5e-5 mm of the trimmed reference |
 | trim | 4 | every vertex beyond it misses only the reference's trim (see below) |
 
-The stage-1.2 `--compare` gate passes **28 of 32**. The other four are exact
-meshes that stage 1 rejects as non-manifold before it compares
-(`OpenBot__100deg_joint`, `…100deg_joint_mirror`,
-`VoronUsers__1515_snapin_ziptie_ldo`, `…ziptie_makerbeam`).
+The stage-1.2 `--compare` gate passes all 24.
 
 ## Which CAD package exported each model (read 2026-11-11)
 
@@ -32,11 +30,9 @@ header carries no signature the STL exporter is an inference from the STEP.
 | NucDeck volume buttons (2) | `SwSTEP 2.0` / `SolidWorks 2021` | `solid <part name>` | SolidWorks 2021 (Parasolid) |
 | ToolChanger, all but one (8) | `SwSTEP 2.0` / `SolidWorks 2021` | `solid <part name>` | SolidWorks 2021 (Parasolid) |
 | ToolChanger `hemera_bowden_bracket` | Autodesk Translation Framework v9.7.1.1290 | `STLB ATF 9.7.1.1290` | Fusion 360 |
-| Open-Task-Light (8) | Autodesk Translation Framework v11.7.0.108 / v11.17.0.187 | `STLB ATF` same versions | Fusion 360 |
-| OpenBot joints (3) | `SIEMENS PLM Software NX 9.0` | blank | Siemens NX 9 (Parasolid); STL writer unconfirmed |
+| Open-Task-Light (6) | Autodesk Translation Framework v11.7.0.108 / v11.17.0.187 | `STLB ATF` same versions | Fusion 360 |
 | OpenBot `front_light_spacer` | Autodesk Translation Framework v10.10.0.1391 (cloud translation path) | `STLB ATF 10.10.0.1391` | Fusion 360 |
-| VoronUsers strip mounts, snap-ins (5) | Autodesk Translation Framework v9.3.0.1241 | `STLB ATF 9.3.0.1241` | Fusion 360 |
-| VoronUsers `10x11_befenybay_chain_top_anchor` | `CATIA Version 5-6 Release 2018` | no signature | CATIA V5 STEP; STL writer unknown |
+| VoronUsers strip mounts (3) | Autodesk Translation Framework v9.3.0.1241 | `STLB ATF 9.3.0.1241` | Fusion 360 |
 | VoronUsers `2020-wago_221-412_tray-5x2` | originating system blank, ST-DEVELOPER v18.1 | no signature | unknown |
 | White-Knight (2) | Autodesk Translation Framework v8.6.0.1094 | `STLB ATF 8.6.0.1094` (the original exports; see below) | Fusion 360 |
 
@@ -45,12 +41,13 @@ the Open-Task-Light, VoronUsers chain-anchor and White-Knight ones are Fusion
 360 STEPs (`rejected.tsv` names each).
 
 `tests/downloaded/`: `3DBenchy` STEP is a FreeCAD / Open CASCADE export (STL
-header `solid Shape0`); `OrcaCube v2` is Fusion 360 (ATF v12.4.0.73, both
-files); `xyz-cube-test-20mm.stl` is Fusion 360 (`STLB ATF 8.12.0.6`).
+header `solid Shape0`); `xyz-cube-test-20mm.stl` is Fusion 360 (`STLB ATF
+8.12.0.6`). `OrcaCube v2` (Fusion 360, two solids) was removed on 2026-11-13
+with the other multi-body parts; it is in git history.
 
-So the wild corpus is two kernels: Parasolid (SolidWorks, NX) and Autodesk
-ShapeManager (Fusion 360), plus one CATIA part. Nothing here is Onshape,
-FreeCAD or Rhino.
+So the wild corpus is two exporters: SolidWorks 2021 (10 pairs) and Fusion 360
+(13 pairs), plus one of unknown origin. The NX and CATIA parts were all
+multi-body and are gone. Nothing here is Onshape, FreeCAD or Rhino.
 
 ## Alignment (re-done 2026-11-11)
 
@@ -73,7 +70,7 @@ rotation. That left five genuine pairs 6e-5..1e-2 mm off (a mesh's bounding box
 is inset by its chord error), six White-Knight pairs 10-17 mm off (a box has the
 same extents after a 180 degree flip), and the four two-body chain anchors
 200-300 mm off (no single motion exists). Several of those pairs have since
-been removed for other reasons; `alignment.tsv` covers the 32 that remain.
+been removed for other reasons; `alignment.tsv` covers the 24 that remain.
 
 ## The boundary rule ("trim")
 
@@ -111,7 +108,24 @@ face interiors, up to about 5e-3 mm — the same pattern as the removed
 `…mount2_for_e3d_v2`, also a direct Fusion export from this author. Re-saving
 is therefore not what makes them inexact, and the cause is not established.
 
-## Removed pairs (21, in `rejected.tsv`)
+## Removed pairs (29, in `rejected.tsv`)
+
+- **Multi-body parts (6), removed by decision on 2026-11-13: the corpus is
+  single-body parts only.** All six were exact. `OpenBot__100deg_joint` (4
+  solids), `…100deg_joint_mirror` (7), `…90deg_joint` (3),
+  `VoronUsers__10x11_befenybay_chain_top_anchor` (2),
+  `VoronUsers__1515_snapin_ziptie_ldo` (2) and `…ziptie_makerbeam` (2). In four
+  of them the bodies touch, which makes the STL non-manifold and stage 1
+  reject it: in `100deg_joint` two bodies share 2 edges; in `ziptie_makerbeam`
+  the raw file has no shared edges and they appear when stage 1 welds nearly
+  coincident vertices; the other two are joined along 8 and 81 edges.
+
+- **The STL is one body of a multi-body STEP (2).**
+  `Open-Task-Light__counterweight_-_flex_tab` (a 4-solid STEP; mesh volume 98%
+  smaller) and `…led_cover_-_bottom` (5 solids; 83% smaller). Every mesh vertex
+  is on the STEP, so the vertex check — which only asks whether the mesh lies
+  on the reference, never the reverse — scored both `exact`. The aligner now
+  compares enclosed volumes first and gives such a pair the verdict `volume`.
 
 - **STEP and STL are different geometry (7).** Vertices more than 0.01 mm
   off, confined to one feature, while the rest of the part is exact.

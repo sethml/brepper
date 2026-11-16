@@ -519,7 +519,7 @@ impl SurfacePair {
 }
 
 /// Build the mapping from mesh face index to selected surface index.
-fn build_face_to_surface_map(output: &Stage2Output) -> Vec<usize> {
+pub(crate) fn build_face_to_surface_map(output: &Stage2Output) -> Vec<usize> {
     let num_faces = output.mesh.faces.len();
     let mut face_to_surface = vec![usize::MAX; num_faces];
     for (si, surface) in output.selected_surfaces.iter().enumerate() {
@@ -6870,7 +6870,7 @@ fn create_occt_faces_all(
     validate_faces(&output, config)?;
 
     // 6. Compare against reference STEP if --compare
-    if config.compare_shape.is_some() {
+    if config.compare_gates() {
         compare_faces_to_step(&output, config)?;
         compare_surface_orientations_to_step(&output, config);
     }
@@ -7012,7 +7012,7 @@ fn construct_shells(
     }
 
     // Compare against reference STEP if --compare
-    if config.compare_shape.is_some() {
+    if config.compare_gates() {
         compare_shells_to_step(&shells, config)?;
     }
 
@@ -7216,7 +7216,7 @@ fn construct_solids(
     }
 
     // Compare against reference STEP if --compare
-    if config.compare_shape.is_some() {
+    if config.compare_gates() {
         compare_solids_to_step(&solids, config)?;
     }
 
@@ -7487,7 +7487,7 @@ pub fn stage3(config: &Config, input: Stage2Output, viz: Option<&crate::viz::Viz
         refine_corner_vertices(vertices, edges, face_descriptors, stage2, config);
     }
 
-    if config.compare_shape.is_some() {
+    if config.compare_gates() {
         compare_adjacency_to_step(
             &output.edges,
             &output.vertices,

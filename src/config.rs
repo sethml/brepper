@@ -146,6 +146,19 @@ struct CliArgs {
     #[arg(long = "reference-report")]
     pub reference_report: bool,
 
+    /// Use the --compare reference for labels only: the stage-1.2 check that
+    /// the mesh lies on it, and --reference-report's scoring. The geometry
+    /// gates of stages 3 and 4, which fail a run whose edges, faces or volume
+    /// differ from the reference's, are skipped. This is the mode
+    /// tools/scoreboard.py runs in: the output is judged against the input
+    /// mesh by the self-check, not against the reference.
+    #[arg(long = "compare-labels-only")]
+    pub compare_labels_only: bool,
+
+    /// Skip the end-of-run self-check of the output against the input mesh.
+    #[arg(long = "no-self-check")]
+    pub no_self_check: bool,
+
     /// Measure the DEVELOPMENT_PLAN "Invariants" against the --compare
     /// reference's ground truth: whether the stated fitting requirement is
     /// satisfiable, whether an angular tolerance can separate adjacent
@@ -290,6 +303,10 @@ pub struct Config {
     pub compare_face_count: usize,
     /// Print the reference-scoring diagnostics (see [`crate::reference`]).
     pub reference_report: bool,
+    /// The reference supplies labels only; stage 3/4 geometry gates are off.
+    pub compare_labels_only: bool,
+    /// Skip the end-of-run self-check (see [`crate::selfcheck`]).
+    pub no_self_check: bool,
     /// Print the invariant measurements (see [`crate::stage2::invariants`]).
     pub invariant_report: bool,
     /// Interactively visualize seed-set growth (see [`crate::stage2::invariants`]).
@@ -334,6 +351,14 @@ pub struct Config {
     pub viz_stages_level: u8,
 }
 
+impl Config {
+    /// Whether the stage 3/4 gates that compare OUR geometry to the reference's
+    /// are in force: a reference was given and it is not labels-only.
+    pub fn compare_gates(&self) -> bool {
+        self.compare_shape.is_some() && !self.compare_labels_only
+    }
+}
+
 impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
@@ -371,6 +396,8 @@ impl Config {
             compare_shape: None,
             compare_face_count: 0,
             reference_report: args.reference_report,
+            compare_labels_only: args.compare_labels_only,
+            no_self_check: args.no_self_check,
             invariant_report: args.invariant_report || args.viz_seeds,
             viz_seeds: args.viz_seeds,
             viz_seed_show: args.viz_seed_show,

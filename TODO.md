@@ -1,4 +1,153 @@
-# Brepper TODO — the Robustness Rework (plan set 2026-07-29)
+# Brepper TODO — the current plan (set 2026-11-12)
+
+**Goal.** Convert CAD-exported STL meshes to STEP: always a valid solid that is
+faithful to the input mesh, with as much of it as possible recovered as the
+analytic faces the designer drew.
+
+This plan replaces the Robustness Rework below, which is kept for its
+measurements. Work the steps in order. Each has a number that moves on the
+scoreboard; report that number in the commit message.
+
+## What the plan rests on (all measured, 2026-11-11/12)
+
+- **The exactness premise holds on wild exports.** 53 STEP+STL pairs were
+  harvested from six open-hardware repos (SolidWorks, Fusion 360, NX, CATIA).
+  After correct alignment, every pair that is a true pair has every vertex on
+  its STEP surfaces to float32 precision. The 23 that did not were removed:
+  7 where the two files are different geometry, 2 where the STL is one body of
+  a multi-body STEP, 14 that disagree by at most 6e-3 mm for a cause that was
+  not established. Six more, exact but multi-body, were removed on 2026-11-13
+  by decision: the corpus is single-body parts only. 24 pairs remain.
+  `tests/external/README.md` has the evidence.
+- **The reference harness produced more false failures than the pipeline.**
+  Bounding-box alignment, distance to *trimmed* faces, non-pairs and a one-way
+  vertex check each failed good data or passed bad. Stage 3.1's edge comparison
+  still has the trim artifact (four SolidWorks parts fail it at ~2e-4 mm), and
+  the compare gates pass a cone recognized as a sphere.
+- **On the verified corpus the pipeline mostly does not finish.** See the
+  baseline below: fewer than half the parts yield a valid, faithful STEP.
+- **Where it finishes, the faces are often wrong on simple geometry.** Every
+  chamfer cone comes out as a sphere band, and plain plane-and-cylinder parts
+  over-segment (a part of 8 planes and 5 cylinders becomes 58 faces including
+  cones, tori and splines).
+
+## Rules
+
+1. **Geometry is judged against the input mesh, never against a reference
+   STEP.** A reference supplies labels only: how many faces, of what type.
+2. **The pipeline must not fail.** Anything it cannot do for one face or one
+   region degrades that face or region; the rest of the part is unaffected.
+3. **A statement in these docs is a measurement or is marked as an
+   inference.** Say which. Several confident sentences in the older sections
+   turned out to be inferences.
+4. **No new tolerance-like or threshold-like constant without user sign-off**
+   (carried over; numeric-conditioning floors are not thresholds, and say so
+   in their doc comments).
+5. **Per commit:** `cargo clippy` clean, build clean, suite green
+   (`cargo test --release --no-fail-fast`, ~3 min), scoreboard diffed against
+   the saved baseline.
+
+## The yardstick: `tools/scoreboard.py`
+
+One row per model, no reference geometry involved in the verdict:
+
+- **status** — `good` (valid closed solid, every mesh vertex on it, volume
+  agrees), `unfaithful`, `invalid`, `fail` (no output), `timeout`.
+- **runtime**, **faces out** and their types.
+- With a reference: **faces in the reference** and their types, and stage 2's
+  area-weighted **coverage** and **purity** against the reference's labels.
+
+Headline numbers: parts `good` out of the wild corpus, and, among those, parts
+whose face types match the reference.
+
+### Baseline (2026-11-12, `tests/scoreboard-baseline.tsv`, 120 s limit)
+
+| | wild (26) | synthetic (137) |
+|---|---|---|
+| good | 10 | 110 |
+| unfaithful | 0 | 13 |
+| invalid | 6 | 5 |
+| fail | 5 | 7 |
+| timeout | 5 | 2 |
+| good and face types match the reference | 4 of 9 labelled | 98 of 109 labelled |
+
+"Wild" is the 24 verified pairs in `tests/external` plus the 2 meshes in
+`tests/downloaded`. (Measured over 33; the rows of the seven multi-body models
+removed on 2026-11-13 were dropped from the file rather than re-run, which
+changes no other row.) What the rows are made of:
+
+- **fail (5):** all stage-3.1 adjacency errors (unsupported winding-loop /
+  pole / seam layouts).
+- **invalid (6):** `BRepCheck` fails on the solid. Three are the strip mounts;
+  the output of `White-Knight__1-5i_case_front_v4` has no solid once written.
+  `Open-Task-Light__led_cover_-_top` is invalid in memory and passes
+  `BRepCheck` after a STEP round trip (the reader heals it) — the only one of
+  the five checked that does.
+- **timeout (5):** 3DBenchy, both blower-fan ducts, and two Open-Task-Light
+  links. The four with a verified reference all have freeform faces, and
+  3DBenchy's hull is one 139k-facet freeform region.
+- **good but wrong type (5):** every one is cones recognized as spheres
+  (type agreement 0.93-0.98).
+- The synthetic `unfaithful` rows are mostly solids that declare an edge
+  tolerance of 0.4-26 mm; several of those models pass every `--compare` gate.
+
+## Steps
+
+1. **The scoreboard, and an always-on self-check.** **DONE 2026-11-12.**
+   `brepper` checks its own output against the input mesh on every run
+   (`src/selfcheck.rs`) and exits non-zero when the solid is invalid or
+   unfaithful, instead of exiting 0 with garbage. `tools/scoreboard.py` runs the
+   corpus and saves/diffs the baseline above. `--compare-labels-only` keeps a
+   reference for labels and turns the stage 3/4 geometry gates off; those gates
+   stay available for the synthetic suite but are no longer what progress is
+   measured by. Stage 2's label scores gained `type agreement`, which is what
+   catches a cone recognized as a sphere.
+   - Found on the way, for step 2: stage 3.4 builds some faces over the wrong
+     sector and `ShapeFix_Solid` in 3.6 silently repairs them (measured on
+     remesh/cone_tangent_planes_offset: a cone face 14 mm from its own facets
+     before 3.6, correct after). Any per-face fallback has to check the face
+     that comes out of 3.6, not the one 3.4 built.
+   - Not done: coverage and purity still count a kernel's two half-cylinder
+     faces as two labels, so merging them (correct) lowers purity. Type
+     agreement is unaffected and is the number to steer by.
+2. **Never fail.** Target: every wild part `good`.
+   - (Dropped from this step 2026-11-13: non-manifold input. The four wild
+     meshes stage 1 rejected for it were all multi-body parts whose bodies
+     touch, and multi-body parts are no longer in the corpus. Stage 1 still
+     rejects such a mesh with a clear error; splitting bodies is not planned
+     until a single-body part needs it.)
+   - Stage 3 hard errors (unsupported loop / seam / pole layouts): demote the
+     face to planar facets and rebuild its neighbours' shared edges.
+   - Stage 2 time budget per region; what is not classified in budget stays
+     faceted.
+   - Stage 2.4's invariant panics become repairs.
+3. **Stage-2 quality on analytic-only parts.** Target: face types match the
+   reference on the parts that have no freeform faces.
+   - Cone versus sphere on single-row bands (every chamfer). Hypothesis, not
+     yet tested: ruling edges lie on the cone and not on the impostor sphere.
+   - Over-segmentation of tangent cylinder chains. Start from the three
+     VoronUsers strip mounts (~1,000 triangles, exact, planes and cylinders
+     only); their logs show `tangent, NO LOCUS: surfaces do not share an axis`
+     and `cone-plane ruling tangency is not implemented`.
+   - Decide patch-versus-rewrite for stage 2.3/2.4 from that diagnosis: a few
+     missing tangency cases means patch; fixes that need new tuned constants
+     mean rewrite the discovery loop around budgeted, deduplicated seeding.
+4. **Freeform cost.** Budgeted seeding and an early "this region is freeform"
+   exit; faceted output by default for freeform regions, B-spline optional.
+   Targets the parts that time out (all have spline faces) and 3DBenchy.
+5. **Shrink the docs.** Archive DEVELOPMENT_PLAN / LEARNINGS / SURFACE_FITTING
+   and the section below; keep a short design document and a dead-ends list.
+
+Not planned: tolerating inexact vertices. Nothing measured calls for it, and
+`--vertex-tolerance` can be raised if a mesh needs it.
+
+---
+
+# Superseded: the Robustness Rework (plan set 2026-07-29)
+
+**Everything below is history.** It is kept for its measurements and its
+dead-end list (rule 6), not as instructions.
+
 
 This file is the **step-by-step execution plan**. Work the phases in order;
 within a phase, work the numbered steps in order unless a step is marked

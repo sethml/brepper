@@ -22,6 +22,12 @@ GENERAL OPTIONS:
                              reference: facet-normal exactness per surface type, closed-form
                              initializer error, the seam assumption, and over/under-segmentation.
                              Diagnostics only. Requires --compare.
+    --compare-labels-only    Use the --compare reference for labels only: the stage-1.2 check
+                             that the mesh lies on it, and --reference-report's scoring. The
+                             stage 3/4 gates that fail a run whose edges, faces or volume
+                             differ from the reference's are skipped. tools/scoreboard.py
+                             runs in this mode.
+    --no-self-check          Skip the end-of-run self-check (see "Self-check" below).
     --invariant-report       Score the DEVELOPMENT_PLAN "Invariants" against the --compare
                              reference: whether the fitting requirement is satisfiable, whether
                              an angular tolerance can separate adjacent surfaces, whether a wrong
@@ -85,6 +91,44 @@ GENERAL OPTIONS:
 # Watch which seed sets fail to grow to their surface, and why
 ./target/release/brepper input.stl --compare reference.step --stage 2.2 --viz-seeds -v
 ```
+
+### Self-check
+
+Every conversion ends by checking the solid it wrote against the mesh it was
+given, with no reference involved, and prints one line:
+
+```
+Self-check: status=good solids=1 faces=44 valid=true vtx_max=1.249e-6 vtx_off=0 uncovered=0 cover_worst=0.000e0 vol_rel=-1.574e-4 tol_max=2.856e-3
+```
+
+- `status=good` — a valid closed solid (`BRepCheck`), every mesh vertex on it
+  (`vtx_off=0`), and output under every mesh facet (`uncovered=0`).
+- `status=unfaithful` — a valid solid that is not the mesh: vertices off it,
+  facets with nothing under them, or a declared tolerance (`tol_max`) above
+  `--surface-tolerance`.
+- `status=invalid` — no solid, or `BRepCheck` fails.
+
+Anything but `good` exits non-zero. The STEP file is still written, so it can
+be inspected, and the message names the worst offending vertices or facets.
+`vol_rel` is the solid's volume against the mesh's and is reported, not gated:
+a mesh legitimately encloses slightly less than the solid it came from.
+`--no-self-check` skips the check. See `src/selfcheck.rs`.
+
+### Scoreboard
+
+```bash
+tools/scoreboard.py            # run the corpus, write tmp/scoreboard.tsv, print a summary
+tools/scoreboard.py --diff     # ...and diff against tests/scoreboard-baseline.tsv
+tools/scoreboard.py --baseline # ...and save the result as that baseline
+```
+
+One row per corpus model: the self-check status, runtime, face types out, and —
+where the model has a reference — the reference's face types and three label
+scores for stage 2 (coverage, purity, and `type_agree`, the share of mesh area
+whose surface is the same kind as the reference's). The verdict on geometry
+never involves the reference. This is the yardstick for the plan in TODO.md;
+`tools/sweep.sh`, which scores runs by per-stage agreement with a reference
+STEP, remains for the synthetic suite.
 
 ### Reference check (`--compare`, stage 1.2)
 

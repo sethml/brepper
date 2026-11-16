@@ -1624,6 +1624,19 @@ pub fn stage1(config: &Config) -> Result<ConnectedMesh, Stage1Error> {
             let model = crate::reference::ReferenceModel::load(shape);
             let labels = crate::reference::label_faces(&mesh, &model);
             crate::reference::report(&mesh, &model, &labels).print();
+            let count = |name: &str| model.surfaces.iter().filter(|s| s.type_name() == name).count();
+            let named: usize =
+                ["plane", "cylinder", "cone", "sphere", "torus"].iter().map(|n| count(n)).sum();
+            eprintln!(
+                "  Reference types: {} plane, {} cyl, {} cone, {} sphere, {} torus, {} freeform ({} total)",
+                count("plane"),
+                count("cylinder"),
+                count("cone"),
+                count("sphere"),
+                count("torus"),
+                model.len() - named,
+                model.len(),
+            );
         } else {
             eprintln!("  Reference: --reference-report needs --compare; skipped");
         }

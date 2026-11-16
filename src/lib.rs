@@ -4,6 +4,7 @@ pub mod compare;
 pub mod config;
 pub mod estimate;
 pub mod reference;
+pub mod selfcheck;
 pub mod stage1;
 pub mod stage2;
 pub mod stage3;

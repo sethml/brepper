@@ -1184,6 +1184,14 @@ fn fit_body(
     (fitted_m.inverse(), coarse, score)
 }
 
+/// How closely a mesh's enclosed volume must match its reference's for the two
+/// to be the same body. A tessellation loses a little volume to chord error
+/// (measured over the wild corpus: at most 0.4%, on a mesh of 10 facets per
+/// quarter turn), so this is far above anything a genuine pair shows and far
+/// below a missing body. It decides which reference solid a mesh body can be
+/// paired with, and whether a whole pair is the same object at all.
+const VOLUME_AGREEMENT: f64 = 0.02;
+
 /// One pair's outcome, for the report and `alignment.tsv`.
 struct AlignRow {
     stem: String,
@@ -1272,7 +1280,8 @@ fn align_corpus(dir: &str, filter: Option<&str>) {
         let solids = step_solids(&shape);
         let solid_volumes: Vec<f64> =
             solids.iter().map(|s| shape_volume(s.as_shape()).abs()).collect();
-        let compatible = |b: &MeshBody, sv: f64| (b.mass.volume.abs() - sv).abs() / sv < 0.02;
+        let compatible =
+            |b: &MeshBody, sv: f64| (b.mass.volume.abs() - sv).abs() / sv < VOLUME_AGREEMENT;
         let whole_faces: Vec<usize> = (0..mesh.faces.len()).collect();
         let whole_mass = mesh_mass_props(&mesh, &whole_faces);
         let volume_rel = {
@@ -1400,7 +1409,15 @@ fn align_corpus(dir: &str, filter: Option<&str>) {
                 .filter(|p| used.boundary_miss(**p).is_some_and(|m| m.excused(tol)))
                 .count()
         });
-        let verdict = if stats[2] <= tol {
+        // The vertex test runs one way: it asks whether the mesh lies on the
+        // reference, never whether the reference is covered by the mesh. A
+        // mesh that is ONE body of a multi-body STEP therefore passes it with
+        // every vertex exact (measured: two Open-Task-Light pairs, mesh volume
+        // 83% and 98% smaller than the STEP's). Volume is the cheap check in
+        // the other direction, and it comes first.
+        let verdict = if volume_rel.abs() > VOLUME_AGREEMENT {
+            "volume"
+        } else if stats[2] <= tol {
             "exact"
         } else if stray_excused == Some(stray) {
             "trim"
@@ -1474,7 +1491,9 @@ fn align_corpus(dir: &str, filter: Option<&str>) {
     let mut tsv = String::from(
         "# Written by `gen_test_models align`. Distances are mesh vertex -> reference\n\
          # surface in mm over EVERY vertex; raw = as published, fit = after the rigid fit.\n\
-         # verdict (of the reference actually used): exact = max within tolerance; trim = every\n\
+         # verdict (of the reference actually used): volume = mesh and reference enclose\n\
+         # different volumes (not the same object, or the mesh is one body of several), whatever\n\
+         # the vertices say; exact = max within tolerance; trim = every\n\
          # vertex beyond it misses only the reference's trim (stage 1.2 passes these too);\n\
          # tail = p95 within (a few genuinely stray vertices); partial = p50 within (most of\n\
          # the part agrees, some does not: revision drift or a heavy tail); mismatch = not the\n\
@@ -1516,8 +1535,9 @@ fn align_corpus(dir: &str, filter: Option<&str>) {
 
     let count = |v: &str| lines.values().filter(|l| l.split('\t').nth(1) == Some(v)).count();
     println!(
-        "\n{} pairs: {} exact, {} trim, {} tail, {} partial, {} mismatch",
-        lines.len(), count("exact"), count("trim"), count("tail"), count("partial"), count("mismatch"),
+        "\n{} pairs: {} exact, {} trim, {} tail, {} partial, {} mismatch, {} volume",
+        lines.len(), count("exact"), count("trim"), count("tail"), count("partial"),
+        count("mismatch"), count("volume"),
     );
 }
 
