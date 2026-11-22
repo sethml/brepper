@@ -173,6 +173,17 @@ struct CliArgs {
     #[arg(long, default_value = "5e-5")]
     pub vertex_tolerance: f64,
 
+    /// Looser vertex-to-surface bound, in STL units, for facets at a face
+    /// boundary only. Surfaces are still discovered at --vertex-tolerance; a
+    /// facet no surface explains at that tolerance may then join an adjacent
+    /// surface if its vertices are within this bound, and the self-check
+    /// allows it at vertices where two output faces meet. Some exporters put
+    /// edge vertices on an approximated edge curve rather than on the
+    /// surfaces (measured: up to 5.2e-4 mm on six Fusion 360 parts). Set it
+    /// equal to --vertex-tolerance to turn the join off.
+    #[arg(long, default_value = "1e-3")]
+    pub boundary_tolerance: f64,
+
     /// Tolerance for surface-to-triangle-face offset, in STL units.
     #[arg(long, default_value = "0.4")]
     pub surface_tolerance: f64,
@@ -327,6 +338,10 @@ pub struct Config {
     pub viz_seed_spec_only: bool,
     /// Fitting tolerance for vertex-to-surface distance, in mm.
     pub vertex_tolerance_mm: f64,
+    /// `--boundary-tolerance`, in mm, as given. Read it through
+    /// [`Config::boundary_tolerance`], which never lets it fall below the
+    /// vertex tolerance.
+    pub boundary_tolerance_mm: f64,
     /// Tolerance for surface-to-triangle-face offset, in mm.
     pub surface_tolerance_mm: f64,
     /// Max dihedral angle (radians) between adjacent triangles on the same surface.
@@ -357,6 +372,19 @@ impl Config {
     pub fn compare_gates(&self) -> bool {
         self.compare_shape.is_some() && !self.compare_labels_only
     }
+
+    /// The bound a facet at a face boundary is held to: `--boundary-tolerance`,
+    /// but never tighter than the vertex tolerance (raising `--vertex-tolerance`
+    /// past it raises this too).
+    pub fn boundary_tolerance(&self) -> f64 {
+        self.boundary_tolerance_mm.max(self.vertex_tolerance_mm)
+    }
+
+    /// Whether the boundary join is on: the boundary bound is looser than the
+    /// vertex tolerance.
+    pub fn boundary_join(&self) -> bool {
+        self.boundary_tolerance() > self.vertex_tolerance_mm
+    }
 }
 
 impl std::fmt::Debug for Config {
@@ -369,6 +397,7 @@ impl std::fmt::Debug for Config {
             .field("compare_step", &self.compare_step)
             .field("compare_shape", &if self.compare_shape.is_some() { format!("[{} faces]", self.compare_face_count) } else { "None".to_string() })
             .field("vertex_tolerance_mm", &self.vertex_tolerance_mm)
+            .field("boundary_tolerance_mm", &self.boundary_tolerance_mm)
             .field("surface_tolerance_mm", &self.surface_tolerance_mm)
             .field("angular_tolerance_rad", &self.angular_tolerance_rad)
             .field("verbosity", &self.verbosity)
@@ -408,6 +437,7 @@ impl Config {
             viz_seed_confine_region: args.viz_seed_confine_region,
             viz_seed_spec_only: args.viz_seed_spec_only,
             vertex_tolerance_mm: args.vertex_tolerance * scale,
+            boundary_tolerance_mm: args.boundary_tolerance * scale,
             surface_tolerance_mm: args.surface_tolerance * scale,
             angular_tolerance_rad: args.angular_tolerance.to_radians(),
             verbosity: args.verbose_level.unwrap_or(0).max(args.verbose_short),
@@ -523,6 +553,23 @@ mod tests {
         let config = parse(&["input.stl", "--stl-units=in", "--vertex-tolerance=1e-5"]);
         let expected = 1e-5 * 25.4;
         assert!((config.vertex_tolerance_mm - expected).abs() < 1e-15);
+    }
+
+    #[test]
+    fn boundary_tolerance_never_below_vertex_tolerance() {
+        let config = parse(&["input.stl"]);
+        assert!((config.boundary_tolerance() - 1e-3).abs() < 1e-15);
+        assert!(config.boundary_join());
+        // Equal to the vertex tolerance: the join is off.
+        let off = parse(&["input.stl", "--boundary-tolerance=5e-5"]);
+        assert!(!off.boundary_join());
+        // Raising the vertex tolerance past it raises it too.
+        let raised = parse(&["input.stl", "--vertex-tolerance=2e-3"]);
+        assert!((raised.boundary_tolerance() - 2e-3).abs() < 1e-15);
+        assert!(!raised.boundary_join());
+        // In STL units, like the vertex tolerance.
+        let inches = parse(&["input.stl", "--stl-units=in", "--boundary-tolerance=1e-4"]);
+        assert!((inches.boundary_tolerance() - 1e-4 * 25.4).abs() < 1e-15);
     }
 
     #[test]

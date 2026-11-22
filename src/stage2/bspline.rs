@@ -2084,6 +2084,13 @@ pub(super) fn fit_leftover_components(
     domain.sort_unstable();
     domain.dedup();
     let leftover_set: HashSet<usize> = leftovers.iter().copied().collect();
+    // Island faces a fitted component actually took over. An island is
+    // dissolved whole (the caller drops the hypothesis), but it is absorbed
+    // component by component, and a hypothesis is not always connected at this
+    // point — claim resolution assigns face by face, and stage 2.4 re-splits
+    // later. So an island can have faces in a component that was NOT fitted;
+    // those are handed to `residual` below.
+    let mut absorbed_faces: HashSet<usize> = HashSet::new();
 
     for comp in leftover_components(mesh, &domain) {
         // Unexplained (leftover) freeform faces in this component.
@@ -2118,6 +2125,7 @@ pub(super) fn fit_leftover_components(
                     for &fi in &comp {
                         if face_hyp[fi] != usize::MAX {
                             result.dissolved.insert(face_hyp[fi]);
+                            absorbed_faces.insert(fi);
                         }
                     }
                 }
@@ -2137,6 +2145,21 @@ pub(super) fn fit_leftover_components(
             match fit_or_planarize(mesh, &part, face_region, config) {
                 Some(fit) => commit_component_fit(fit, &mut result),
                 None => result.residual.extend(part),
+            }
+        }
+    }
+
+    // Total coverage: every face of a dissolved island is either in the patch
+    // that absorbed it or goes per-facet. Without this, a dissolved island
+    // with faces in two components lost the ones in the unfitted component
+    // (measured: `VoronUsers__12mm_strip_mini_mount`, one face covered by no
+    // surface, caught by stage 2.4's invariant).
+    let mut dissolved: Vec<usize> = result.dissolved.iter().copied().collect();
+    dissolved.sort_unstable();
+    for hi in dissolved {
+        for &fi in hyps[hi].faces() {
+            if !absorbed_faces.contains(&fi) {
+                result.residual.push(fi);
             }
         }
     }

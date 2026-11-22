@@ -36,6 +36,13 @@ principles drive it; retired mechanisms and the reasons they died are in
    validation is decisive, not statistical. We are not solving the
    fit-primitives-in-noisy-scans problem the literature (RANSAC lineage)
    addresses.
+   *Exception, measured 2026-11-21:* some exporters put the vertices of an
+   edge on their approximated edge curve, off both surfaces (up to 5.2e-4 mm
+   on six Fusion 360 parts). Discovery still validates at
+   `--vertex-tolerance`; only a facet left over at a face boundary may join an
+   adjacent, already-found surface at `--boundary-tolerance` (default
+   1e-3 mm), with every vertex beyond the vertex tolerance kept on an edge of
+   that surface. See README "Boundary tolerance" and TODO step 3, cause 3.
 2. **The answer's boundaries are already in the mesh.** CAD tessellators emit
    seam edges along B-rep face boundaries — *including tangent junctions*
    (verified 2026-07-17 on the nosecone cone–sphere tangency: 0 of 1572 STL
@@ -3412,8 +3419,10 @@ criteria under "Acceptance narratives".
      wrongly committed (plate_with_hole, fusion plate, l_bracket) — **FIXED
      2026-07-23 by jet-informed rung ordering** (`region_is_developable` in
      classify.rs tries the conical rung before the sphere rung for
-     developable regions); the 9 fusion `plate_with_hole` tests were
-     re-enabled; l_bracket (a second cylinder undetected) and the coarse
+     developable regions; *replaced 2026-11-16 — the jet read chamfers as
+     not developable, and the two rungs are now decided together by which
+     surface contains the facets' edges, see `sphere_or_conical`*); the 9
+     fusion `plate_with_hole` tests were re-enabled; l_bracket (a second cylinder undetected) and the coarse
      onshape plate (hole faceted, no cylinder region) stay disabled for
      different gaps; (b) **fillet over-segmentation** — a fillet
      chain decomposed into extra tori + a freeform patch with the straight

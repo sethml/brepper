@@ -24,9 +24,13 @@
 //! stage 3.4 built: stage 3.6 re-trims some, and a check against the earlier
 //! faces fails solids that are correct (see `self_check`).
 //!
-//! The only allowance is the B-rep's own: OCCT stores a tolerance on every
-//! face, edge and vertex saying how far the geometry there may be trusted, and
-//! a point is allowed `--vertex-tolerance` plus the largest such tolerance on
+//! The allowances are the user's bounds and the B-rep's own. A vertex is
+//! allowed `--vertex-tolerance`, or `--boundary-tolerance` where facets of two
+//! different surfaces meet at it (an output edge: some exporters put edge
+//! vertices on an approximated edge curve, off both surfaces; see
+//! `stage2::classify::join_boundary_facets`). On top of that, OCCT stores a
+//! tolerance on every face, edge and vertex saying how far the geometry there
+//! may be trusted, and a point is also allowed the largest such tolerance on
 //! the face it is measured against. Nothing here is tuned.
 //!
 //! That allowance cannot be open-ended, or a solid could pass any test by
@@ -323,12 +327,35 @@ pub fn self_check(
     result.measured = true;
 
     // --- 2. Every mesh vertex on the output. ---
-    let tasks: Vec<([f64; 3], f64)> =
-        mesh.vertices.iter().map(|v| ([v.x, v.y, v.z], vtol)).collect();
+    // A vertex where facets of two different surfaces meet lies on an output
+    // edge, and is held to `--boundary-tolerance`: some exporters put edge
+    // vertices on their approximation of the edge curve, off both surfaces
+    // (see `classify::join_boundary_facets`). Every other vertex is held to
+    // `--vertex-tolerance`.
+    let face_surface = crate::stage3::build_face_to_surface_map(stage2);
+    let mut first_surface = vec![usize::MAX; mesh.vertices.len()];
+    let mut on_edge = vec![false; mesh.vertices.len()];
+    for (f, &si) in mesh.faces.iter().zip(face_surface.iter()) {
+        for &vi in &f.vertex_indices[..f.vertex_count as usize] {
+            if first_surface[vi] == usize::MAX {
+                first_surface[vi] = si;
+            } else if first_surface[vi] != si {
+                on_edge[vi] = true;
+            }
+        }
+    }
+    let btol = config.boundary_tolerance();
+    let allow_of = |vi: usize| if on_edge[vi] { btol } else { vtol };
+    let tasks: Vec<([f64; 3], f64)> = mesh
+        .vertices
+        .iter()
+        .enumerate()
+        .map(|(vi, v)| ([v.x, v.y, v.z], allow_of(vi)))
+        .collect();
     let near = nearest_faces(&tasks, &faces, tol_max);
     let mut offenders: Vec<(f64, usize)> = Vec::new();
     for (vi, n) in near.iter().enumerate() {
-        if n.distance > vtol + n.tol {
+        if n.distance > allow_of(vi) + n.tol {
             offenders.push((n.distance, vi));
         } else {
             result.vertex_max = result.vertex_max.max(n.distance);
@@ -357,7 +384,6 @@ pub fn self_check(
     // --- 3. Every mesh facet has output under it. ---
     // A facet's centroid is within the facet's own radius of its vertices,
     // which are on its face, so that radius is how far its face can be.
-    let face_surface = crate::stage3::build_face_to_surface_map(stage2);
     let mut centroid_tasks: Vec<([f64; 3], f64)> = Vec::with_capacity(mesh.faces.len());
     let mut centroid_facet: Vec<usize> = Vec::with_capacity(mesh.faces.len());
     for (fi, f) in mesh.faces.iter().enumerate() {

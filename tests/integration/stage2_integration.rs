@@ -869,8 +869,19 @@ fn onshape_cone_tangent_planes_three_cones() {
     let config = config_for_stl_stage26(&stl);
     let output = run_stage2(&config);
 
-    let cones: Vec<_> = output.conical_hypotheses.iter().filter(|h| !h.is_cylinder()).collect();
+    // Count cones that still own faces. Stage 2.4's merge empties the surface
+    // it absorbs and drops it from `selected_surfaces`, but leaves the emptied
+    // hypothesis in `conical_hypotheses`; since 2026-11-16 this model has one
+    // (two pieces of the same cone, merged), where before it had a spurious
+    // fifth plane instead. The decomposition is now the reference's exactly:
+    // 4 planes + 3 cones.
+    let cones: Vec<_> = output
+        .conical_hypotheses
+        .iter()
+        .filter(|h| !h.is_cylinder() && !h.faces.is_empty())
+        .collect();
     assert_eq!(cones.len(), 3, "cone_tangent_planes should select 3 cones");
+    assert_eq!(output.selected_surfaces.len(), 7, "cone_tangent_planes is 4 planes + 3 cones");
     let mut has: Vec<f64> = cones.iter().map(|c| c.half_angle.to_degrees()).collect();
     has.sort_by(|a, b| a.partial_cmp(b).unwrap());
     assert!((has[0] - 7.67).abs() < 0.5, "smallest half-angle ~7.67°, got {:.2}", has[0]);

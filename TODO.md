@@ -60,36 +60,48 @@ One row per model, no reference geometry involved in the verdict:
 Headline numbers: parts `good` out of the wild corpus, and, among those, parts
 whose face types match the reference.
 
-### Baseline (2026-11-12, `tests/scoreboard-baseline.tsv`, 120 s limit)
+### Baseline (2026-11-22, `tests/scoreboard-baseline.tsv`, 120 s limit)
 
 | | wild (26) | synthetic (137) |
 |---|---|---|
-| good | 10 | 110 |
-| unfaithful | 0 | 13 |
-| invalid | 6 | 5 |
-| fail | 5 | 7 |
+| good | 15 | 110 |
+| unfaithful | 0 | 12 |
+| invalid | 2 | 6 |
+| fail | 4 | 7 |
 | timeout | 5 | 2 |
-| good and face types match the reference | 4 of 9 labelled | 98 of 109 labelled |
+| good and face types match the reference | 10 of 14 labelled | 101 of 109 labelled |
 
 "Wild" is the 24 verified pairs in `tests/external` plus the 2 meshes in
-`tests/downloaded`. (Measured over 33; the rows of the seven multi-body models
-removed on 2026-11-13 were dropped from the file rather than re-run, which
-changes no other row.) What the rows are made of:
+`tests/downloaded`. What the rows are made of:
 
-- **fail (5):** all stage-3.1 adjacency errors (unsupported winding-loop /
-  pole / seam layouts).
-- **invalid (6):** `BRepCheck` fails on the solid. Three are the strip mounts;
-  the output of `White-Knight__1-5i_case_front_v4` has no solid once written.
-  `Open-Task-Light__led_cover_-_top` is invalid in memory and passes
-  `BRepCheck` after a STEP round trip (the reader heals it) — the only one of
-  the five checked that does.
-- **timeout (5):** 3DBenchy, both blower-fan ducts, and two Open-Task-Light
-  links. The four with a verified reference all have freeform faces, and
-  3DBenchy's hull is one 139k-facet freeform region.
-- **good but wrong type (5):** every one is cones recognized as spheres
-  (type agreement 0.93-0.98).
-- The synthetic `unfaithful` rows are mostly solids that declare an edge
-  tolerance of 0.4-26 mm; several of those models pass every `--compare` gate.
+- **fail (4):** all stage-3.1 adjacency errors (unsupported winding-loop /
+  pole / seam layouts): `led_cover_drag_chain_termination`, both
+  `blower_fan_holder_arm`s, and `blower_fan_duct` (it used to time out; it
+  now reaches stage 3 at 119 s of the 120 s limit).
+- **invalid (2):** `BRepCheck` fails on the solid:
+  `ToolChanger__docking_station`, `White-Knight__1-5i_case_front_v4`.
+- **timeout (5):** 3DBenchy, `blower_fan_duct_(m)`,
+  `Open-Task-Light__penultimate_link`, `…drag_chain_termination_(base)` and
+  `ToolChanger__docking_station_(m)`. The first four have freeform faces
+  (3DBenchy's hull is one 139k-facet freeform region). The docking station is
+  different: it used to fail at stage 3.1, now passes it, and stage 3.3 hangs
+  inside OCCT's `GeomAPI_IntSS` (`IntPatch_WLine::ComputeVertexParameters`,
+  sampled after 10 min of CPU). Stage 3 has no time bound on an intersection.
+- **good:** the four new ones (the strip mounts and `drag_chain_link`) do not
+  yet have the reference's face types: B-spline patches remain on small
+  cylinders, and `drag_chain_link` has 14 cones where the reference has 4.
+  The ten earlier ones still match.
+
+| Earlier baselines, wild | good | invalid | fail | timeout | types match |
+|---|---|---|---|---|---|
+| 2026-11-12 (step 1) | 10 | 6 | 5 | 5 | 4 of 9 |
+| 2026-11-16 (cone versus sphere) | 11 | 5 | 6 | 4 | 10 of 10 |
+| 2026-11-21 (same-surface merge) | 11 | 5 | 5 | 5 | 10 of 10 |
+| 2026-11-22 (boundary tolerance) | 15 | 2 | 4 | 5 | 10 of 14 |
+
+(The 2026-11-21 row's one fail -> timeout is `Open-Task-Light__drag_chain_termination_(base)`,
+which ran 116.6 s against the 120 s limit before and now hits it; coverage rose
+on 12 models and no other status changed.)
 
 ## Steps
 
@@ -110,35 +122,151 @@ changes no other row.) What the rows are made of:
    - Not done: coverage and purity still count a kernel's two half-cylinder
      faces as two labels, so merging them (correct) lowers purity. Type
      agreement is unaffected and is the number to steer by.
-2. **Never fail.** Target: every wild part `good`.
-   - (Dropped from this step 2026-11-13: non-manifold input. The four wild
-     meshes stage 1 rejected for it were all multi-body parts whose bodies
-     touch, and multi-body parts are no longer in the corpus. Stage 1 still
-     rejects such a mesh with a clear error; splitting bodies is not planned
-     until a single-body part needs it.)
-   - Stage 3 hard errors (unsupported loop / seam / pole layouts): demote the
-     face to planar facets and rebuild its neighbours' shared edges.
-   - Stage 2 time budget per region; what is not classified in budget stays
-     faceted.
-   - Stage 2.4's invariant panics become repairs.
+2. **Never fail.** **DROPPED as a separate step 2026-11-15**, on this
+   measurement: every one of the 5 wild stage-3 hard failures, and 39 of the 48
+   faces that fail `BRepCheck` in the 6 invalid wild outputs, is on a surface
+   stage 2 gave the wrong type (a torus for a cylinder, cone or freeform face;
+   a sphere for a cone; a spline for a cylinder or plane). Demoting those faces
+   to facets would turn a visible failure into a quietly wrong face. So: fix
+   the types (step 3), then re-measure, and build a per-face fallback only for
+   whatever stage-3 failures remain on correctly typed faces. (Inference, not
+   yet measured: that a correctly typed face is then built correctly. The 9
+   failing faces of the right type have not been explained, and the synthetic
+   corpus's 7 hard failures have not been traced this way.) What was in this
+   step:
+   - Non-manifold input: dropped with the multi-body parts (stage 1 still
+     rejects such a mesh with a clear error).
+   - Stage 3 per-face fallback: deferred as above.
+   - Stage 2 time budget: moved to step 4, where the timeouts are.
+   - Stage 2.4 invariant panics: none occur anywhere in the baseline.
+   To trace a stage-3 failure to a stage-2 type, run with `--compare <ref>
+   --compare-labels-only --reference-report --stage 2 -vv`: every surface whose
+   type the reference disagrees with is listed by the index stage 3 uses.
 3. **Stage-2 quality on analytic-only parts.** Target: face types match the
    reference on the parts that have no freeform faces.
-   - Cone versus sphere on single-row bands (every chamfer). Hypothesis, not
-     yet tested: ruling edges lie on the cone and not on the impostor sphere.
-   - Over-segmentation of tangent cylinder chains. Start from the three
-     VoronUsers strip mounts (~1,000 triangles, exact, planes and cylinders
-     only); their logs show `tangent, NO LOCUS: surfaces do not share an axis`
-     and `cone-plane ruling tangency is not implemented`.
-   - Decide patch-versus-rewrite for stage 2.3/2.4 from that diagnosis: a few
-     missing tangency cases means patch; fixes that need new tuned constants
-     mean rewrite the discovery loop around budgeted, deduplicated seeding.
-4. **Freeform cost.** Budgeted seeding and an early "this region is freeform"
-   exit; faceted output by default for freeform regions, B-spline optional.
+   - **Cone versus sphere: DONE 2026-11-16.** A sphere passes exactly through
+     the vertices of any single band between two coaxial circles. Measured over
+     151 models (`BREPPER_TYPE_PROBE=1`): a sphere also validates the facets of
+     180 of 223 reference cones and 136 of 858 reference cylinders, and no
+     cylinder or cone validates any of 143 reference spheres. Where both
+     validate, the surface containing more of the facets' EDGE length wins
+     (`classify::edges_on_surface`: a ruling lies whole in a cone or cylinder,
+     no edge lies in a sphere) — right on all 316 ambiguous faces, no ties. The
+     rule is in the ladder (`sphere_or_conical`), in competition's per-seed
+     tie-break and claim resolution, and in a re-typing pass over spheres that
+     competition commits. A sphere that carries on into neighbouring facets
+     where no cone can follow stays a sphere (a coarse sphere whose rows are
+     separate sharp regions). A true tie goes to the cylinder-or-cone; the
+     jet-based ordering and its tuned constant `DEVELOPABLE_MAX_RATIO` are
+     deleted (stage-2 constant count 54 -> 53). Wild type matches 4 of 9 ->
+     10 of 10; `Open-Task-Light__led_cover_-_top` invalid -> good.
+     Found on the way and fixed: the freeform step dropped faces of a
+     dissolved analytic island that lay in an unfitted component.
+     Left: chamfer cones still come out in pieces on the busiest parts
+     (`led_cover_-_top` 10 cones for 4, `docking_station` 87 for 73), and a
+     few 3-5 facet fragments there stay spheres. That is over-segmentation,
+     the next item.
+   - **Over-segmentation: diagnosed 2026-11-21.** Instruments: `-vv` on a
+     `--reference-report` run lists every reference face we split and into
+     what; `BREPPER_FACET_PROBE=1` counts, per model, facets that no single
+     untrimmed reference surface passes through ("straddling"), fragment
+     facets that lie on their own reference face (joinable), and vertices off
+     every incident surface (`=2` prints each straddler). Over the 24 verified
+     wild pairs there are three causes, none of them a missing tangency case:
+     1. **Freeform faces shattered** (fan ducts, drag-chain termination,
+        penultimate link, the docking stations' and holder arms' small blend
+        faces): by far the most extra surfaces — 2,255 single-facet planes and
+        ~400 analytic impostors on B-spline reference faces. Step 4.
+     2. **One analytic surface in several pieces**, each fitted to part of it,
+        so neither fit extrapolates onto the other piece (the LED cover's
+        358 mm² chamfer cone as 7 cones). **FIXED**: `repair::merge_same_surface`
+        refits adjacent same-kind surfaces together and keeps the union when it
+        validates — no size limit, no new constant. LED cover now 75:56:4
+        exactly; coverage up on 12 models; no status regressions.
+     3. **Vertices on tolerant edges** (six Fusion 360 parts: the three
+        VoronUsers strip mounts and three Open-Task-Light drag-chain pieces):
+        18-72 vertices per part sit 1.7e-4 to 5.2e-4 mm off EVERY untrimmed
+        surface while within 7e-6 mm of the trimmed faces — on the STEP's
+        approximated edge curves, not on the surfaces. Facets containing them
+        validate on no surface at 5e-5 mm; they are 117 of the 126 fragment
+        facets on the mini strip mount. The mirror image of the SolidWorks trim
+        artifact (there: on both surfaces, off the edge curve). Not fixable
+        inside stage 2 at the current tolerance. **Decision for the user.**
+        Measured with the whole scoreboard at `--vertex-tolerance=1e-3` (2x the
+        worst miss; 3e-4 still fragments the mini strip mount):
+        - wild 11 good / 0 unfaithful / 5 invalid / 5 fail / 5 timeout becomes
+          12 / 4 / 1 / 6 / 3. All six tolerant-edge parts get coverage 1.0;
+          `drag_chain_link` goes fail -> good with the reference's types. But
+          the strip mounts stay unfaithful (their r = 2.9 counterbores come out
+          as tori, and 86 facets around them have no output), and
+          `led_cover_drag_chain_termination` gets a sphere impostor and a
+          solid 8e6 times too large.
+        - synthetic (exact to ~1e-6 mm) gets worse where discrimination
+          matters: `pipe_elbow_10_medium` good -> invalid, rounded cubes gain
+          extra planes, cylinders and a torus, three models time out or fail
+          that did not.
+        So a global loosening trades impostors on exact meshes for recovery on
+        tolerant ones. **BUILT 2026-11-22, user sign-off "Add boundary
+        tolerance"**: `--boundary-tolerance` (default 1e-3 mm, 2x the worst
+        measured miss; never below `--vertex-tolerance`; the one new
+        tolerance-like constant, rule 4). Discovery stays at the vertex
+        tolerance. Three places use the looser bound, and nowhere else:
+        - `classify::join_boundary_facets` (stage 2.3, each competed region,
+          before the leftover rescue): a leftover facet sharing an edge with
+          a surface already found joins the best-fitting one if it passes the
+          per-face test at the boundary bound. It runs before the rescue
+          because a ring of straddling facets is exactly a cone frustum, and
+          the rescue committed such rings.
+        - `repair::merge_regions` (stage 2.4): a small surface (at most
+          `MERGE_MAX_SMALL` = 16 facets, the existing limit) whose facets all
+          lie within the boundary bound of a larger neighbour merges into it.
+          Competition commits 3-8 facet cones along a tolerant edge before
+          the join can run (measured on the mini strip mount); this removes
+          them.
+        - The self-check allows the boundary bound only at vertices where two
+          output faces meet.
+        In both stage-2 places a vertex beyond the vertex tolerance must be on
+        a real edge of the surface it joins: a facet around it is across a
+        sharp edge or belongs to another surface its own strict facets
+        determine (at least `min_support`: 2 for a plane, the existing
+        `MIN_*_FACES` otherwise). Only such a determined surface takes joined
+        facets. A joined facet is flagged (`Classification::joined`) and is
+        never used to refit a surface; refits and merge revalidation hold it
+        to the boundary bound.
+        The first version counted a leftover facet as an edge and let any
+        surface take facets. On `ToolChanger__blower_fan_duct` that made
+        stage 2 much worse: a one-facet competition "cylinder" took 69
+        freeform facets, near-tangent blend facets joined analytic surfaces,
+        a freeform patch stopped fitting, and per-facet planes went 767 ->
+        2039. With both rules: 737, fewer than with the join off.
+        Measured on `VoronUsers__12mm_strip_mini_mount`: invalid -> good, 60 ->
+        22 faces (reference 13), coverage 0.9751 -> 0.9963, type agreement
+        0.9753 -> 0.9952, 67 facets joined. Left on it, three B-splines on
+        reference cylinders: two 2.8-2.9 mm² counterbore cylinders (inference
+        from the earlier facet probe: every facet there straddles, so no
+        surface is found strictly and there is nothing to join), and an
+        18-facet patch on the 743 mm² cylinder, not yet explained.
+        Whole scoreboard against the 2026-11-21 run (2026-11-22): wild good
+        11 -> 15 (the three strip mounts invalid -> good, `drag_chain_link`
+        fail -> good), invalid 5 -> 2, fail 5 -> 4, timeout 5 -> 5
+        (`blower_fan_duct` timeout -> fail, `docking_station_(m)` fail ->
+        timeout; see the baseline notes). Synthetic statuses unchanged; four
+        stepped-block models lose 1-2 fragment planes. Suite green (121 unit,
+        378 integration).
+   - **Patch versus rewrite: patch.** The diagnosis found no case where the
+     discovery loop's design is the obstacle: cause 1 is step 4's freeform
+     work, cause 2 is fixed by a merge, cause 3 is a tolerance policy.
+4. **Freeform cost.** A stage-2 time budget per region (what is not classified
+   in budget stays faceted), budgeted seeding and an early "this region is
+   freeform" exit; faceted output by default for freeform regions, B-spline optional.
    Targets the parts that time out (all have spline faces) and 3DBenchy.
+   Also here: a bound on stage 3's OCCT intersections, one of which hangs on
+   `ToolChanger__docking_station_(m)` (`GeomAPI_IntSS`, found 2026-11-22).
 5. **Shrink the docs.** Archive DEVELOPMENT_PLAN / LEARNINGS / SURFACE_FITTING
    and the section below; keep a short design document and a dead-ends list.
 
-Not planned: tolerating inexact vertices. Nothing measured calls for it, and
+Not planned: tolerating inexact vertices inside faces (the boundary tolerance
+covers only vertices on edges). Nothing measured calls for it, and
 `--vertex-tolerance` can be raised if a mesh needs it.
 
 ---

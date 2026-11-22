@@ -339,6 +339,27 @@ pub(crate) fn face_area(face: &MeshFace, vertices: &[MeshVertex]) -> f64 {
     area
 }
 
+/// The facets around vertex `vi`, found by walking face adjacency from `fi`
+/// (which must contain `vi`) through the facets that also contain it.
+pub(super) fn vertex_fan(mesh: &ConnectedMesh, fi: usize, vi: usize) -> Vec<usize> {
+    let has = |g: usize| {
+        let f = &mesh.faces[g];
+        f.vertex_indices[..f.vertex_count as usize].contains(&vi)
+    };
+    let mut fan = vec![fi];
+    let mut k = 0;
+    while k < fan.len() {
+        let f = &mesh.faces[fan[k]];
+        for &ni in &f.neighbors[..f.vertex_count as usize] {
+            if ni >= 0 && !fan.contains(&(ni as usize)) && has(ni as usize) {
+                fan.push(ni as usize);
+            }
+        }
+        k += 1;
+    }
+    fan
+}
+
 /// Compute the face centroid for a mesh face.
 pub(crate) fn face_centroid(face: &MeshFace, vertices: &[MeshVertex]) -> [f64; 3] {
     let n = face.vertex_count as usize;
@@ -811,7 +832,7 @@ pub fn stage2(
     // --- Stage 2.4: resolution & repair (snap, relabel, merge, re-split) ---
     if config.stage.at_least(2, 4) {
         let t = Instant::now();
-        let stats = surface::with_fit_cache(memoize, || repair::repair(&mesh, &mut cls, config));
+        let stats = surface::with_fit_cache(memoize, || repair::repair(&mesh, &mut cls, &segmentation.face_region, config));
         if config.verbosity >= 1 {
             eprintln!(
                 "Stage 2.4 ({:.3}s): Repair: {} snapped ({} pair(s) unhandled), {} relabeled, {} merged, {} re-split → {} surfaces",
@@ -884,6 +905,229 @@ pub fn stage2(
             )
             .print();
 
+            // BREPPER_TYPE_PROBE=1: for every analytic reference face, whether a
+            // sphere and a cylinder-or-cone each validate its own facets, and
+            // how much of those facets' edge length lies on each. One TSV row
+            // per reference face on stdout. This is the measurement behind the
+            // ladder's sphere-versus-conical rule (`classify::edges_on_surface`).
+            if std::env::var("BREPPER_TYPE_PROBE").is_ok() {
+                let centroids: Vec<[f64; 3]> =
+                    output.mesh.faces.iter().map(|f| face_centroid(f, &output.mesh.vertices)).collect();
+                let vtol = config.vertex_tolerance_mm;
+                for (ri, surface) in model.surfaces.iter().enumerate() {
+                    if matches!(surface, crate::reference::RefSurface::Other { .. }) {
+                        continue;
+                    }
+                    let faces: Vec<usize> = (0..labels.len())
+                        .filter(|&fi| labels[fi].face() == Some(ri))
+                        .collect();
+                    if faces.is_empty() {
+                        continue;
+                    }
+                    let mut verts: Vec<usize> = faces
+                        .iter()
+                        .flat_map(|&fi| {
+                            let f = &output.mesh.faces[fi];
+                            f.vertex_indices[..f.vertex_count as usize].to_vec()
+                        })
+                        .collect();
+                    verts.sort_unstable();
+                    verts.dedup();
+                    let sphere = classify::fit_validate_with_fit::<spherical::SphericalSurface>(
+                        &output.mesh, &faces, &verts, &centroids, config,
+                    )
+                    .map(|(_, fit)| {
+                        classify::edges_on_surface::<spherical::SphericalSurface>(&output.mesh, &faces, &fit, vtol)
+                    });
+                    let conical = classify::fit_validate_with_fit::<conical::ConicalSurface>(
+                        &output.mesh, &faces, &verts, &centroids, config,
+                    )
+                    .map(|(hyp, fit)| {
+                        let e = classify::edges_on_surface::<conical::ConicalSurface>(&output.mesh, &faces, &fit, vtol);
+                        (if hyp.is_cylinder() { "cylinder" } else { "cone" }, e)
+                    });
+                    let show = |e: Option<(f64, f64, usize)>| match e {
+                        Some((on, total, n)) => format!("yes\t{:.4}\t{n}", on / total.max(1e-300)),
+                        None => "no\t-\t-".to_string(),
+                    };
+                    println!(
+                        "TYPEPROBE\t{}\t{}\t{}\t{}\t{}",
+                        surface.type_name(),
+                        faces.len(),
+                        show(sphere),
+                        conical.map_or("-", |c| c.0),
+                        show(conical.map(|c| c.1)),
+                    );
+                }
+            }
+
+            // BREPPER_FACET_PROBE=1: is over-segmentation the data's or ours?
+            // For every mesh facet, the reference faces whose UNTRIMMED surface
+            // passes through all its vertices. A facet on none straddles a face
+            // boundary — no single surface can claim it, so a per-facet plane
+            // is the right answer for it. Then, for every one of our surfaces
+            // that is not the largest piece of the reference face it covers
+            // (a fragment), how many of its facets lie on that reference face
+            // and could have joined the main piece. One line on stderr.
+            if std::env::var("BREPPER_FACET_PROBE").is_ok() {
+                let vtol = config.vertex_tolerance_mm;
+                let mesh = &output.mesh;
+                let n = mesh.faces.len();
+                let on_ref = |fi: usize, ri: usize| -> bool {
+                    let f = &mesh.faces[fi];
+                    f.vertex_indices[..f.vertex_count as usize].iter().all(|&vi| {
+                        let v = &mesh.vertices[vi];
+                        model.surface_distance(ri, [v.x, v.y, v.z]).is_some_and(|d| d <= vtol)
+                    })
+                };
+                // Candidate reference faces per facet: its own label and the
+                // labels of its neighbours (a facet's surface is one of those
+                // in every case that matters, and it keeps this linear).
+                let mut straddle = vec![false; n];
+                let mut n_straddle = 0usize;
+                for fi in 0..n {
+                    let f = &mesh.faces[fi];
+                    let mut cands: Vec<usize> = Vec::new();
+                    if let Some(ri) = labels[fi].face() {
+                        cands.push(ri);
+                    }
+                    for &nb in &f.neighbors[..f.vertex_count as usize] {
+                        if nb >= 0 {
+                            if let Some(ri) = labels[nb as usize].face() {
+                                cands.push(ri);
+                            }
+                        }
+                    }
+                    cands.sort_unstable();
+                    cands.dedup();
+                    if !cands.iter().any(|&ri| on_ref(fi, ri)) {
+                        // Neighbour labels are a shortcut; on a small model
+                        // confirm against every reference face.
+                        if model.len() > 64 || !(0..model.len()).any(|ri| on_ref(fi, ri)) {
+                            straddle[fi] = true;
+                            n_straddle += 1;
+                            if std::env::var("BREPPER_FACET_PROBE").as_deref() == Ok("2") {
+                                let f = &mesh.faces[fi];
+                                let vs: Vec<String> = f.vertex_indices[..f.vertex_count as usize]
+                                    .iter()
+                                    .map(|&vi| {
+                                        let v = &mesh.vertices[vi];
+                                        let p = [v.x, v.y, v.z];
+                                        let mut best: Vec<(f64, usize)> = (0..model.len())
+                                            .filter_map(|ri| model.surface_distance(ri, p).map(|d| (d, ri)))
+                                            .collect();
+                                        best.sort_by(|a, b| a.0.total_cmp(&b.0));
+                                        let on: Vec<usize> = best.iter().take_while(|b| b.0 <= vtol).map(|b| b.1).collect();
+                                        let mut trimmed = String::new();
+                                        if on.is_empty() {
+                                            use opencascade_sys::{top_abs, top_exp};
+                                            let mut ex = top_exp::Explorer::new_shape_shapeenum2(
+                                                model.shape(), top_abs::ShapeEnum::Face, top_abs::ShapeEnum::Shape);
+                                            let mut k = 0usize;
+                                            let mut ds: Vec<(f64, usize)> = Vec::new();
+                                            while ex.more() {
+                                                let d = crate::stage1::min_distance_to_shape(
+                                                    &opencascade_sys::gp::Pnt::new_real3(v.x, v.y, v.z), ex.value());
+                                                ds.push((d, k));
+                                                k += 1;
+                                                ex.next();
+                                            }
+                                            ds.sort_by(|a, b| a.0.total_cmp(&b.0));
+                                            trimmed = format!(" trimmed-nearest {:?}", &ds[..3.min(ds.len())]);
+                                        }
+                                        format!(
+                                            "({:.3},{:.3},{:.3}) on {:?} nearest {}@{:.1e}{trimmed}",
+                                            v.x, v.y, v.z, on, best[0].1, best[0].0,
+                                        )
+                                    })
+                                    .collect();
+                                eprintln!("STRADDLE facet {fi} ({} vertices, label {:?}): {}", f.vertex_count, labels[fi].face(), vs.join(" "));
+                            }
+                        }
+                    }
+                }
+                // Fragments: our surfaces that are not the largest piece of
+                // their majority reference face.
+                let sets = output.selected_face_sets();
+                let mut majority: Vec<Option<usize>> = Vec::new();
+                let mut piece_area: std::collections::HashMap<(usize, usize), usize> =
+                    std::collections::HashMap::new();
+                for (si, faces) in sets.iter().enumerate() {
+                    let mut c: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+                    for &fi in faces {
+                        if let Some(ri) = labels[fi].face() {
+                            *c.entry(ri).or_insert(0) += 1;
+                        }
+                    }
+                    let m = c.into_iter().max_by_key(|&(ri, k)| (k, std::cmp::Reverse(ri)));
+                    if let Some((ri, k)) = m {
+                        piece_area.insert((si, ri), k);
+                    }
+                    majority.push(m.map(|(ri, _)| ri));
+                }
+                let mut biggest: std::collections::HashMap<usize, (usize, usize)> =
+                    std::collections::HashMap::new();
+                for (&(si, ri), &k) in &piece_area {
+                    let e = biggest.entry(ri).or_insert((si, k));
+                    if k > e.1 || (k == e.1 && si < e.0) {
+                        *e = (si, k);
+                    }
+                }
+                let (mut frag_surfaces, mut frag_facets, mut frag_on_own, mut frag_straddle) =
+                    (0usize, 0usize, 0usize, 0usize);
+                for (si, faces) in sets.iter().enumerate() {
+                    let Some(ri) = majority[si] else { continue };
+                    if biggest.get(&ri).is_some_and(|&(b, _)| b == si) {
+                        continue;
+                    }
+                    frag_surfaces += 1;
+                    for &fi in faces {
+                        frag_facets += 1;
+                        if straddle[fi] {
+                            frag_straddle += 1;
+                        } else if on_ref(fi, ri) {
+                            frag_on_own += 1;
+                        }
+                    }
+                }
+                // Vertices on no untrimmed surface: for each, the nearest
+                // surface among the labels of its incident facets.
+                let mut incident: Vec<Vec<usize>> = vec![Vec::new(); mesh.vertices.len()];
+                for (f, label) in mesh.faces.iter().zip(labels.iter()) {
+                    if let Some(ri) = label.face() {
+                        for &vi in &f.vertex_indices[..f.vertex_count as usize] {
+                            incident[vi].push(ri);
+                        }
+                    }
+                }
+                let mut off: Vec<f64> = Vec::new();
+                for (vi, refs) in incident.iter_mut().enumerate() {
+                    refs.sort_unstable();
+                    refs.dedup();
+                    let v = &mesh.vertices[vi];
+                    let p = [v.x, v.y, v.z];
+                    let best = refs
+                        .iter()
+                        .filter_map(|&ri| model.surface_distance(ri, p))
+                        .fold(f64::MAX, f64::min);
+                    if best != f64::MAX && best > vtol {
+                        off.push(best);
+                    }
+                }
+                off.sort_by(f64::total_cmp);
+                eprintln!(
+                    "VERTPROBE\tvertices {}\toff every incident surface {}\tp50 {:.2e}\tmax {:.2e}",
+                    mesh.vertices.len(),
+                    off.len(),
+                    off.get(off.len() / 2).copied().unwrap_or(0.0),
+                    off.last().copied().unwrap_or(0.0),
+                );
+                eprintln!(
+                    "FACETPROBE\tfacets {n}\tstraddling {n_straddle}\tfragments {frag_surfaces}\tfragment facets {frag_facets}\ton their reference face {frag_on_own}\tstraddling {frag_straddle}\tother {}",
+                    frag_facets - frag_on_own - frag_straddle,
+                );
+            }
+
             // Type agreement: the share of labelled mesh area on which our
             // surface is the same KIND of surface as the reference's. Coverage
             // and purity above cannot see a cone recognized as a sphere (one
@@ -891,7 +1135,16 @@ pub fn stage2(
             // comparison of face counts it does not care that a kernel splits
             // a cylinder into two half faces.
             let (mut agree, mut total) = (0.0_f64, 0.0_f64);
-            for (surface, faces) in output.selected_surfaces.iter().zip(output.selected_face_sets()) {
+            // Per surface: (index, our type, labelled area by reference type).
+            type Tally<'a> = Vec<(&'a str, f64)>;
+            let mut per_surface: Vec<(usize, &str, Tally)> = Vec::new();
+            // Per reference face: (our surface, our type, facets, area).
+            let mut pieces: std::collections::BTreeMap<usize, Vec<(usize, &str, usize, f64)>> =
+                std::collections::BTreeMap::new();
+            for (si, (surface, faces)) in
+                output.selected_surfaces.iter().zip(output.selected_face_sets()).enumerate()
+            {
+                let mut tally: Tally = Vec::new();
                 let ours = match surface {
                     SelectedSurface::Planar(_) => "plane",
                     SelectedSurface::Conical(i) if output.conical_hypotheses[*i].is_cylinder() => {
@@ -929,6 +1182,58 @@ pub fn stage2(
                     if ours == theirs {
                         agree += area;
                     }
+                    match tally.iter_mut().find(|t| t.0 == theirs) {
+                        Some(t) => t.1 += area,
+                        None => tally.push((theirs, area)),
+                    }
+                    let list = pieces.entry(ri).or_default();
+                    match list.iter_mut().find(|p| p.0 == si) {
+                        Some(p) => {
+                            p.2 += 1;
+                            p.3 += area;
+                        }
+                        None => list.push((si, ours, 1, area)),
+                    }
+                }
+                per_surface.push((si, ours, tally));
+            }
+            // -vv: every surface whose type the reference disagrees with, by
+            // index — the index stage 3 names in its errors and warnings, so a
+            // stage-3 failure can be traced to a stage-2 type.
+            if config.verbosity >= 2 {
+                for (si, ours, tally) in &per_surface {
+                    let area: f64 = tally.iter().map(|t| t.1).sum();
+                    let Some(top) = tally.iter().max_by(|a, b| a.1.total_cmp(&b.1)) else {
+                        continue;
+                    };
+                    if top.0 != *ours {
+                        eprintln!(
+                            "      surface {si}: ours {ours}, reference {} ({:.0}% of its {:.3} mm² labelled area)",
+                            top.0,
+                            100.0 * top.1 / area,
+                            area,
+                        );
+                    }
+                }
+                // Every reference face we split, and into what: the
+                // over-segmentation that coverage reports as one number.
+                for (ri, list) in &pieces {
+                    if list.len() < 2 {
+                        continue;
+                    }
+                    let mut list = list.clone();
+                    list.sort_by(|a, b| b.3.total_cmp(&a.3));
+                    let total: f64 = list.iter().map(|p| p.3).sum();
+                    let parts: Vec<String> = list
+                        .iter()
+                        .map(|(si, t, n, a)| format!("{si}:{t}/{n}f/{:.0}%", 100.0 * a / total))
+                        .collect();
+                    eprintln!(
+                        "      reference face {ri} ({}, {total:.3} mm²) split into {}: {}",
+                        model.surfaces[*ri].type_name(),
+                        list.len(),
+                        parts.join(" "),
+                    );
                 }
             }
             if total > 0.0 {

@@ -284,6 +284,34 @@ pub enum RefSurface {
 }
 
 impl RefSurface {
+    /// Distance from `p` to the UNTRIMMED surface, for the analytic types;
+    /// `None` for [`RefSurface::Other`]. A cone is measured to both nappes.
+    pub fn distance(&self, p: [f64; 3]) -> Option<f64> {
+        match self {
+            RefSurface::Plane { point, normal } => Some(dot(sub(p, *point), *normal).abs()),
+            RefSurface::Cylinder { axis_pos, axis_dir, radius } => {
+                let v = sub(p, *axis_pos);
+                let h = dot(v, *axis_dir);
+                Some((norm(sub(v, scale(*axis_dir, h))) - radius).abs())
+            }
+            RefSurface::Cone { apex, axis_dir, half_angle } => {
+                let v = sub(p, *apex);
+                let h = dot(v, *axis_dir);
+                let r = norm(sub(v, scale(*axis_dir, h)));
+                let (s, c) = half_angle.sin_cos();
+                Some((r * c - h * s).abs().min((r * c + h * s).abs()))
+            }
+            RefSurface::Sphere { centre, radius } => Some((norm(sub(p, *centre)) - radius).abs()),
+            RefSurface::Torus { centre, axis_dir, major, minor } => {
+                let q = sub(p, *centre);
+                let h = dot(q, *axis_dir);
+                let rho = norm(sub(q, scale(*axis_dir, h)));
+                Some((((rho - major).powi(2) + h * h).sqrt() - minor).abs())
+            }
+            RefSurface::Other { .. } => None,
+        }
+    }
+
     /// A short name for grouping in the report.
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -516,6 +544,21 @@ impl ReferenceModel {
         }
         let n = props.normal();
         unit([n.x(), n.y(), n.z()])
+    }
+
+    /// Distance from `p` to the untrimmed surface of reference face `i`: closed
+    /// form for the analytic types, an OCCT projection for the rest. Not
+    /// thread-safe for freeform faces (it reads the geometry handles).
+    pub fn surface_distance(&self, i: usize, p: [f64; 3]) -> Option<f64> {
+        if let Some(d) = self.surfaces.get(i)?.distance(p) {
+            return Some(d);
+        }
+        let proj = geom_api::ProjectPointOnSurf::new_pnt_handlegeomsurface_extalgo(
+            &gp::Pnt::new_real3(p[0], p[1], p[2]),
+            self.geometry.get(i)?,
+            extrema::ExtAlgo::Grad,
+        );
+        (proj.is_done() && proj.nb_points() > 0).then(|| proj.lower_distance())
     }
 
     /// The compound of reference faces — the correct distance target. Never

@@ -38,7 +38,7 @@ use crate::stage1::{ConnectedMesh, MeshVertex};
 
 use std::collections::BTreeSet;
 
-use super::classify::{fit_validate, Classification};
+use super::classify::{fit_validate_joined, Classification};
 use super::locus::{analyze_pairs, PairOutcome, Surf};
 use super::surface::SurfaceType;
 use super::conical::ConicalSurface;
@@ -67,7 +67,15 @@ pub(super) struct RepairStats {
 
 /// Run the stage-2.4 repair sequence in place, then assert the hard
 /// partition invariants.
-pub(super) fn repair(mesh: &ConnectedMesh, cls: &mut Classification, config: &Config) -> RepairStats {
+pub(super) fn repair(
+    mesh: &ConnectedMesh,
+    cls: &mut Classification,
+    face_region: &[usize],
+    config: &Config,
+) -> RepairStats {
+    if config.boundary_join() {
+        cls.joined.resize(mesh.faces.len(), false);
+    }
     let centroids: Vec<[f64; 3]> = mesh
         .faces
         .iter()
@@ -82,7 +90,8 @@ pub(super) fn repair(mesh: &ConnectedMesh, cls: &mut Classification, config: &Co
     // Re-split still follows it, since a snap can in principle disconnect a
     // surface.
     let relabeled = relabel_boundaries(mesh, cls, config);
-    let merged = merge_regions(mesh, cls, &centroids, config);
+    let merged = merge_regions(mesh, cls, &centroids, face_region, config)
+        + merge_same_surface(mesh, cls, &centroids, config);
     let (snapped, snap_problems) = snap_boundaries(mesh, cls, config);
     let stats = RepairStats {
         snapped,
@@ -126,6 +135,21 @@ fn surface_faces_mut(cls: &mut Classification, si: usize) -> &mut Vec<usize> {
 /// operations skip B-spline surfaces via this predicate.
 fn is_bspline(cls: &Classification, si: usize) -> bool {
     matches!(cls.selected[si], SelectedSurface::BSpline(_))
+}
+
+/// Whether an analytic surface's own strict facets determine it — at least the
+/// per-type minimum (`CompeteHyp::min_support`: two for a plane, since one
+/// facet is exactly a plane). A B-spline is never counted: its fit vouches only
+/// for its own data.
+fn determined(cls: &Classification, si: usize) -> bool {
+    let min = match cls.selected[si] {
+        SelectedSurface::Planar(_) => 2,
+        SelectedSurface::Conical(_) => super::MIN_CYLINDER_FACES,
+        SelectedSurface::Spherical(_) => super::MIN_SPHERE_FACES,
+        SelectedSurface::Toroidal(_) => super::MIN_TORUS_FACES,
+        SelectedSurface::BSpline(_) => return false,
+    };
+    surface_faces(cls, si).iter().filter(|&&fi| !cls.is_joined(fi)).count() >= min
 }
 
 /// Distance from a point to a selected surface's fitted geometry.
@@ -191,26 +215,35 @@ fn refit_geometry(mesh: &ConnectedMesh, cls: &mut Classification, si: usize) {
         return;
     }
     let verts = vertices_of(mesh, &faces);
+    // The fit comes from the faces that validated strictly; a facet that joined
+    // at the boundary bound is a member, not evidence (`Classification::joined`).
+    let strict: Vec<usize> = faces.iter().copied().filter(|&fi| !cls.is_joined(fi)).collect();
+    let (fit_faces, fit_verts) = if strict.is_empty() || strict.len() == faces.len() {
+        (faces.clone(), verts.clone())
+    } else {
+        let v = vertices_of(mesh, &strict);
+        (strict, v)
+    };
     match cls.selected[si] {
         SelectedSurface::Planar(i) => {
-            if let Some(fit) = super::surface::cached_fit::<PlanarSurface>(mesh, &faces, &verts, 0) {
+            if let Some(fit) = super::surface::cached_fit::<PlanarSurface>(mesh, &fit_faces, &fit_verts, 0) {
                 cls.planar[i] = PlanarSurface::make_hypothesis(mesh, faces, verts, &fit);
             }
         }
         SelectedSurface::Conical(i) => {
-            if let Some(mut fit) = super::surface::cached_fit::<ConicalSurface>(mesh, &faces, &verts, 0) {
+            if let Some(mut fit) = super::surface::cached_fit::<ConicalSurface>(mesh, &fit_faces, &fit_verts, 0) {
                 ConicalSurface::determine_convexity(mesh, &faces, &mut fit);
                 cls.conical[i] = ConicalSurface::make_hypothesis(mesh, faces, verts, &fit);
             }
         }
         SelectedSurface::Spherical(i) => {
-            if let Some(mut fit) = super::surface::cached_fit::<SphericalSurface>(mesh, &faces, &verts, 0) {
+            if let Some(mut fit) = super::surface::cached_fit::<SphericalSurface>(mesh, &fit_faces, &fit_verts, 0) {
                 SphericalSurface::determine_convexity(mesh, &faces, &mut fit);
                 cls.spherical[i] = SphericalSurface::make_hypothesis(mesh, faces, verts, &fit);
             }
         }
         SelectedSurface::Toroidal(i) => {
-            if let Some(mut fit) = super::surface::cached_fit::<ToroidalSurface>(mesh, &faces, &verts, 0) {
+            if let Some(mut fit) = super::surface::cached_fit::<ToroidalSurface>(mesh, &fit_faces, &fit_verts, 0) {
                 ToroidalSurface::determine_convexity(mesh, &faces, &mut fit);
                 cls.toroidal[i] = ToroidalSurface::make_hypothesis(mesh, faces, verts, &fit);
             }
@@ -427,7 +460,109 @@ enum Refit {
     Toroidal(ToroidalHypothesis),
 }
 
-/// Refit a union of faces with the type of `sel` and validate it end to end.
+/// Whether two selected surfaces are the same kind for a union refit. The
+/// conical family covers cylinder and cone together, as its fitter does.
+fn same_kind(a: SelectedSurface, b: SelectedSurface) -> bool {
+    matches!(
+        (a, b),
+        (SelectedSurface::Planar(_), SelectedSurface::Planar(_))
+            | (SelectedSurface::Conical(_), SelectedSurface::Conical(_))
+            | (SelectedSurface::Spherical(_), SelectedSurface::Spherical(_))
+            | (SelectedSurface::Toroidal(_), SelectedSurface::Toroidal(_))
+    )
+}
+
+/// Merge adjacent surfaces of the same kind whose union validates as ONE
+/// surface of that kind.
+///
+/// `merge_regions` absorbs a small surface whose vertices lie on a larger
+/// neighbour's CURRENT fit. That misses pieces of one surface that were each
+/// fitted to a partial support: neither fit extrapolates onto the other piece
+/// to vertex tolerance, though one surface explains both exactly. Measured on
+/// `Open-Task-Light__led_cover_-_top`: a 358 mm² reference cone came out as
+/// seven cones of 9-55 facets, every facet within tolerance of the true cone.
+///
+/// So ask the question directly: refit the union and validate it end to end,
+/// exactly as a merge does. Validation at `--vertex-tolerance` is the whole
+/// test — two adjacent surfaces that are geometrically different cannot both
+/// lie on one fit — so this needs no size limit and no new constant.
+/// Smallest pair first, to a fixpoint. B-splines are left alone, as in
+/// `merge_regions`.
+fn merge_same_surface(
+    mesh: &ConnectedMesh,
+    cls: &mut Classification,
+    centroids: &[[f64; 3]],
+    config: &Config,
+) -> usize {
+    let mut merged = 0usize;
+    // Pairs already tried and refused, as (smaller, larger) face counts would
+    // not be stable across merges; keyed on the two face sets' first faces and
+    // sizes, which change whenever either surface does.
+    let mut refused: std::collections::HashSet<(usize, usize, usize, usize)> =
+        std::collections::HashSet::new();
+    loop {
+        let f2s = face_to_surface(mesh, cls);
+        let mut pairs: Vec<(usize, usize, usize)> = Vec::new(); // (union size, a, b)
+        for si in 0..cls.selected.len() {
+            let faces = surface_faces(cls, si);
+            if faces.is_empty() || is_bspline(cls, si) {
+                continue;
+            }
+            let mut nbrs: Vec<usize> = Vec::new();
+            for &fi in faces {
+                let f = &mesh.faces[fi];
+                for &ni in &f.neighbors[..f.vertex_count as usize] {
+                    if ni >= 0 {
+                        let sj = f2s[ni as usize];
+                        if sj != usize::MAX && sj > si {
+                            nbrs.push(sj);
+                        }
+                    }
+                }
+            }
+            nbrs.sort_unstable();
+            nbrs.dedup();
+            for sj in nbrs {
+                if !is_bspline(cls, sj) && same_kind(cls.selected[si], cls.selected[sj]) {
+                    pairs.push((faces.len() + surface_faces(cls, sj).len(), si, sj));
+                }
+            }
+        }
+        pairs.sort_unstable();
+        let mut did = false;
+        for (_, si, sj) in pairs {
+            let (a, b) = (surface_faces(cls, si), surface_faces(cls, sj));
+            let key = (a[0], a.len(), b[0], b.len());
+            if refused.contains(&key) {
+                continue;
+            }
+            let mut union: Vec<usize> = a.iter().chain(b.iter()).copied().collect();
+            union.sort_unstable();
+            let verts = vertices_of(mesh, &union);
+            // Keep the larger surface's slot; empty the smaller.
+            let (keep, drop) = if b.len() >= a.len() { (sj, si) } else { (si, sj) };
+            match refit_union(mesh, cls.selected[keep], &union, &verts, centroids, config, &cls.joined) {
+                Some(refit) => {
+                    store_refit(cls, keep, refit);
+                    surface_faces_mut(cls, drop).clear();
+                    merged += 1;
+                    did = true;
+                    break;
+                }
+                None => {
+                    refused.insert(key);
+                }
+            }
+        }
+        if !did {
+            break;
+        }
+    }
+    merged
+}
+
+/// Refit a union of faces with the type of `sel` and validate it end to end
+/// (joined facets left out of the fit and held to the boundary bound).
 fn refit_union(
     mesh: &ConnectedMesh,
     sel: SelectedSurface,
@@ -435,20 +570,23 @@ fn refit_union(
     verts: &[usize],
     centroids: &[[f64; 3]],
     config: &Config,
+    joined: &[bool],
 ) -> Option<Refit> {
     match sel {
         SelectedSurface::Planar(_) => {
-            fit_validate::<PlanarSurface>(mesh, faces, verts, centroids, config).map(Refit::Planar)
+            fit_validate_joined::<PlanarSurface>(mesh, faces, verts, centroids, config, joined)
+                .map(Refit::Planar)
         }
         SelectedSurface::Conical(_) => {
-            fit_validate::<ConicalSurface>(mesh, faces, verts, centroids, config).map(Refit::Conical)
+            fit_validate_joined::<ConicalSurface>(mesh, faces, verts, centroids, config, joined)
+                .map(Refit::Conical)
         }
         SelectedSurface::Spherical(_) => {
-            fit_validate::<SphericalSurface>(mesh, faces, verts, centroids, config)
+            fit_validate_joined::<SphericalSurface>(mesh, faces, verts, centroids, config, joined)
                 .map(Refit::Spherical)
         }
         SelectedSurface::Toroidal(_) => {
-            fit_validate::<ToroidalSurface>(mesh, faces, verts, centroids, config)
+            fit_validate_joined::<ToroidalSurface>(mesh, faces, verts, centroids, config, joined)
                 .map(Refit::Toroidal)
         }
         SelectedSurface::BSpline(_) => None,
@@ -460,9 +598,14 @@ fn merge_regions(
     mesh: &ConnectedMesh,
     cls: &mut Classification,
     centroids: &[[f64; 3]],
+    face_region: &[usize],
     config: &Config,
 ) -> usize {
     let vtol = config.vertex_tolerance_mm;
+    let btol = config.boundary_tolerance();
+    // Stage-2.2 region of a face; faces of an unknown region (an empty map, as
+    // in unit tests) are never across a sharp edge from each other.
+    let region = |fi: usize| face_region.get(fi).copied();
     let stol = config.surface_tolerance_mm;
     let mut merged = 0usize;
 
@@ -501,7 +644,6 @@ fn merge_regions(
             neighbors.sort_unstable();
             neighbors.dedup();
 
-            let s_verts = vertices_of(mesh, &s_faces);
             for &ti in &neighbors {
                 // A B-spline is never a merge TARGET: a fit vouches only for
                 // its data (the 2.3(e) island-dissolution guard is the
@@ -515,9 +657,42 @@ fn merge_regions(
                 }
                 // Every S vertex on T within vertex tol, every S centroid
                 // within surface tol — "on the same surface" is decisive.
-                let verts_ok = s_verts.iter().all(|&vi| {
-                    let v = &mesh.vertices[vi];
-                    point_dist(cls, ti, &[v.x, v.y, v.z]) <= vtol
+                //
+                // With the boundary join on, a facet of S may instead come
+                // within `--boundary-tolerance` of T, provided every vertex of
+                // it beyond vertex tolerance is on a real edge of S ∪ T — a
+                // facet around it is across a sharp edge, or belongs to a third
+                // analytic surface of at least two facets — the rule
+                // `classify::join_boundary_facets` applies. S is then a
+                // sliver of boundary facets that competition fitted on its own
+                // before the join could claim them — measured on
+                // `VoronUsers__12mm_strip_mini_mount`: cones of 3-8 facets along
+                // a tolerant edge of a cylinder — not a surface of its own. Such
+                // facets join T: left out of its refit, held to the boundary
+                // bound.
+                let mut loose: Vec<usize> = Vec::new();
+                let verts_ok = s_faces.iter().all(|&fi| {
+                    let d = face_vertex_dist(mesh, cls, ti, fi);
+                    if d <= vtol {
+                        return true;
+                    }
+                    if !config.boundary_join() || d > btol {
+                        return false;
+                    }
+                    let f = &mesh.faces[fi];
+                    let on_edge = f.vertex_indices[..f.vertex_count as usize].iter().all(|&vi| {
+                        let v = &mesh.vertices[vi];
+                        point_dist(cls, ti, &[v.x, v.y, v.z]) <= vtol
+                            || super::vertex_fan(mesh, fi, vi).iter().any(|&g| {
+                                let o = f2s[g];
+                                (region(g).is_some() && region(g) != region(fi))
+                                    || (o != usize::MAX && o != si && o != ti && determined(cls, o))
+                            })
+                    });
+                    if on_edge {
+                        loose.push(fi);
+                    }
+                    on_edge
                 });
                 if !verts_ok {
                     continue;
@@ -533,14 +708,22 @@ fn merge_regions(
                 union_faces.dedup();
                 let union_verts = vertices_of(mesh, &union_faces);
                 let sel_t = cls.selected[ti];
+                let newly: Vec<usize> =
+                    loose.iter().copied().filter(|&fi| !cls.is_joined(fi)).collect();
+                for &fi in &newly {
+                    cls.joined[fi] = true;
+                }
                 if let Some(refit) =
-                    refit_union(mesh, sel_t, &union_faces, &union_verts, centroids, config)
+                    refit_union(mesh, sel_t, &union_faces, &union_verts, centroids, config, &cls.joined)
                 {
                     store_refit(cls, ti, refit);
                     surface_faces_mut(cls, si).clear();
                     merged += 1;
                     did = true;
                     break;
+                }
+                for &fi in &newly {
+                    cls.joined[fi] = false;
                 }
             }
         }
@@ -820,6 +1003,89 @@ mod tests {
         config::parse_config_from(["brepper", "dummy.stl", "-q"]).unwrap()
     }
 
+    /// A strip of 4 quads along x (z=0), 8 triangles, with the two vertices at
+    /// x=3 raised `lift` in z: as if the edge between quads 2 and 3 were on an
+    /// approximated edge curve, off the plane.
+    fn lifted_strip(lift: f64) -> ConnectedMesh {
+        let mut verts = Vec::new();
+        for x in 0..=4 {
+            let z = if x == 3 { lift } else { 0.0 };
+            verts.push(MeshVertex::from_xyz(x as f64, 0.0, z));
+            verts.push(MeshVertex::from_xyz(x as f64, 1.0, z));
+        }
+        let mut faces = Vec::new();
+        for q in 0..4 {
+            let (a, b, c, d) = (2 * q, 2 * q + 1, 2 * q + 2, 2 * q + 3);
+            faces.push(tri(a, c, d));
+            faces.push(tri(a, d, b));
+        }
+        let mut mesh = ConnectedMesh { vertices: verts, faces, stats: Default::default() };
+        mesh.validate_and_populate_topology().expect("valid mesh");
+        mesh
+    }
+
+    /// T = quads 0-1, S = quad 2, U = quad 3, all fitted as z=0.
+    fn lifted_cls(n_faces: usize) -> Classification {
+        Classification {
+            planar: vec![
+                planar(vec![0, 1, 2, 3], vec![0, 1, 2, 3, 4, 5]),
+                planar(vec![4, 5], vec![4, 5, 6, 7]),
+                planar(vec![6, 7], vec![6, 7, 8, 9]),
+            ],
+            conical: Vec::new(),
+            spherical: Vec::new(),
+            toroidal: Vec::new(),
+            bspline: Vec::new(),
+            selected: vec![
+                SelectedSurface::Planar(0),
+                SelectedSurface::Planar(1),
+                SelectedSurface::Planar(2),
+            ],
+            joined: vec![false; n_faces],
+        }
+    }
+
+    #[test]
+    fn boundary_merge_joins_a_sliver_whose_off_vertices_stay_on_an_edge() {
+        // S's lifted vertices (5e-4 off T, within the 1e-3 boundary bound) are
+        // shared with U, so they stay on an edge of S+T: S merges into T, and
+        // its facets are marked joined. U's would then be inside T+U — every
+        // facet around them on T or U — so U is refused.
+        let mesh = lifted_strip(5e-4);
+        let mut cls = lifted_cls(mesh.faces.len());
+        let centroids: Vec<[f64; 3]> =
+            mesh.faces.iter().map(|f| face_centroid(f, &mesh.vertices)).collect();
+        let merged = merge_regions(&mesh, &mut cls, &centroids, &[], &test_config());
+        assert_eq!(merged, 1);
+        assert_eq!(cls.planar[0].faces.len(), 6, "S joined T");
+        assert!(cls.planar[1].faces.is_empty());
+        assert_eq!(cls.planar[2].faces, vec![6, 7], "U kept: its lifted vertices would be inside");
+        assert!(cls.is_joined(4) && cls.is_joined(5));
+        assert!(!cls.is_joined(6) && !cls.is_joined(7));
+        // T's fit came from its strict facets only: still z=0.
+        assert!(cls.planar[0].distance.abs() < 1e-12);
+    }
+
+    #[test]
+    fn boundary_merge_is_off_at_the_vertex_tolerance_and_past_the_bound() {
+        let off = config::parse_config_from([
+            "brepper", "dummy.stl", "-q", "--boundary-tolerance=5e-5",
+        ])
+        .unwrap();
+        let mesh = lifted_strip(5e-4);
+        let mut cls = lifted_cls(mesh.faces.len());
+        let centroids: Vec<[f64; 3]> =
+            mesh.faces.iter().map(|f| face_centroid(f, &mesh.vertices)).collect();
+        assert_eq!(merge_regions(&mesh, &mut cls, &centroids, &[], &off), 0);
+
+        // 2e-3 off is past the default 1e-3 bound.
+        let mesh = lifted_strip(2e-3);
+        let mut cls = lifted_cls(mesh.faces.len());
+        let centroids: Vec<[f64; 3]> =
+            mesh.faces.iter().map(|f| face_centroid(f, &mesh.vertices)).collect();
+        assert_eq!(merge_regions(&mesh, &mut cls, &centroids, &[], &test_config()), 0);
+    }
+
     #[test]
     fn merge_absorbs_coplanar_small_region() {
         let mesh = strip_mesh();
@@ -834,8 +1100,9 @@ mod tests {
             toroidal: Vec::new(),
             bspline: Vec::new(),
             selected: vec![SelectedSurface::Planar(0), SelectedSurface::Planar(1)],
+            joined: Vec::new(),
         };
-        let stats = repair(&mesh, &mut cls, &test_config());
+        let stats = repair(&mesh, &mut cls, &[], &test_config());
         assert_eq!(stats.merged, 1, "the coplanar small region should merge");
         assert_eq!(cls.selected.len(), 1, "one surface remains after merge");
         let faces = surface_faces(&cls, 0);
@@ -897,8 +1164,9 @@ mod tests {
             toroidal: Vec::new(),
             bspline: Vec::new(),
             selected: vec![SelectedSurface::Planar(0), SelectedSurface::Planar(1)],
+            joined: Vec::new(),
         };
-        let stats = repair(&mesh, &mut cls, &test_config());
+        let stats = repair(&mesh, &mut cls, &[], &test_config());
         assert_eq!(stats.merged, 0, "perpendicular planes must not merge");
         assert_eq!(cls.selected.len(), 2, "both surfaces survive");
         assert_invariants(&mesh, &cls);
@@ -920,6 +1188,7 @@ mod tests {
             toroidal: Vec::new(),
             bspline: Vec::new(),
             selected: vec![SelectedSurface::Planar(0), SelectedSurface::Planar(1)],
+            joined: Vec::new(),
         };
         let extra = resplit_disconnected(&mesh, &mut cls);
         assert_eq!(extra, 1, "the disconnected surface splits into two");

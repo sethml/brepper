@@ -78,14 +78,18 @@ def models():
 
 
 def run(cmd, timeout):
-    """(return code or None on timeout, combined output, seconds)."""
-    t0 = time.time()
+    """(return code or None on timeout, combined output, seconds).
+
+    Timed on the monotonic clock, the one subprocess's timeout uses: on macOS
+    it stops while the machine sleeps, so a run that spans a sleep reports the
+    time it actually ran (wall-clock time reported 895 s for a 4.5 s run)."""
+    t0 = time.monotonic()
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT, timeout=timeout)
-        return p.returncode, p.stdout + p.stderr, time.time() - t0
+        return p.returncode, p.stdout + p.stderr, time.monotonic() - t0
     except subprocess.TimeoutExpired as e:
         text = (e.stdout or b"") + (e.stderr or b"")
-        return None, text.decode(errors="replace") if isinstance(text, bytes) else text, time.time() - t0
+        return None, text.decode(errors="replace") if isinstance(text, bytes) else text, time.monotonic() - t0
 
 
 def types(text, label):

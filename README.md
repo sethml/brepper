@@ -35,6 +35,12 @@ GENERAL OPTIONS:
                              different seeds converges on the same surface. Runs after stage 2.2.
                              Diagnostics only. Requires --compare.
     --vertex-tolerance=<value>  Fitting tolerance in STL units (default: 5e-5)
+    --boundary-tolerance=<value> Looser vertex bound, in STL units, for facets at a face boundary
+                             only (default: 1e-3; never below --vertex-tolerance). Surfaces are
+                             still found at --vertex-tolerance; a facet none of them explains may
+                             then join an adjacent one if its vertices are within this bound, and
+                             the self-check allows it where two output faces meet. See "Boundary
+                             tolerance" below. Set it equal to --vertex-tolerance to turn it off.
     --surface-tolerance=<value> Surface-to-face offset tolerance in STL units (default: 0.4)
     --angular-tolerance=<deg>   Max dihedral angle between adjacent triangles on the same surface (default: 25)
     -v, --verbose[=LEVEL]    Verbosity level: 1 = stage summaries, 2 = per-hypothesis details,
@@ -102,7 +108,9 @@ Self-check: status=good solids=1 faces=44 valid=true vtx_max=1.249e-6 vtx_off=0 
 ```
 
 - `status=good` — a valid closed solid (`BRepCheck`), every mesh vertex on it
-  (`vtx_off=0`), and output under every mesh facet (`uncovered=0`).
+  (`vtx_off=0`: within `--vertex-tolerance`, or `--boundary-tolerance` at a
+  vertex where two output faces meet, plus the face's own OCCT tolerance), and
+  output under every mesh facet (`uncovered=0`).
 - `status=unfaithful` — a valid solid that is not the mesh: vertices off it,
   facets with nothing under them, or a declared tolerance (`tol_max`) above
   `--surface-tolerance`.
@@ -113,6 +121,44 @@ be inspected, and the message names the worst offending vertices or facets.
 `vol_rel` is the solid's volume against the mesh's and is reported, not gated:
 a mesh legitimately encloses slightly less than the solid it came from.
 `--no-self-check` skips the check. See `src/selfcheck.rs`.
+
+### Boundary tolerance
+
+Some exporters write the vertices of an edge on their own approximation of the
+edge curve rather than on the two surfaces that meet there. Measured on six
+Fusion 360 parts in `tests/external`: 18-72 vertices per part sit 1.7e-4 to
+5.2e-4 mm off every surface, within 7e-6 mm of the STEP's trimmed faces. A
+facet holding such a vertex is on no surface at `--vertex-tolerance`, so those
+rows used to come out as small impostor cones, tori, single-facet planes and
+B-spline patches.
+
+Raising `--vertex-tolerance` fixes those parts but loosens discovery
+everywhere, which breaks exact meshes. `--boundary-tolerance` is looser only
+where the problem is:
+
+- Surfaces are still discovered at `--vertex-tolerance` (stage 2.3).
+- A facet left over after that may join an adjacent surface that was already
+  found, if its vertices are within `--boundary-tolerance` of it and it passes
+  the usual orientation and centroid tests. A small surface (at most 16 facets)
+  whose facets all lie that close to a larger neighbour is merged into it in
+  stage 2.4.
+- In both cases a vertex more than `--vertex-tolerance` off must be on a real
+  edge of the surface it joins: some facet around it is across a sharp edge,
+  or belongs to another surface. Facets left over from discovery don't count,
+  because bordering only those is what a near-tangent freeform blend looks
+  like.
+- Only a surface "determined by its own facets" can take facets this way, or
+  serve as that other surface: it must have at least as many strictly
+  validated facets as its type needs to be fitted at all (two for a plane;
+  the existing minimums for cylinders, spheres and tori). A surface left with
+  one facet by competition can fit almost anything nearby.
+- A joined facet is never used to refit a surface.
+- The self-check allows `--boundary-tolerance` only at vertices where two
+  output faces meet.
+
+`-v` prints how many facets joined (`boundary join: …`), and
+`BREPPER_DEBUG_JOIN=1` lists every facet the join left out with its distance to
+each adjacent surface.
 
 ### Scoreboard
 
@@ -126,9 +172,25 @@ One row per corpus model: the self-check status, runtime, face types out, and �
 where the model has a reference — the reference's face types and three label
 scores for stage 2 (coverage, purity, and `type_agree`, the share of mesh area
 whose surface is the same kind as the reference's). The verdict on geometry
-never involves the reference. This is the yardstick for the plan in TODO.md;
+never involves the reference. Runtimes and the `--timeout` limit are on the
+monotonic clock, which on macOS stops while the machine sleeps, so a run that
+spans a sleep is still timed by what it actually ran. This is the yardstick for the plan in TODO.md;
 `tools/sweep.sh`, which scores runs by per-stage agreement with a reference
 STEP, remains for the synthetic suite.
+
+To see where stage 2 and the reference disagree about a surface's TYPE, add
+`-vv` to a `--reference-report` run: every such surface is listed by the index
+stage 3 uses in its errors and warnings, so a stage-3 failure can be traced to
+the stage-2 decision behind it. `BREPPER_TYPE_PROBE=1` prints, for every
+analytic reference face, whether a sphere and a cylinder-or-cone each validate
+its facets and how much of their edge length lies on each (one `TYPEPROBE` row
+per face on stdout) — the measurement behind stage 2's sphere-versus-cone rule.
+The same `-vv` run also lists every reference face we split and into which of
+our surfaces. `BREPPER_FACET_PROBE=1` prints two summary lines on stderr: how
+many vertices lie off every untrimmed reference surface they touch (vertices
+on a STEP's approximated edge curves), and how many facets no single surface
+passes through, against how many of our fragment facets lie on their own
+reference face and could have been joined (`=2` also prints each such facet).
 
 ### Reference check (`--compare`, stage 1.2)
 

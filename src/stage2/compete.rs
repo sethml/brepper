@@ -197,6 +197,31 @@ impl CompeteHyp {
             CompeteHyp::Toroidal(h) => &h.faces,
         }
     }
+    /// Add faces to the hypothesis's face set (and their vertices to its vertex
+    /// list), leaving its fitted geometry as it is.
+    pub(super) fn add_faces(&mut self, mesh: &ConnectedMesh, extra: &[usize]) {
+        let (faces, verts) = match self {
+            CompeteHyp::Planar(h) => (&mut h.faces, &mut h.vertices),
+            CompeteHyp::Conical(h) => (&mut h.faces, &mut h.vertices),
+            CompeteHyp::Spherical(h) => (&mut h.faces, &mut h.vertices),
+            CompeteHyp::Toroidal(h) => (&mut h.faces, &mut h.vertices),
+        };
+        faces.extend_from_slice(extra);
+        faces.sort_unstable();
+        faces.dedup();
+        *verts = vertices_of(mesh, faces);
+    }
+    /// The fewest facets that determine a surface of this type: the existing
+    /// per-type minimums, and two for a plane (one facet is exactly a plane, so
+    /// it says nothing).
+    pub(super) fn min_support(&self) -> usize {
+        match self {
+            CompeteHyp::Planar(_) => 2,
+            CompeteHyp::Conical(_) => MIN_CYLINDER_FACES,
+            CompeteHyp::Spherical(_) => MIN_SPHERE_FACES,
+            CompeteHyp::Toroidal(_) => MIN_TORUS_FACES,
+        }
+    }
     /// Short surface-type name for diagnostics.
     pub(super) fn kind_name(&self) -> &'static str {
         match self {
@@ -535,6 +560,15 @@ pub(super) fn compete_from_seed(
         // Grow the jet-pruned candidate types; keep the largest validated
         // area (simplest-DOF tiebreak).
         let mut best: Option<(CompeteHyp, f64, u8)> = None; // (hyp, area, dof)
+        // Edge length the current best contains (`edges_on_hyp`). Between two
+        // candidates of EQUAL area — the same faces explained two ways, which
+        // is what a cone and a sphere do to a single band of quads — the one
+        // containing more of the faces' edges wins, before DOF is consulted:
+        // see `classify::sphere_or_conical` for the measurement.
+        // Computed only when a tie asks for it: it walks every edge of the
+        // candidate's faces, and paying that for every candidate of every seed
+        // doubled stage 2's runtime on some models when first tried.
+        let best_edges: std::cell::Cell<Option<f64>> = std::cell::Cell::new(None);
         let consider = |hyp_area: Option<(CompeteHyp, f64)>, dof: u8, best: &mut Option<(CompeteHyp, f64, u8)>| {
             if let Some((h, area)) = hyp_area {
                 let sweep = candidate_sweep(mesh, &h);
@@ -549,12 +583,26 @@ pub(super) fn compete_from_seed(
                     }
                     return;
                 }
+                let vtol = config.vertex_tolerance_mm;
+                let mut edges: Option<f64> = None;
                 let better = match best {
                     None => true,
-                    Some((_, ba, bd)) => area > *ba + 1e-9 || ((area - *ba).abs() <= 1e-9 && dof < *bd),
+                    Some((_, ba, _)) if area > *ba + 1e-9 => true,
+                    Some((bh, ba, bd)) if (area - *ba).abs() <= 1e-9 => {
+                        let mine = edges_on_hyp(mesh, &h, h.faces(), vtol).0;
+                        let theirs = best_edges.get().unwrap_or_else(|| {
+                            let e = edges_on_hyp(mesh, bh, bh.faces(), vtol).0;
+                            best_edges.set(Some(e));
+                            e
+                        });
+                        edges = Some(mine);
+                        mine > theirs + 1e-9 || ((mine - theirs).abs() <= 1e-9 && dof < *bd)
+                    }
+                    Some(_) => false,
                 };
                 if better {
                     *best = Some((h, area, dof));
+                    best_edges.set(edges);
                 }
             }
         };
@@ -765,13 +813,21 @@ fn resolve_claims(
         // fillet's. Comparing absolute best-fit here instead would let a tiny
         // tighter sliver steal it and fragment one surface into a chain.
         let within: Vec<usize> = claimants.iter().copied().filter(|&ci| dist(ci) <= vtol).collect();
+        // Before DOF: the claimant that contains more of this face's own
+        // edges. Every claimant here already passes through the face's
+        // vertices; an edge lying whole on a surface is evidence the vertices
+        // cannot give, and it is what separates a cone or cylinder (which
+        // contains its ruling edges) from a sphere through the same vertices
+        // (which contains none). Equal counts, as between a sphere and a torus,
+        // leave the old order untouched.
+        let edges_on = |ci: usize| edges_on_hyp(mesh, &committed[ci], &[fi], vtol).1;
         let winner = if !within.is_empty() {
             *within
                 .iter()
                 .min_by(|&&a, &&b| {
-                    committed[a]
-                        .dof_rank()
-                        .cmp(&committed[b].dof_rank())
+                    edges_on(b)
+                        .cmp(&edges_on(a))
+                        .then_with(|| committed[a].dof_rank().cmp(&committed[b].dof_rank()))
                         .then_with(|| hyp_area[b].partial_cmp(&hyp_area[a]).unwrap())
                         .then_with(|| a.cmp(&b))
                 })
@@ -1297,6 +1353,98 @@ pub(super) fn face_validates<S: SurfaceType>(
     S::centroid_distance(fit, &centroids[fi]) <= stol
 }
 
+/// The typed fit behind a committed hypothesis, with its convexity read from
+/// the hypothesis's own faces exactly as `fit_validate` reads it. Lets a facet
+/// outside the hypothesis be tested by the same per-face rule a member passed
+/// ([`face_validates`]).
+pub(super) enum HypFit {
+    Planar(super::planar::PlaneFit),
+    Conical(ConeFit),
+    Spherical(super::spherical::SphereFit),
+    Toroidal(super::toroidal::TorusFit),
+}
+
+impl HypFit {
+    pub(super) fn of(mesh: &ConnectedMesh, hyp: &CompeteHyp) -> Self {
+        match hyp {
+            CompeteHyp::Planar(h) => HypFit::Planar(super::planar::PlaneFit {
+                normal: h.normal,
+                distance: h.distance,
+            }),
+            CompeteHyp::Conical(h) => {
+                let mut f = ConeFit {
+                    apex: h.apex,
+                    axis_direction: h.axis_direction,
+                    half_angle: h.half_angle,
+                    radius: h.radius_at_apex,
+                    convex: None,
+                };
+                ConicalSurface::determine_convexity(mesh, &h.faces, &mut f);
+                HypFit::Conical(f)
+            }
+            CompeteHyp::Spherical(h) => {
+                let mut f = super::spherical::SphereFit {
+                    center: h.center,
+                    radius: h.radius,
+                    convex: None,
+                };
+                SphericalSurface::determine_convexity(mesh, &h.faces, &mut f);
+                HypFit::Spherical(f)
+            }
+            CompeteHyp::Toroidal(h) => {
+                let mut f = super::toroidal::TorusFit {
+                    center: h.center,
+                    axis_direction: h.axis_direction,
+                    major_radius: h.major_radius,
+                    minor_radius: h.minor_radius,
+                    convex: None,
+                };
+                ToroidalSurface::determine_convexity(mesh, &h.faces, &mut f);
+                HypFit::Toroidal(f)
+            }
+        }
+    }
+
+    /// Distance from a point to this surface.
+    pub(super) fn distance(&self, p: &[f64; 3]) -> f64 {
+        match self {
+            HypFit::Planar(f) => PlanarSurface::vertex_distance(f, p),
+            HypFit::Conical(f) => ConicalSurface::vertex_distance(f, p),
+            HypFit::Spherical(f) => SphericalSurface::vertex_distance(f, p),
+            HypFit::Toroidal(f) => ToroidalSurface::vertex_distance(f, p),
+        }
+    }
+
+    /// The largest distance from face `fi`'s vertices to this surface, if `fi`
+    /// passes [`face_validates`] at vertex bound `vtol`; `None` otherwise.
+    pub(super) fn face_fits(
+        &self,
+        mesh: &ConnectedMesh,
+        fi: usize,
+        centroids: &[[f64; 3]],
+        vtol: f64,
+        stol: f64,
+    ) -> Option<f64> {
+        fn on<S: SurfaceType>(
+            mesh: &ConnectedMesh,
+            fi: usize,
+            fit: &S::Fit,
+            centroids: &[[f64; 3]],
+            vtol: f64,
+            stol: f64,
+        ) -> Option<f64> {
+            face_validates::<S>(mesh, fi, fit, centroids, vtol, stol)
+                .then(|| face_max_vertex_dist::<S>(mesh, fi, fit))
+        }
+        match self {
+            HypFit::Planar(f) => on::<PlanarSurface>(mesh, fi, f, centroids, vtol, stol),
+            HypFit::Conical(f) => on::<ConicalSurface>(mesh, fi, f, centroids, vtol, stol),
+            HypFit::Spherical(f) => on::<SphericalSurface>(mesh, fi, f, centroids, vtol, stol),
+            HypFit::Toroidal(f) => on::<ToroidalSurface>(mesh, fi, f, centroids, vtol, stol),
+        }
+    }
+}
+
 /// Max distance from any vertex of face `fi` to `fit` — the trim criterion for
 /// conditioning the seed patch (`condition_patch`).
 fn face_max_vertex_dist<S: SurfaceType>(mesh: &ConnectedMesh, fi: usize, fit: &S::Fit) -> f64 {
@@ -1525,44 +1673,78 @@ fn neighbor_jet_mismatch(mesh: &ConnectedMesh, fi: usize, jet: &[JetField], in_r
     worst
 }
 
+/// Distance from a point to a committed hypothesis's surface.
+fn hyp_distance(hyp: &CompeteHyp, v: &crate::stage1::MeshVertex) -> f64 {
+    match hyp {
+        CompeteHyp::Planar(h) => {
+            (h.normal[0] * v.x + h.normal[1] * v.y + h.normal[2] * v.z - h.distance).abs()
+        }
+        CompeteHyp::Conical(h) => {
+            if h.is_cylinder() {
+                super::cylindrical::vertex_to_cylinder_distance(
+                    v, &h.apex, &h.axis_direction, h.radius_at_apex,
+                )
+                .abs()
+            } else {
+                super::conical::vertex_to_cone_distance(v, &h.apex, &h.axis_direction, h.half_angle)
+                    .abs()
+            }
+        }
+        CompeteHyp::Spherical(h) => {
+            super::spherical::vertex_to_sphere_distance(v, &h.center, h.radius).abs()
+        }
+        CompeteHyp::Toroidal(h) => super::toroidal::vertex_to_torus_distance(
+            v,
+            &h.center,
+            &h.axis_direction,
+            h.major_radius,
+            h.minor_radius,
+        )
+        .abs(),
+    }
+}
+
 /// Max distance from face `fi`'s vertices to a committed hypothesis.
 fn max_vertex_dist(mesh: &ConnectedMesh, hyp: &CompeteHyp, fi: usize) -> f64 {
     let face = &mesh.faces[fi];
     let vc = face.vertex_count as usize;
     face.vertex_indices[..vc]
         .iter()
-        .map(|&vi| {
-            let v = &mesh.vertices[vi];
-            let p = [v.x, v.y, v.z];
-            match hyp {
-                CompeteHyp::Planar(h) => {
-                    (h.normal[0] * p[0] + h.normal[1] * p[1] + h.normal[2] * p[2] - h.distance).abs()
-                }
-                CompeteHyp::Conical(h) => {
-                    if h.is_cylinder() {
-                        super::cylindrical::vertex_to_cylinder_distance(
-                            v, &h.apex, &h.axis_direction, h.radius_at_apex,
-                        )
-                        .abs()
-                    } else {
-                        super::conical::vertex_to_cone_distance(v, &h.apex, &h.axis_direction, h.half_angle)
-                            .abs()
-                    }
-                }
-                CompeteHyp::Spherical(h) => {
-                    super::spherical::vertex_to_sphere_distance(v, &h.center, h.radius).abs()
-                }
-                CompeteHyp::Toroidal(h) => super::toroidal::vertex_to_torus_distance(
-                    v,
-                    &h.center,
-                    &h.axis_direction,
-                    h.major_radius,
-                    h.minor_radius,
-                )
-                .abs(),
-            }
-        })
+        .map(|&vi| hyp_distance(hyp, &mesh.vertices[vi]))
         .fold(0.0_f64, f64::max)
+}
+
+/// The mesh edges of `faces` that lie on a committed hypothesis's surface — the
+/// midpoint is within `vtol` of it — as (total length, count). The same
+/// evidence as `classify::edges_on_surface`, read off a hypothesis instead of a
+/// fit: a ruled surface contains the facet edges laid along its rulings, a
+/// sphere contains none.
+fn edges_on_hyp(mesh: &ConnectedMesh, hyp: &CompeteHyp, faces: &[usize], vtol: f64) -> (f64, usize) {
+    let mut edges: Vec<(usize, usize)> = Vec::with_capacity(faces.len() * 3);
+    for &fi in faces {
+        let f = &mesh.faces[fi];
+        let n = f.vertex_count as usize;
+        for k in 0..n {
+            let (a, b) = (f.vertex_indices[k], f.vertex_indices[(k + 1) % n]);
+            edges.push((a.min(b), a.max(b)));
+        }
+    }
+    edges.sort_unstable();
+    edges.dedup();
+    let (mut on, mut count) = (0.0_f64, 0usize);
+    for (a, b) in edges {
+        let (p, q) = (&mesh.vertices[a], &mesh.vertices[b]);
+        let mid = crate::stage1::MeshVertex::from_xyz(
+            (p.x + q.x) / 2.0,
+            (p.y + q.y) / 2.0,
+            (p.z + q.z) / 2.0,
+        );
+        if hyp_distance(hyp, &mid) <= vtol {
+            on += ((p.x - q.x).powi(2) + (p.y - q.y).powi(2) + (p.z - q.z).powi(2)).sqrt();
+            count += 1;
+        }
+    }
+    (on, count)
 }
 
 /// Sorted, deduplicated vertex indices of a face set.

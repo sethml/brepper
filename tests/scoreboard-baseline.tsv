@@ -1,168 +1,168 @@
-# brepper scoreboard 2026-11-12 19:13
-# commit 5ec9cd7-dirty
+# brepper scoreboard 2026-11-22 08:45
+# commit 22e50bb-dirty
 # jobs 4   models 163   timeout 120s
 # types and ref_types are plane:cyl:cone:sphere:torus:freeform face counts
 model	status	secs	tris	faces	types	vtx_max	vtx_off	uncovered	vol_rel	tol_max	ref	ref_faces	ref_types	coverage	purity	type_agree	note
-ccad/generated/ball_on_cylinder	good	0.15	764	3	1:1:0:1:0:0	2.867e-6	0	0	+1.299e-2	5.000e-5	ok	3	1:1:0:1:0:0	1.0000	1.0000	1.0000	
-ccad/generated/block_corner_hole	good	0.06	44	7	6:1:0:0:0:0	2.750e-7	0	0	-2.080e-4	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
-ccad/generated/block_with_conical_hole	good	0.27	312	7	6:0:1:0:0:0	5.652e-7	0	0	-1.671e-3	5.000e-5	ok	7	6:0:1:0:0:0	1.0000	1.0000	1.0000	
-ccad/generated/block_with_hole	good	0.13	132	7	6:1:0:0:0:0	6.950e-7	0	0	-1.121e-3	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
-ccad/generated/cone_cylinder	good	3.55	314	4	2:1:1:0:0:0	7.089e-7	0	0	+9.491e-3	5.000e-5	ok	4	2:1:1:0:0:0	1.0000	1.0000	1.0000	
-ccad/generated/cube	good	0.06	12	6	6:0:0:0:0:0	0.000e0	0	0	-4.206e-15	5.000e-5	ok	6	6:0:0:0:0:0	1.0000	1.0000	1.0000	
-ccad/generated/filleted_cylinder	good	6.92	1528	5	2:1:0:0:2:0	2.327e-6	0	0	+6.695e-3	5.000e-5	ok	5	2:1:0:0:2:0	1.0000	1.0000	1.0000	
-ccad/generated/filleted_hole_block	good	3.71	1484	9	6:1:0:0:2:0	6.188e-6	0	0	-1.382e-3	5.000e-5	ok	9	6:1:0:0:2:0	1.0000	1.0000	1.0000	
+ccad/generated/ball_on_cylinder	good	0.17	764	3	1:1:0:1:0:0	2.867e-6	0	0	+1.299e-2	5.000e-5	ok	3	1:1:0:1:0:0	1.0000	1.0000	1.0000	
+ccad/generated/block_corner_hole	good	0.07	44	7	6:1:0:0:0:0	2.750e-7	0	0	-2.080e-4	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
+ccad/generated/block_with_conical_hole	good	0.13	312	7	6:0:1:0:0:0	5.652e-7	0	0	-1.671e-3	5.000e-5	ok	7	6:0:1:0:0:0	1.0000	1.0000	1.0000	
+ccad/generated/block_with_hole	good	0.11	132	7	6:1:0:0:0:0	6.950e-7	0	0	-1.121e-3	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
+ccad/generated/cone_cylinder	good	2.84	314	4	2:1:1:0:0:0	7.089e-7	0	0	+9.491e-3	5.000e-5	ok	4	2:1:1:0:0:0	1.0000	1.0000	1.0000	
+ccad/generated/cube	good	0.10	12	6	6:0:0:0:0:0	0.000e0	0	0	-4.206e-15	5.000e-5	ok	6	6:0:0:0:0:0	1.0000	1.0000	1.0000	
+ccad/generated/filleted_cylinder	good	6.62	1528	5	2:1:0:0:2:0	2.327e-6	0	0	+6.695e-3	5.000e-5	ok	5	2:1:0:0:2:0	1.0000	1.0000	1.0000	
+ccad/generated/filleted_hole_block	good	3.38	1484	9	6:1:0:0:2:0	6.188e-6	0	0	-1.382e-3	5.000e-5	ok	9	6:1:0:0:2:0	1.0000	1.0000	1.0000	
 ccad/generated/filleted_pipe	good	7.92	2576	8	2:2:0:0:4:0	4.120e-6	0	0	+5.844e-3	5.000e-5	ok	8	2:2:0:0:4:0	1.0000	1.0000	1.0000	
-ccad/generated/hemisphere	good	0.09	518	2	1:0:0:1:0:0	4.710e-7	0	0	+1.454e-2	5.000e-5	ok	2	1:0:0:1:0:0	1.0000	1.0000	1.0000	
-ccad/generated/nosecone	good	0.20	712	3	1:0:1:1:0:0	5.674e-6	0	0	+8.173e-3	5.000e-5	ok	3	1:0:1:1:0:0	1.0000	1.0000	1.0000	
-ccad/generated/pipe	good	0.24	244	4	2:2:0:0:0:0	4.020e-7	0	0	+5.102e-3	5.000e-5	ok	4	2:2:0:0:0:0	1.0000	1.0000	1.0000	
-ccad/generated/simple_cone	good	0.12	348	3	2:0:1:0:0:0	5.757e-7	0	0	+1.096e-2	5.000e-5	ok	3	2:0:1:0:0:0	1.0000	1.0000	1.0000	
-ccad/generated/simple_cylinder	good	0.26	124	3	2:1:0:0:0:0	3.730e-7	0	0	+6.455e-3	5.000e-5	ok	3	2:1:0:0:0:0	1.0000	1.0000	1.0000	
-ccad/generated/simple_sphere	good	0.08	974	1	0:0:0:1:0:0	4.483e-7	0	0	+1.454e-2	4.000e-6	ok	1	0:0:0:1:0:0	1.0000	1.0000	1.0000	
-ccad/generated/spherical_pocket	good	0.16	486	7	6:0:0:1:0:0	6.720e-6	0	0	-9.716e-4	5.000e-5	ok	7	6:0:0:1:0:0	1.0000	1.0000	1.0000	
-ccad/generated/staircase	good	0.41	48	12	12:0:0:0:0:0	0.000e0	0	0	-4.366e-15	5.000e-5	ok	21	21:0:0:0:0:0	1.0000	0.6667	1.0000	
+ccad/generated/hemisphere	good	0.10	518	2	1:0:0:1:0:0	4.710e-7	0	0	+1.454e-2	5.000e-5	ok	2	1:0:0:1:0:0	1.0000	1.0000	1.0000	
+ccad/generated/nosecone	good	0.14	712	3	1:0:1:1:0:0	5.674e-6	0	0	+8.173e-3	5.000e-5	ok	3	1:0:1:1:0:0	1.0000	1.0000	1.0000	
+ccad/generated/pipe	good	0.27	244	4	2:2:0:0:0:0	4.020e-7	0	0	+5.102e-3	5.000e-5	ok	4	2:2:0:0:0:0	1.0000	1.0000	1.0000	
+ccad/generated/simple_cone	good	0.10	348	3	2:0:1:0:0:0	5.757e-7	0	0	+1.096e-2	5.000e-5	ok	3	2:0:1:0:0:0	1.0000	1.0000	1.0000	
+ccad/generated/simple_cylinder	good	0.12	124	3	2:1:0:0:0:0	3.730e-7	0	0	+6.455e-3	5.000e-5	ok	3	2:1:0:0:0:0	1.0000	1.0000	1.0000	
+ccad/generated/simple_sphere	good	0.11	974	1	0:0:0:1:0:0	4.483e-7	0	0	+1.454e-2	4.000e-6	ok	1	0:0:0:1:0:0	1.0000	1.0000	1.0000	
+ccad/generated/spherical_pocket	good	0.18	486	7	6:0:0:1:0:0	6.720e-6	0	0	-9.716e-4	5.000e-5	ok	7	6:0:0:1:0:0	1.0000	1.0000	1.0000	
+ccad/generated/staircase	good	0.29	48	12	12:0:0:0:0:0	0.000e0	0	0	-4.366e-15	5.000e-5	ok	21	21:0:0:0:0:0	1.0000	0.6667	1.0000	
 ccad/generated/stepped_cylinder	good	0.13	240	5	3:2:0:0:0:0	4.020e-7	0	0	+6.919e-3	5.000e-5	ok	5	3:2:0:0:0:0	1.0000	1.0000	1.0000	
-ccad/generated/t_shape	good	0.13	28	10	10:0:0:0:0:0	1.776e-15	0	0	-3.941e-15	5.000e-5	ok	12	12:0:0:0:0:0	1.0000	0.9000	1.0000	
-ccad/generated/two_holes	good	0.16	252	8	6:2:0:0:0:0	2.555e-6	0	0	-1.201e-3	5.000e-5	ok	8	6:2:0:0:0:0	1.0000	1.0000	1.0000	
-ccad/generated/wedge	good	0.05	12	6	6:0:0:0:0:0	0.000e0	0	0	-4.244e-15	5.000e-5	ok	6	6:0:0:0:0:0	1.0000	1.0000	1.0000	
-downloaded/3DBenchy	timeout	120.01	225156	-	-	-	-	-	-	-	timeout	-	-	-	-	-	
-downloaded/xyz-cube-test-20mm	good	1.63	1128	56	46:4:0:0:0:6	5.229e-7	0	0	+4.583e-5	5.000e-5	none	-	-	-	-	-	
-external/NucDeck__+_volume_button	good	0.63	520	40	28:8:0:4:0:0	4.178e-7	0	0	+9.377e-4	2.585e-3	ok	40	28:8:4:0:0:0	1.0000	1.0000	0.9776	
-external/NucDeck__-_volume_button	good	0.56	488	32	20:8:0:4:0:0	4.178e-7	0	0	+9.306e-4	2.585e-3	ok	32	20:8:4:0:0:0	1.0000	1.0000	0.9775	
-external/Open-Task-Light__drag_chain_link	fail	17.32	3088	-	21:19:24:6:6:5	-	-	-	-	-	ok	37	23:10:4:0:0:0	0.9510	0.9913	0.8773	Error: stage 3.1 adjacency error: face 14: single winding loop but the surface has no pole on the region side
-external/Open-Task-Light__drag_chain_termination_(base)	timeout	120.02	14172	-	19:13:10:3:74:1	-	-	-	-	-	ok	25	13:8:3:0:0:1	0.8814	0.9999	0.7984	
-external/Open-Task-Light__led_cover_-_top	invalid	3.29	7564	135	75:56:1:3:0:0	-	-	-	+2.358e-5	1.660e-2	ok	135	75:56:4:0:0:0	1.0000	1.0000	0.9800	Error: self-check: the output is invalid (BRepCheck reports the solid invalid). /Users/sethml/src/brepper/tmp/scoreboard/external__Open-Task-Light__led_cover_-_
-external/Open-Task-Light__led_cover_drag_chain_termination	fail	3.95	2676	-	20:22:4:4:3:1	-	-	-	-	-	ok	37	19:14:4:0:0:0	0.9856	0.9986	0.9137	Error: stage 3.1 adjacency error: face 30: single winding loop but the surface has no pole on the region side
-external/Open-Task-Light__penultimate_link	timeout	120.01	13784	-	-	-	-	-	-	-	timeout	-	-	-	-	-	
-external/Open-Task-Light__routed_spacer	good	1.24	3082	8	2:2:0:4:0:0	2.552e-7	0	0	+9.020e-5	5.000e-5	ok	8	2:2:4:0:0:0	1.0000	1.0000	0.9312	
-external/OpenBot__front_light_spacer	good	0.43	1160	6	3:3:0:0:0:0	2.383e-7	0	0	+3.342e-4	5.000e-5	ok	6	3:3:0:0:0:0	1.0000	1.0000	1.0000	
-external/ToolChanger__blower_fan_duct	timeout	120.03	5838	-	-	-	-	-	-	-	ok	45	17:14:2:0:0:12	0.9004	0.9137	0.8959	
-external/ToolChanger__blower_fan_duct_(m)	timeout	120.04	6006	-	-	-	-	-	-	-	ok	45	17:14:2:0:0:12	0.8091	0.9504	0.7893	
-external/ToolChanger__blower_fan_holder_arm	fail	8.14	3716	-	57:31:0:2:20:6	-	-	-	-	-	ok	87	57:10:0:0:0:20	0.9963	0.9669	0.9499	Error: stage 3.1 adjacency error: face 28: V-wrapped face must have exactly two winding loops (found 1)
-external/ToolChanger__blower_fan_holder_arm_(m)	fail	10.88	3742	-	59:31:1:0:19:5	-	-	-	-	-	ok	87	57:10:0:0:0:20	0.9963	0.9669	0.7463	Error: stage 3.1 adjacency error: face 27: single winding loop but the surface has no pole on the region side
-external/ToolChanger__dock_to_rhxs	good	2.16	2484	29	22:7:0:0:0:0	1.354e-5	0	0	+1.114e-5	5.000e-5	ok	34	22:12:0:0:0:0	0.9749	0.9266	1.0000	
-external/ToolChanger__dock_to_rhxs_(m)	good	2.49	2488	29	22:7:0:0:0:0	1.354e-5	0	0	+1.135e-5	5.000e-5	ok	34	22:12:0:0:0:0	0.9749	0.9266	1.0000	
-external/ToolChanger__docking_station	invalid	57.24	16848	270	132:36:11:83:2:4	-	-	-	+2.535e-2	7.726e0	ok	236	105:49:73:0:0:9	0.9966	0.9400	0.9323	Error: self-check: the output is invalid (BRepCheck reports the solid invalid; the solid declares a tolerance of 7.726e0 mm, above --surface-tolerance). /Users/
-external/ToolChanger__docking_station_(m)	fail	41.36	16934	-	103:48:5:80:1:4	-	-	-	-	-	ok	236	105:49:73:0:0:9	0.9803	0.9398	0.9388	Error: stage 3.1 adjacency error: face 34: single winding loop but the surface has no pole on the region side
-external/ToolChanger__hemera_bowden_bracket	good	1.79	3732	44	24:8:0:12:0:0	1.249e-6	0	0	-1.574e-4	2.856e-3	ok	44	24:8:12:0:0:0	1.0000	1.0000	0.9794	
-external/VoronUsers__10mm_strip_mount_full	invalid	10.99	1094	60	36:10:5:0:0:9	-	-	-	-1.292e-3	6.259e0	ok	15	8:7:0:0:0:0	0.9802	1.0000	0.9900	Error: self-check: the output is invalid (BRepCheck reports the solid invalid; the solid declares a tolerance of 6.259e0 mm, above --surface-tolerance). /Users/
-external/VoronUsers__10mm_strip_mount_full_with_channel	invalid	8.97	1110	64	40:10:5:0:0:9	-	-	-	-2.103e-3	6.259e0	ok	19	12:7:0:0:0:0	0.9817	1.0000	0.9907	Error: self-check: the output is invalid (BRepCheck reports the solid invalid; the solid declares a tolerance of 6.259e0 mm, above --surface-tolerance). /Users/
-external/VoronUsers__12mm_strip_mini_mount	invalid	10.05	872	59	40:6:3:0:4:5	-	-	-	-1.659e-3	7.900e0	ok	13	8:5:0:0:0:0	0.9751	1.0000	0.9754	Error: self-check: the output is invalid (BRepCheck reports the solid invalid; the solid declares a tolerance of 7.900e0 mm, above --surface-tolerance). /Users/
-external/VoronUsers__2020-wago_221-412_tray-5x2	good	2.27	1678	140	138:2:0:0:0:0	7.739e-7	0	0	-3.884e-6	5.000e-5	ok	140	138:2:0:0:0:0	1.0000	1.0000	1.0000	
-external/White-Knight__1-5i_case_front_v4	invalid	14.45	2536	84	52:26:0:4:0:1	-	-	-	+2.002e1	4.728e5	ok	87	55:28:0:4:0:0	1.0000	0.9108	0.8360	Error: self-check: the output is invalid (BRepCheck reports the solid invalid; the solid declares a tolerance of 4.728e5 mm, above --surface-tolerance). /Users/
-external/White-Knight__1-belt_stepper_roller_endcap_v1	good	4.84	6146	14	5:5:0:2:2:0	7.691e-6	0	0	+1.037e-3	5.000e-5	ok	14	5:5:2:0:2:0	1.0000	1.0000	0.9343	
-fusion/plate_with_hole_100x50_high	good	0.23	284	7	6:1:0:0:0:0	2.267e-6	0	0	-2.338e-5	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
-fusion/plate_with_hole_100x50_low	good	0.13	112	7	6:1:0:0:0:0	1.939e-6	0	0	-1.816e-4	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
-fusion/plate_with_hole_100x50_medium	good	0.22	168	7	6:1:0:0:0:0	2.035e-6	0	0	-7.261e-5	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
-fusion_reexport/chamfered_cube_10_c1_fusion_coarse	good	0.16	44	26	26:0:0:0:0:0	2.110e-14	0	0	-4.329e-15	5.000e-5	ok	26	26:0:0:0:0:0	1.0000	1.0000	1.0000	
+ccad/generated/t_shape	good	0.09	28	10	10:0:0:0:0:0	1.776e-15	0	0	-3.941e-15	5.000e-5	ok	12	12:0:0:0:0:0	1.0000	0.9000	1.0000	
+ccad/generated/two_holes	good	0.28	252	8	6:2:0:0:0:0	2.555e-6	0	0	-1.201e-3	5.000e-5	ok	8	6:2:0:0:0:0	1.0000	1.0000	1.0000	
+ccad/generated/wedge	good	0.07	12	6	6:0:0:0:0:0	0.000e0	0	0	-4.244e-15	5.000e-5	ok	6	6:0:0:0:0:0	1.0000	1.0000	1.0000	
+downloaded/3DBenchy	timeout	120.04	225156	-	-	-	-	-	-	-	skipped	-	-	-	-	-	
+downloaded/xyz-cube-test-20mm	good	2.79	1128	54	44:4:0:0:0:6	5.229e-7	0	0	+4.583e-5	5.000e-5	none	-	-	-	-	-	
+external/NucDeck__+_volume_button	good	0.79	520	40	28:8:4:0:0:0	3.595e-7	0	0	+8.943e-4	5.000e-5	ok	40	28:8:4:0:0:0	1.0000	1.0000	1.0000	
+external/NucDeck__-_volume_button	good	0.81	488	32	20:8:4:0:0:0	3.595e-7	0	0	+8.908e-4	5.000e-5	ok	32	20:8:4:0:0:0	1.0000	1.0000	1.0000	
+external/Open-Task-Light__drag_chain_link	good	20.38	3088	51	23:14:13:0:0:1	1.963e-1	0	0	-2.432e-4	2.093e-1	ok	37	23:10:4:0:0:0	0.9795	0.9976	0.9748	
+external/Open-Task-Light__drag_chain_termination_(base)	timeout	120.02	14172	-	-	-	-	-	-	-	skipped	-	-	-	-	-	
+external/Open-Task-Light__led_cover_-_top	good	13.04	7564	135	75:56:4:0:0:0	1.644e-2	0	0	-1.229e-4	1.660e-2	ok	135	75:56:4:0:0:0	1.0000	1.0000	1.0000	
+external/Open-Task-Light__led_cover_drag_chain_termination	fail	2.94	2676	-	19:16:6:0:2:0	-	-	-	-	-	ok	37	19:14:4:0:0:0	0.9986	1.0000	0.9976	Error: stage 3.1 adjacency error: face 20: single winding loop but the surface has no pole on the region side
+external/Open-Task-Light__penultimate_link	timeout	120.03	13784	-	-	-	-	-	-	-	skipped	-	-	-	-	-	
+external/Open-Task-Light__routed_spacer	good	0.81	3082	8	2:2:4:0:0:0	2.552e-7	0	0	+9.020e-5	5.000e-5	ok	8	2:2:4:0:0:0	1.0000	1.0000	1.0000	
+external/OpenBot__front_light_spacer	good	0.30	1160	6	3:3:0:0:0:0	2.383e-7	0	0	+3.342e-4	5.000e-5	ok	6	3:3:0:0:0:0	1.0000	1.0000	1.0000	
+external/ToolChanger__blower_fan_duct	fail	119.22	5838	-	678:13:6:0:0:6	-	-	-	-	-	ok	45	17:14:2:0:0:12	0.9013	0.9137	0.8959	Error: stage 3.1 adjacency error: face 124: single winding loop but the surface has no pole on the region side
+external/ToolChanger__blower_fan_duct_(m)	timeout	120.02	6006	-	-	-	-	-	-	-	skipped	-	-	-	-	-	
+external/ToolChanger__blower_fan_holder_arm	fail	7.74	3716	-	56:20:0:0:21:4	-	-	-	-	-	ok	87	57:10:0:0:0:20	0.9977	0.9669	0.9496	Error: stage 3.1 adjacency error: face 27: V-wrapped face must have exactly two winding loops (found 1)
+external/ToolChanger__blower_fan_holder_arm_(m)	fail	10.45	3742	-	52:19:1:0:19:3	-	-	-	-	-	ok	87	57:10:0:0:0:20	0.9976	0.9669	0.7461	Error: stage 3.1 adjacency error: face 26: single winding loop but the surface has no pole on the region side
+external/ToolChanger__dock_to_rhxs	good	2.31	2484	27	20:7:0:0:0:0	1.354e-5	0	0	+1.116e-5	5.000e-5	ok	34	22:12:0:0:0:0	1.0000	0.9266	1.0000	
+external/ToolChanger__dock_to_rhxs_(m)	good	1.84	2488	27	20:7:0:0:0:0	1.354e-5	0	0	+1.137e-5	5.000e-5	ok	34	22:12:0:0:0:0	1.0000	0.9266	1.0000	
+external/ToolChanger__docking_station	invalid	54.93	16848	226	109:36:74:2:1:4	-	-	-	+1.539e-2	7.726e0	ok	236	105:49:73:0:0:9	0.9994	0.9401	0.9448	Error: self-check: the output is invalid (BRepCheck reports the solid invalid; the solid declares a tolerance of 7.726e0 mm, above --surface-tolerance). /Users/
+external/ToolChanger__docking_station_(m)	timeout	120.01	16934	-	96:37:70:2:1:2	-	-	-	-	-	skipped	-	-	-	-	-	
+external/ToolChanger__hemera_bowden_bracket	good	2.01	3732	44	24:8:12:0:0:0	1.465e-6	0	0	-1.434e-4	5.000e-5	ok	44	24:8:12:0:0:0	1.0000	1.0000	1.0000	
+external/VoronUsers__10mm_strip_mount_full	good	5.13	1094	27	20:4:0:0:0:3	1.041e-2	0	0	-6.006e-4	1.154e-2	ok	15	8:7:0:0:0:0	1.0000	1.0000	0.9990	
+external/VoronUsers__10mm_strip_mount_full_with_channel	good	6.63	1110	31	24:4:0:0:0:3	1.041e-2	0	0	-6.285e-4	1.154e-2	ok	19	12:7:0:0:0:0	1.0000	1.0000	0.9991	
+external/VoronUsers__12mm_strip_mini_mount	good	3.32	872	22	16:3:0:0:0:3	2.730e-2	0	0	-3.002e-4	3.868e-1	ok	13	8:5:0:0:0:0	0.9963	1.0000	0.9952	
+external/VoronUsers__2020-wago_221-412_tray-5x2	good	1.37	1678	140	138:2:0:0:0:0	7.739e-7	0	0	-3.884e-6	5.000e-5	ok	140	138:2:0:0:0:0	1.0000	1.0000	1.0000	
+external/White-Knight__1-5i_case_front_v4	invalid	8.55	2536	84	52:26:0:4:0:1	-	-	-	+2.002e1	4.728e5	ok	87	55:28:0:4:0:0	1.0000	0.9108	0.8360	Error: self-check: the output is invalid (BRepCheck reports the solid invalid; the solid declares a tolerance of 4.728e5 mm, above --surface-tolerance). /Users/
+external/White-Knight__1-belt_stepper_roller_endcap_v1	good	5.54	6146	14	5:5:2:0:2:0	7.691e-6	0	0	+8.262e-4	5.000e-5	ok	14	5:5:2:0:2:0	1.0000	1.0000	1.0000	
+fusion/plate_with_hole_100x50_high	good	0.15	284	7	6:1:0:0:0:0	2.267e-6	0	0	-2.338e-5	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
+fusion/plate_with_hole_100x50_low	good	0.12	112	7	6:1:0:0:0:0	1.939e-6	0	0	-1.816e-4	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
+fusion/plate_with_hole_100x50_medium	good	0.13	168	7	6:1:0:0:0:0	2.035e-6	0	0	-7.261e-5	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
+fusion_reexport/chamfered_cube_10_c1_fusion_coarse	good	0.12	44	26	26:0:0:0:0:0	2.110e-14	0	0	-4.329e-15	5.000e-5	ok	26	26:0:0:0:0:0	1.0000	1.0000	1.0000	
 fusion_reexport/chamfered_cube_10_c1_fusion_fine	good	0.12	44	26	26:0:0:0:0:0	2.110e-14	0	0	-4.329e-15	5.000e-5	ok	26	26:0:0:0:0:0	1.0000	1.0000	1.0000	
-fusion_reexport/chamfered_cube_10_c1_fusion_medium	good	0.19	44	26	26:0:0:0:0:0	2.110e-14	0	0	-4.329e-15	5.000e-5	ok	26	26:0:0:0:0:0	1.0000	1.0000	1.0000	
-fusion_reexport/cone_tangent_planes_fusion_coarse	unfaithful	0.47	56	14	12:0:1:1:0:0	5.007e-6	0	0	+5.978e-3	6.125e-1	ok	7	4:0:3:0:0:0	0.7683	1.0000	0.6395	Error: self-check: the output is unfaithful (the solid declares a tolerance of 6.125e-1 mm, above --surface-tolerance). /Users/sethml/src/brepper/tmp/scoreboard
-fusion_reexport/cone_tangent_planes_fusion_fine	good	0.98	318	7	4:0:2:1:0:0	3.954e-6	0	0	+5.865e-3	5.000e-5	ok	7	4:0:3:0:0:0	1.0000	1.0000	0.9011	
-fusion_reexport/cone_tangent_planes_fusion_medium	good	0.72	104	7	4:0:2:1:0:0	5.821e-6	0	0	+8.900e-3	5.000e-5	ok	7	4:0:3:0:0:0	1.0000	1.0000	0.9019	
-fusion_reexport/cylinder_10x30_fusion_coarse	good	0.11	44	14	14:0:0:0:0:0	3.670e-15	0	0	-4.446e-15	5.000e-5	ok	3	2:1:0:0:0:0	0.2104	1.0000	0.1387	
-fusion_reexport/l_bracket_simple_fusion_coarse	good	0.64	124	32	32:0:0:0:0:0	1.020e-14	0	0	-3.553e-15	5.000e-5	ok	10	8:2:0:0:0:0	0.9530	1.0000	0.9488	
-fusion_reexport/l_bracket_simple_fusion_fine	good	0.29	508	10	8:2:0:0:0:0	1.761e-6	0	0	-1.801e-4	5.000e-5	ok	10	8:2:0:0:0:0	1.0000	1.0000	1.0000	
-fusion_reexport/l_bracket_simple_fusion_medium	good	0.23	268	10	8:2:0:0:0:0	1.587e-6	0	0	-7.006e-4	5.000e-5	ok	10	8:2:0:0:0:0	1.0000	1.0000	1.0000	
-fusion_reexport/nosecone_fusion_coarse	invalid	1.01	94	39	37:0:0:2:0:0	-	-	-	+2.864e-4	7.535e-1	not-a-pair	-	-	-	-	-	Error: self-check: the output is invalid (BRepCheck reports the solid invalid; the solid declares a tolerance of 7.535e-1 mm, above --surface-tolerance). /Users
-fusion_reexport/nosecone_fusion_fine	fail	1.07	1530	-	2:0:1:1:0:0	-	-	-	-	-	ok	3	1:0:1:1:0:0	0.9150	0.8073	0.8073	Error: stage 3.1 adjacency error: face 1: 3 winding boundary loops (at most 2 supported)
-fusion_reexport/nosecone_fusion_medium	good	0.42	286	3	1:0:1:1:0:0	8.775e-6	0	0	+1.173e-2	5.000e-5	ok	3	1:0:1:1:0:0	0.9570	0.7665	0.7665	
-fusion_reexport/part_rounded_cube_10_r2_fusion_coarse	good	0.13	60	10	6:4:0:0:0:0	1.432e-14	0	0	+5.676e-2	5.670e-3	ok	10	6:4:0:0:0:0	0.8511	0.8511	0.4941	
-fusion_reexport/part_rounded_cube_10_r2_fusion_fine	good	0.26	476	10	6:4:0:0:0:0	1.791e-6	0	0	+2.378e-4	5.000e-5	ok	10	6:4:0:0:0:0	1.0000	1.0000	1.0000	
-fusion_reexport/part_rounded_cube_10_r2_fusion_medium	good	0.53	108	3	2:0:0:0:0:1	1.628e-14	0	0	+1.198e-3	5.000e-5	ok	10	6:4:0:0:0:0	1.0000	0.4530	0.3455	
-fusion_reexport/pill_fusion_coarse	good	0.27	144	14	12:0:0:2:0:0	2.431e-6	0	0	+2.926e-2	6.883e-2	ok	3	0:1:0:2:0:0	0.3367	1.0000	0.2764	
-fusion_reexport/pipe_elbow_10_fusion_coarse	invalid	4.46	140	35	27:0:0:0:0:7	-	-	-	-4.208e-2	5.149e0	not-a-pair	-	-	-	-	-	Error: self-check: the output is invalid (BRepCheck reports the solid invalid; the solid declares a tolerance of 5.149e0 mm, above --surface-tolerance). /Users/
-fusion_reexport/plate_with_hole_100x50_fusion_coarse	good	0.18	64	18	18:0:0:0:0:0	1.005e-14	0	0	-4.986e-15	5.000e-5	ok	7	6:1:0:0:0:0	0.9972	1.0000	0.9969	
-fusion_reexport/rounded_cube_10_r2_fusion_coarse	fail	1.65	204	-	61:3:0:4:0:2	-	-	-	-	-	ok	26	6:12:0:8:0:0	0.6177	0.7716	0.4849	Error: stage 3.1 adjacency error: MakeEdge failed while re-anchoring closed edge 1: Differentspointandparameter
-fusion_reexport/rounded_cube_10_r2_fusion_fine	good	19.17	4188	26	6:12:0:8:0:0	1.259e-6	0	0	+6.240e-4	5.000e-5	ok	26	6:12:0:8:0:0	1.0000	1.0000	1.0000	
-fusion_reexport/rounded_cube_10_r2_fusion_medium	unfaithful	9.39	684	9	0:0:0:8:0:1	2.657e-1	0	0	+2.337e-2	4.416e-1	ok	26	6:12:0:8:0:0	1.0000	0.1742	0.1009	Error: self-check: the output is unfaithful (the solid declares a tolerance of 4.416e-1 mm, above --surface-tolerance). /Users/sethml/src/brepper/tmp/scoreboard
-fusion_reexport/sphere_25_fusion_coarse	good	0.23	120	28	24:0:4:0:0:0	8.189e-6	0	0	+1.494e-2	3.726e-1	not-a-pair	-	-	-	-	-	
-fusion_reexport/sphere_25_fusion_fine	good	0.15	3480	1	0:0:0:1:0:0	5.207e-7	0	0	+4.582e-3	5.000e-6	ok	1	0:0:0:1:0:0	1.0000	1.0000	1.0000	
-fusion_reexport/sphere_25_fusion_medium	good	0.04	528	1	0:0:0:1:0:0	3.016e-7	0	0	+2.905e-2	5.000e-6	ok	1	0:0:0:1:0:0	1.0000	1.0000	1.0000	
-fusion_reexport/stepped_block_fusion_coarse	good	0.16	52	16	16:0:0:0:0:0	2.930e-14	0	0	-4.362e-15	5.000e-5	ok	16	16:0:0:0:0:0	1.0000	1.0000	1.0000	
+fusion_reexport/chamfered_cube_10_c1_fusion_medium	good	0.12	44	26	26:0:0:0:0:0	2.110e-14	0	0	-4.329e-15	5.000e-5	ok	26	26:0:0:0:0:0	1.0000	1.0000	1.0000	
+fusion_reexport/cone_tangent_planes_fusion_coarse	unfaithful	0.49	56	14	12:0:2:0:0:0	5.007e-6	0	0	+6.897e-4	6.125e-1	ok	7	4:0:3:0:0:0	0.7683	1.0000	0.7352	Error: self-check: the output is unfaithful (the solid declares a tolerance of 6.125e-1 mm, above --surface-tolerance). /Users/sethml/src/brepper/tmp/scoreboard
+fusion_reexport/cone_tangent_planes_fusion_fine	good	0.96	318	7	4:0:3:0:0:0	3.954e-6	0	0	+6.326e-4	5.000e-5	ok	7	4:0:3:0:0:0	1.0000	1.0000	1.0000	
+fusion_reexport/cone_tangent_planes_fusion_medium	good	0.58	104	7	4:0:3:0:0:0	3.571e-6	0	0	+3.652e-3	5.000e-5	ok	7	4:0:3:0:0:0	1.0000	1.0000	1.0000	
+fusion_reexport/cylinder_10x30_fusion_coarse	good	0.12	44	14	14:0:0:0:0:0	3.670e-15	0	0	-4.446e-15	5.000e-5	ok	3	2:1:0:0:0:0	0.2104	1.0000	0.1387	
+fusion_reexport/l_bracket_simple_fusion_coarse	good	0.29	124	32	32:0:0:0:0:0	1.020e-14	0	0	-3.553e-15	5.000e-5	ok	10	8:2:0:0:0:0	0.9530	1.0000	0.9488	
+fusion_reexport/l_bracket_simple_fusion_fine	good	0.23	508	10	8:2:0:0:0:0	1.761e-6	0	0	-1.801e-4	5.000e-5	ok	10	8:2:0:0:0:0	1.0000	1.0000	1.0000	
+fusion_reexport/l_bracket_simple_fusion_medium	good	0.19	268	10	8:2:0:0:0:0	1.587e-6	0	0	-7.006e-4	5.000e-5	ok	10	8:2:0:0:0:0	1.0000	1.0000	1.0000	
+fusion_reexport/nosecone_fusion_coarse	invalid	0.86	94	39	37:0:0:2:0:0	-	-	-	+2.864e-4	7.535e-1	not-a-pair	-	-	-	-	-	Error: self-check: the output is invalid (BRepCheck reports the solid invalid; the solid declares a tolerance of 7.535e-1 mm, above --surface-tolerance). /Users
+fusion_reexport/nosecone_fusion_fine	fail	1.00	1530	-	2:0:1:1:0:0	-	-	-	-	-	ok	3	1:0:1:1:0:0	0.9150	0.8073	0.8073	Error: stage 3.1 adjacency error: face 1: 3 winding boundary loops (at most 2 supported)
+fusion_reexport/nosecone_fusion_medium	good	0.33	286	3	1:0:1:1:0:0	8.775e-6	0	0	+1.173e-2	5.000e-5	ok	3	1:0:1:1:0:0	0.9570	0.7665	0.7665	
+fusion_reexport/part_rounded_cube_10_r2_fusion_coarse	good	0.08	60	10	6:4:0:0:0:0	1.432e-14	0	0	+5.676e-2	5.670e-3	ok	10	6:4:0:0:0:0	0.8511	0.8511	0.4941	
+fusion_reexport/part_rounded_cube_10_r2_fusion_fine	good	0.18	476	10	6:4:0:0:0:0	1.791e-6	0	0	+2.378e-4	5.000e-5	ok	10	6:4:0:0:0:0	1.0000	1.0000	1.0000	
+fusion_reexport/part_rounded_cube_10_r2_fusion_medium	good	0.21	108	3	2:0:0:0:0:1	1.628e-14	0	0	+1.198e-3	5.000e-5	ok	10	6:4:0:0:0:0	1.0000	0.4530	0.3455	
+fusion_reexport/pill_fusion_coarse	good	0.18	144	14	12:0:0:2:0:0	2.431e-6	0	0	+2.926e-2	6.883e-2	ok	3	0:1:0:2:0:0	0.3367	1.0000	0.2764	
+fusion_reexport/pipe_elbow_10_fusion_coarse	invalid	4.31	140	35	27:0:0:0:0:7	-	-	-	-4.208e-2	5.149e0	not-a-pair	-	-	-	-	-	Error: self-check: the output is invalid (BRepCheck reports the solid invalid; the solid declares a tolerance of 5.149e0 mm, above --surface-tolerance). /Users/
+fusion_reexport/plate_with_hole_100x50_fusion_coarse	good	0.28	64	18	18:0:0:0:0:0	1.005e-14	0	0	-4.986e-15	5.000e-5	ok	7	6:1:0:0:0:0	0.9972	1.0000	0.9969	
+fusion_reexport/rounded_cube_10_r2_fusion_coarse	fail	1.68	204	-	61:3:0:4:0:2	-	-	-	-	-	ok	26	6:12:0:8:0:0	0.6177	0.7716	0.4849	Error: stage 3.1 adjacency error: MakeEdge failed while re-anchoring closed edge 1: Differentspointandparameter
+fusion_reexport/rounded_cube_10_r2_fusion_fine	good	19.38	4188	26	6:12:0:8:0:0	1.259e-6	0	0	+6.240e-4	5.000e-5	ok	26	6:12:0:8:0:0	1.0000	1.0000	1.0000	
+fusion_reexport/rounded_cube_10_r2_fusion_medium	unfaithful	9.71	684	9	0:0:0:8:0:1	2.657e-1	0	0	+2.337e-2	4.416e-1	ok	26	6:12:0:8:0:0	1.0000	0.1742	0.1009	Error: self-check: the output is unfaithful (the solid declares a tolerance of 4.416e-1 mm, above --surface-tolerance). /Users/sethml/src/brepper/tmp/scoreboard
+fusion_reexport/sphere_25_fusion_coarse	good	0.24	120	28	24:0:4:0:0:0	8.189e-6	0	0	+1.494e-2	3.726e-1	not-a-pair	-	-	-	-	-	
+fusion_reexport/sphere_25_fusion_fine	good	0.36	3480	1	0:0:0:1:0:0	5.207e-7	0	0	+4.582e-3	5.000e-6	ok	1	0:0:0:1:0:0	1.0000	1.0000	1.0000	
+fusion_reexport/sphere_25_fusion_medium	good	0.06	528	1	0:0:0:1:0:0	3.016e-7	0	0	+2.905e-2	5.000e-6	ok	1	0:0:0:1:0:0	1.0000	1.0000	1.0000	
+fusion_reexport/stepped_block_fusion_coarse	good	0.15	52	16	16:0:0:0:0:0	2.930e-14	0	0	-4.362e-15	5.000e-5	ok	16	16:0:0:0:0:0	1.0000	1.0000	1.0000	
 fusion_reexport/stepped_block_fusion_fine	good	0.14	52	16	16:0:0:0:0:0	2.930e-14	0	0	-4.362e-15	5.000e-5	ok	16	16:0:0:0:0:0	1.0000	1.0000	1.0000	
-fusion_reexport/stepped_block_fusion_medium	good	0.22	52	16	16:0:0:0:0:0	2.930e-14	0	0	-4.362e-15	5.000e-5	ok	16	16:0:0:0:0:0	1.0000	1.0000	1.0000	
-fusion_reexport/stepped_block_toroidal_fillets_fusion_coarse	unfaithful	32.22	866	268	234:16:4:0:3:9	3.564e-1	0	0	-6.364e-2	2.579e1	not-a-pair	-	-	-	-	-	Error: self-check: the output is unfaithful (the solid declares a tolerance of 2.579e1 mm, above --surface-tolerance). /Users/sethml/src/brepper/tmp/scoreboard/
-fusion_reexport/stepped_block_toroidal_fillets_fusion_fine	unfaithful	50.78	17598	82	27:36:0:0:18:1	3.382e-1	0	0	-8.458e-4	4.782e0	ok	71	16:37:0:0:18:0	0.9999	0.9638	0.9087	Error: self-check: the output is unfaithful (the solid declares a tolerance of 4.782e0 mm, above --surface-tolerance). /Users/sethml/src/brepper/tmp/scoreboard/
-fusion_reexport/stepped_block_toroidal_fillets_fusion_medium	fail	24.85	2948	-	74:29:0:0:21:0	-	-	-	-	-	ok	71	16:37:0:0:18:0	0.9983	1.0000	0.9979	Error: stage 3.1 adjacency error: face 14: single winding loop but the surface has no pole on the region side
-manual/cube	good	0.06	12	6	6:0:0:0:0:0	0.000e0	0	0	-4.552e-15	5.000e-5	ok	6	6:0:0:0:0:0	1.0000	1.0000	1.0000	
-nurbs/bspline_blister	unfaithful	27.18	6720	7	6:0:0:0:0:1	3.057e0	8	12	+5.710e-4	6.258e-1	ok	6	5:0:0:0:0:1	0.8665	1.0000	0.7702	Error: self-check: the output is unfaithful (8 mesh vert(ices) off their output face, worst 3.057e0 mm; the solid declares a tolerance of 6.258e-1 mm, above --s
-nurbs/bspline_hill	timeout	120.02	6720	-	5:0:0:0:0:1	-	-	-	-	-	ok	6	5:0:0:0:0:1	1.0000	1.0000	1.0000	
-nurbs/bspline_saddle	timeout	120.01	6720	-	-	-	-	-	-	-	ok	6	5:0:0:0:0:1	0.6551	1.0000	0.6547	
-nurbs/bspline_terrain	good	115.33	6720	6	5:0:0:0:0:1	4.491e-2	0	0	-9.294e-5	1.692e-1	ok	6	5:0:0:0:0:1	1.0000	1.0000	1.0000	
-nurbs/bspline_wave	good	1.00	644	6	5:0:0:0:0:1	2.018e-14	0	0	+4.949e-4	5.000e-5	ok	6	5:0:0:0:0:1	1.0000	1.0000	1.0000	
+fusion_reexport/stepped_block_fusion_medium	good	0.17	52	16	16:0:0:0:0:0	2.930e-14	0	0	-4.362e-15	5.000e-5	ok	16	16:0:0:0:0:0	1.0000	1.0000	1.0000	
+fusion_reexport/stepped_block_toroidal_fillets_fusion_coarse	unfaithful	28.88	866	204	170:16:4:0:3:9	3.564e-1	0	0	-6.340e-2	2.579e1	not-a-pair	-	-	-	-	-	Error: self-check: the output is unfaithful (the solid declares a tolerance of 2.579e1 mm, above --surface-tolerance). /Users/sethml/src/brepper/tmp/scoreboard/
+fusion_reexport/stepped_block_toroidal_fillets_fusion_fine	unfaithful	47.25	17598	82	27:36:0:0:18:1	3.382e-1	0	0	-8.458e-4	4.782e0	ok	71	16:37:0:0:18:0	0.9999	0.9638	0.9087	Error: self-check: the output is unfaithful (the solid declares a tolerance of 4.782e0 mm, above --surface-tolerance). /Users/sethml/src/brepper/tmp/scoreboard/
+fusion_reexport/stepped_block_toroidal_fillets_fusion_medium	fail	26.36	2948	-	60:29:0:0:21:0	-	-	-	-	-	ok	71	16:37:0:0:18:0	0.9983	1.0000	0.9979	Error: stage 3.1 adjacency error: face 14: single winding loop but the surface has no pole on the region side
+manual/cube	good	0.04	12	6	6:0:0:0:0:0	0.000e0	0	0	-4.552e-15	5.000e-5	ok	6	6:0:0:0:0:0	1.0000	1.0000	1.0000	
+nurbs/bspline_blister	unfaithful	28.63	6720	7	6:0:0:0:0:1	3.057e0	8	12	+5.710e-4	6.258e-1	ok	6	5:0:0:0:0:1	0.8665	1.0000	0.7702	Error: self-check: the output is unfaithful (8 mesh vert(ices) off their output face, worst 3.057e0 mm; the solid declares a tolerance of 6.258e-1 mm, above --s
+nurbs/bspline_hill	timeout	120.02	6720	-	5:0:0:0:0:1	-	-	-	-	-	skipped	-	-	-	-	-	
+nurbs/bspline_saddle	timeout	120.02	6720	-	-	-	-	-	-	-	skipped	-	-	-	-	-	
+nurbs/bspline_terrain	good	103.41	6720	6	5:0:0:0:0:1	4.491e-2	0	0	-9.294e-5	1.692e-1	ok	6	5:0:0:0:0:1	1.0000	1.0000	1.0000	
+nurbs/bspline_wave	good	0.94	644	6	5:0:0:0:0:1	2.018e-14	0	0	+4.949e-4	5.000e-5	ok	6	5:0:0:0:0:1	1.0000	1.0000	1.0000	
 nurbs/elliptical_arch	good	0.35	192	4	3:0:0:0:0:1	2.051e-2	0	0	+9.684e-4	2.059e-2	ok	4	3:0:0:0:0:1	1.0000	1.0000	1.0000	
-nurbs/elliptical_cylinder	good	0.99	364	3	2:0:0:0:0:1	1.082e-14	0	0	+1.164e-3	9.106e-3	ok	3	2:0:0:0:0:1	1.0000	1.0000	1.0000	
-nurbs/hill_with_hole	unfaithful	107.68	2054	7	5:1:0:0:0:1	1.088e1	287	582	-5.661e-3	1.396e0	ok	7	5:1:0:0:0:1	1.0000	1.0000	1.0000	Error: self-check: the output is unfaithful (287 mesh vert(ices) off their output face, worst 1.088e1 mm; the solid declares a tolerance of 1.396e0 mm, above --
-occt/full_torus	good	0.19	1864	1	0:0:0:0:1:0	4.808e-7	0	0	+1.521e-2	5.628e-6	ok	1	0:0:0:0:1:0	1.0000	1.0000	1.0000	
-occt/hollow_cube	good	0.10	24	12	12:0:0:0:0:0	0.000e0	0	0	-4.547e-15	5.000e-5	ok	12	12:0:0:0:0:0	1.0000	1.0000	1.0000	
-onshape/chamfered_cube_10_c1_medium	good	0.14	44	26	26:0:0:0:0:0	8.882e-15	0	0	-4.329e-15	5.000e-5	ok	26	26:0:0:0:0:0	1.0000	1.0000	1.0000	
-onshape/cone_15x20_medium	good	0.08	116	2	1:0:1:0:0:0	1.634e-6	0	0	+1.959e-3	5.000e-5	ok	59	59:0:0:0:0:0	1.0000	0.2724	0.2596	
-onshape/cone_tangent_planes_medium	good	1.77	376	7	4:0:2:1:0:0	4.848e-6	0	0	+5.719e-3	5.000e-5	ok	7	4:0:3:0:0:0	1.0000	1.0000	0.9011	
+nurbs/elliptical_cylinder	good	1.35	364	3	2:0:0:0:0:1	1.082e-14	0	0	+1.164e-3	9.106e-3	ok	3	2:0:0:0:0:1	1.0000	1.0000	1.0000	
+nurbs/hill_with_hole	unfaithful	71.33	2054	7	5:1:0:0:0:1	1.088e1	287	582	-5.661e-3	1.396e0	ok	7	5:1:0:0:0:1	1.0000	1.0000	1.0000	Error: self-check: the output is unfaithful (287 mesh vert(ices) off their output face, worst 1.088e1 mm; the solid declares a tolerance of 1.396e0 mm, above --
+occt/full_torus	good	0.17	1864	1	0:0:0:0:1:0	4.808e-7	0	0	+1.521e-2	5.628e-6	ok	1	0:0:0:0:1:0	1.0000	1.0000	1.0000	
+occt/hollow_cube	good	0.09	24	12	12:0:0:0:0:0	0.000e0	0	0	-4.547e-15	5.000e-5	ok	12	12:0:0:0:0:0	1.0000	1.0000	1.0000	
+onshape/chamfered_cube_10_c1_medium	good	0.12	44	26	26:0:0:0:0:0	8.882e-15	0	0	-4.329e-15	5.000e-5	ok	26	26:0:0:0:0:0	1.0000	1.0000	1.0000	
+onshape/cone_15x20_medium	good	0.09	116	2	1:0:1:0:0:0	1.634e-6	0	0	+1.959e-3	5.000e-5	ok	59	59:0:0:0:0:0	1.0000	0.2724	0.2596	
+onshape/cone_tangent_planes_medium	good	1.75	376	7	4:0:3:0:0:0	4.848e-6	0	0	+4.875e-4	5.000e-5	ok	7	4:0:3:0:0:0	1.0000	1.0000	1.0000	
 onshape/cone_truncated_medium	good	0.10	232	3	2:0:1:0:0:0	1.033e-5	0	0	+1.959e-3	5.000e-5	ok	3	2:0:1:0:0:0	1.0000	1.0000	1.0000	
-onshape/cylinder_10_r2_fine	good	0.12	576	3	2:1:0:0:0:0	1.274e-6	0	0	+3.174e-4	5.000e-5	ok	3	2:1:0:0:0:0	1.0000	1.0000	1.0000	
+onshape/cylinder_10_r2_fine	good	0.11	576	3	2:1:0:0:0:0	1.274e-6	0	0	+3.174e-4	5.000e-5	ok	3	2:1:0:0:0:0	1.0000	1.0000	1.0000	
 onshape/cylinder_10x30_medium	good	0.09	232	3	2:1:0:0:0:0	9.399e-7	0	0	+1.959e-3	5.000e-5	ok	3	2:1:0:0:0:0	1.0000	1.0000	1.0000	
-onshape/dome_hemisphere_20_fine	good	0.78	10368	2	1:0:0:1:0:0	4.098e-6	0	0	+7.936e-4	5.000e-5	ok	2	1:0:0:1:0:0	1.0000	1.0000	1.0000	
-onshape/l_bracket_simple_medium	good	0.29	492	10	8:2:0:0:0:0	2.591e-6	0	0	-1.927e-4	5.000e-5	ok	10	8:2:0:0:0:0	1.0000	1.0000	1.0000	
-onshape/nosecone_medium	good	1.35	1572	3	1:0:1:1:0:0	7.110e-6	0	0	+1.928e-3	5.000e-5	ok	3	1:0:1:1:0:0	1.0000	1.0000	1.0000	
-onshape/nosecone_truncated_medium	good	1.65	760	4	2:0:1:1:0:0	1.307e-5	0	0	+1.860e-3	5.000e-5	ok	4	2:0:1:1:0:0	1.0000	1.0000	1.0000	
+onshape/dome_hemisphere_20_fine	good	0.93	10368	2	1:0:0:1:0:0	4.098e-6	0	0	+7.936e-4	5.000e-5	ok	2	1:0:0:1:0:0	1.0000	1.0000	1.0000	
+onshape/l_bracket_simple_medium	good	0.21	492	10	8:2:0:0:0:0	2.591e-6	0	0	-1.927e-4	5.000e-5	ok	10	8:2:0:0:0:0	1.0000	1.0000	1.0000	
+onshape/nosecone_medium	good	1.03	1572	3	1:0:1:1:0:0	7.110e-6	0	0	+1.928e-3	5.000e-5	ok	3	1:0:1:1:0:0	1.0000	1.0000	1.0000	
+onshape/nosecone_truncated_medium	good	1.75	760	4	2:0:1:1:0:0	1.307e-5	0	0	+1.860e-3	5.000e-5	ok	4	2:0:1:1:0:0	1.0000	1.0000	1.0000	
 onshape/part_rounded_cube_10_r2_coarse	good	0.17	140	10	6:4:0:0:0:0	1.875e-6	0	0	+8.352e-4	5.000e-5	ok	10	6:4:0:0:0:0	1.0000	1.0000	1.0000	
-onshape/part_rounded_cube_10_r2_fine	good	0.66	588	10	6:4:0:0:0:0	2.246e-6	0	0	+4.126e-5	5.000e-5	ok	10	6:4:0:0:0:0	1.0000	1.0000	1.0000	
-onshape/pill_coarse	good	0.80	752	3	0:1:0:2:0:0	2.118e-6	0	0	+9.161e-3	5.000e-5	ok	3	0:1:0:2:0:0	1.0000	1.0000	1.0000	
-onshape/pill_fine	good	19.52	20736	3	0:1:0:2:0:0	2.355e-6	0	0	+4.176e-4	5.000e-5	ok	3	0:1:0:2:0:0	1.0000	1.0000	1.0000	
-onshape/pipe_elbow_10_fine	good	28.91	11232	5	2:2:0:0:1:0	4.746e-6	0	0	+4.265e-4	5.000e-5	ok	5	2:2:0:0:1:0	1.0000	1.0000	1.0000	
-onshape/pipe_elbow_10_medium	good	1.46	2320	5	2:2:0:0:1:0	3.951e-6	0	0	+1.902e-3	5.000e-5	ok	5	2:2:0:0:1:0	1.0000	1.0000	1.0000	
+onshape/part_rounded_cube_10_r2_fine	good	0.70	588	10	6:4:0:0:0:0	2.246e-6	0	0	+4.126e-5	5.000e-5	ok	10	6:4:0:0:0:0	1.0000	1.0000	1.0000	
+onshape/pill_coarse	good	0.86	752	3	0:1:0:2:0:0	2.118e-6	0	0	+9.161e-3	5.000e-5	ok	3	0:1:0:2:0:0	1.0000	1.0000	1.0000	
+onshape/pill_fine	good	17.75	20736	3	0:1:0:2:0:0	2.355e-6	0	0	+4.176e-4	5.000e-5	ok	3	0:1:0:2:0:0	1.0000	1.0000	1.0000	
+onshape/pipe_elbow_10_fine	good	43.86	11232	5	2:2:0:0:1:0	4.746e-6	0	0	+4.265e-4	5.000e-5	ok	5	2:2:0:0:1:0	1.0000	1.0000	1.0000	
+onshape/pipe_elbow_10_medium	good	1.99	2320	5	2:2:0:0:1:0	3.951e-6	0	0	+1.902e-3	5.000e-5	ok	5	2:2:0:0:1:0	1.0000	1.0000	1.0000	
 onshape/plate_with_hole_100x50_coarse	good	0.14	136	7	6:1:0:0:0:0	2.817e-6	0	0	-1.213e-4	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
-onshape/rounded_cube_10_r2_coarse	good	1.86	820	26	6:12:0:8:0:0	1.698e-6	0	0	+2.916e-3	5.000e-5	ok	26	6:12:0:8:0:0	1.0000	1.0000	1.0000	
-onshape/rounded_cube_10_r2_fine	good	54.79	21466	26	6:12:0:8:0:0	1.911e-6	0	0	+1.063e-4	5.000e-5	ok	26	6:12:0:8:0:0	1.0000	1.0000	1.0000	
-onshape/rounded_cube_10_r2_medium	good	9.54	3548	26	6:12:0:8:0:0	1.918e-6	0	0	+5.748e-4	5.000e-5	ok	26	6:12:0:8:0:0	1.0000	1.0000	1.0000	
-onshape/sphere_25_fine	good	0.78	20448	1	0:0:0:1:0:0	1.138e-6	0	0	+7.936e-4	5.000e-6	ok	1	0:0:0:1:0:0	1.0000	1.0000	1.0000	
-onshape/stepped_block_coarse	good	0.20	52	16	16:0:0:0:0:0	1.421e-14	0	0	-4.362e-15	5.000e-5	ok	16	16:0:0:0:0:0	1.0000	1.0000	1.0000	
-onshape/stepped_block_toroidal_fillets_fine	unfaithful	114.21	50962	76	20:38:0:0:18:0	3.382e-1	17	0	+1.050e-4	2.958e-1	ok	71	16:37:0:0:18:0	1.0000	1.0000	1.0000	Error: self-check: the output is unfaithful (17 mesh vert(ices) off their output face, worst 3.382e-1 mm). /Users/sethml/src/brepper/tmp/scoreboard/onshape__ste
-onshape/stepped_block_toroidal_fillets_medium	unfaithful	46.31	4576	80	30:31:0:0:18:1	3.129e-1	5	0	-2.744e-4	1.314e0	ok	71	16:37:0:0:18:0	0.9981	0.9956	0.9780	Error: self-check: the output is unfaithful (5 mesh vert(ices) off their output face, worst 3.129e-1 mm; the solid declares a tolerance of 1.314e0 mm, above --s
-random/rand_ball_on_cylinder_0	unfaithful	3.78	1208	3	2:1:0:3:0:0	2.401e1	508	969	-8.725e-1	5.000e-5	ok	6	2:2:0:2:0:0	1.0000	1.0000	0.9612	Error: self-check: the output is unfaithful (508 mesh vert(ices) off their output face, worst 2.401e1 mm; 969 mesh facet(s) not covered by their output face, wo
-random/rand_ball_on_cylinder_1	good	0.21	1390	4	2:1:0:1:0:0	1.014e-6	0	0	+1.715e-3	5.000e-5	ok	4	2:1:0:1:0:0	1.0000	1.0000	1.0000	
-random/rand_ball_on_cylinder_2	good	0.21	858	5	2:1:0:2:0:0	7.069e-7	0	0	+7.251e-3	5.000e-5	ok	5	2:1:0:2:0:0	1.0000	1.0000	1.0000	
-random/rand_cone_chain_0	good	0.72	678	5	2:0:3:0:0:0	1.177e-6	0	0	+2.339e-2	5.000e-5	ok	5	2:0:3:0:0:0	1.0000	1.0000	1.0000	
+onshape/rounded_cube_10_r2_coarse	good	3.48	820	26	6:12:0:8:0:0	1.698e-6	0	0	+2.916e-3	5.000e-5	ok	26	6:12:0:8:0:0	1.0000	1.0000	1.0000	
+onshape/rounded_cube_10_r2_fine	good	68.10	21466	26	6:12:0:8:0:0	1.911e-6	0	0	+1.063e-4	5.000e-5	ok	26	6:12:0:8:0:0	1.0000	1.0000	1.0000	
+onshape/rounded_cube_10_r2_medium	good	11.33	3548	26	6:12:0:8:0:0	1.918e-6	0	0	+5.748e-4	5.000e-5	ok	26	6:12:0:8:0:0	1.0000	1.0000	1.0000	
+onshape/sphere_25_fine	good	1.79	20448	1	0:0:0:1:0:0	1.138e-6	0	0	+7.936e-4	5.000e-6	ok	1	0:0:0:1:0:0	1.0000	1.0000	1.0000	
+onshape/stepped_block_coarse	good	0.15	52	16	16:0:0:0:0:0	1.421e-14	0	0	-4.362e-15	5.000e-5	ok	16	16:0:0:0:0:0	1.0000	1.0000	1.0000	
+onshape/stepped_block_toroidal_fillets_fine	unfaithful	107.53	50962	71	16:37:0:0:18:0	3.382e-1	17	0	+1.409e-4	2.958e-1	ok	71	16:37:0:0:18:0	1.0000	1.0000	1.0000	Error: self-check: the output is unfaithful (17 mesh vert(ices) off their output face, worst 3.382e-1 mm). /Users/sethml/src/brepper/tmp/scoreboard/onshape__ste
+onshape/stepped_block_toroidal_fillets_medium	unfaithful	40.31	4576	80	30:31:0:0:18:1	3.129e-1	5	0	-2.744e-4	1.314e0	ok	71	16:37:0:0:18:0	0.9981	0.9956	0.9780	Error: self-check: the output is unfaithful (5 mesh vert(ices) off their output face, worst 3.129e-1 mm; the solid declares a tolerance of 1.314e0 mm, above --s
+random/rand_ball_on_cylinder_0	invalid	3.45	1208	7	2:2:0:2:0:0	-	-	-	-8.688e-1	5.000e-5	ok	6	2:2:0:2:0:0	1.0000	1.0000	1.0000	Error: self-check: the output is invalid (BRepCheck reports the solid invalid). /Users/sethml/src/brepper/tmp/scoreboard/random__rand_ball_on_cylinder_0.step wa
+random/rand_ball_on_cylinder_1	good	0.22	1390	4	2:1:0:1:0:0	1.014e-6	0	0	+1.715e-3	5.000e-5	ok	4	2:1:0:1:0:0	1.0000	1.0000	1.0000	
+random/rand_ball_on_cylinder_2	good	0.20	858	5	2:1:0:2:0:0	7.069e-7	0	0	+7.251e-3	5.000e-5	ok	5	2:1:0:2:0:0	1.0000	1.0000	1.0000	
+random/rand_cone_chain_0	good	0.78	678	5	2:0:3:0:0:0	1.177e-6	0	0	+2.339e-2	5.000e-5	ok	5	2:0:3:0:0:0	1.0000	1.0000	1.0000	
 random/rand_cone_chain_1	good	0.14	388	4	2:0:2:0:0:0	5.468e-7	0	0	+1.271e-2	5.000e-5	ok	4	2:0:2:0:0:0	1.0000	1.0000	1.0000	
-random/rand_cone_chain_2	good	3.25	1546	5	2:0:3:0:0:0	7.695e-7	0	0	+3.530e-3	5.000e-5	ok	5	2:0:3:0:0:0	1.0000	1.0000	1.0000	
-random/rand_filleted_box_0	invalid	9.67	828	9	0:0:0:8:0:1	-	-	-	-7.059e-3	4.630e-1	ok	26	6:12:0:8:0:0	1.0000	0.2201	0.0083	Error: self-check: the output is invalid (BRepCheck reports the solid invalid; the solid declares a tolerance of 4.630e-1 mm, above --surface-tolerance). /Users
-random/rand_filleted_box_1	invalid	8.98	620	9	0:0:0:8:0:1	-	-	-	+1.584e-2	7.625e-1	ok	26	6:12:0:8:0:0	1.0000	0.2516	0.0057	Error: self-check: the output is invalid (BRepCheck reports the solid invalid; the solid declares a tolerance of 7.625e-1 mm, above --surface-tolerance). /Users
-random/rand_filleted_box_2	unfaithful	23.19	828	9	0:0:0:8:0:1	2.206e-1	0	0	+5.631e-2	6.573e-1	ok	26	6:12:0:8:0:0	1.0000	0.2965	0.0021	Error: self-check: the output is unfaithful (the solid declares a tolerance of 6.573e-1 mm, above --surface-tolerance). /Users/sethml/src/brepper/tmp/scoreboard
-random/rand_torus_0	good	0.84	6104	1	0:0:0:0:1:0	1.215e-6	0	0	+5.501e-3	1.299e-5	ok	1	0:0:0:0:1:0	1.0000	1.0000	1.0000	
-random/rand_torus_1	fail	95.28	3162	-	0:0:22:22:6:1	-	-	-	-	-	not-a-pair	-	-	-	-	-	Error: stage 3.1 adjacency error: face 15: winding loops have incompatible seam anchors (5.1612 vs 5.0116 rad); edge splitting not implemented
-random/rand_torus_2	good	0.46	4802	1	0:0:0:0:1:0	2.759e-7	0	0	+5.499e-3	3.035e-6	ok	1	0:0:0:0:1:0	1.0000	1.0000	1.0000	
-random/rand_tube_0	good	0.18	624	4	2:2:0:0:0:0	4.539e-7	0	0	+1.082e-3	5.000e-5	ok	4	2:2:0:0:0:0	1.0000	1.0000	1.0000	
-random/rand_tube_1	good	0.16	520	4	2:2:0:0:0:0	3.728e-7	0	0	+7.084e-4	5.000e-5	ok	4	2:2:0:0:0:0	1.0000	1.0000	1.0000	
-random/rand_tube_2	good	0.32	608	4	2:2:0:0:0:0	7.637e-7	0	0	+1.140e-3	5.000e-5	ok	4	2:2:0:0:0:0	1.0000	1.0000	1.0000	
-remesh/cone_tangent_planes_occt_coarse	fail	1.37	200	-	8:0:3:0:0:0	-	-	-	-	-	ok	7	4:0:3:0:0:0	0.9911	1.0000	0.9911	Error: stage 3.1 adjacency error: face 2: single winding loop but the surface has no pole on the region side
-remesh/cone_tangent_planes_occt_fine	good	10.57	2390	7	4:0:3:0:0:0	3.835e-6	0	0	+5.740e-4	5.000e-5	ok	7	4:0:3:0:0:0	1.0000	1.0000	1.0000	
-remesh/cone_tangent_planes_occt_medium	good	1.98	542	7	4:0:3:0:0:0	4.181e-6	0	0	+3.048e-3	5.000e-5	ok	7	4:0:3:0:0:0	1.0000	1.0000	1.0000	
-remesh/cone_tangent_planes_offset_occt_medium	good	2.21	542	8	5:0:3:0:0:0	5.165e-5	0	0	+3.048e-3	1.210e-4	ok	7	4:0:3:0:0:0	0.9040	1.0000	1.0000	
+random/rand_cone_chain_2	good	2.24	1546	5	2:0:3:0:0:0	7.695e-7	0	0	+3.530e-3	5.000e-5	ok	5	2:0:3:0:0:0	1.0000	1.0000	1.0000	
+random/rand_filleted_box_0	invalid	8.12	828	9	0:0:0:8:0:1	-	-	-	-7.059e-3	4.630e-1	ok	26	6:12:0:8:0:0	1.0000	0.2201	0.0083	Error: self-check: the output is invalid (BRepCheck reports the solid invalid; the solid declares a tolerance of 4.630e-1 mm, above --surface-tolerance). /Users
+random/rand_filleted_box_1	invalid	7.56	620	9	0:0:0:8:0:1	-	-	-	+1.584e-2	7.625e-1	ok	26	6:12:0:8:0:0	1.0000	0.2516	0.0057	Error: self-check: the output is invalid (BRepCheck reports the solid invalid; the solid declares a tolerance of 7.625e-1 mm, above --surface-tolerance). /Users
+random/rand_filleted_box_2	unfaithful	26.59	828	9	0:0:0:8:0:1	2.206e-1	0	0	+5.631e-2	6.573e-1	ok	26	6:12:0:8:0:0	1.0000	0.2965	0.0021	Error: self-check: the output is unfaithful (the solid declares a tolerance of 6.573e-1 mm, above --surface-tolerance). /Users/sethml/src/brepper/tmp/scoreboard
+random/rand_torus_0	good	0.68	6104	1	0:0:0:0:1:0	1.215e-6	0	0	+5.501e-3	1.299e-5	ok	1	0:0:0:0:1:0	1.0000	1.0000	1.0000	
+random/rand_torus_1	fail	92.25	3162	-	0:0:42:2:2:1	-	-	-	-	-	not-a-pair	-	-	-	-	-	Error: stage 3.1 adjacency error: face 15: winding loops have incompatible seam anchors (0.4488 vs 0.2992 rad); edge splitting not implemented
+random/rand_torus_2	good	0.60	4802	1	0:0:0:0:1:0	2.759e-7	0	0	+5.499e-3	3.035e-6	ok	1	0:0:0:0:1:0	1.0000	1.0000	1.0000	
+random/rand_tube_0	good	0.19	624	4	2:2:0:0:0:0	4.539e-7	0	0	+1.082e-3	5.000e-5	ok	4	2:2:0:0:0:0	1.0000	1.0000	1.0000	
+random/rand_tube_1	good	0.24	520	4	2:2:0:0:0:0	3.728e-7	0	0	+7.084e-4	5.000e-5	ok	4	2:2:0:0:0:0	1.0000	1.0000	1.0000	
+random/rand_tube_2	good	0.19	608	4	2:2:0:0:0:0	7.637e-7	0	0	+1.140e-3	5.000e-5	ok	4	2:2:0:0:0:0	1.0000	1.0000	1.0000	
+remesh/cone_tangent_planes_occt_coarse	fail	1.21	200	-	8:0:3:0:0:0	-	-	-	-	-	ok	7	4:0:3:0:0:0	0.9911	1.0000	0.9911	Error: stage 3.1 adjacency error: face 2: single winding loop but the surface has no pole on the region side
+remesh/cone_tangent_planes_occt_fine	good	7.76	2390	7	4:0:3:0:0:0	3.835e-6	0	0	+5.740e-4	5.000e-5	ok	7	4:0:3:0:0:0	1.0000	1.0000	1.0000	
+remesh/cone_tangent_planes_occt_medium	good	1.56	542	7	4:0:3:0:0:0	4.181e-6	0	0	+3.048e-3	5.000e-5	ok	7	4:0:3:0:0:0	1.0000	1.0000	1.0000	
+remesh/cone_tangent_planes_offset_occt_medium	good	1.82	542	7	4:0:3:0:0:0	5.165e-5	0	0	+3.048e-3	1.210e-4	ok	7	4:0:3:0:0:0	1.0000	1.0000	1.0000	
 remesh/cylinder_10x30_occt_coarse	good	0.08	92	3	2:1:0:0:0:0	4.932e-7	0	0	+1.152e-2	5.000e-5	ok	3	2:1:0:0:0:0	1.0000	1.0000	1.0000	
-remesh/cylinder_10x30_occt_fine	good	0.12	476	3	2:1:0:0:0:0	1.093e-6	0	0	+4.570e-4	5.000e-5	ok	3	2:1:0:0:0:0	1.0000	1.0000	1.0000	
-remesh/cylinder_10x30_occt_medium	good	0.10	188	3	2:1:0:0:0:0	5.812e-7	0	0	+2.862e-3	5.000e-5	ok	3	2:1:0:0:0:0	1.0000	1.0000	1.0000	
+remesh/cylinder_10x30_occt_fine	good	0.10	476	3	2:1:0:0:0:0	1.093e-6	0	0	+4.570e-4	5.000e-5	ok	3	2:1:0:0:0:0	1.0000	1.0000	1.0000	
+remesh/cylinder_10x30_occt_medium	good	0.09	188	3	2:1:0:0:0:0	5.812e-7	0	0	+2.862e-3	5.000e-5	ok	3	2:1:0:0:0:0	1.0000	1.0000	1.0000	
 remesh/cylinder_10x30_offset_occt_medium	good	0.10	188	3	2:1:0:0:0:0	3.428e-5	0	0	+2.862e-3	5.000e-5	ok	3	2:1:0:0:0:0	1.0000	1.0000	1.0000	
-remesh/pill_occt_coarse	good	0.34	396	3	0:1:0:2:0:0	1.743e-6	0	0	+1.722e-2	5.000e-5	ok	3	0:1:0:2:0:0	1.0000	1.0000	1.0000	
-remesh/pill_occt_fine	good	1.40	7788	3	0:1:0:2:0:0	2.177e-6	0	0	+7.656e-4	5.000e-5	ok	3	0:1:0:2:0:0	1.0000	1.0000	1.0000	
-remesh/pill_occt_medium	good	1.12	1352	3	0:1:0:2:0:0	2.102e-6	0	0	+4.653e-3	5.000e-5	ok	3	0:1:0:2:0:0	1.0000	1.0000	1.0000	
-remesh/pill_offset_occt_medium	good	1.18	1352	3	0:1:0:2:0:0	2.982e-5	0	0	+4.653e-3	5.000e-5	ok	3	0:1:0:2:0:0	1.0000	1.0000	1.0000	
-remesh/pipe_elbow_10_occt_coarse	good	1.46	524	5	2:2:0:0:1:0	2.282e-6	0	0	+1.410e-2	5.000e-5	ok	5	2:2:0:0:1:0	1.0000	1.0000	1.0000	
-remesh/pipe_elbow_10_occt_fine	good	13.84	9356	5	2:2:0:0:1:0	2.651e-6	0	0	+5.691e-4	5.000e-5	ok	5	2:2:0:0:1:0	1.0000	1.0000	1.0000	
-remesh/pipe_elbow_10_occt_medium	good	5.07	1820	5	2:2:0:0:1:0	2.379e-6	0	0	+3.419e-3	5.000e-5	ok	5	2:2:0:0:1:0	1.0000	1.0000	1.0000	
-remesh/pipe_elbow_10_offset_occt_medium	good	5.07	1820	5	2:2:0:0:1:0	3.891e-5	0	0	+3.419e-3	5.000e-5	ok	5	2:2:0:0:1:0	1.0000	1.0000	1.0000	
+remesh/pill_occt_coarse	good	0.35	396	3	0:1:0:2:0:0	1.743e-6	0	0	+1.722e-2	5.000e-5	ok	3	0:1:0:2:0:0	1.0000	1.0000	1.0000	
+remesh/pill_occt_fine	good	2.15	7788	3	0:1:0:2:0:0	2.177e-6	0	0	+7.656e-4	5.000e-5	ok	3	0:1:0:2:0:0	1.0000	1.0000	1.0000	
+remesh/pill_occt_medium	good	1.48	1352	3	0:1:0:2:0:0	2.102e-6	0	0	+4.653e-3	5.000e-5	ok	3	0:1:0:2:0:0	1.0000	1.0000	1.0000	
+remesh/pill_offset_occt_medium	good	1.23	1352	3	0:1:0:2:0:0	2.982e-5	0	0	+4.653e-3	5.000e-5	ok	3	0:1:0:2:0:0	1.0000	1.0000	1.0000	
+remesh/pipe_elbow_10_occt_coarse	good	1.55	524	5	2:2:0:0:1:0	2.282e-6	0	0	+1.410e-2	5.000e-5	ok	5	2:2:0:0:1:0	1.0000	1.0000	1.0000	
+remesh/pipe_elbow_10_occt_fine	good	14.57	9356	5	2:2:0:0:1:0	2.651e-6	0	0	+5.691e-4	5.000e-5	ok	5	2:2:0:0:1:0	1.0000	1.0000	1.0000	
+remesh/pipe_elbow_10_occt_medium	good	5.21	1820	5	2:2:0:0:1:0	2.379e-6	0	0	+3.419e-3	5.000e-5	ok	5	2:2:0:0:1:0	1.0000	1.0000	1.0000	
+remesh/pipe_elbow_10_offset_occt_medium	good	5.18	1820	5	2:2:0:0:1:0	3.891e-5	0	0	+3.419e-3	5.000e-5	ok	5	2:2:0:0:1:0	1.0000	1.0000	1.0000	
 remesh/plate_with_hole_100x50_occt_coarse	good	0.13	112	7	6:1:0:0:0:0	1.939e-6	0	0	-1.816e-4	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
-remesh/plate_with_hole_100x50_occt_fine	good	0.20	496	7	6:1:0:0:0:0	2.289e-6	0	0	-7.290e-6	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
-remesh/plate_with_hole_100x50_occt_medium	good	0.15	208	7	6:1:0:0:0:0	1.938e-6	0	0	-4.553e-5	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
-remesh/plate_with_hole_100x50_offset_occt_medium	good	0.15	208	7	6:1:0:0:0:0	2.793e-5	0	0	-4.553e-5	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
-remesh/rounded_cube_10_r2_occt_coarse	fail	2.85	572	-	8:8:0:14:4:0	-	-	-	-	-	ok	26	6:12:0:8:0:0	0.7867	0.8378	0.3001	Error: stage 3.1 adjacency error: face 16: single winding loop but the surface has no pole on the region side
-remesh/rounded_cube_10_r2_occt_fine	good	32.40	8668	26	6:12:0:8:0:0	1.293e-6	0	0	+1.829e-4	5.000e-5	ok	26	6:12:0:8:0:0	1.0000	1.0000	1.0000	
-remesh/rounded_cube_10_r2_occt_medium	good	5.82	1660	26	6:12:0:8:0:0	9.983e-7	0	0	+1.110e-3	5.000e-5	ok	26	6:12:0:8:0:0	1.0000	1.0000	1.0000	
-remesh/rounded_cube_10_r2_offset_occt_medium	good	7.77	1660	26	6:12:0:8:0:0	4.473e-5	0	0	+1.110e-3	5.000e-5	ok	26	6:12:0:8:0:0	1.0000	1.0000	1.0000	
-remesh/sphere_25_occt_coarse	invalid	0.29	302	8	6:0:0:2:0:0	-	-	-	+1.055e0	5.000e-5	not-a-pair	-	-	-	-	-	Error: self-check: the output is invalid (BRepCheck reports the solid invalid). /Users/sethml/src/brepper/tmp/scoreboard/remesh__sphere_25_occt_coarse.step was 
-remesh/sphere_25_occt_fine	good	0.42	7300	1	0:0:0:1:0:0	5.096e-7	0	0	+2.018e-3	5.000e-6	ok	1	0:0:0:1:0:0	1.0000	1.0000	1.0000	
-remesh/sphere_25_occt_medium	good	0.11	1254	1	0:0:0:1:0:0	4.437e-7	0	0	+1.172e-2	5.000e-6	ok	1	0:0:0:1:0:0	1.0000	1.0000	1.0000	
-remesh/sphere_25_offset_occt_medium	good	0.09	1254	1	0:0:0:1:0:0	3.873e-5	0	0	+1.172e-2	5.000e-6	ok	1	0:0:0:1:0:0	1.0000	1.0000	1.0000	
-remesh/stepped_block_toroidal_occt_coarse	fail	28.76	1948	-	141:16:0:0:21:0	-	-	-	-	-	ok	71	16:37:0:0:18:0	0.7708	0.9998	0.6627	Error: stage 3.1 adjacency error: face 2: single winding loop but the surface has no pole on the region side
-remesh/stepped_block_toroidal_occt_fine	unfaithful	114.66	35596	98	41:37:0:0:18:2	3.645e-1	0	0	-1.147e-3	4.782e0	ok	71	16:37:0:0:18:0	0.9998	0.9634	0.8866	Error: self-check: the output is unfaithful (the solid declares a tolerance of 4.782e0 mm, above --surface-tolerance). /Users/sethml/src/brepper/tmp/scoreboard/
-remesh/stepped_block_toroidal_occt_medium	unfaithful	42.89	6464	88	34:33:0:0:18:3	3.929e-1	0	0	-8.298e-4	4.782e0	ok	71	16:37:0:0:18:0	0.9999	0.9630	0.8608	Error: self-check: the output is unfaithful (the solid declares a tolerance of 4.782e0 mm, above --surface-tolerance). /Users/sethml/src/brepper/tmp/scoreboard/
-remesh/stepped_block_toroidal_offset_occt_medium	unfaithful	34.37	6464	95	39:37:0:0:18:1	3.902e-1	4	0	+3.611e-4	1.264e0	ok	71	16:37:0:0:18:0	0.9995	0.9996	0.9742	Error: self-check: the output is unfaithful (4 mesh vert(ices) off their output face, worst 3.902e-1 mm; the solid declares a tolerance of 1.264e0 mm, above --s
+remesh/plate_with_hole_100x50_occt_fine	good	0.19	496	7	6:1:0:0:0:0	2.289e-6	0	0	-7.290e-6	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
+remesh/plate_with_hole_100x50_occt_medium	good	0.16	208	7	6:1:0:0:0:0	1.938e-6	0	0	-4.553e-5	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
+remesh/plate_with_hole_100x50_offset_occt_medium	good	0.17	208	7	6:1:0:0:0:0	2.793e-5	0	0	-4.553e-5	5.000e-5	ok	7	6:1:0:0:0:0	1.0000	1.0000	1.0000	
+remesh/rounded_cube_10_r2_occt_coarse	fail	3.06	572	-	8:8:0:14:4:0	-	-	-	-	-	ok	26	6:12:0:8:0:0	0.7867	0.8378	0.3001	Error: stage 3.1 adjacency error: face 16: single winding loop but the surface has no pole on the region side
+remesh/rounded_cube_10_r2_occt_fine	good	30.83	8668	26	6:12:0:8:0:0	1.293e-6	0	0	+1.829e-4	5.000e-5	ok	26	6:12:0:8:0:0	1.0000	1.0000	1.0000	
+remesh/rounded_cube_10_r2_occt_medium	good	6.75	1660	26	6:12:0:8:0:0	9.983e-7	0	0	+1.110e-3	5.000e-5	ok	26	6:12:0:8:0:0	1.0000	1.0000	1.0000	
+remesh/rounded_cube_10_r2_offset_occt_medium	good	8.60	1660	26	6:12:0:8:0:0	4.473e-5	0	0	+1.110e-3	5.000e-5	ok	26	6:12:0:8:0:0	1.0000	1.0000	1.0000	
+remesh/sphere_25_occt_coarse	invalid	0.35	302	8	6:0:0:2:0:0	-	-	-	+1.055e0	5.000e-5	not-a-pair	-	-	-	-	-	Error: self-check: the output is invalid (BRepCheck reports the solid invalid). /Users/sethml/src/brepper/tmp/scoreboard/remesh__sphere_25_occt_coarse.step was 
+remesh/sphere_25_occt_fine	good	0.80	7300	1	0:0:0:1:0:0	5.096e-7	0	0	+2.018e-3	5.000e-6	ok	1	0:0:0:1:0:0	1.0000	1.0000	1.0000	
+remesh/sphere_25_occt_medium	good	0.16	1254	1	0:0:0:1:0:0	4.437e-7	0	0	+1.172e-2	5.000e-6	ok	1	0:0:0:1:0:0	1.0000	1.0000	1.0000	
+remesh/sphere_25_offset_occt_medium	good	0.22	1254	1	0:0:0:1:0:0	3.873e-5	0	0	+1.172e-2	5.000e-6	ok	1	0:0:0:1:0:0	1.0000	1.0000	1.0000	
+remesh/stepped_block_toroidal_occt_coarse	fail	31.76	1948	-	139:16:0:0:21:0	-	-	-	-	-	ok	71	16:37:0:0:18:0	0.7708	0.9998	0.6627	Error: stage 3.1 adjacency error: face 2: single winding loop but the surface has no pole on the region side
+remesh/stepped_block_toroidal_occt_fine	unfaithful	113.54	35596	95	40:35:0:0:18:2	3.645e-1	0	0	-1.146e-3	4.782e0	ok	71	16:37:0:0:18:0	1.0000	0.9634	0.8866	Error: self-check: the output is unfaithful (the solid declares a tolerance of 4.782e0 mm, above --surface-tolerance). /Users/sethml/src/brepper/tmp/scoreboard/
+remesh/stepped_block_toroidal_occt_medium	unfaithful	34.36	6464	88	34:33:0:0:18:3	3.929e-1	0	0	-8.298e-4	4.782e0	ok	71	16:37:0:0:18:0	0.9999	0.9630	0.8608	Error: self-check: the output is unfaithful (the solid declares a tolerance of 4.782e0 mm, above --surface-tolerance). /Users/sethml/src/brepper/tmp/scoreboard/
+remesh/stepped_block_toroidal_offset_occt_medium	unfaithful	31.61	6464	92	39:34:0:0:18:1	3.902e-1	4	0	+3.599e-4	1.264e0	ok	71	16:37:0:0:18:0	0.9999	0.9996	0.9742	Error: self-check: the output is unfaithful (4 mesh vert(ices) off their output face, worst 3.902e-1 mm; the solid declares a tolerance of 1.264e0 mm, above --s
