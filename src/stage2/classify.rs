@@ -260,7 +260,13 @@ pub(super) fn classify_regions(
         for (i, hyp) in hyps.into_iter().enumerate() {
             if !ff.dissolved.contains(&i) && !fragmented.contains(&i) {
                 joined_faces += hyp.faces().iter().filter(|&&fi| cls.is_joined(fi)).count();
-                cls.push_compete(retype_sphere(mesh, hyp, &centroids, config, &cls.joined));
+                let hyp = match hyp {
+                    CompeteHyp::Toroidal(torus) => {
+                        retype_torus(mesh, torus, &centroids, config, &cls.joined)
+                    }
+                    _ => retype_sphere(mesh, hyp, &centroids, config, &cls.joined),
+                };
+                cls.push_compete(hyp);
                 competed_surfaces += 1;
             }
         }
@@ -701,6 +707,38 @@ fn retype_sphere(
         Some(SphereOrConical::Conical(c)) => CompeteHyp::Conical(c),
         _ => CompeteHyp::Spherical(sphere),
     }
+}
+
+/// Refit a torus's settled support as a cylinder or cone. A torus can pass
+/// through both vertex rings of a chamfer. The chamfer's ruling edges supply
+/// evidence between those vertices, using the same test as competition.
+fn retype_torus(
+    mesh: &ConnectedMesh,
+    torus: ToroidalHypothesis,
+    centroids: &[[f64; 3]],
+    config: &Config,
+    joined: &[bool],
+) -> CompeteHyp {
+    let Some(conical) = fit_validate_joined::<ConicalSurface>(
+        mesh, &torus.faces, &torus.vertices, centroids, config, joined,
+    ) else {
+        return CompeteHyp::Toroidal(torus);
+    };
+    let strict: Vec<_> = torus.faces.iter().copied()
+        .filter(|&fi| !joined.get(fi).copied().unwrap_or(false))
+        .collect();
+    let conical = CompeteHyp::Conical(conical);
+    let torus = CompeteHyp::Toroidal(torus);
+    let vtol = config.vertex_tolerance_mm;
+    let (conical_length, _) = compete::edges_on_hyp(mesh, &conical, &strict, vtol);
+    let (torus_length, _) = compete::edges_on_hyp(mesh, &torus, &strict, vtol);
+    if config.verbosity >= 3 {
+        eprintln!(
+            "    retype: torus over {} faces — edges on conical {conical_length:.3} mm, on torus {torus_length:.3} mm",
+            torus.faces().len(),
+        );
+    }
+    if conical_length > torus_length { conical } else { torus }
 }
 
 /// Try the DOF ladder on one region; commit the first surface that validates.

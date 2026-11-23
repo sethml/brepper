@@ -1719,7 +1719,12 @@ fn max_vertex_dist(mesh: &ConnectedMesh, hyp: &CompeteHyp, fi: usize) -> f64 {
 /// evidence as `classify::edges_on_surface`, read off a hypothesis instead of a
 /// fit: a ruled surface contains the facet edges laid along its rulings, a
 /// sphere contains none.
-fn edges_on_hyp(mesh: &ConnectedMesh, hyp: &CompeteHyp, faces: &[usize], vtol: f64) -> (f64, usize) {
+pub(super) fn edges_on_hyp(
+    mesh: &ConnectedMesh,
+    hyp: &CompeteHyp,
+    faces: &[usize],
+    vtol: f64,
+) -> (f64, usize) {
     let mut edges: Vec<(usize, usize)> = Vec::with_capacity(faces.len() * 3);
     for &fi in faces {
         let f = &mesh.faces[fi];

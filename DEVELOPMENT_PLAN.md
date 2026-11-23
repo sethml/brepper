@@ -16,7 +16,7 @@ then face quality on analytic-only parts, then freeform cost. Sections of this
 document written before that date describe the pipeline accurately but argue
 for a plan that has been replaced.
 
-The [mirrored docking-station handoff](TODO.md#mac-handoff--mirrored-docking-station-measured-2026-11-23) records the stage 3.3 stall on the M2 Pro and the subsequent face assembly failure reproduced on both platforms.
+The [mirrored docking-station handoff](TODO.md#mac-handoff--mirrored-docking-station-measured-2026-11-23) records the M2 Pro stall and the torus misclassification exposed by bypassing it. Finite cone domains and a validated cone refit let the model reach self-check, where a B-spline wire fails validation.
 
 ## Design Principles
 
@@ -2004,6 +2004,7 @@ For each ReconEdge, compute the 3D intersection curve between the two adjacent s
 
 **Intersection computation (implemented):**
 - For non-tangent edges: use `GeomAPI_IntSS` to compute intersection curves with tolerance `vertex_tolerance_mm`. IntSS may return multiple curves (e.g., a plane cutting through a torus); `select_closest_curve()` picks the one closest to the mesh boundary vertices by sampling up to 10 evenly-spaced boundary vertices, projecting each onto each candidate curve via `GeomAPI_ProjectPointOnCurve`, and summing distances. IntSS construction can throw (wrapped in catch_unwind, routed to the chain fallback).
+- For two cones, pass V-trimmed copies to IntSS. Compute the V bounds from each cone's mesh vertices projected onto its axis, pad by `surface_tolerance_mm` in height, and divide by the cosine of the half-angle. This preserves the full U period and avoids the unbounded cone intersection that stalled on the mirrored docking station.
 - For tangent edges: construct the curve analytically rather than using `GeomAPI_IntSS`. Dispatches by surface pair type:
   - **Plane-cylinder**: `Geom_Line` parallel to the cylinder axis at the tangent point.
   - **Cylinder-cylinder**: `Geom_Line` along the first cylinder's axis direction.

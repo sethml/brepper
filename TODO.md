@@ -260,8 +260,9 @@ on 12 models and no other status changed.)
    in budget stays faceted), budgeted seeding and an early "this region is
    freeform" exit; faceted output by default for freeform regions, B-spline optional.
    Targets the parts that time out (all have spline faces) and 3DBenchy.
-   Stage 3 also needs a bound on OCCT intersections. The mirrored docking
-   station reproduces the stall on the Mac. See the handoff below.
+   Stage 3 also needs a general time bound on OCCT intersections. Finite
+   cone domains resolve the mirrored docking station stall. Its remaining
+   invalid B-spline wire is recorded in the handoff below.
 5. **Shrink the docs.** Archive DEVELOPMENT_PLAN / LEARNINGS / SURFACE_FITTING
    and the section below; keep a short design document and a dead-ends list.
 
@@ -288,8 +289,7 @@ time target/release/brepper 'tests/external/ToolChanger__docking_station_(m).stl
   `IntPatch_WLine::ComputeVertexParameters`, reached through
   `GeomAPI_IntSS` and `IntPatch_ALineToWLine::MakeWLine`. The sampled
   instruction adds one U period in OCCT's `RecadreMemePeriode` loop.
-  The parameter values in that loop and the cause of the platform difference
-  remain unknown.
+  See the follow-up below for the parameter values.
 - **Intel i7-11800H, Linux.** Two runs took 42.36 s and 42.29 s end to end.
   On the same edge, IntSS returned a curve that brepper judged degenerate.
   Brepper constructed a line from the endpoints and finished all 490 edge
@@ -299,15 +299,40 @@ time target/release/brepper 'tests/external/ToolChanger__docking_station_(m).stl
 - **One-edge experiment on the Mac.** Forcing the existing mesh-boundary
   fallback only for vertices 4097 and 4194 gave a chain deviation of
   1.14e-3 mm. Stage 3.3 finished all 490 edges in 0.801 s, then face 29
-  failed exactly as on Linux. This isolates the Mac timeout. Whether the
-  resulting solid would pass self-check is still untested.
-- **Resume on the Mac.** The logs, both samples, trace patch and probe source
+  failed exactly as on Linux. This isolates the Mac timeout.
+- The original logs, both samples, trace patch and probe source
   are in `~/src/brepper/tmp/machine-timing-9481flty/`. The scratch binary
   `target/release/docking-probe` accepts the reproduction command's arguments.
-  Set `DOCKING_SKIP='[4097, 4194]'` to repeat the bypass. To investigate the
-  numerical cause, inspect the current U, target U and U period in the sampled
-  loop. To investigate face 29 separately, check its fitted type against the
-  aligned reference with the step 2 label report.
+  Set `DOCKING_SKIP='[4097, 4194]'` to repeat the bypass.
+
+**Mac follow-up (2026-11-23).** A standalone OCCT probe using the two fitted
+cones traced the large parameter to `IntPatch_ALineToWLine::CorrectEndPoint`.
+It extrapolates U to the cone apex at V = 0 from two samples near
+V = 141421 mm whose V coordinates differ by 2.91e-11 mm. The resulting
+target U is 7.6890e12 rad. `RecadreMemePeriode` starts at U = 7.0040 rad
+and adds 2π per iteration, requiring about 1.224e12 iterations. The cause of
+the platform difference remains open. Probe source and logs are in
+`tmp/docking-handoff/`.
+
+- **Edge 412.** Stage 3.3 trims two non-tangent cones to their observed axial
+  ranges plus `--surface-tolerance` before intersecting them. OCCT returned
+  a curve for edge 412 and finished all 490 edges in about 1 s on the Mac.
+  Both pcurves for edge 412 reported a 2.42e-2 mm deviation.
+- **Face 29.** The aligned reference labels all 5.641 mm² of this fitted
+  torus as cone. A cone validates on the same 61 facets. Stage 2.3 now tries
+  that refit on settled torus patches and uses the developable surface when it
+  holds more mesh edge length at vertex tolerance. Face 29 assembled as a
+  cone and the pipeline wrote a 208-face STEP.
+- **Remaining failure.** The mirrored part moves from `timeout` to `invalid`.
+  `BRepCheck` flags the wire of B-spline face 47, fitted over 52 mesh faces.
+  The solid declares a tolerance of 1.085 mm and fails self-check. The label
+  report assigns 84% of that patch's labelled area to a reference plane.
+- **Verification.** The two docking-station scoreboard rows each gained one
+  cone in place of a torus. The unmirrored part remains `invalid`, and its
+  type agreement rose from 0.9448 to 0.9455. The mirrored part's type agreement
+  is 0.9527. An isolated mirrored run on the M2 Pro took 22.21 s to reach
+  the self-check failure, including 0.873 s in stage 3.3. The release suite
+  passed 121 unit and 378 integration tests.
 
 On three other checksum-matched meshes, median end-to-end times in seconds
 (M2 Pro / Intel, three serial runs per part per machine, default worker

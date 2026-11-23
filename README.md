@@ -122,6 +122,11 @@ be inspected, and the message names the worst offending vertices or facets.
 a mesh legitimately encloses slightly less than the solid it came from.
 `--no-self-check` skips the check. See `src/selfcheck.rs`.
 
+For sharp edges between two cones, reconstruction intersects their finite
+mesh extents with padding from `--surface-tolerance`. This avoids a stall
+observed on the mirrored ToolChanger docking station in OCCT's intersection
+of infinite cones.
+
 ### Boundary tolerance
 
 Some exporters write the vertices of an edge on their own approximation of the

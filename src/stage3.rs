@@ -9,7 +9,7 @@
 
 use crate::config::Config;
 use crate::stage1::{ConnectedMesh, MeshVertex};
-use crate::stage2::{SelectedSurface, Stage2Output};
+use crate::stage2::{ConicalHypothesis, SelectedSurface, Stage2Output};
 use crate::stage1;
 use opencascade_sys::{
     b_rep, b_rep_adaptor, b_rep_bnd_lib, b_rep_builder_api, b_rep_check, b_rep_extrema,
@@ -1418,6 +1418,33 @@ fn detect_tangency(mut output: Stage3Output, config: &Config) -> Stage3Output {
 // Stage 3.3: Compute edge curves via surface-surface intersection
 // ---------------------------------------------------------------------------
 
+/// Bound a cone's intersection domain in V while keeping its full U period.
+fn trim_cone_to_mesh(
+    surface: &geom::Handle_Geom_Surface,
+    cone: &ConicalHypothesis,
+    mesh: &ConnectedMesh,
+    margin_mm: f64,
+) -> OwnedPtr<geom::Handle_Geom_Surface> {
+    let (mut min_height, mut max_height) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &vi in &cone.vertices {
+        let p = &mesh.vertices[vi];
+        let offset = [p.x - cone.apex[0], p.y - cone.apex[1], p.z - cone.apex[2]];
+        let height = dot3(&offset, &cone.axis_direction);
+        min_height = min_height.min(height);
+        max_height = max_height.max(height);
+    }
+    // V is distance along a ruling from the apex. Leave room for the
+    // fitted junction to extend past the mesh samples within chord tolerance.
+    let axial_scale = cone.half_angle.cos();
+    let trimmed = geom::RectangularTrimmedSurface::new_handlegeomsurface_real2_bool(
+        surface,
+        (min_height - margin_mm) / axial_scale,
+        (max_height + margin_mm) / axial_scale,
+        false, // trim V
+    );
+    geom::RectangularTrimmedSurface::to_handle(trimmed).to_handle_surface()
+}
+
 /// Compute the 3D intersection curve for a single ReconEdge.
 ///
 /// Uses GeomAPI_IntSS to find intersection curves between the two adjacent surfaces.
@@ -1441,6 +1468,26 @@ fn compute_edge_curve(
     // a throw like any other IntSS failure so the caller's mesh-boundary-
     // chain fallback supplies the edge curve.
     let int_ss = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let cones = [fi0, fi1].map(|fi| {
+            let SelectedSurface::Conical(idx) =
+                stage2.selected_surfaces[face_descriptors[fi].selected_surface_idx]
+            else {
+                return None;
+            };
+            let cone = &stage2.conical_hypotheses[idx];
+            (!cone.is_cylinder()).then_some(cone)
+        });
+        if let [Some(cone0), Some(cone1)] = cones {
+            // OCCT's intersection of two infinite cones can generate a
+            // huge periodic parameter and stall while shifting it by 2π.
+            // Use the observed axial ranges for the intersection only.
+            let margin = config.surface_tolerance_mm;
+            let bounded0 = trim_cone_to_mesh(surf0, cone0, mesh, margin);
+            let bounded1 = trim_cone_to_mesh(surf1, cone1, mesh, margin);
+            return geom_api::IntSS::new_handlegeomsurface2_real(
+                &bounded0, &bounded1, config.vertex_tolerance_mm,
+            );
+        }
         geom_api::IntSS::new_handlegeomsurface2_real(surf0, surf1, config.vertex_tolerance_mm)
     }))
     .map_err(|e| {
