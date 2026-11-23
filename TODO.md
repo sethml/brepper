@@ -260,14 +260,60 @@ on 12 models and no other status changed.)
    in budget stays faceted), budgeted seeding and an early "this region is
    freeform" exit; faceted output by default for freeform regions, B-spline optional.
    Targets the parts that time out (all have spline faces) and 3DBenchy.
-   Also here: a bound on stage 3's OCCT intersections, one of which hangs on
-   `ToolChanger__docking_station_(m)` (`GeomAPI_IntSS`, found 2026-11-22).
+   Stage 3 also needs a bound on OCCT intersections. The mirrored docking
+   station reproduces the stall on the Mac. See the handoff below.
 5. **Shrink the docs.** Archive DEVELOPMENT_PLAN / LEARNINGS / SURFACE_FITTING
    and the section below; keep a short design document and a dead-ends list.
 
 Not planned: tolerating inexact vertices inside faces (the boundary tolerance
 covers only vertices on edges). Nothing measured calls for it, and
 `--vertex-tolerance` can be raised if a mesh needs it.
+
+### Mac handoff — mirrored docking station (measured 2026-11-23)
+
+Both checkouts were at brepper `e1a425f`, opencascade-rs `be0a1f8` and
+OCCT `4f95ecaa`. Both used the release binary, default options and the STL
+with SHA-256 `5a88b587acc5d128111af9800a42d7a20f83c3f756d9e067d14912b3d71ed9b4`.
+From `~/src/brepper` on `whitelily`, reproduce with:
+
+```sh
+time target/release/brepper 'tests/external/ToolChanger__docking_station_(m).stl' -o tmp/docking-repro.step -v
+```
+
+- **M2 Pro, macOS 15.8.1.** Both runs reached the 120 s limit after logging
+  edge 411. A fresh trace identified the next call as edge **412**, between
+  faces **137 and 140** (two 45° cones with oppositely directed axes).
+  Its mesh boundary is just vertices **4097 and 4194**. Two independent 3 s
+  samples placed all 2,528 and 2,556 observations in
+  `IntPatch_WLine::ComputeVertexParameters`, reached through
+  `GeomAPI_IntSS` and `IntPatch_ALineToWLine::MakeWLine`. The sampled
+  instruction adds one U period in OCCT's `RecadreMemePeriode` loop.
+  The parameter values in that loop and the cause of the platform difference
+  remain unknown.
+- **Intel i7-11800H, Linux.** Two runs took 42.36 s and 42.29 s end to end.
+  On the same edge, IntSS returned a curve that brepper judged degenerate.
+  Brepper constructed a line from the endpoints and finished all 490 edge
+  curves. Face assembly (stage 3.4) then failed on toroidal face 29 with
+  “single winding loop but the surface has no pole on the region side”.
+  The error message calls this a stage 3.1 adjacency error.
+- **One-edge experiment on the Mac.** Forcing the existing mesh-boundary
+  fallback only for vertices 4097 and 4194 gave a chain deviation of
+  1.14e-3 mm. Stage 3.3 finished all 490 edges in 0.801 s, then face 29
+  failed exactly as on Linux. This isolates the Mac timeout. Whether the
+  resulting solid would pass self-check is still untested.
+- **Resume on the Mac.** The logs, both samples, trace patch and probe source
+  are in `~/src/brepper/tmp/machine-timing-9481flty/`. The scratch binary
+  `target/release/docking-probe` accepts the reproduction command's arguments.
+  Set `DOCKING_SKIP='[4097, 4194]'` to repeat the bypass. To investigate the
+  numerical cause, inspect the current U, target U and U period in the sampled
+  loop. To investigate face 29 separately, check its fitted type against the
+  aligned reference with the step 2 label report.
+
+On three other checksum-matched meshes, median end-to-end times in seconds
+(M2 Pro / Intel, three serial runs per part per machine, default worker
+counts) were 1.19 / 2.72 for `downloaded/xyz-cube-test-20mm`, 9.80 / 24.68
+for `onshape/pill_fine`, and 5.76 / 11.14 for
+`remesh/pipe_elbow_10_occt_fine`. All passed self-check on every run.
 
 ---
 

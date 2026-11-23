@@ -16,6 +16,8 @@ then face quality on analytic-only parts, then freeform cost. Sections of this
 document written before that date describe the pipeline accurately but argue
 for a plan that has been replaced.
 
+The [mirrored docking-station handoff](TODO.md#mac-handoff--mirrored-docking-station-measured-2026-11-23) records the stage 3.3 stall on the M2 Pro and the subsequent face assembly failure reproduced on both platforms.
+
 ## Design Principles
 
 *(The self-check that ends every run — `src/selfcheck.rs`, added 2026-11-12 — is
